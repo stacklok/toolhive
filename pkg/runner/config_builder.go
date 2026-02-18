@@ -305,7 +305,7 @@ func WithLabels(labelStrings []string) RunConfigBuilderOption {
 		for _, labelString := range labelStrings {
 			key, value, err := labels.ParseLabel(labelString)
 			if err != nil {
-				slog.Warn("Skipping invalid label: ()", "skipping_invalid_label", labelString, "error", err)
+				slog.Warn("Skipping invalid label", "label", labelString, "error", err)
 				continue
 			}
 			b.config.ContainerLabels[key] = value

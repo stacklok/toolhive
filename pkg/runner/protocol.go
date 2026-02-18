@@ -213,7 +213,7 @@ func addBuildEnvToTemplate(templateData *templates.TemplateData) error {
 
 	if len(resolvedEnv) > 0 {
 		templateData.BuildEnv = resolvedEnv
-		slog.Debug("Loaded build environment variable(s) (redacted for security)", "value", len(resolvedEnv))
+		slog.Debug("Loaded build environment variable(s) (redacted for security)", "count", len(resolvedEnv))
 	}
 
 	return nil
@@ -236,7 +236,7 @@ func addBuildAuthFilesToTemplate(templateData *templates.TemplateData) error {
 
 	if len(authFiles) > 0 {
 		templateData.BuildAuthFiles = authFiles
-		slog.Debug("Loaded build auth file(s)", "value", len(authFiles))
+		slog.Debug("Loaded build auth file(s)", "count", len(authFiles))
 	}
 
 	return nil
@@ -317,7 +317,7 @@ func resolveSecretsForBuildEnv(secretRefs map[string]string) (map[string]string,
 
 // addCACertToTemplate reads and validates a CA certificate, adding it to the template data.
 func addCACertToTemplate(caCertPath string, templateData *templates.TemplateData) error {
-	slog.Debug("Using custom CA certificate from", "path", caCertPath)
+	slog.Debug("Using custom CA certificate", "path", caCertPath)
 
 	// Read the CA certificate file
 	// #nosec G304 -- This is a user-provided file path that we need to read
@@ -424,7 +424,7 @@ func writeDockerfile(dockerfilePath, dockerfileContent string, isLocalPath bool)
 	if isLocalPath {
 		// Check if a Dockerfile already exists
 		if _, err := os.Stat(dockerfilePath); err == nil {
-			slog.Debug("Dockerfile already exists at , using existing Dockerfile", "dockerfilepath", dockerfilePath)
+			slog.Debug("Dockerfile already exists, using existing Dockerfile", "path", dockerfilePath)
 			return nil // Use the existing Dockerfile
 		}
 	}
@@ -437,7 +437,7 @@ func writeDockerfile(dockerfilePath, dockerfileContent string, isLocalPath bool)
 	}
 
 	if isLocalPath {
-		slog.Debug("Created temporary Dockerfile at", "dockerfilepath", dockerfilePath)
+		slog.Debug("Created temporary Dockerfile", "path", dockerfilePath)
 	}
 
 	return nil
@@ -510,7 +510,7 @@ func writeAuthFiles(buildContextDir string, authFiles map[string]string, isLocal
 		cleanupFunc = func() {
 			for _, f := range writtenFiles {
 				if err := os.Remove(f); err != nil {
-					slog.Debug("Failed to remove temporary auth file", "f", f, "s", err)
+					slog.Debug("Failed to remove temporary auth file", "path", f, "error", err)
 				}
 			}
 		}
@@ -589,8 +589,8 @@ func buildImageFromTemplateWithName(
 	}
 
 	// Log the build process
-	slog.Debug("Building Docker image for package", "transporttype", transportType, "s_package", packageName)
-	slog.Debug("Using Dockerfile:\n", "dockerfilecontent", dockerfileContent)
+	slog.Debug("Building Docker image for package", "transport_type", transportType, "package", packageName)
+	slog.Debug("Using Dockerfile", "dockerfile_content", dockerfileContent)
 
 	if err := imageManager.BuildImage(ctx, buildCtx.Dir, finalImageName); err != nil {
 		return "", fmt.Errorf("failed to build Docker image: %w", err)

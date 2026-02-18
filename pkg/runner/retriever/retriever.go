@@ -381,7 +381,7 @@ func hasLatestTag(imageRef string) bool {
 	ref, err := nameref.ParseReference(imageRef)
 	if err != nil {
 		// If we can't parse the reference, assume it's not "latest"
-		slog.Warn("Warning: Failed to parse image reference", "error", err)
+		slog.Warn("failed to parse image reference", "error", err)
 		return false
 	}
 

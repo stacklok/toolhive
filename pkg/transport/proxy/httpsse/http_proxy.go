@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,7 +23,6 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
@@ -158,7 +158,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
-		logger.Debug("Prometheus metrics endpoint enabled at /metrics")
+		slog.Debug("Prometheus metrics endpoint enabled at /metrics")
 	}
 
 	// Create a listener to get the actual port when using port 0
@@ -188,12 +188,16 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		_, portStr, _ := net.SplitHostPort(actualAddr)
 		actualPort, _ := strconv.Atoi(portStr)
 
-		logger.Debugf("HTTP proxy started on port %d", actualPort)
-		logger.Debugf("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
-		logger.Debugf("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
+		slog.Debug("HTTP proxy started", "port", actualPort)
+		//nolint:gosec // G706: logging configured SSE and JSON-RPC endpoint addresses
+		slog.Debug("SSE endpoint",
+			"url", fmt.Sprintf("http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint))
+		//nolint:gosec // G706: logging configured JSON-RPC endpoint address
+		slog.Debug("JSON-RPC endpoint",
+			"url", fmt.Sprintf("http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint))
 
 		if err := p.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Errorf("HTTP server error: %v", err)
+			slog.Error("HTTP server error", "error", err)
 		}
 	}()
 
@@ -211,7 +215,7 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 	// Stop the session manager cleanup routine
 	if p.sessionManager != nil {
 		if err := p.sessionManager.Stop(); err != nil {
-			logger.Errorf("Failed to stop session manager: %v", err)
+			slog.Error("Failed to stop session manager", "error", err)
 		}
 	}
 
@@ -312,7 +316,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	// Create and register the SSE session
 	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
 	if err := p.sessionManager.AddSession(sseSession); err != nil {
-		logger.Errorf("Failed to add SSE session: %v", err)
+		slog.Error("Failed to add SSE session", "error", err)
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -333,7 +337,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 
 	// Send the initial event
 	if _, err := fmt.Fprint(w, endpointMsg.ToSSEString()); err != nil { //nolint:gosec // G705: SSE data from internal MCP protocol
-		logger.Debugf("Failed to write endpoint message: %v", err)
+		slog.Debug("Failed to write endpoint message", "error", err)
 		return
 	}
 	flusher.Flush()
@@ -350,7 +354,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	go func() {
 		<-ctx.Done()
 		p.removeClient(clientID)
-		logger.Debugf("Client %s disconnected", clientID)
+		slog.Debug("Client disconnected", "client_id", clientID)
 	}()
 
 	// Send messages to the client
@@ -363,14 +367,14 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 				return
 			}
 			if _, err := fmt.Fprint(w, msg); err != nil {
-				logger.Debugf("Failed to write message: %v", err)
+				slog.Debug("Failed to write message", "error", err)
 				return
 			}
 			flusher.Flush()
 		case <-keepAliveTicker.C:
 			// Send SSE comment as keep-alive
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
-				logger.Debugf("Failed to write keep-alive: %v", err)
+				slog.Debug("Failed to write keep-alive", "error", err)
 				return
 			}
 			flusher.Flush()
@@ -415,8 +419,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Log the message
-	logger.Debugf("Received JSON-RPC message: %T", msg)
+	slog.Debug("Received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {
@@ -427,7 +430,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	// Return a success response
 	w.WriteHeader(http.StatusAccepted)
 	if _, err := w.Write([]byte("Accepted")); err != nil {
-		logger.Warnf("Warning: Failed to write response: %v", err)
+		slog.Warn("Failed to write response", "error", err)
 	}
 }
 
@@ -455,9 +458,9 @@ func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 				// Log the error but continue sending to other clients
 				switch {
 				case errors.Is(err, session.ErrSessionDisconnected):
-					logger.Debugf("Client %s is disconnected, skipping message", clientID)
+					slog.Debug("Client is disconnected, skipping message", "client_id", clientID)
 				case errors.Is(err, session.ErrMessageChannelFull):
-					logger.Debugf("Client %s channel full, skipping message", clientID)
+					slog.Debug("Client channel full, skipping message", "client_id", clientID)
 				}
 			}
 		}
@@ -492,7 +495,7 @@ func (p *HTTPSSEProxy) removeClient(clientID string) {
 
 	// Remove the session from the manager
 	if err := p.sessionManager.Delete(clientID); err != nil {
-		logger.Debugf("Failed to delete session %s: %v", clientID, err)
+		slog.Debug("Failed to delete session", "client_id", clientID, "error", err)
 	}
 
 	// Clean up closed clients map periodically (prevent memory leak)
@@ -524,8 +527,8 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 			// Message sent successfully
 		default:
 			// Channel is full, stop sending
-			logger.Errorf("Client %s channel full after sending %d/%d pending messages",
-				clientID, i, len(p.pendingMessages))
+			slog.Error("Client channel full after sending pending messages",
+				"client_id", clientID, "sent", i, "total", len(p.pendingMessages))
 			// Remove successfully sent messages and keep the rest
 			p.pendingMessages = p.pendingMessages[i:]
 			return

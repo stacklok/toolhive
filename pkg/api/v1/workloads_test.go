@@ -23,7 +23,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/core"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
-	"github.com/stacklok/toolhive/pkg/logger"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
@@ -33,8 +32,6 @@ import (
 
 func TestGetWorkload(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -100,8 +97,6 @@ func TestGetWorkload(t *testing.T) {
 
 func TestCreateWorkload(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -247,8 +242,6 @@ func TestCreateWorkload(t *testing.T) {
 
 func TestUpdateWorkload(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -444,8 +437,6 @@ func TestUpdateWorkload(t *testing.T) {
 // TestUpdateWorkload_PortReuse tests the port reuse logic when editing workloads
 func TestUpdateWorkload_PortReuse(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		name           string

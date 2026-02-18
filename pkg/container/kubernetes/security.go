@@ -4,11 +4,11 @@
 package kubernetes
 
 import (
+	"log/slog"
+
 	corev1 "k8s.io/api/core/v1"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/utils/ptr"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // SecurityContextBuilder provides platform-aware security context configuration
@@ -35,7 +35,7 @@ func (b *SecurityContextBuilder) BuildPodSecurityContext() *corev1.PodSecurityCo
 
 	// Apply platform-specific modifications
 	if b.platform == PlatformOpenShift {
-		logger.Info("Configuring pod security context for OpenShift")
+		slog.Info("Configuring pod security context for OpenShift")
 		// OpenShift uses Security Context Constraints (SCCs) to manage user/group assignments
 		// Setting these to nil allows OpenShift to assign them dynamically
 		podSecurityContext.RunAsUser = nil
@@ -47,7 +47,7 @@ func (b *SecurityContextBuilder) BuildPodSecurityContext() *corev1.PodSecurityCo
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		}
 	} else {
-		logger.Info("Configuring pod security context for Kubernetes")
+		slog.Info("Configuring pod security context for Kubernetes")
 	}
 
 	return podSecurityContext
@@ -67,7 +67,7 @@ func (b *SecurityContextBuilder) BuildContainerSecurityContext() *corev1.Securit
 
 	// Apply platform-specific modifications
 	if b.platform == PlatformOpenShift {
-		logger.Info("Configuring container security context for OpenShift")
+		slog.Info("Configuring container security context for OpenShift")
 		// OpenShift uses Security Context Constraints (SCCs) to manage user/group assignments
 		// Setting these to nil allows OpenShift to assign them dynamically
 		containerSecurityContext.RunAsUser = nil
@@ -83,7 +83,7 @@ func (b *SecurityContextBuilder) BuildContainerSecurityContext() *corev1.Securit
 			Drop: []corev1.Capability{"ALL"},
 		}
 	} else {
-		logger.Info("Configuring container security context for Kubernetes")
+		slog.Info("Configuring container security context for Kubernetes")
 	}
 
 	return containerSecurityContext

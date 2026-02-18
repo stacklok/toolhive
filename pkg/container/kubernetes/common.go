@@ -4,6 +4,7 @@
 package kubernetes
 
 import (
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -13,8 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Platform represents the Kubernetes platform type
@@ -66,7 +65,8 @@ func (d *DefaultPlatformDetector) DetectPlatform(config *rest.Config) (Platform,
 		// Check if we are running on OpenShift via environment variable override
 		value, ok := os.LookupEnv("OPERATOR_OPENSHIFT")
 		if ok {
-			logger.Infof("%s", "OpenShift set by env var 'OPERATOR_OPENSHIFT': "+value)
+			//nolint:gosec // G706: env var value from trusted OPERATOR_OPENSHIFT
+			slog.Info("OpenShift set by env var", "env", "OPERATOR_OPENSHIFT", "value", value)
 			if strings.ToLower(value) == "true" {
 				d.platform = PlatformOpenShift
 			} else {
@@ -112,7 +112,7 @@ func (d *DefaultPlatformDetector) DetectPlatform(config *rest.Config) (Platform,
 		}
 
 		if isOpenShiftResourcePresent {
-			logger.Infof("OpenShift detected by route resource check.")
+			slog.Info("OpenShift detected by route resource check")
 			d.platform = PlatformOpenShift
 		} else {
 			d.platform = PlatformKubernetes

@@ -10,8 +10,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const validCACertificate = `-----BEGIN CERTIFICATE-----
@@ -38,7 +36,6 @@ UukCUf8SUaaTa7XF7inVh8cJQYTO1w/QAMJePU6EcxR4Rkc=
 
 func TestCACertOperations(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name         string
@@ -203,7 +200,6 @@ func TestCACertOperations(t *testing.T) {
 
 func TestProviderInterfaceCACert(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name     string

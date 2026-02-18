@@ -22,12 +22,12 @@ func CheckAndPerformMiddlewareTelemetryMigration() {
 		// Check if migration was already performed
 		appConfig := config.NewDefaultProvider().GetConfig()
 		if appConfig.MiddlewareTelemetryMigration {
-			slog.Debug("Telemetry config migration already completed, skipping")
+			slog.Debug("telemetry config migration already completed, skipping")
 			return
 		}
 
 		if err := performTelemetryConfigMigration(); err != nil {
-			slog.Error("Failed to perform middleware telemetry migration", "error", err)
+			slog.Error("failed to perform middleware telemetry migration", "error", err)
 			return
 		}
 
@@ -35,7 +35,7 @@ func CheckAndPerformMiddlewareTelemetryMigration() {
 		if err := config.UpdateConfig(func(c *config.Config) {
 			c.MiddlewareTelemetryMigration = true
 		}); err != nil {
-			slog.Error("Failed to update config after middleware telemetry migration", "error", err)
+			slog.Error("failed to update config after middleware telemetry migration", "error", err)
 		}
 	})
 }

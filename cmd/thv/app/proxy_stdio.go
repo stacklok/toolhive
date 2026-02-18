@@ -57,7 +57,7 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Consume until interrupt
 	<-ctx.Done()
-	slog.Debug("Shutting down bridge")
+	slog.Debug("shutting down bridge")
 	bridge.Shutdown()
 	return nil
 }

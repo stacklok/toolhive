@@ -144,11 +144,11 @@ func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) 
 
 	// Check cache first
 	if caps := m.getCachedCapabilities(cacheKey); caps != nil {
-		slog.Debug("Cache hit for user", "user", identity.Subject, "key", cacheKey)
+		slog.Debug("cache hit for user", "user", identity.Subject, "key", cacheKey)
 		return caps, nil
 	}
 
-	slog.Debug("Cache miss - performing capability discovery", "user", identity.Subject)
+	slog.Debug("cache miss - performing capability discovery", "user", identity.Subject)
 
 	// Cache miss - perform aggregation
 	caps, err := m.aggregator.AggregateCapabilities(ctx, backends)
@@ -213,7 +213,7 @@ func (m *DefaultManager) getCachedCapabilities(key string) *aggregator.Aggregate
 	if m.registry != nil {
 		currentVersion := m.registry.Version()
 		if entry.registryVersion != currentVersion {
-			slog.Debug("Cache entry stale", "current_version", currentVersion, "entry_version", entry.registryVersion)
+			slog.Debug("cache entry stale", "current_version", currentVersion, "entry_version", entry.registryVersion)
 			return nil
 		}
 	}
@@ -231,7 +231,7 @@ func (m *DefaultManager) cacheCapabilities(key string, caps *aggregator.Aggregat
 	if len(m.cache) >= maxCacheSize {
 		_, exists := m.cache[key]
 		if !exists {
-			slog.Debug("Cache at capacity, not caching new entry", "capacity", maxCacheSize)
+			slog.Debug("cache at capacity, not caching new entry", "capacity", maxCacheSize)
 			return
 		}
 	}
@@ -282,6 +282,6 @@ func (m *DefaultManager) removeExpiredEntries() {
 	}
 
 	if removed > 0 {
-		slog.Debug("Removed expired cache entries", "removed", removed, "remaining", len(m.cache))
+		slog.Debug("removed expired cache entries", "removed", removed, "remaining", len(m.cache))
 	}
 }

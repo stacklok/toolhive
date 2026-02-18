@@ -67,11 +67,11 @@ func routeCapability(
 
 	target, exists := capabilityMap[key]
 	if !exists {
-		slog.Debug("Not found in routing table", "type", entityType, "key", key)
+		slog.Debug("not found in routing table", "type", entityType, "key", key)
 		return nil, fmt.Errorf("%w: %s", notFoundErr, key)
 	}
 
-	slog.Debug("Routed capability to backend", "type", entityType, "key", key, "backend", target.WorkloadID)
+	slog.Debug("routed capability to backend", "type", entityType, "key", key, "backend", target.WorkloadID)
 	return target, nil
 }
 

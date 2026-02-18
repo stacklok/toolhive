@@ -86,7 +86,7 @@ func setupSignalHandler() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-sigCh
-		slog.Debug("Received signal, cleaning up lock files...")
+		slog.Debug("received signal, cleaning up lock files")
 		lockfile.CleanupAllLocks()
 		cancel()
 	}()

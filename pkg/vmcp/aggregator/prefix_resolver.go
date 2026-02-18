@@ -39,7 +39,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 	_ context.Context,
 	toolsByBackend map[string][]vmcp.Tool,
 ) (map[string]*ResolvedTool, error) {
-	slog.Debug("Resolving conflicts using prefix strategy", "format", r.PrefixFormat)
+	slog.Debug("resolving conflicts using prefix strategy", "format", r.PrefixFormat)
 
 	resolved := make(map[string]*ResolvedTool)
 
@@ -51,7 +51,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 			// Check if this resolved name is unique
 			if existing, exists := resolved[resolvedName]; exists {
 				// This should be extremely rare with prefixing, but handle it
-				slog.Warn("Collision after prefixing",
+				slog.Warn("collision after prefixing",
 					"resolved_name", resolvedName,
 					"backend", backendID,
 					"existing_name", existing.ResolvedName,
@@ -70,7 +70,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 		}
 	}
 
-	slog.Info("Prefix strategy created unique tools", "count", len(resolved))
+	slog.Info("prefix strategy created unique tools", "count", len(resolved))
 
 	return resolved, nil
 }

@@ -89,7 +89,7 @@ func (cb *circuitBreaker) RecordSuccess() {
 
 		// Log successful recovery
 		if previousState == CircuitHalfOpen {
-			slog.Info("Circuit breaker CLOSED (recovery successful)", "backend", cb.name)
+			slog.Info("circuit breaker CLOSED (recovery successful)", "backend", cb.name)
 		}
 	}
 }
@@ -106,11 +106,11 @@ func (cb *circuitBreaker) RecordFailure() {
 
 	if cb.state == CircuitClosed && cb.failureCount >= cb.failureThreshold {
 		cb.transitionTo(CircuitOpen)
-		slog.Warn("Circuit breaker OPENED (threshold exceeded)", "backend", cb.name)
+		slog.Warn("circuit breaker OPENED (threshold exceeded)", "backend", cb.name)
 	} else if cb.state == CircuitHalfOpen {
 		// Failed in half-open state, go back to open
 		cb.transitionTo(CircuitOpen)
-		slog.Warn("Circuit breaker returned to OPEN from half-open (recovery failed)", "backend", cb.name)
+		slog.Warn("circuit breaker returned to OPEN from half-open (recovery failed)", "backend", cb.name)
 	}
 }
 

@@ -50,7 +50,7 @@ func (r *ManualConflictResolver) ResolveToolConflicts(
 	_ context.Context,
 	toolsByBackend map[string][]vmcp.Tool,
 ) (map[string]*ResolvedTool, error) {
-	slog.Debug("Resolving conflicts using manual strategy", "overrides", len(r.Overrides))
+	slog.Debug("resolving conflicts using manual strategy", "overrides", len(r.Overrides))
 
 	// Group tools by name to detect conflicts
 	toolsByName := groupToolsByName(toolsByBackend)
@@ -66,7 +66,7 @@ func (r *ManualConflictResolver) ResolveToolConflicts(
 		return nil, err
 	}
 
-	slog.Info("Manual strategy resolved tools", "count", len(resolved))
+	slog.Info("manual strategy resolved tools", "count", len(resolved))
 	return resolved, nil
 }
 

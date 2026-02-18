@@ -314,7 +314,7 @@ func New(
 		if err != nil {
 			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
 		}
-		slog.Info("Workflow audit logging enabled")
+		slog.Info("workflow audit logging enabled")
 	}
 
 	// Create workflow engine (composer) for executing composite tools
@@ -360,13 +360,13 @@ func New(
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health monitor: %w", err)
 		}
-		slog.Info("Health monitoring enabled",
+		slog.Info("health monitoring enabled",
 			"check_interval", cfg.HealthMonitorConfig.CheckInterval,
 			"unhealthy_threshold", cfg.HealthMonitorConfig.UnhealthyThreshold,
 			"timeout", cfg.HealthMonitorConfig.Timeout,
 			"degraded_threshold", cfg.HealthMonitorConfig.DegradedThreshold)
 	} else {
-		slog.Info("Health monitoring disabled")
+		slog.Info("health monitoring disabled")
 	}
 
 	// Create Server instance
@@ -434,9 +434,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.TelemetryProvider != nil {
 		if prometheusHandler := s.config.TelemetryProvider.PrometheusHandler(); prometheusHandler != nil {
 			mux.Handle("/metrics", prometheusHandler)
-			slog.Info("Prometheus metrics endpoint enabled at /metrics")
+			slog.Info("prometheus metrics endpoint enabled at /metrics")
 		} else {
-			slog.Warn("Prometheus metrics endpoint is not enabled, but telemetry provider is configured")
+			slog.Warn("prometheus metrics endpoint is not enabled, but telemetry provider is configured")
 		}
 	}
 
@@ -444,7 +444,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
 	if wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler); wellKnownHandler != nil {
 		mux.Handle("/.well-known/", wellKnownHandler)
-		slog.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
+		slog.Info("rFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
@@ -455,7 +455,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
-		slog.Info("Telemetry middleware enabled for MCP endpoints")
+		slog.Info("telemetry middleware enabled for MCP endpoints")
 	}
 
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
@@ -467,7 +467,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// This runs after discovery populates the routing table, so it can extract backend names
 	if s.config.AuditConfig != nil {
 		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
-		slog.Info("Backend enrichment middleware enabled for audit events")
+		slog.Info("backend enrichment middleware enabled for audit events")
 	}
 
 	// Apply discovery middleware (runs after audit/auth middleware)
@@ -484,7 +484,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		healthStatusProvider = healthMon
 	}
 	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider)(mcpHandler)
-	slog.Info("Discovery middleware enabled for lazy per-user capability discovery")
+	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
 	if s.config.AuditConfig != nil {
@@ -499,13 +499,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 			return nil, fmt.Errorf("failed to create auditor: %w", err)
 		}
 		mcpHandler = auditor.Middleware(mcpHandler)
-		slog.Info("Audit middleware enabled for MCP endpoints")
+		slog.Info("audit middleware enabled for MCP endpoints")
 	}
 
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
-		slog.Info("Authentication middleware enabled for MCP endpoints")
+		slog.Info("authentication middleware enabled for MCP endpoints")
 	}
 
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
@@ -513,7 +513,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// Apply recovery middleware as outermost (catches panics from all inner middleware)
 	mcpHandler = recovery.Middleware(mcpHandler)
-	slog.Info("Recovery middleware enabled for MCP endpoints")
+	slog.Info("recovery middleware enabled for MCP endpoints")
 
 	mux.Handle("/", mcpHandler)
 
@@ -565,8 +565,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listenerMu.Unlock()
 
 	actualAddr := listener.Addr().String()
-	slog.Info("Starting Virtual MCP Server", "address", actualAddr, "endpoint", s.config.EndpointPath)
-	slog.Info("Health endpoints available",
+	slog.Info("starting Virtual MCP Server", "address", actualAddr, "endpoint", s.config.EndpointPath)
+	slog.Info("health endpoints available",
 		"health", actualAddr+"/health",
 		"ping", actualAddr+"/ping",
 		"status", actualAddr+"/status",
@@ -594,12 +594,12 @@ func (s *Server) Start(ctx context.Context) error {
 		if err := healthMon.Start(ctx); err != nil {
 			// Log error and disable health monitoring - treat as if it wasn't configured
 			// This ensures getter methods correctly report monitoring as disabled
-			slog.Warn("Failed to start health monitor, disabling health monitoring", "error", err)
+			slog.Warn("failed to start health monitor, disabling health monitoring", "error", err)
 			s.healthMonitorMu.Lock()
 			s.healthMonitor = nil
 			s.healthMonitorMu.Unlock()
 		} else {
-			slog.Info("Health monitor started")
+			slog.Info("health monitor started")
 		}
 	}
 
@@ -636,11 +636,11 @@ func (s *Server) Start(ctx context.Context) error {
 	// Wait for either context cancellation or server error
 	select {
 	case <-ctx.Done():
-		slog.Info("Context cancelled, shutting down server")
+		slog.Info("context cancelled, shutting down server")
 		return s.Stop(context.Background())
 	case err := <-errCh:
 		// HTTP server error - log and tear down cleanly
-		slog.Error("HTTP server error", "error", err)
+		slog.Error("hTTP server error", "error", err)
 		if stopErr := s.Stop(context.Background()); stopErr != nil {
 			// Combine errors if Stop() also fails
 			return fmt.Errorf("server error: %w; stop error: %v", err, stopErr)
@@ -651,7 +651,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Stop gracefully stops the Virtual MCP Server.
 func (s *Server) Stop(ctx context.Context) error {
-	slog.Info("Stopping Virtual MCP Server")
+	slog.Info("stopping Virtual MCP Server")
 
 	var errs []error
 
@@ -702,11 +702,11 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	if len(errs) > 0 {
-		slog.Error("Errors during shutdown", "errors", errs)
+		slog.Error("errors during shutdown", "errors", errs)
 		return errors.Join(errs...)
 	}
 
-	slog.Info("Virtual MCP Server stopped")
+	slog.Info("virtual MCP Server stopped")
 	return nil
 }
 
@@ -744,7 +744,7 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	// Encode response. If this fails (extremely unlikely for simple map[string]string),
 	// the 200 OK status has already been sent above.
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("Failed to encode health response", "error", err)
+		slog.Error("failed to encode health response", "error", err)
 	}
 }
 
@@ -782,7 +782,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			slog.Error("Failed to encode readiness response", "error", err)
+			slog.Error("failed to encode readiness response", "error", err)
 		}
 		return
 	}
@@ -801,7 +801,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			slog.Error("Failed to encode readiness response", "error", err)
+			slog.Error("failed to encode readiness response", "error", err)
 		}
 		return
 	}
@@ -814,7 +814,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("Failed to encode readiness response", "error", err)
+		slog.Error("failed to encode readiness response", "error", err)
 	}
 }
 
@@ -1001,7 +1001,7 @@ func (s *Server) handleSessionRegistration(
 	sessionManager *transportsession.Manager,
 ) {
 	sessionID := session.SessionID()
-	slog.Debug("OnRegisterSession hook called", "session_id", sessionID)
+	slog.Debug("onRegisterSession hook called", "session_id", sessionID)
 
 	// Get capabilities from context (discovered by middleware)
 	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
@@ -1112,11 +1112,11 @@ func validateAndCreateExecutors(
 
 		validDefs[name] = def
 		validExecutors[name] = newComposerWorkflowExecutor(validator, def)
-		slog.Debug("Validated workflow definition", "name", name)
+		slog.Debug("validated workflow definition", "name", name)
 	}
 
 	if len(validDefs) > 0 {
-		slog.Info("Loaded valid composite tool workflows", "count", len(validDefs))
+		slog.Info("loaded valid composite tool workflows", "count", len(validDefs))
 	}
 
 	return validDefs, validExecutors, nil
@@ -1211,7 +1211,7 @@ func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
 	// Encode response before writing headers to ensure encoding succeeds
 	data, err := json.Marshal(response)
 	if err != nil {
-		slog.Error("Failed to encode backend health response", "error", err)
+		slog.Error("failed to encode backend health response", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -1219,7 +1219,7 @@ func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(data); err != nil {
-		slog.Error("Failed to write backend health response", "error", err)
+		slog.Error("failed to write backend health response", "error", err)
 	}
 }
 
@@ -1239,7 +1239,7 @@ func headerValidatingMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotAcceptable)
 			if _, err := w.Write(notAcceptableBody); err != nil {
-				slog.Error("Failed to write not-acceptable response", "error", err)
+				slog.Error("failed to write not-acceptable response", "error", err)
 			}
 			return
 		}

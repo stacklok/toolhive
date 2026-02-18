@@ -340,11 +340,11 @@ func createMCPClientWithAutoDetect(ctx context.Context, serverURL string) (*clie
 	streamableClient, err := client.NewStreamableHttpClient(serverURL)
 	if err == nil {
 		if err := tryInitializeClient(ctx, streamableClient); err == nil {
-			slog.Debug("Successfully connected using streamable HTTP transport")
+			slog.Debug("successfully connected using streamable HTTP transport")
 			return streamableClient, nil
 		}
 		_ = streamableClient.Close()
-		slog.Debug("Streamable HTTP transport failed, trying SSE fallback")
+		slog.Debug("streamable HTTP transport failed, trying SSE fallback")
 	}
 
 	// Fall back to SSE
@@ -359,7 +359,7 @@ func createMCPClientWithAutoDetect(ctx context.Context, serverURL string) (*clie
 		return nil, fmt.Errorf("failed to connect using both streamable HTTP and SSE transports: %w", err)
 	}
 
-	slog.Debug("Successfully connected using SSE transport")
+	slog.Debug("successfully connected using SSE transport")
 	return sseClient, nil
 }
 

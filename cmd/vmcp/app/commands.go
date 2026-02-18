@@ -146,7 +146,7 @@ This command checks:
 				return fmt.Errorf("configuration loading failed: %w", err)
 			}
 
-			slog.Debug("Configuration loaded successfully, performing validation...")
+			slog.Debug("configuration loaded successfully, performing validation")
 
 			// Validate configuration
 			validator := config.NewValidator()
@@ -213,7 +213,7 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	slog.Info("Configuration loaded and validated successfully")
+	slog.Info("configuration loaded and validated successfully")
 	slog.Info(fmt.Sprintf("  Name: %s", cfg.Name))
 	slog.Info(fmt.Sprintf("  Group: %s", cfg.Group))
 	slog.Info(fmt.Sprintf("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution))
@@ -228,7 +228,7 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 // Returns empty backends list with no error if running in Kubernetes where CLI discovery doesn't work
 func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
 	// Create outgoing authentication registry
-	slog.Info("Initializing outgoing authentication")
+	slog.Info("initializing outgoing authentication")
 	envReader := &env.OSReader{}
 	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, envReader)
 	if err != nil {
@@ -253,7 +253,7 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		)
 	} else {
 		// Dynamic mode: Discover backends at runtime from K8s API
-		slog.Info("Dynamic mode: initializing group manager for backend discovery")
+		slog.Info("dynamic mode: initializing group manager for backend discovery")
 		groupsManager, err := groups.NewManager()
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
@@ -303,7 +303,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		// Create default audit config with reasonable defaults
 		cfg.Audit = audit.DefaultConfig()
 		cfg.Audit.Component = "vmcp-server"
-		slog.Info("Audit logging enabled with default configuration")
+		slog.Info("audit logging enabled with default configuration")
 	}
 
 	// Discover backends and create client
@@ -352,14 +352,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
-	slog.Info("Dynamic backend registry enabled for Kubernetes environment")
+	slog.Info("dynamic backend registry enabled for Kubernetes environment")
 
 	// Backend watcher for dynamic backend discovery
 	var backendWatcher *k8s.BackendWatcher
 
 	// If outgoingAuth.source is "discovered", start K8s backend watcher to watch backend changes
 	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == "discovered" {
-		slog.Info("Detected dynamic backend discovery mode (outgoingAuth.source: discovered)")
+		slog.Info("detected dynamic backend discovery mode (outgoingAuth.source: discovered)")
 
 		// Get in-cluster REST config
 		restConfig, err := rest.InClusterConfig()
@@ -382,13 +382,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 		// Start K8s backend watcher in background goroutine
 		go func() {
-			slog.Info("Starting Kubernetes backend watcher in background")
+			slog.Info("starting Kubernetes backend watcher in background")
 			if err := backendWatcher.Start(ctx); err != nil {
 				slog.Error(fmt.Sprintf("Backend watcher stopped with error: %v", err))
 			}
 		}()
 
-		slog.Info("Kubernetes backend watcher started for dynamic backend discovery")
+		slog.Info("kubernetes backend watcher started for dynamic backend discovery")
 	}
 
 	// Create router
@@ -453,7 +453,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		slog.Info("Health monitoring configured from operational settings")
+		slog.Info("health monitoring configured from operational settings")
 	}
 
 	// Create status reporter using factory (auto-detects K8s vs CLI mode)
@@ -513,7 +513,7 @@ func aggregateCapabilities(
 	agg aggregator.Aggregator,
 	backends []vmcp.Backend,
 ) (*aggregator.AggregatedCapabilities, error) {
-	slog.Info("Aggregating capabilities from backends")
+	slog.Info("aggregating capabilities from backends")
 
 	if len(backends) > 0 {
 		aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -534,7 +534,7 @@ func aggregateCapabilities(
 	}
 
 	// No backends available - create empty capabilities
-	slog.Warn("No backends available - starting with empty capabilities")
+	slog.Warn("no backends available - starting with empty capabilities")
 	return &aggregator.AggregatedCapabilities{
 		Tools:     []vmcp.Tool{},
 		Resources: []vmcp.Resource{},

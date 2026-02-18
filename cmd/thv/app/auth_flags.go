@@ -45,7 +45,7 @@ func readSecretFromFile(filePath string) (string, error) {
 func resolveSecret(flagValue, filePath, envVarName string) (string, error) {
 	// 1. Check if provided directly via flag
 	if flagValue != "" {
-		slog.Debug("Using secret from command-line flag")
+		slog.Debug("using secret from command-line flag")
 		return flagValue, nil
 	}
 
@@ -61,7 +61,7 @@ func resolveSecret(flagValue, filePath, envVarName string) (string, error) {
 	}
 
 	// No secret found - this is acceptable for PKCE flows
-	slog.Debug("No secret provided - using public client mode")
+	slog.Debug("no secret provided - using public client mode")
 	return "", nil
 }
 

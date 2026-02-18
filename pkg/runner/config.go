@@ -299,7 +299,7 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	// Save the migrated RunConfig back to disk so migration only happens once
 	if err := config.SaveState(context.Background()); err != nil {
 		// Log error without potentially sensitive details - only log error type and message
-		slog.Warn("Failed to save migrated RunConfig for workload", "name", config.Name, "error", err)
+		slog.Warn("failed to save migrated RunConfig for workload", "name", config.Name, "error", err)
 		// Don't fail the migration - the secret is already stored and the config is updated in memory
 	}
 
@@ -338,7 +338,7 @@ func migrateBearerToken(config *RunConfig) error {
 	// Save the migrated RunConfig back to disk so migration only happens once
 	if err := config.SaveState(context.Background()); err != nil {
 		// Log error without potentially sensitive details - only log error type and message
-		slog.Warn("Failed to save migrated RunConfig for workload", "name", config.Name, "error", err)
+		slog.Warn("failed to save migrated RunConfig for workload", "name", config.Name, "error", err)
 		// Don't fail the migration - the secret is already stored and the config is updated in memory
 	}
 
@@ -400,12 +400,12 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	if proxyPort != 0 {
 		// Skip validation if reusing the same port from existing workload (during update)
 		if proxyPort == c.existingPort && c.existingPort > 0 {
-			slog.Debug("Reusing existing port", "port", proxyPort)
+			slog.Debug("reusing existing port", "port", proxyPort)
 			selectedPort = proxyPort
 		} else if !networking.IsAvailable(proxyPort) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
 		} else {
-			slog.Debug("Using requested port", "port", proxyPort)
+			slog.Debug("using requested port", "port", proxyPort)
 			selectedPort = proxyPort
 		}
 	} else {
@@ -423,7 +423,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
-		slog.Debug("Using target port", "port", selectedTargetPort)
+		slog.Debug("using target port", "port", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 

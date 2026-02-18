@@ -114,7 +114,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
 	}
 
-	slog.Debug("OAuth2 configuration created",
+	slog.Debug("oauth2 configuration created",
 		"access_token_lifespan", cfg.AccessTokenLifespan,
 		"refresh_token_lifespan", cfg.RefreshTokenLifespan,
 		"auth_code_lifespan", cfg.AuthCodeLifespan,
@@ -140,7 +140,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// Create HTTP handler serving all endpoints
 	router := handlerInstance.Routes()
 
-	slog.Debug("OAuth authorization server initialized",
+	slog.Debug("oauth authorization server initialized",
 		"issuer", cfg.Issuer,
 	)
 

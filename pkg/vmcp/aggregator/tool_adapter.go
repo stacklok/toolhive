@@ -80,7 +80,7 @@ func processBackendTools(
 	// Apply the shared filtering/override logic from pkg/mcp
 	processed, err := mcp.ApplyToolFiltering(opts, simpleTools)
 	if err != nil {
-		slog.Warn("Failed to apply tool filtering for backend", "backend", backendID, "error", err)
+		slog.Warn("failed to apply tool filtering for backend", "backend", backendID, "error", err)
 		return tools // Return original tools if processing fails
 	}
 
@@ -98,7 +98,7 @@ func processBackendTools(
 		if !exists {
 			// This should not happen unless there's a bug in the filtering logic,
 			// but skip the tool rather than panicking
-			slog.Warn("Tool not found in original tools map for backend, skipping", "tool", originalName, "backend", backendID)
+			slog.Warn("tool not found in original tools map for backend, skipping", "tool", originalName, "backend", backendID)
 			continue
 		}
 

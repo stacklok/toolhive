@@ -104,7 +104,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		slog.Debug(fmt.Sprintf("No configuration file found or failed to load: %v", err))
 		// Continue without configuration file - will use flags instead
 	}
-	slog.Info("Auto-discovered and loaded configuration from runconfig.json file")
+	slog.Info("auto-discovered and loaded configuration from runconfig.json file")
 	// Use simplified approach: when config file exists, use it directly and only apply essential flags
 	return runWithFileBasedConfig(ctx, cmd, mcpServerImage, fileBasedConfig, rt, debugMode, envVarValidator, imageMetadata)
 }

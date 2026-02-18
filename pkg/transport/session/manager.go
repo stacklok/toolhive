@@ -115,7 +115,7 @@ func (m *Manager) cleanupRoutine() {
 			cutoff := time.Now().Add(-m.ttl)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			if err := m.storage.DeleteExpired(ctx, cutoff); err != nil {
-				slog.Error("Failed to delete expired sessions", "error", err)
+				slog.Error("failed to delete expired sessions", "error", err)
 			}
 			cancel()
 		case <-m.stopCh:

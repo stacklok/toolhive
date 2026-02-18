@@ -197,7 +197,7 @@ func (s *StrategySelector) SelectTracerStrategy() TracerStrategy {
 
 	// Log informational message when endpoint is configured but tracing is disabled
 	if hasEndpoint && !tracingEnabled {
-		slog.Debug("OTLP endpoint configured but tracing is disabled")
+		slog.Debug("otlp endpoint configured but tracing is disabled")
 	}
 
 	return &NoOpTracerStrategy{}

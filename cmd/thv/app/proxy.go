@@ -219,7 +219,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 				slog.Debug(fmt.Sprintf("Using OAuth config with introspection URL: %s", introspectionURL))
 			}
 		} else {
-			slog.Debug("No OAuth configuration available, proceeding without outgoing authentication")
+			slog.Debug("no OAuth configuration available, proceeding without outgoing authentication")
 		}
 	}
 
@@ -332,7 +332,7 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
 	}
 	if bearerToken != "" {
-		slog.Debug("Using bearer token authentication for remote server")
+		slog.Debug("using bearer token authentication for remote server")
 		return &discovery.OAuthFlowResult{
 			TokenSource: remote.NewBearerTokenSource(bearerToken),
 		}, nil
@@ -435,7 +435,7 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			return fmt.Errorf("invalid token exchange configuration: %w", err)
 		}
 		if tokenExchangeConfig == nil {
-			slog.Warn("Token exchange URL provided but configuration could not be built")
+			slog.Warn("token exchange URL provided but configuration could not be built")
 			return nil
 		}
 

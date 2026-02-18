@@ -127,7 +127,7 @@ func (*GitHubProvider) CanHandle(introspectURL string) bool {
 // IntrospectToken introspects a GitHub OAuth token and returns JWT claims
 // This calls GitHub's token validation API to verify the token and extract user information
 func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt.MapClaims, error) {
-	slog.Debug("Using GitHub token validation provider", "url", g.baseURL)
+	slog.Debug("using GitHub token validation provider", "url", g.baseURL)
 
 	// Apply rate limiting to prevent DoS and respect GitHub API limits
 	if err := g.rateLimiter.Wait(ctx); err != nil {
@@ -162,7 +162,7 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -185,7 +185,7 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 		remaining := resp.Header.Get("X-RateLimit-Remaining")
 		reset := resp.Header.Get("X-RateLimit-Reset")
 		//nolint:gosec // G706: rate limit headers are public HTTP metadata
-		slog.Warn("GitHub rate limit exceeded",
+		slog.Warn("github rate limit exceeded",
 			"retry_after", retryAfter, "remaining", remaining, "reset", reset)
 		return nil, fmt.Errorf("github rate limit exceeded, retry after: %s", retryAfter)
 	}
@@ -195,7 +195,7 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 
 	// Parse the GitHub response and convert to JWT claims
 	//nolint:gosec // G706: HTTP status code is not sensitive
-	slog.Debug("Successfully validated GitHub token", "status", resp.StatusCode)
+	slog.Debug("successfully validated GitHub token", "status", resp.StatusCode)
 	return g.parseGitHubResponse(body)
 }
 

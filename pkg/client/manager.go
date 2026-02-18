@@ -171,14 +171,14 @@ func (m *defaultManager) AddServerToClients(
 	targetClients := m.getTargetClients(ctx, serverName, group)
 
 	if len(targetClients) == 0 {
-		slog.Debug("No target clients found for server", "server", serverName)
+		slog.Debug("no target clients found for server", "server", serverName)
 		return nil
 	}
 
 	// Add the server to each target client
 	for _, clientName := range targetClients {
 		if err := m.updateClientWithServer(clientName, serverName, serverURL, transportType); err != nil {
-			slog.Warn("Failed to update client", "client", clientName, "error", err)
+			slog.Warn("failed to update client", "client", clientName, "error", err)
 		}
 	}
 	return nil
@@ -191,14 +191,14 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 	targetClients := m.getTargetClients(ctx, serverName, group)
 
 	if len(targetClients) == 0 {
-		slog.Debug("No target clients found for server", "server", serverName)
+		slog.Debug("no target clients found for server", "server", serverName)
 		return nil
 	}
 
 	// Remove the server from each target client
 	for _, clientName := range targetClients {
 		if err := m.removeServerFromClient(ClientApp(clientName), serverName); err != nil && !errors.Is(err, ErrConfigFileNotFound) {
-			slog.Warn("Failed to remove server from client", "client", clientName, "error", err)
+			slog.Warn("failed to remove server from client", "client", clientName, "error", err)
 		}
 	}
 
@@ -222,7 +222,7 @@ func (m *defaultManager) addWorkloadsToClient(clientType ClientApp, workloads []
 			return fmt.Errorf("failed to add workload %s to client %s: %w", workload.Name, clientType, err)
 		}
 
-		slog.Debug("Added MCP server to client", "server", workload.Name, "client", clientType)
+		slog.Debug("added mcp server to client", "server", workload.Name, "client", clientType)
 	}
 
 	return nil
@@ -258,7 +258,7 @@ func (*defaultManager) removeServerFromClient(clientName ClientApp, serverName s
 		return fmt.Errorf("failed to remove MCP server configuration from %s: %w", clientConfig.Path, err)
 	}
 
-	slog.Debug("Removed MCP server from client", "server", serverName, "client", clientName)
+	slog.Debug("removed mcp server from client", "server", serverName, "client", clientName)
 	return nil
 }
 
@@ -277,13 +277,13 @@ func (*defaultManager) updateClientWithServer(clientName, serverName, serverURL,
 		}
 	}
 
-	slog.Debug("Updating client configuration", "path", clientConfig.Path)
+	slog.Debug("updating client configuration", "path", clientConfig.Path)
 
 	if err := Upsert(*clientConfig, serverName, serverURL, transportType); err != nil {
 		return fmt.Errorf("failed to update MCP server configuration in %s: %w", clientConfig.Path, err)
 	}
 
-	slog.Debug("Successfully updated client configuration", "path", clientConfig.Path)
+	slog.Debug("successfully updated client configuration", "path", clientConfig.Path)
 	return nil
 }
 
@@ -293,12 +293,12 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 	if groupName != "" {
 		group, err := m.groupManager.Get(ctx, groupName)
 		if err != nil {
-			slog.Warn("Failed to get group, skipping client config updates",
+			slog.Warn("failed to get group, skipping client config updates",
 				"group", groupName, "server", serverName, "error", err)
 			return nil
 		}
 
-		slog.Debug("Server belongs to group, updating registered clients",
+		slog.Debug("server belongs to group, updating registered clients",
 			"server", serverName, "group", group.Name, "count", len(group.RegisteredClients))
 		return group.RegisteredClients
 	}
@@ -306,7 +306,7 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 	// Server has no group - use backward compatible behavior (update all registered clients)
 	appConfig := m.configProvider.GetConfig()
 	targetClients := appConfig.Clients.RegisteredClients
-	slog.Debug("Server has no group, updating globally registered clients for backward compatibility",
+	slog.Debug("server has no group, updating globally registered clients for backward compatibility",
 		"server", serverName, "count", len(targetClients))
 	return targetClients
 }

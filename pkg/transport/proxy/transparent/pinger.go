@@ -57,7 +57,7 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	}
 
 	//nolint:gosec // G706: logging target URL from config
-	slog.Debug("Checking SSE server health", "target", p.targetURL)
+	slog.Debug("checking SSE server health", "target", p.targetURL)
 
 	// Send the request
 	resp, err := p.client.Do(req) // #nosec G704 -- targetURL is the local MCP server health endpoint
@@ -66,7 +66,7 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -80,7 +80,7 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	// For now, we accept any non 50x response for both local and remote.
 	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 		//nolint:gosec // G706: logging HTTP status code from health check response
-		slog.Debug("SSE server health check successful",
+		slog.Debug("sse server health check successful",
 			"duration", duration, "status", resp.StatusCode)
 		return duration, nil
 	}

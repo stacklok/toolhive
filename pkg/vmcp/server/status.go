@@ -52,7 +52,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("Failed to encode status response", "error", err)
+		slog.Error("failed to encode status response", "error", err)
 	}
 }
 

@@ -71,7 +71,7 @@ func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) 
 // PullImage pulls an image from a registry and saves it to the local daemon
 func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) error {
 	//nolint:gosec // G706: image name from user/config input
-	slog.Info("Pulling image", "image", imageName)
+	slog.Info("pulling image", "image", imageName)
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageName)

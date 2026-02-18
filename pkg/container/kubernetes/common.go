@@ -66,7 +66,7 @@ func (d *DefaultPlatformDetector) DetectPlatform(config *rest.Config) (Platform,
 		value, ok := os.LookupEnv("OPERATOR_OPENSHIFT")
 		if ok {
 			//nolint:gosec // G706: env var value from trusted OPERATOR_OPENSHIFT
-			slog.Info("OpenShift set by env var", "env", "OPERATOR_OPENSHIFT", "value", value)
+			slog.Info("openshift set by env var", "env", "OPERATOR_OPENSHIFT", "value", value)
 			if strings.ToLower(value) == "true" {
 				d.platform = PlatformOpenShift
 			} else {

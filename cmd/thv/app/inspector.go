@@ -85,7 +85,7 @@ func waitForInspectorReady(ctx context.Context, port int, statusChan chan bool) 
 			case <-ctx.Done():
 				return
 			default:
-				slog.Info("Waiting for MCP Inspector to be ready...")
+				slog.Info("waiting for MCP Inspector to be ready")
 				time.Sleep(3 * time.Second)
 			}
 		}
@@ -187,7 +187,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 
 		return nil
 	case <-ctx.Done():
-		slog.Info("Context cancelled during inspector startup, cleaning up...")
+		slog.Info("context cancelled during inspector startup, cleaning up")
 		if cleanupErr := cleanupInspectorContainer(context.Background(), "inspector"); cleanupErr != nil {
 			slog.Warn(fmt.Sprintf("Failed to cleanup inspector container: %v", cleanupErr))
 		}

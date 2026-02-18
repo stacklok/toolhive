@@ -100,7 +100,7 @@ func proxyTunnelCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Consume until interrupt
 	<-ctx.Done()
-	slog.Info("Shutting down tunnel")
+	slog.Info("shutting down tunnel")
 	return nil
 }
 

@@ -4,10 +4,9 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"sync"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Singleton value - should only be written to by the getSingletonConfig function.
@@ -47,7 +46,7 @@ func getSingletonConfig() *Config {
 	if appConfig == nil {
 		config, err := LoadOrCreateConfig()
 		if err != nil {
-			logger.Errorf("error loading configuration: %v", err)
+			slog.Error("error loading configuration", "error", err)
 			os.Exit(1)
 		}
 		appConfig = config

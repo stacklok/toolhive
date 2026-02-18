@@ -28,7 +28,9 @@ var singleton atomic.Pointer[slog.Logger]
 
 func init() {
 	// Set a default logger so callers that skip Initialize() don't panic.
-	singleton.Store(logging.New())
+	l := logging.New()
+	singleton.Store(l)
+	slog.SetDefault(l)
 }
 
 // get returns the current singleton logger.
@@ -45,6 +47,7 @@ func Get() *slog.Logger {
 // capture log output; production code should use [Initialize] instead.
 func Set(l *slog.Logger) {
 	singleton.Store(l)
+	slog.SetDefault(l)
 }
 
 // Debug logs a message at debug level using the singleton logger.
@@ -186,7 +189,9 @@ func InitializeWithEnv(envReader env.Reader) {
 		opts = append(opts, logging.WithLevel(slog.LevelDebug))
 	}
 
-	singleton.Store(logging.New(opts...))
+	l := logging.New(opts...)
+	singleton.Store(l)
+	slog.SetDefault(l)
 }
 
 func unstructuredLogsWithEnv(envReader env.Reader) bool {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -14,8 +15,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	containerdigest "github.com/opencontainers/go-digest"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // bundleFromAttestation retrieves the attestation bundles from the image reference. Note that the attestation
@@ -66,28 +65,28 @@ func bundleFromAttestation(imageRef string, keychain authn.Keychain) ([]sigstore
 		}
 		refImg, err := remote.Image(ref.Context().Digest(refDesc.Digest.String()), opts...)
 		if err != nil {
-			logger.Debugf("error getting referrer image: %v", err)
+			slog.Debug("error getting referrer image", "error", err)
 			continue
 		}
 		layers, err := refImg.Layers()
 		if err != nil {
-			logger.Debugf("error getting referrer image: %v", err)
+			slog.Debug("error getting referrer layers", "error", err)
 			continue
 		}
 		layer0, err := layers[0].Uncompressed()
 		if err != nil {
-			logger.Debugf("error getting referrer image: %v", err)
+			slog.Debug("error uncompressing referrer layer", "error", err)
 			continue
 		}
 		bundleBytes, err := io.ReadAll(layer0)
 		if err != nil {
-			logger.Debugf("error getting referrer image: %v", err)
+			slog.Debug("error reading referrer layer", "error", err)
 			continue
 		}
 		b := &bundle.Bundle{}
 		err = b.UnmarshalJSON(bundleBytes)
 		if err != nil {
-			logger.Debugf("error unmarshalling bundle: %v", err)
+			slog.Debug("error unmarshalling bundle", "error", err)
 			continue
 		}
 

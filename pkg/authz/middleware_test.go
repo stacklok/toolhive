@@ -20,7 +20,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
-	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
@@ -29,9 +28,6 @@ import (
 
 func TestMiddleware(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger for tests
-	logger.Initialize()
 
 	// Create a Cedar authorizer
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
@@ -453,9 +449,6 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 
 func TestFactoryCreateMiddleware(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger for tests
-	logger.Initialize()
 
 	t.Run("create middleware with config data", func(t *testing.T) {
 		t.Parallel()

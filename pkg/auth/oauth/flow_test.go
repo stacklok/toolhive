@@ -20,14 +20,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestMain(m *testing.M) {
-	// Initialize logger for tests
-	logger.Initialize()
-
 	// Run tests
 	code := m.Run()
 

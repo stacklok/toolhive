@@ -21,13 +21,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize the logger for tests
-	logger.Initialize()
-}
 
 // mockWaitForStatefulSetReady is used to mock the waitForStatefulSetReady function in tests
 var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string, _ int64) error {

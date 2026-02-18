@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -96,9 +95,6 @@ func TestMiddleware_AuthInfoHandler(t *testing.T) {
 
 func TestCreateMiddleware_WithoutOIDCConfig(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger for testing
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -208,9 +204,6 @@ func TestCreateMiddleware_NilParameters(t *testing.T) {
 
 func TestCreateMiddleware_EmptyParameters(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger for testing
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

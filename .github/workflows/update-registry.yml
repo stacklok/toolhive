@@ -110,12 +110,8 @@ jobs:
             **Servers**: ${{ steps.update.outputs.server_count }}
             **Checksum verified**: ${{ steps.get-release.outputs.has_checksum == 'true' && '✅' || '⚠️ No checksum available' }}
             
-            ## Migration Notice
-            
-            The registry data is now maintained in the separate [toolhive-registry](https://github.com/stacklok/toolhive-registry) repository and distributed via GitHub releases. This replaces the previous `regup` automation that updated individual server metadata.
-            
             ## Changes
-            
+
             - Registry synchronized from external repository
             - All server definitions and metadata updated
             - Provenance and security information maintained by upstream

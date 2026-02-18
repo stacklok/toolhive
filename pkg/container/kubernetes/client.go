@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -33,7 +34,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/k8s"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -178,7 +178,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		VersionedParams(attachOpts, scheme.ParameterCodec)
 	attachURL := req.URL()
 
-	logger.Infof("Attaching to pod %s workload %s...", podName, workloadName)
+	slog.Info("Attaching to pod", "pod", podName, "workload", workloadName)
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -187,10 +187,10 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		// This ensures processStdout() sees EOF and can attempt re-attachment or exit.
 		defer func() {
 			if err := stdoutWriter.Close(); err != nil {
-				logger.Debugf("Error closing stdout writer: %v", err)
+				slog.Debug("error closing stdout writer", "error", err)
 			}
 			if err := stdinReader.Close(); err != nil {
-				logger.Debugf("Error closing stdin reader: %v", err)
+				slog.Debug("error closing stdin reader", "error", err)
 			}
 		}()
 
@@ -220,25 +220,24 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			backoff.WithBackOff(expBackoff),
 			backoff.WithMaxElapsedTime(attachRetryTimeout),
 			backoff.WithNotify(func(err error, duration time.Duration) {
-				logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadName, err, duration)
+				slog.Error("error attaching to workload, retrying", "workload", workloadName, "error", err, "retry_in", duration)
 			}),
 		)
 		if err != nil {
 			if statusErr, ok := err.(*errors.StatusError); ok {
-				logger.Errorf("Kubernetes API error: Status=%s, Message=%s, Reason=%s, Code=%d",
-					statusErr.ErrStatus.Status,
-					statusErr.ErrStatus.Message,
-					statusErr.ErrStatus.Reason,
-					statusErr.ErrStatus.Code)
+				slog.Error("kubernetes API error",
+					"status", statusErr.ErrStatus.Status,
+					"message", statusErr.ErrStatus.Message,
+					"reason", statusErr.ErrStatus.Reason,
+					"code", statusErr.ErrStatus.Code)
 
 				// Note: statuscode 0 with empty message indicates the connection was closed
 				// unexpectedly (e.g., container terminated or doesn't read from stdin)
 				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
-					logger.Errorf("Connection closed unexpectedly for workload %s", workloadName)
-					logger.Errorf("This typically means the pod terminated or restarted")
+					slog.Error("connection closed unexpectedly, pod likely terminated or restarted", "workload", workloadName)
 				}
 			} else {
-				logger.Errorf("Non-status error: %v", err)
+				slog.Error("non-status error", "error", err)
 			}
 
 			// Exit the process to trigger a restart by Kubernetes.
@@ -250,7 +249,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			// 2. Any cleanup of these broken resources would likely fail or hang
 			// 3. We want Kubernetes to perform a complete container restart with fresh state
 			// 4. Deferred cleanup is designed for graceful shutdown, not recovery from broken state
-			logger.Errorf("kubectl attach failed after all retries for workload %s, exiting to allow restart", workloadName)
+			slog.Error("kubectl attach failed after all retries, exiting to allow restart", "workload", workloadName)
 			exitFunc := c.exitFunc
 			if exitFunc == nil {
 				exitFunc = os.Exit
@@ -315,7 +314,7 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	defer func() {
 		if err := podLogs.Close(); err != nil {
 			// Non-fatal: pod logs cleanup failure
-			logger.Debugf("Failed to close pod logs: %v", err)
+			slog.Debug("failed to close pod logs", "error", err)
 		}
 	}()
 
@@ -418,7 +417,8 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		return 0, fmt.Errorf("failed to apply statefulset: %w", err)
 	}
 
-	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
+	//nolint:gosec // G706: statefulset name from Kubernetes API response
+	slog.Info("Applied statefulset", "name", createdStatefulSet.Name)
 
 	if transportTypeRequiresHeadlessService(transportType) && options != nil {
 		// Create a headless service for SSE transport
@@ -608,13 +608,13 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
-			logger.Infof("Statefulset %s not found, nothing to remove", workloadName)
+			slog.Info("Statefulset not found, nothing to remove", "name", workloadName)
 			return nil
 		}
 		return fmt.Errorf("failed to delete statefulset %s: %w", workloadName, err)
 	}
 
-	logger.Infof("Deleted statefulset %s", workloadName)
+	slog.Info("Deleted statefulset", "name", workloadName)
 	return nil
 }
 
@@ -687,9 +687,12 @@ func waitForStatefulSetReady(
 			return true, nil
 		}
 
-		logger.Infof("Waiting for statefulset %s to be ready (%d/%d replicas ready, observed gen %d, desired gen %d)...",
-			name, statefulSet.Status.ReadyReplicas, *statefulSet.Spec.Replicas,
-			statefulSet.Status.ObservedGeneration, desiredGeneration)
+		slog.Info("Waiting for statefulset to be ready",
+			"name", name,
+			"ready_replicas", statefulSet.Status.ReadyReplicas,
+			"desired_replicas", *statefulSet.Spec.Replicas,
+			"observed_generation", statefulSet.Status.ObservedGeneration,
+			"desired_generation", desiredGeneration)
 		return false, nil
 	}
 
@@ -901,7 +904,7 @@ func (c *Client) createHeadlessService(
 
 	// If no ports were configured, don't create a service
 	if len(servicePorts) == 0 {
-		logger.Info("No ports configured for SSE transport, skipping service creation")
+		slog.Info("No ports configured for SSE transport, skipping service creation")
 		return nil
 	}
 
@@ -941,7 +944,7 @@ func (c *Client) createHeadlessService(
 		return fmt.Errorf("failed to apply service: %w", err)
 	}
 
-	logger.Infof("Created headless service %s for HTTP transport", containerName)
+	slog.Info("Created headless service for HTTP transport", "name", containerName)
 
 	options.SSEHeadlessServiceName = svcName
 	return nil
@@ -1186,14 +1189,14 @@ func configureContainer(
 	envVars []*corev1apply.EnvVarApplyConfiguration,
 	platform Platform,
 ) {
-	logger.Debugf("Configuring container %s with image %s", *container.Name, image)
-	logger.Debugf("Command: ")
-	for _, arg := range command {
-		logger.Debugf("Arg: %s", arg)
-	}
-	logger.Debugf("AttachStdio: %v", attachStdio)
+	//nolint:gosec // G706: container name and image from config
+	slog.Debug("configuring container", "name", *container.Name, "image", image)
+	//nolint:gosec // G706: command args from config
+	slog.Debug("container command", "args", command)
+	slog.Debug("container stdio", "attach_stdio", attachStdio)
 	for _, envVar := range envVars {
-		logger.Debugf("EnvVar: %s=%s", *envVar.Name, *envVar.Value)
+		//nolint:gosec // G706: env var names from config
+		slog.Debug("container env var", "name", *envVar.Name, "value", *envVar.Value)
 	}
 
 	container.WithImage(image).
@@ -1245,7 +1248,7 @@ func configureContainer(
 
 		// For OpenShift, override certain fields even if they exist
 		if platform == PlatformOpenShift {
-			logger.Infof("Setting OpenShift security context requirements to container %s", *container.Name)
+			slog.Info("Setting OpenShift security context requirements", "container", *container.Name)
 
 			if container.SecurityContext.RunAsUser != nil {
 				container.SecurityContext.RunAsUser = nil

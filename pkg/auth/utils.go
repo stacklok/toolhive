@@ -7,11 +7,10 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os/user"
 	"strings"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // bearerTokenType defines the expected token type for Bearer authentication.
@@ -65,7 +64,7 @@ func ExtractBearerToken(r *http.Request) (string, error) {
 func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcConfig != nil {
-		logger.Debug("OIDC validation enabled")
+		slog.Debug("OIDC validation enabled")
 
 		// Create JWT validator
 		jwtValidator, err := NewTokenValidator(ctx, *oidcConfig)
@@ -77,16 +76,16 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 		return jwtValidator.Middleware, authInfoHandler, nil
 	}
 
-	logger.Debug("OIDC validation disabled, using local user authentication")
+	slog.Debug("OIDC validation disabled, using local user authentication")
 
 	// Get current OS user
 	currentUser, err := user.Current()
 	if err != nil {
-		logger.Warnf("Failed to get current user, using 'local' as default: %v", err)
+		slog.Warn("Failed to get current user, using 'local' as default", "error", err)
 		return LocalUserMiddleware("local"), nil, nil
 	}
 
-	logger.Debugf("Using local user authentication for user: %s", currentUser.Username)
+	slog.Debug("Using local user authentication", "user", currentUser.Username)
 	return LocalUserMiddleware(currentUser.Username), nil, nil
 }
 

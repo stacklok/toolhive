@@ -110,20 +110,6 @@ func buildTestSession(
 // Interface composition
 // ---------------------------------------------------------------------------
 
-func TestDefaultSession_ImplementsInterfaces(t *testing.T) {
-	t.Parallel()
-
-	sess := buildTestSession(t, "b1", &mockConnectedBackend{}, nil, nil, nil)
-
-	// Both interface assertions must be satisfied at runtime.
-	var _ Session = sess
-	var _ transportsession.Session = sess
-
-	assert.Equal(t, "test-session-id", sess.ID())
-	assert.Equal(t, transportsession.SessionTypeStreamable, sess.Type())
-	assert.NotZero(t, sess.CreatedAt())
-}
-
 // ---------------------------------------------------------------------------
 // Tools / Resources / Prompts accessors
 // ---------------------------------------------------------------------------

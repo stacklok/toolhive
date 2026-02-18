@@ -15,6 +15,153 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
+func TestConvertToolInputSchema(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		schema mcp.ToolInputSchema
+		checks func(t *testing.T, got map[string]any)
+	}{
+		{
+			name: "captures type, properties, required",
+			schema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]any{
+					"title": map[string]any{"type": "string"},
+				},
+				Required: []string{"title"},
+			},
+			checks: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				assert.Equal(t, "object", got["type"])
+				assert.Contains(t, got, "properties")
+				required, ok := got["required"].([]any)
+				require.True(t, ok)
+				assert.Equal(t, []any{"title"}, required)
+			},
+		},
+		{
+			name: "captures $defs",
+			schema: mcp.ToolInputSchema{
+				Type: "object",
+				Defs: map[string]any{"Config": map[string]any{"type": "object"}},
+			},
+			checks: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				assert.Contains(t, got, "$defs")
+			},
+		},
+		{
+			name:   "nil required emitted as empty array by mcp-go",
+			schema: mcp.ToolInputSchema{Type: "object", Required: nil},
+			checks: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				required, ok := got["required"].([]any)
+				require.True(t, ok)
+				assert.Empty(t, required)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := conversion.ConvertToolInputSchema(tt.schema)
+			tt.checks(t, got)
+		})
+	}
+}
+
+func TestConvertPromptMessages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		messages []mcp.PromptMessage
+		want     string
+	}{
+		{
+			name:     "empty messages",
+			messages: nil,
+			want:     "",
+		},
+		{
+			name: "single message with role",
+			messages: []mcp.PromptMessage{
+				{Role: "user", Content: mcp.NewTextContent("Hello")},
+			},
+			want: "[user] Hello\n",
+		},
+		{
+			name: "message without role omits prefix",
+			messages: []mcp.PromptMessage{
+				{Role: "", Content: mcp.NewTextContent("No role")},
+			},
+			want: "No role\n",
+		},
+		{
+			name: "multiple messages concatenated",
+			messages: []mcp.PromptMessage{
+				{Role: "system", Content: mcp.NewTextContent("You are helpful")},
+				{Role: "user", Content: mcp.NewTextContent("Hi")},
+				{Role: "assistant", Content: mcp.NewTextContent("Hello!")},
+			},
+			want: "[system] You are helpful\n[user] Hi\n[assistant] Hello!\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, conversion.ConvertPromptMessages(tt.messages))
+		})
+	}
+}
+
+func TestConvertPromptArguments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		arguments map[string]any
+		want      map[string]string
+	}{
+		{
+			name:      "nil map returns empty map",
+			arguments: nil,
+			want:      map[string]string{},
+		},
+		{
+			name:      "string values pass through unchanged",
+			arguments: map[string]any{"key": "value"},
+			want:      map[string]string{"key": "value"},
+		},
+		{
+			name: "non-string values are formatted",
+			arguments: map[string]any{
+				"int":   42,
+				"bool":  true,
+				"float": 3.14,
+				"nil":   nil,
+			},
+			want: map[string]string{
+				"int":   "42",
+				"bool":  "true",
+				"float": "3.14",
+				"nil":   "<nil>",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, conversion.ConvertPromptArguments(tt.arguments))
+		})
+	}
+}
+
 func TestConvertMCPContent(t *testing.T) {
 	t.Parallel()
 

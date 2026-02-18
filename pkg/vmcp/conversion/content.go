@@ -7,8 +7,10 @@ package conversion
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -60,7 +62,7 @@ func ConcatenateResourceContents(contents []mcp.ResourceContents) (data []byte, 
 		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
 			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
 			if err != nil {
-				slog.Warn("Skipping malformed base64 blob resource chunk; data loss may occur",
+				slog.Warn("Skipping malformed base64 blob resource chunk; this chunk's data is lost",
 					"uri", blobContent.URI, "error", err)
 				continue
 			}
@@ -71,6 +73,51 @@ func ConcatenateResourceContents(contents []mcp.ResourceContents) (data []byte, 
 		}
 	}
 	return data, mimeType
+}
+
+// ConvertToolInputSchema converts a mcp.ToolInputSchema to map[string]any via a
+// JSON round-trip, capturing all fields (type, properties, required, $defs,
+// additionalProperties, etc.) without enumerating them manually. Falls back to
+// {type: schema.Type} if marshalling fails.
+func ConvertToolInputSchema(schema mcp.ToolInputSchema) map[string]any {
+	result := make(map[string]any)
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return map[string]any{"type": schema.Type}
+	}
+	if err := json.Unmarshal(b, &result); err != nil {
+		return map[string]any{"type": schema.Type}
+	}
+	return result
+}
+
+// ConvertPromptMessages flattens MCP prompt messages into a single string with
+// the format "[role] text\n". Messages without a role omit the prefix. Only
+// text content is included; non-text content is silently discarded (Phase 1
+// limitation — vmcp.PromptGetResult carries a flat string, not structured messages).
+func ConvertPromptMessages(messages []mcp.PromptMessage) string {
+	var sb strings.Builder
+	for _, msg := range messages {
+		if msg.Role != "" {
+			fmt.Fprintf(&sb, "[%s] ", msg.Role)
+		}
+		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
+			sb.WriteString(textContent.Text)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// ConvertPromptArguments converts map[string]any to map[string]string by
+// formatting each value with fmt.Sprintf("%v", v). Required by the MCP
+// GetPrompt API which accepts only string-typed arguments.
+func ConvertPromptArguments(arguments map[string]any) map[string]string {
+	result := make(map[string]string, len(arguments))
+	for k, v := range arguments {
+		result[k] = fmt.Sprintf("%v", v)
+	}
+	return result
 }
 
 // ContentArrayToMap converts a vmcp.Content array to a map for template variable substitution.

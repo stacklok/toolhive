@@ -5,12 +5,10 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -18,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -169,10 +168,7 @@ func (c *mcpConnectedBackend) getPrompt(
 		slog.Debug("Translating prompt name", "clientName", name, "backendName", backendName)
 	}
 
-	stringArgs := make(map[string]string, len(arguments))
-	for k, v := range arguments {
-		stringArgs[k] = fmt.Sprintf("%v", v)
-	}
+	stringArgs := conversion.ConvertPromptArguments(arguments)
 
 	result, err := c.client.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
@@ -184,26 +180,10 @@ func (c *mcpConnectedBackend) getPrompt(
 		return nil, fmt.Errorf("prompt %q get failed on backend %s: %w", name, target.WorkloadID, err)
 	}
 
-	// NOTE: This conversion is lossy. The MCP GetPrompt response carries
-	// structured messages (role + multi-modal content). vmcp.PromptGetResult
-	// collapses them into a single flat string. Non-text content items
-	// (images, audio) are silently discarded. This is a known Phase 1
-	// limitation: the vmcp.PromptGetResult type must be extended before
-	// structured prompt messages can be forwarded faithfully.
-	var sb strings.Builder
-	for _, msg := range result.Messages {
-		if msg.Role != "" {
-			fmt.Fprintf(&sb, "[%s] ", msg.Role)
-		}
-		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
-			sb.WriteString(textContent.Text)
-			sb.WriteByte('\n')
-		}
-	}
-	prompt := sb.String()
-
+	// NOTE: ConvertPromptMessages is lossy — non-text content (images, audio)
+	// is discarded. Phase 1 limitation; see vmcp.PromptGetResult.
 	return &vmcp.PromptGetResult{
-		Messages:    prompt,
+		Messages:    conversion.ConvertPromptMessages(result.Messages),
 		Description: result.Description,
 		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil
@@ -362,7 +342,7 @@ func initAndQueryCapabilities(
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo: mcp.Implementation{
 				Name:    "toolhive-vmcp",
-				Version: "0.1.0",
+				Version: versions.Version,
 			},
 		},
 	})
@@ -379,26 +359,10 @@ func initAndQueryCapabilities(
 			return nil, fmt.Errorf("list tools failed: %w", listErr)
 		}
 		for _, t := range toolsResult.Tools {
-			// Use a JSON round-trip to capture all schema fields (type,
-			// properties, required, $defs, additionalProperties, etc.)
-			// rather than enumerating them manually. This is forward-safe:
-			// any fields the SDK adds in future versions are preserved.
-			inputSchema := make(map[string]any)
-			if b, err := json.Marshal(t.InputSchema); err == nil {
-				if jsonErr := json.Unmarshal(b, &inputSchema); jsonErr != nil {
-					slog.Debug("Failed to decode tool input schema; using type-only fallback",
-						"tool", t.Name, "error", jsonErr)
-					inputSchema = map[string]any{"type": t.InputSchema.Type}
-				}
-			} else {
-				slog.Debug("Failed to encode tool input schema; using type-only fallback",
-					"tool", t.Name, "error", err)
-				inputSchema = map[string]any{"type": t.InputSchema.Type}
-			}
 			caps.Tools = append(caps.Tools, vmcp.Tool{
 				Name:        t.Name,
 				Description: t.Description,
-				InputSchema: inputSchema,
+				InputSchema: conversion.ConvertToolInputSchema(t.InputSchema),
 				BackendID:   target.WorkloadID,
 			})
 		}

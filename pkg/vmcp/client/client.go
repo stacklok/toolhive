@@ -9,14 +9,12 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -24,6 +22,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -329,7 +328,7 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo: mcp.Implementation{
 				Name:    "toolhive-vmcp",
-				Version: "0.1.0",
+				Version: versions.Version,
 			},
 			Capabilities: mcp.ClientCapabilities{
 				// Virtual MCP acts as a client to backends
@@ -384,13 +383,6 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 	}
 	slog.Debug("backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
-}
-
-// convertContent converts a single mcp.Content item to vmcp.Content.
-// Delegates to the shared conversion package; kept here for backward compatibility
-// with tests that call it directly.
-func convertContent(content mcp.Content) vmcp.Content {
-	return conversion.ConvertMCPContent(content)
 }
 
 // ListCapabilities queries a backend for its MCP capabilities.
@@ -448,25 +440,10 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 
 	// Convert tools
 	for i, tool := range toolsResp.Tools {
-		// Use a JSON round-trip to capture all schema fields (type, properties,
-		// required, $defs, additionalProperties, etc.) rather than enumerating
-		// them manually. This is forward-safe: any fields the SDK adds in future
-		// versions are preserved automatically.
-		inputSchema := make(map[string]any)
-		if b, err := json.Marshal(tool.InputSchema); err == nil {
-			if jsonErr := json.Unmarshal(b, &inputSchema); jsonErr != nil {
-				slog.Debug("Failed to decode tool input schema; using type-only fallback", "tool", tool.Name, "error", jsonErr)
-				inputSchema = map[string]any{"type": tool.InputSchema.Type}
-			}
-		} else {
-			slog.Debug("Failed to encode tool input schema; using type-only fallback", "tool", tool.Name, "error", err)
-			inputSchema = map[string]any{"type": tool.InputSchema.Type}
-		}
-
 		capabilities.Tools[i] = vmcp.Tool{
 			Name:        tool.Name,
 			Description: tool.Description,
-			InputSchema: inputSchema,
+			InputSchema: conversion.ConvertToolInputSchema(tool.InputSchema),
 			BackendID:   target.WorkloadID,
 		}
 	}
@@ -709,11 +686,7 @@ func (h *httpBackendClient) GetPrompt(
 		slog.Debug("translating prompt name", "client_name", name, "backend_name", backendPromptName)
 	}
 
-	// Convert map[string]any to map[string]string
-	stringArgs := make(map[string]string)
-	for k, v := range arguments {
-		stringArgs[k] = fmt.Sprintf("%v", v)
-	}
+	stringArgs := conversion.ConvertPromptArguments(arguments)
 
 	result, err := c.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
@@ -725,27 +698,9 @@ func (h *httpBackendClient) GetPrompt(
 		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all prompt messages into a single string.
-	// MCP prompts return messages with role and multi-modal content; only text
-	// chunks are captured (non-text content is silently discarded — Phase 1 limitation).
-	var sb strings.Builder
-	for _, msg := range result.Messages {
-		if msg.Role != "" {
-			fmt.Fprintf(&sb, "[%s] ", msg.Role)
-		}
-		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
-			sb.WriteString(textContent.Text)
-			sb.WriteByte('\n')
-		}
-	}
-	prompt := sb.String()
-
-	// Extract _meta field from backend response
-	meta := conversion.FromMCPMeta(result.Meta)
-
 	return &vmcp.PromptGetResult{
-		Messages:    prompt,
+		Messages:    conversion.ConvertPromptMessages(result.Messages),
 		Description: result.Description,
-		Meta:        meta,
+		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil
 }

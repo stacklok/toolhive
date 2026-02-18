@@ -31,7 +31,8 @@ func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*types.ImageMet
 
 	imageMetadata := &types.ImageMetadata{
 		BaseServerMetadata: types.BaseServerMetadata{
-			Name:        serverJSON.Name,
+ 			Name:        serverJSON.Name,
+			Title:       serverJSON.Title,
 			Description: serverJSON.Description,
 			Transport:   pkg.Transport.Type,
 		},
@@ -236,6 +237,7 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*types.R
 	remoteMetadata := &types.RemoteServerMetadata{
 		BaseServerMetadata: types.BaseServerMetadata{
 			Name:        serverJSON.Name,
+			Title:       serverJSON.Title,
 			Description: serverJSON.Description,
 			Transport:   remote.Type,
 		},

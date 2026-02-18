@@ -43,7 +43,7 @@ func ImageMetadataToServerJSON(name string, imageMetadata *registry.ImageMetadat
 	serverJSON := &upstream.ServerJSON{
 		Schema:      model.CurrentSchemaURL,
 		Name:        canonicalName,
-		Title:       imageMetadata.Name,
+		Title:       imageMetadata.Title,
 		Description: imageMetadata.Description,
 		Version:     "1.0.0", // TODO: Extract from image tag or metadata
 	}
@@ -87,7 +87,7 @@ func RemoteServerMetadataToServerJSON(name string, remoteMetadata *registry.Remo
 	serverJSON := &upstream.ServerJSON{
 		Schema:      model.CurrentSchemaURL,
 		Name:        canonicalName,
-		Title:       remoteMetadata.Name,
+		Title:       remoteMetadata.Title,
 		Description: remoteMetadata.Description,
 		Version:     "1.0.0", // TODO: Version management
 	}

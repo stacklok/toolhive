@@ -52,6 +52,9 @@ type BaseServerMetadata struct {
 	// Name is the identifier for the MCP server, used when referencing the server in commands
 	// If not provided, it will be auto-generated from the registry key
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+	// Title is an optional human-readable display name for the server.
+	// If not provided, the Name field is used for display purposes.
+	Title string `json:"title,omitempty" yaml:"title,omitempty"`
 	// Description is a human-readable description of the server's purpose and functionality
 	Description string `json:"description" yaml:"description"`
 	// Tier represents the tier classification level of the server, e.g., "Official" or "Community"
@@ -271,6 +274,8 @@ func (r *RemoteServerMetadata) UnmarshalYAML(node *yaml.Node) error {
 type ServerMetadata interface {
 	// GetName returns the server name
 	GetName() string
+	// GetTitle returns the optional human-readable display name
+	GetTitle() string
 	// GetDescription returns the server description
 	GetDescription() string
 	// GetTier returns the server tier
@@ -305,6 +310,14 @@ func (i *ImageMetadata) GetName() string {
 		return ""
 	}
 	return i.Name
+}
+
+// GetTitle returns the optional human-readable display name
+func (i *ImageMetadata) GetTitle() string {
+	if i == nil {
+		return ""
+	}
+	return i.Title
 }
 
 // GetDescription returns the server description
@@ -408,6 +421,14 @@ func (r *RemoteServerMetadata) GetName() string {
 		return ""
 	}
 	return r.Name
+}
+
+// GetTitle returns the optional human-readable display name
+func (r *RemoteServerMetadata) GetTitle() string {
+	if r == nil {
+		return ""
+	}
+	return r.Title
 }
 
 // GetDescription returns the server description

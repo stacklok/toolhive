@@ -202,7 +202,6 @@ func TestBaseServerMetadataInheritance(t *testing.T) {
 		Tools:       []string{"tool1", "tool2"},
 		Metadata: &types.Metadata{
 			Stars:       100,
-			Pulls:       5000,
 			LastUpdated: time.Now().Format(time.RFC3339),
 		},
 		RepositoryURL: "https://github.com/example/server",
@@ -311,7 +310,6 @@ func TestMetadataParsedTime(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	metadata := &types.Metadata{
 		Stars:       100,
-		Pulls:       5000,
 		LastUpdated: now.Format(time.RFC3339),
 	}
 

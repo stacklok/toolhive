@@ -47,7 +47,6 @@ func createTestServerJSON() *upstream.ServerJSON {
 						"tags":   []interface{}{"test", "example"},
 						"metadata": map[string]interface{}{
 							"stars":        float64(100),
-							"pulls":        float64(1000),
 							"last_updated": "2025-01-01",
 						},
 					},
@@ -70,7 +69,6 @@ func createTestImageMetadata() *types.ImageMetadata {
 			Tags:          []string{"test", "example"},
 			Metadata: &types.Metadata{
 				Stars:       100,
-				Pulls:       1000,
 				LastUpdated: "2025-01-01",
 			},
 		},
@@ -115,7 +113,6 @@ func TestServerJSONToImageMetadata_Success(t *testing.T) {
 	assert.Equal(t, []string{"test", "example"}, imageMetadata.Tags)
 	assert.NotNil(t, imageMetadata.Metadata)
 	assert.Equal(t, 100, imageMetadata.Metadata.Stars)
-	assert.Equal(t, 1000, imageMetadata.Metadata.Pulls)
 	assert.Equal(t, "2025-01-01", imageMetadata.Metadata.LastUpdated)
 }
 
@@ -813,7 +810,6 @@ func TestRoundTrip_ImageMetadata(t *testing.T) {
 	if original.Metadata != nil {
 		require.NotNil(t, result.Metadata)
 		assert.Equal(t, original.Metadata.Stars, result.Metadata.Stars)
-		assert.Equal(t, original.Metadata.Pulls, result.Metadata.Pulls)
 		assert.Equal(t, original.Metadata.LastUpdated, result.Metadata.LastUpdated)
 	}
 }
@@ -858,7 +854,6 @@ func TestRoundTrip_ImageMetadataWithAllFields(t *testing.T) {
 			Tags:          []string{"tag1", "tag2"},
 			Metadata: &types.Metadata{
 				Stars:       500,
-				Pulls:       10000,
 				LastUpdated: "2025-10-23",
 			},
 		},
@@ -911,7 +906,6 @@ func TestRoundTrip_ImageMetadataWithAllFields(t *testing.T) {
 
 	require.NotNil(t, result.Metadata)
 	assert.Equal(t, original.Metadata.Stars, result.Metadata.Stars)
-	assert.Equal(t, original.Metadata.Pulls, result.Metadata.Pulls)
 	assert.Equal(t, original.Metadata.LastUpdated, result.Metadata.LastUpdated)
 }
 
@@ -979,7 +973,6 @@ func TestRealWorld_GitHubServer(t *testing.T) {
 						},
 						"metadata": map[string]interface{}{
 							"stars":        float64(23700),
-							"pulls":        float64(5000),
 							"last_updated": "2025-10-18T02:26:51Z",
 						},
 					},
@@ -1019,7 +1012,6 @@ func TestRealWorld_GitHubServer(t *testing.T) {
 	// Verify metadata
 	require.NotNil(t, imageMetadata.Metadata)
 	assert.Equal(t, 23700, imageMetadata.Metadata.Stars)
-	assert.Equal(t, 5000, imageMetadata.Metadata.Pulls)
 	assert.Equal(t, "2025-10-18T02:26:51Z", imageMetadata.Metadata.LastUpdated)
 
 	// Test round-trip: Convert back to ServerJSON
@@ -1064,7 +1056,6 @@ func TestRealWorld_GitHubServer(t *testing.T) {
 	metadata, ok := imageData["metadata"].(map[string]interface{})
 	require.True(t, ok, "Metadata should be present")
 	assert.Equal(t, float64(23700), metadata["stars"])
-	assert.Equal(t, float64(5000), metadata["pulls"])
 	assert.Equal(t, "2025-10-18T02:26:51Z", metadata["last_updated"])
 }
 
@@ -1129,7 +1120,6 @@ func TestRealWorld_GitHubServer_ExactData(t *testing.T) {
   ],
   "metadata": {
     "stars": 23700,
-    "pulls": 5000,
     "last_updated": "2025-10-18T02:26:51Z"
   },
   "repository_url": "https://github.com/github/github-mcp-server",
@@ -1294,7 +1284,6 @@ func TestRealWorld_GitHubServer_ExactData(t *testing.T) {
 	// Verify metadata preserved
 	require.NotNil(t, roundTripImageMetadata.Metadata)
 	assert.Equal(t, 23700, roundTripImageMetadata.Metadata.Stars)
-	assert.Equal(t, 5000, roundTripImageMetadata.Metadata.Pulls)
 
 	// Verify permissions and provenance are preserved through the round-trip
 	assert.NotNil(t, roundTripImageMetadata.Permissions)

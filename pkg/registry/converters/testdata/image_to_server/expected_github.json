@@ -46,7 +46,6 @@
         "ghcr.io/github/github-mcp-server:v0.19.1": {
           "metadata": {
             "last_updated": "2025-10-18T02:26:51Z",
-            "pulls": 5000,
             "stars": 23700
           },
           "permissions": {

@@ -201,8 +201,6 @@ type RemoteServerMetadata struct {
 type Metadata struct {
 	// Stars represents the popularity rating or number of stars for the server
 	Stars int `json:"stars,omitempty" yaml:"stars,omitempty"`
-	// Pulls indicates how many times the server image has been downloaded
-	Pulls int `json:"pulls,omitempty" yaml:"pulls,omitempty"`
 	// LastUpdated is the timestamp when the server was last updated, in RFC3339 format
 	LastUpdated string `json:"last_updated,omitempty" yaml:"last_updated,omitempty"`
 	// Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster.

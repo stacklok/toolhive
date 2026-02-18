@@ -84,7 +84,7 @@ func printJSONSearchResults(servers []types.ServerMetadata) error {
 func printTextSearchResults(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS"); err != nil {
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS"); err != nil {
 		logger.Warnf("Failed to write output: %v", err)
 		return
 	}
@@ -92,10 +92,8 @@ func printTextSearchResults(servers []types.ServerMetadata) {
 	// Print server information
 	for _, server := range servers {
 		stars := 0
-		pulls := 0
 		if metadata := server.GetMetadata(); metadata != nil {
 			stars = metadata.Stars
-			pulls = metadata.Pulls
 		}
 
 		serverType := "container"
@@ -104,13 +102,12 @@ func printTextSearchResults(servers []types.ServerMetadata) {
 		}
 
 		// Print server information
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
 			server.GetName(),
 			serverType,
 			truncateSearchString(server.GetDescription(), 50),
 			server.GetTransport(),
 			stars,
-			pulls,
 		); err != nil {
 			logger.Debugf("Failed to write server information: %v", err)
 		}

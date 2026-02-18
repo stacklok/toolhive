@@ -932,10 +932,6 @@ const docTemplate = `{
                         "description": "LastUpdated is the timestamp when the server was last updated, in RFC3339 format",
                         "type": "string"
                     },
-                    "pulls": {
-                        "description": "Pulls indicates how many times the server image has been downloaded",
-                        "type": "integer"
-                    },
                     "stars": {
                         "description": "Stars represents the popularity rating or number of stars for the server",
                         "type": "integer"

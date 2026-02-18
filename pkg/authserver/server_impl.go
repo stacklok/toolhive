@@ -6,6 +6,7 @@ package authserver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	josev3 "github.com/go-jose/go-jose/v3"
@@ -16,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // server is the internal implementation of the Server interface.
@@ -63,7 +63,7 @@ func withUpstreamFactory(factory upstreamProviderFactory) serverOption {
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
 func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...serverOption) (*server, error) {
-	logger.Debug("initializing OAuth authorization server")
+	slog.Debug("initializing OAuth authorization server")
 
 	// Apply server options
 	options := &serverOptions{
@@ -88,7 +88,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("storage is required")
 	}
 
-	logger.Debug("creating OAuth2 configuration")
+	slog.Debug("creating OAuth2 configuration")
 
 	// Get signing key from KeyProvider
 	signingKey, err := cfg.KeyProvider.SigningKey(ctx)
@@ -114,33 +114,33 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
 	}
 
-	logger.Debugw("OAuth2 configuration created",
-		"accessTokenLifespan", cfg.AccessTokenLifespan,
-		"refreshTokenLifespan", cfg.RefreshTokenLifespan,
-		"authCodeLifespan", cfg.AuthCodeLifespan,
+	slog.Debug("OAuth2 configuration created",
+		"access_token_lifespan", cfg.AccessTokenLifespan,
+		"refresh_token_lifespan", cfg.RefreshTokenLifespan,
+		"auth_code_lifespan", cfg.AuthCodeLifespan,
 	)
 
 	// Create fosite provider
-	logger.Debug("creating fosite OAuth2 provider")
+	slog.Debug("creating fosite OAuth2 provider")
 	provider := createProvider(authServerConfig, stor)
 
 	// Get upstream config
 	upstreamCfg := cfg.GetUpstream()
 
 	// Create upstream IDP provider using factory
-	logger.Debugw("creating upstream IDP provider", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
+	slog.Debug("creating upstream IDP provider", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
 	upstreamIDP, err := options.upstreamFactory(ctx, upstreamCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
 	}
-	logger.Debugw("upstream IDP provider configured", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
+	slog.Debug("upstream IDP provider configured", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
 
 	handlerInstance := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP)
 
 	// Create HTTP handler serving all endpoints
 	router := handlerInstance.Routes()
 
-	logger.Debugw("OAuth authorization server initialized",
+	slog.Debug("OAuth authorization server initialized",
 		"issuer", cfg.Issuer,
 	)
 
@@ -163,7 +163,7 @@ func (s *server) IDPTokenStorage() storage.UpstreamTokenStorage {
 
 // Close releases resources held by the server.
 func (s *server) Close() error {
-	logger.Debug("closing OAuth authorization server")
+	slog.Debug("closing OAuth authorization server")
 	return s.storage.Close()
 }
 
@@ -180,8 +180,8 @@ func (s *server) Close() error {
 //   - Refresh token grant (RFC 6749 Section 6)
 //   - PKCE (RFC 7636) for public client security
 func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage) fosite.OAuth2Provider {
-	logger.Debugw("configuring fosite OAuth2 provider",
-		"keyID", authServerConfig.SigningKey.KeyID,
+	slog.Debug("configuring fosite OAuth2 provider",
+		"key_id", authServerConfig.SigningKey.KeyID,
 		"algorithm", authServerConfig.SigningKey.Algorithm,
 	)
 

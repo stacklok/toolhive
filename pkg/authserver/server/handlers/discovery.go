@@ -17,12 +17,12 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	"github.com/stacklok/toolhive/pkg/logger"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
@@ -70,15 +70,15 @@ func (h *Handler) getSigningAlgorithms() []string {
 func (h *Handler) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 	publicJWKS := h.config.PublicJWKS()
 	if publicJWKS == nil {
-		logger.Error("no public JWKS available")
+		slog.Error("no public JWKS available")
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	data, err := json.Marshal(publicJWKS)
 	if err != nil {
-		logger.Errorw("failed to encode JWKS",
-			"error", err.Error(),
+		slog.Error("failed to encode JWKS",
+			"error", err,
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -125,8 +125,8 @@ func (h *Handler) OAuthDiscoveryHandler(w http.ResponseWriter, _ *http.Request) 
 
 	data, err := json.Marshal(metadata)
 	if err != nil {
-		logger.Errorw("failed to encode OAuth AS metadata",
-			"error", err.Error(),
+		slog.Error("failed to encode OAuth AS metadata",
+			"error", err,
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -156,8 +156,8 @@ func (h *Handler) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
 
 	data, err := json.Marshal(discovery)
 	if err != nil {
-		logger.Errorw("failed to encode discovery document",
-			"error", err.Error(),
+		slog.Error("failed to encode discovery document",
+			"error", err,
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return

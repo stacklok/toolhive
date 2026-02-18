@@ -10,12 +10,12 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 	"time"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 //go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=provider.go KeyProvider
@@ -164,9 +164,9 @@ func (p *GeneratingProvider) SigningKey(_ context.Context) (*SigningKeyData, err
 		return nil, err
 	}
 
-	logger.Warnw("generated ephemeral signing key - tokens will be invalid after restart",
+	slog.Warn("generated ephemeral signing key - tokens will be invalid after restart",
 		"algorithm", key.Algorithm,
-		"keyID", key.KeyID,
+		"key_id", key.KeyID,
 	)
 
 	p.key = key

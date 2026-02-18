@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -18,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
@@ -271,7 +271,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 
 	// Warn if UserInfoOverride is configured but won't be used
 	if oidc.UserInfoOverride != nil {
-		logger.Warnw("userinfo_override is configured for OIDC provider but will not be used; "+
+		slog.Warn("userinfo_override is configured for OIDC provider but will not be used; "+
 			"OIDC providers resolve identity from the ID token, not the UserInfo endpoint",
 			"upstream", rc.Name,
 		)
@@ -344,7 +344,7 @@ func resolveSecret(file, envVar string) (string, error) {
 		}
 		return value, nil
 	}
-	logger.Debugf("No client secret configured (neither file nor env var specified)")
+	slog.Debug("no client secret configured (neither file nor env var specified)")
 	return "", nil
 }
 

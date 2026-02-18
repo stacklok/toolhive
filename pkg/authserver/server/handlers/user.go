@@ -7,12 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // UserResolver handles finding or creating users based on provider identity.
@@ -93,12 +93,12 @@ func (r *UserResolver) createUserWithIdentity(
 	if err := r.storage.CreateProviderIdentity(ctx, identity); err != nil {
 		// Rollback user creation on identity link failure
 		if deleteErr := r.storage.DeleteUser(ctx, user.ID); deleteErr != nil {
-			logger.Warnw("failed to rollback user creation", "error", deleteErr)
+			slog.Warn("failed to rollback user creation", "error", deleteErr)
 		}
 		return nil, fmt.Errorf("failed to link provider identity: %w", err)
 	}
 
-	logger.Infow("created new user with provider identity",
+	slog.Info("created new user with provider identity",
 		"user_id", user.ID,
 		"provider_id", providerID,
 	)
@@ -115,6 +115,6 @@ func (r *UserResolver) UpdateLastAuthenticated(
 	providerSubject string,
 ) {
 	if err := r.storage.UpdateProviderIdentityLastUsed(ctx, providerID, providerSubject, time.Now()); err != nil {
-		logger.Warnw("failed to update identity last used timestamp", "error", err)
+		slog.Warn("failed to update identity last used timestamp", "error", err)
 	}
 }

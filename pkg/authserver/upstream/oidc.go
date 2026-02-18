@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -15,7 +16,6 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -120,7 +120,7 @@ func NewOIDCProvider(
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	logger.Debugw("creating OIDC provider",
+	slog.Debug("creating OIDC provider",
 		"issuer", config.Issuer,
 		"client_id", config.ClientID,
 	)
@@ -217,7 +217,7 @@ func NewOIDCProvider(
 		ClientID: config.ClientID,
 	})
 
-	logger.Debugw("OIDC provider created successfully",
+	slog.Debug("OIDC provider created successfully",
 		"issuer", p.endpoints.Issuer,
 		"pkce_supported", p.supportsPKCE(),
 		"id_token_validation_enabled", p.verifier != nil,
@@ -255,11 +255,11 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	// Validate ID token with nonce in a single pass — no double-validation.
 	validatedToken, err := p.validateIDToken(ctx, tokens.IDToken, nonce)
 	if err != nil {
-		logger.Debugw("ID token validation failed", "error", err)
+		slog.Debug("ID token validation failed", "error", err)
 		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
 	}
 
-	logger.Debugw("authorization code exchange successful",
+	slog.Debug("authorization code exchange successful",
 		"has_refresh_token", tokens.RefreshToken != "",
 		"has_id_token", tokens.IDToken != "",
 		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
@@ -325,7 +325,7 @@ func (p *OIDCProviderImpl) AuthorizationURL(state, codeChallenge string, opts ..
 		nonce = authOpts.additionalParams["nonce"]
 	}
 
-	logger.Debugw("building authorization URL",
+	slog.Debug("building authorization URL",
 		"authorization_endpoint", p.endpoints.AuthorizationEndpoint,
 		"has_pkce", codeChallenge != "",
 		"has_nonce", nonce != "",
@@ -335,7 +335,7 @@ func (p *OIDCProviderImpl) AuthorizationURL(state, codeChallenge string, opts ..
 	// servers regardless of whether they advertise support. Servers that don't
 	// support PKCE will simply ignore the parameters.
 	if codeChallenge != "" && !p.supportsPKCE() {
-		logger.Debugw("sending PKCE to provider that does not advertise S256 support (per RFC 7636 Section 5)")
+		slog.Debug("sending PKCE to provider that does not advertise S256 support (per RFC 7636 Section 5)")
 	}
 
 	// Merge caller's opts with OIDC-specific params
@@ -364,7 +364,7 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 		return nil, errors.New("OIDC endpoints not discovered")
 	}
 
-	logger.Debugw("refreshing tokens",
+	slog.Debug("refreshing tokens",
 		"token_endpoint", p.endpoints.TokenEndpoint,
 	)
 
@@ -392,7 +392,7 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 		}
 	}
 
-	logger.Debugw("token refresh successful",
+	slog.Debug("token refresh successful",
 		"has_new_refresh_token", tokens.RefreshToken != "",
 		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
 	)

@@ -1,5 +1,20 @@
 {
+  "title": "Example Remote Server",
   "description": "Example remote MCP server accessed via SSE",
+  "overview": "# Example Remote Server\n\nA demo remote MCP server with SSE transport.",
+  "tool_definitions": [
+    {
+      "name": "get_data",
+      "description": "Retrieves data from the remote API",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"}
+        },
+        "required": ["query"]
+      }
+    }
+  ],
   "tier": "Community",
   "status": "active",
   "transport": "sse",

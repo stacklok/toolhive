@@ -1,6 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.stacklok/github",
+  "title": "GitHub MCP Server",
   "description": "Provides integration with GitHub's APIs",
   "repository": {
     "url": "https://github.com/github/github-mcp-server",
@@ -130,6 +131,23 @@
             "update_issue",
             "update_pull_request",
             "update_pull_request_branch"
+          ],
+          "overview": "# GitHub MCP Server\n\nProvides comprehensive integration with GitHub APIs.",
+          "tool_definitions": [
+            {
+              "annotations": {},
+              "name": "create_issue",
+              "description": "Create a new issue in a GitHub repository",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "owner": {"type": "string"},
+                  "repo": {"type": "string"},
+                  "title": {"type": "string"}
+                },
+                "required": ["owner", "repo", "title"]
+              }
+            }
           ],
           "docker_tags": ["v0.19.1", "v0.19.0", "latest"],
           "proxy_port": 8080,

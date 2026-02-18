@@ -1,6 +1,24 @@
 {
   "name": "io.github.stacklok/github",
+  "title": "GitHub MCP Server",
   "description": "Provides integration with GitHub's APIs",
+  "overview": "# GitHub MCP Server\n\nProvides comprehensive integration with GitHub APIs.",
+  "tool_definitions": [
+    {
+      "annotations": {},
+      "name": "create_issue",
+      "description": "Create a new issue in a GitHub repository",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {"type": "string"},
+          "repo": {"type": "string"},
+          "title": {"type": "string"}
+        },
+        "required": ["owner", "repo", "title"]
+      }
+    }
+  ],
   "tier": "Official",
   "status": "Active",
   "transport": "stdio",

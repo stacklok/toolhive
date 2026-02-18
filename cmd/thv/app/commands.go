@@ -116,6 +116,10 @@ func checkForUpdates() {
 	if updates.ShouldSkipUpdateChecks() {
 		return
 	}
+	// Desktop app manages its own updates
+	if desktop.IsDesktopManagedCLI() {
+		return
+	}
 
 	versionClient := updates.NewVersionClient()
 	updateChecker, err := updates.NewUpdateChecker(versionClient)

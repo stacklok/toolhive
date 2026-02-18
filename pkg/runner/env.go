@@ -137,7 +137,7 @@ func (v *CLIEnvVarValidator) Validate(
 
 				value, err := promptForEnvironmentVariable(envVar)
 				if err != nil {
-					slog.Warn("Warning: Failed to read input for", "name", envVar.Name, "s", err)
+					slog.Warn("failed to read input", "name", envVar.Name, "error", err)
 					continue
 				}
 				if value != "" {
@@ -215,8 +215,8 @@ func addAsSecret(
 	}
 
 	if err := secretsManager.SetSecret(ctx, secretName, value); err != nil {
-		slog.Warn("Warning: Failed to store secret", "secretname", secretName, "s", err)
-		slog.Warn("Falling back to environment variable for", "name", envVar.Name)
+		slog.Warn("failed to store secret", "secret_name", secretName, "error", err)
+		slog.Warn("Falling back to environment variable", "name", envVar.Name)
 		(*envVars)[envVar.Name] = value
 		slog.Debug("Added environment variable (secret fallback)", "name", envVar.Name)
 	} else {
@@ -224,9 +224,9 @@ func addAsSecret(
 		secretEntry := fmt.Sprintf("%s,target=%s", secretName, envVar.Name)
 		*secretsList = append(*secretsList, secretEntry)
 		if envVar.Required {
-			slog.Debug("Created secret for", "name", envVar.Name, "s", secretName)
+			slog.Debug("Created secret", "name", envVar.Name, "secret_name", secretName)
 		} else {
-			slog.Debug("Created secret with default value for", "name", envVar.Name, "s", secretName)
+			slog.Debug("Created secret with default value", "name", envVar.Name, "secret_name", secretName)
 		}
 	}
 }
@@ -248,7 +248,7 @@ func (v *CLIEnvVarValidator) initializeSecretsManagerIfNeeded(registryEnvVars []
 
 	secretsManager, err := v.getSecretsManager()
 	if err != nil {
-		slog.Warn("Warning: Failed to initialize secrets manager", "error", err)
+		slog.Warn("failed to initialize secrets manager", "error", err)
 		slog.Warn("Secret environment variables will be stored as regular environment variables")
 		return nil
 	}
@@ -336,9 +336,9 @@ func addAsEnvironmentVariable(
 		}
 	} else {
 		if envVar.Required {
-			slog.Debug("Added environment variable", "added_environment_variable", envVar.Name)
+			slog.Debug("Added environment variable", "name", envVar.Name)
 		} else {
-			slog.Debug("Using default value for", "name", envVar.Name, "s", value)
+			slog.Debug("Using default value", "name", envVar.Name, "default_value", value)
 		}
 	}
 }

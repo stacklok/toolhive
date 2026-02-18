@@ -15,8 +15,6 @@ import (
 func TestProcessEnvFile(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-
 	tests := []struct {
 		name     string
 		content  string
@@ -112,8 +110,6 @@ func TestProcessEnvFile(t *testing.T) {
 func TestProcessEnvFilesDirectory_FileFiltering(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-
 	// Create temporary directory structure
 	tmpDir := t.TempDir()
 	envDir := filepath.Join(tmpDir, "env")
@@ -160,8 +156,6 @@ func TestProcessEnvFilesDirectory_FileFiltering(t *testing.T) {
 
 func TestProcessEnvFilesDirectory_Integration(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
 
 	tests := []struct {
 		name         string
@@ -248,8 +242,6 @@ DATABASE_URL=postgres://user:complex_password_with_symbols_!@#$@db.example.com:5
 
 func TestProcessEnvFilesDirectory_NonExistentDirectory(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
 
 	result, err := processEnvFilesDirectory("/path/that/does/not/exist")
 	assert.NoError(t, err)

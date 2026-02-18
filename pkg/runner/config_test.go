@@ -738,7 +738,6 @@ func (*mockEnvVarValidator) Validate(_ context.Context, _ *regtypes.ImageMetadat
 func TestRunConfigBuilder(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
 	runtime := &runtimemocks.MockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
@@ -1050,8 +1049,6 @@ func TestCommaSeparatedEnvVars(t *testing.T) {
 func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-
 	tests := []struct {
 		name               string
 		userTransport      string
@@ -1158,7 +1155,6 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
@@ -1203,8 +1199,6 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 // TestRunConfigBuilder_CmdArgsMetadataOverride tests that user args override registry defaults
 func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
 
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
@@ -1257,8 +1251,6 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
@@ -1309,7 +1301,6 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
@@ -1376,8 +1367,6 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 // TestRunConfigBuilder_FilesystemMCPScenario tests the specific scenario from the bug report
 func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
 
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}

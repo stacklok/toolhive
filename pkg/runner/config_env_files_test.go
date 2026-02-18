@@ -15,8 +15,6 @@ import (
 func TestRunConfig_WithEnvFile(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to prevent nil pointer dereference
-
 	tests := []struct {
 		name            string
 		initialEnvVars  map[string]string
@@ -95,8 +93,6 @@ func TestRunConfig_WithEnvFile(t *testing.T) {
 
 func TestRunConfig_WithEnvFilesFromDirectory(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger to prevent nil pointer dereference
 
 	tests := []struct {
 		name            string
@@ -191,8 +187,6 @@ func TestRunConfig_WithEnvFilesFromDirectory(t *testing.T) {
 
 func TestRunConfig_WithEnvFile_ErrorHandling(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger to prevent nil pointer dereference
 
 	config := &RunConfig{}
 

@@ -20,13 +20,13 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			slog.Debug("Env files directory does not exist", "dirpath", dirPath)
+			slog.Debug("Env files directory does not exist", "dir", dirPath)
 			return make(map[string]string), nil // Return empty map, not an error
 		}
 		return nil, fmt.Errorf("failed to read env files directory %s: %w", dirPath, err)
 	}
 
-	slog.Debug("Env files directory detected, processing environment files", "dirpath", dirPath)
+	slog.Debug("Env files directory detected, processing environment files", "dir", dirPath)
 
 	allEnvVars := make(map[string]string)
 	processedCount := 0
@@ -45,7 +45,7 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 		filePath := filepath.Join(dirPath, entry.Name())
 		fileEnvVars, err := processEnvFile(filePath)
 		if err != nil {
-			slog.Warn("Failed to process env file", "name", entry.Name(), "s", err)
+			slog.Warn("Failed to process env file", "name", entry.Name(), "error", err)
 			continue
 		}
 
@@ -56,7 +56,7 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 		processedCount++
 	}
 
-	slog.Debug("Processed env files, environment variables extracted", "processedcount", processedCount, "value2", len(allEnvVars))
+	slog.Debug("Processed env files", "files_processed", processedCount, "vars_extracted", len(allEnvVars))
 	return allEnvVars, nil
 }
 
@@ -90,7 +90,7 @@ func processEnvFile(path string) (map[string]string, error) {
 	}
 
 	if len(envLines) == 0 {
-		slog.Debug("No environment variables found in", "value", filepath.Base(path))
+		slog.Debug("No environment variables found", "file", filepath.Base(path))
 		return make(map[string]string), nil
 	}
 
@@ -100,6 +100,6 @@ func processEnvFile(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("failed to parse environment variables in %s: %w", filepath.Base(path), err)
 	}
 
-	slog.Debug("Extracted environment variables from", "value1", len(envVars), "value2", filepath.Base(path))
+	slog.Debug("Extracted environment variables", "count", len(envVars), "file", filepath.Base(path))
 	return envVars, nil
 }

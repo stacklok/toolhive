@@ -28,8 +28,6 @@ const testPort = math.MaxInt16
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
@@ -243,8 +241,6 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to prevent nil pointer dereference when processing volume mounts
-
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
@@ -378,8 +374,6 @@ func createTempProfileFile(t *testing.T, content string) (string, func()) {
 func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 	t.Parallel()
 
-	// Prevent nil pointer dereference in the logger.
-
 	t.Run("token-exchange NOT added when config is nil", func(t *testing.T) {
 		t.Parallel()
 
@@ -441,8 +435,6 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 
 func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -552,8 +544,6 @@ func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
@@ -629,8 +619,6 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 
 func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -839,8 +827,6 @@ func TestWithEnvVarsOverwrite(t *testing.T) {
 func TestBuildForOperator(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to prevent nil pointer dereference
-
 	testCases := []struct {
 		name           string
 		builderOptions []RunConfigBuilderOption
@@ -910,8 +896,6 @@ func TestBuildForOperator(t *testing.T) {
 
 func TestWithEnvFileDir(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
 
 	testCases := []struct {
 		name        string

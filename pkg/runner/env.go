@@ -6,13 +6,13 @@ package runner
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
 	"golang.org/x/term"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -122,13 +122,13 @@ func (v *CLIEnvVarValidator) Validate(
 					if secretsManager != nil {
 						value, err := secretsManager.GetSecret(ctx, envVar.Name)
 						if err != nil {
-							logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
+							slog.Warn("Unable to find secret in the secrets manager", "name", envVar.Name, "error", err)
 						} else {
 							addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
 							continue
 						}
 					} else {
-						logger.Warnf("Secrets manager not configured (setup incomplete or missing provider) - " +
+						slog.Warn("Secrets manager not configured (setup incomplete or missing provider) - " +
 							"falling back to prompt")
 					}
 
@@ -137,7 +137,7 @@ func (v *CLIEnvVarValidator) Validate(
 
 				value, err := promptForEnvironmentVariable(envVar)
 				if err != nil {
-					logger.Warnf("Warning: Failed to read input for %s: %v", envVar.Name, err)
+					slog.Warn("Warning: Failed to read input for", "name", envVar.Name, "s", err)
 					continue
 				}
 				if value != "" {
@@ -215,18 +215,18 @@ func addAsSecret(
 	}
 
 	if err := secretsManager.SetSecret(ctx, secretName, value); err != nil {
-		logger.Warnf("Warning: Failed to store secret %s: %v", secretName, err)
-		logger.Warnf("Falling back to environment variable for %s", envVar.Name)
+		slog.Warn("Warning: Failed to store secret", "secretname", secretName, "s", err)
+		slog.Warn("Falling back to environment variable for", "name", envVar.Name)
 		(*envVars)[envVar.Name] = value
-		logger.Debugf("Added environment variable (secret fallback): %s", envVar.Name)
+		slog.Debug("Added environment variable (secret fallback)", "name", envVar.Name)
 	} else {
 		// Create secret reference for RunConfig
 		secretEntry := fmt.Sprintf("%s,target=%s", secretName, envVar.Name)
 		*secretsList = append(*secretsList, secretEntry)
 		if envVar.Required {
-			logger.Debugf("Created secret for %s: %s", envVar.Name, secretName)
+			slog.Debug("Created secret for", "name", envVar.Name, "s", secretName)
 		} else {
-			logger.Debugf("Created secret with default value for %s: %s", envVar.Name, secretName)
+			slog.Debug("Created secret with default value for", "name", envVar.Name, "s", secretName)
 		}
 	}
 }
@@ -248,8 +248,8 @@ func (v *CLIEnvVarValidator) initializeSecretsManagerIfNeeded(registryEnvVars []
 
 	secretsManager, err := v.getSecretsManager()
 	if err != nil {
-		logger.Warnf("Warning: Failed to initialize secrets manager: %v", err)
-		logger.Warnf("Secret environment variables will be stored as regular environment variables")
+		slog.Warn("Warning: Failed to initialize secrets manager", "error", err)
+		slog.Warn("Secret environment variables will be stored as regular environment variables")
 		return nil
 	}
 
@@ -330,15 +330,15 @@ func addAsEnvironmentVariable(
 
 	if envVar.Secret {
 		if envVar.Required {
-			logger.Debugf("Added secret as environment variable (no secrets manager): %s", envVar.Name)
+			slog.Debug("Added secret as environment variable (no secrets manager)", "name", envVar.Name)
 		} else {
-			logger.Debugf("Added default secret as environment variable (no secrets manager): %s", envVar.Name)
+			slog.Debug("Added default secret as environment variable (no secrets manager)", "name", envVar.Name)
 		}
 	} else {
 		if envVar.Required {
-			logger.Debugf("Added environment variable: %s", envVar.Name)
+			slog.Debug("Added environment variable", "added_environment_variable", envVar.Name)
 		} else {
-			logger.Debugf("Using default value for %s: %s", envVar.Name, value)
+			slog.Debug("Using default value for", "name", envVar.Name, "s", value)
 		}
 	}
 }

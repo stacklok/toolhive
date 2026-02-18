@@ -10,15 +10,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestProcessEnvFile(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	tests := []struct {
 		name     string
@@ -116,7 +113,6 @@ func TestProcessEnvFilesDirectory_FileFiltering(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create temporary directory structure
 	tmpDir := t.TempDir()
@@ -166,7 +162,6 @@ func TestProcessEnvFilesDirectory_Integration(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	tests := []struct {
 		name         string
@@ -255,7 +250,6 @@ func TestProcessEnvFilesDirectory_NonExistentDirectory(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	result, err := processEnvFilesDirectory("/path/that/does/not/exist")
 	assert.NoError(t, err)

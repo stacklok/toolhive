@@ -8,10 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Config represents the audit logging configuration.
@@ -85,7 +84,7 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
-			logger.Warnf("Failed to close audit config file: %v", err)
+			slog.Warn("failed to close audit config file", "error", err)
 		}
 	}()
 

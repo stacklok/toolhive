@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,7 +21,6 @@ import (
 	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -871,15 +871,15 @@ func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]Con
 		cf, err := cm.FindClientConfig(clientStatus.ClientType)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
-				logger.Debugf("Client config file not found for %s, creating it...", clientStatus.ClientType)
+				slog.Debug("Client config file not found, creating", "client", clientStatus.ClientType)
 				cf, err = cm.CreateClientConfig(clientStatus.ClientType)
 				if err != nil {
-					logger.Warnf("Unable to create client config for %s: %v", clientStatus.ClientType, err)
+					slog.Warn("Unable to create client config", "client", clientStatus.ClientType, "error", err)
 					continue
 				}
-				logger.Debugf("Successfully created client config file for %s", clientStatus.ClientType)
+				slog.Debug("Successfully created client config file", "client", clientStatus.ClientType)
 			} else {
-				logger.Warnf("Unable to process client config for %s: %v", clientStatus.ClientType, err)
+				slog.Warn("Unable to process client config", "client", clientStatus.ClientType, "error", err)
 				continue
 			}
 		}
@@ -915,7 +915,7 @@ func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, 
 	}
 
 	// Create the file if it does not exist
-	logger.Debugf("Creating new client config file at %s", path)
+	slog.Debug("Creating new client config file", "path", path)
 
 	// Create parent directories if they don't exist
 	parentDir := filepath.Dir(path)

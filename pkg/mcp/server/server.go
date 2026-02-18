@@ -7,13 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -84,7 +84,9 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 
 // Start starts the MCP server
 func (s *Server) Start() error {
-	logger.Debugf("Starting ToolHive MCP server on http://%s:%s/mcp", s.config.Host, s.config.Port)
+	//nolint:gosec // G706: host/port from server config
+	slog.Debug("starting ToolHive MCP server",
+		"host", s.config.Host, "port", s.config.Port)
 	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("MCP server error: %w", err)
 	}
@@ -93,7 +95,7 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the MCP server
 func (s *Server) Shutdown(ctx context.Context) error {
-	logger.Debug("Shutting down MCP server...")
+	slog.Debug("shutting down MCP server")
 	return s.httpServer.Shutdown(ctx)
 }
 

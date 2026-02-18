@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -25,7 +26,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -299,7 +299,7 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	// Save the migrated RunConfig back to disk so migration only happens once
 	if err := config.SaveState(context.Background()); err != nil {
 		// Log error without potentially sensitive details - only log error type and message
-		logger.Warnf("Failed to save migrated RunConfig for workload %s: %s", config.Name, err.Error())
+		slog.Warn("Failed to save migrated RunConfig for workload", "name", config.Name, "s", err.Error())
 		// Don't fail the migration - the secret is already stored and the config is updated in memory
 	}
 
@@ -338,7 +338,7 @@ func migrateBearerToken(config *RunConfig) error {
 	// Save the migrated RunConfig back to disk so migration only happens once
 	if err := config.SaveState(context.Background()); err != nil {
 		// Log error without potentially sensitive details - only log error type and message
-		logger.Warnf("Failed to save migrated RunConfig for workload %s: %s", config.Name, err.Error())
+		slog.Warn("Failed to save migrated RunConfig for workload", "name", config.Name, "s", err.Error())
 		// Don't fail the migration - the secret is already stored and the config is updated in memory
 	}
 
@@ -400,12 +400,12 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	if proxyPort != 0 {
 		// Skip validation if reusing the same port from existing workload (during update)
 		if proxyPort == c.existingPort && c.existingPort > 0 {
-			logger.Debugf("Reusing existing port: %d", proxyPort)
+			slog.Debug("Reusing existing port", "reusing_existing_port", proxyPort)
 			selectedPort = proxyPort
 		} else if !networking.IsAvailable(proxyPort) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
 		} else {
-			logger.Debugf("Using requested port: %d", proxyPort)
+			slog.Debug("Using requested port", "port", proxyPort)
 			selectedPort = proxyPort
 		}
 	} else {
@@ -423,7 +423,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
-		logger.Debugf("Using target port: %d", selectedTargetPort)
+		slog.Debug("Using target port", "port", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 

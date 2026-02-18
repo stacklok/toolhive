@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +23,6 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -78,7 +78,7 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Total number of MCP requests"),
 	)
 	if err != nil {
-		logger.Debugf("failed to create request counter metric: %v", err)
+		slog.Debug("failed to create request counter metric", "error", err)
 	}
 
 	requestDuration, err := meter.Float64Histogram(
@@ -88,7 +88,7 @@ func NewHTTPMiddleware(
 		metric.WithExplicitBucketBoundaries(MCPHistogramBuckets...),
 	)
 	if err != nil {
-		logger.Debugf("failed to create request duration metric: %v", err)
+		slog.Debug("failed to create request duration metric", "error", err)
 	}
 
 	activeConnections, err := meter.Int64UpDownCounter(
@@ -96,7 +96,7 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Number of active MCP connections"),
 	)
 	if err != nil {
-		logger.Debugf("failed to create active connections metric: %v", err)
+		slog.Debug("failed to create active connections metric", "error", err)
 	}
 
 	operationDuration, err := meter.Float64Histogram(
@@ -106,7 +106,7 @@ func NewHTTPMiddleware(
 		metric.WithExplicitBucketBoundaries(MCPHistogramBuckets...),
 	)
 	if err != nil {
-		logger.Debugf("failed to create operation duration metric: %v", err)
+		slog.Debug("failed to create operation duration metric", "error", err)
 	}
 
 	toolCallCounter, err := meter.Int64Counter(
@@ -114,7 +114,7 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Total number of MCP tool calls"),
 	)
 	if err != nil {
-		logger.Debugf("failed to create tool call counter metric: %v", err)
+		slog.Debug("failed to create tool call counter metric", "error", err)
 	}
 
 	middleware := &HTTPMiddleware{
@@ -702,7 +702,9 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	if mcpMethod != "unknown" {
 		m.recordOperationDuration(ctx, r, mcpMethod, mcpResourceID, rw.statusCode, duration)
 	} else {
-		logger.Warnf("MCP method could not be determined for request %s %s — middleware may be misconfigured", r.Method, r.URL.Path)
+		//nolint:gosec // G706: HTTP method and URL path from request
+		slog.Warn("MCP method could not be determined, middleware may be misconfigured",
+			"http_method", r.Method, "path", r.URL.Path)
 	}
 
 	// For tools/call, record tool-specific metrics
@@ -883,7 +885,9 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Set Prometheus handler if enabled
 	if prometheusHandler != nil {
 		runner.SetPrometheusHandler(prometheusHandler)
-		logger.Infof("Prometheus metrics will be exposed on port %d at /metrics", runner.GetConfig().GetPort())
+		//nolint:gosec // G706: port number from config
+		slog.Info("Prometheus metrics will be exposed at /metrics",
+			"port", runner.GetConfig().GetPort())
 	}
 
 	return nil

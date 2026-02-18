@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -18,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -96,7 +96,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) er
 	if len(newClient.Groups) == 0 {
 		defaultGroup, err := c.groupManager.Get(r.Context(), groups.DefaultGroupName)
 		if err != nil {
-			logger.Debugf("Failed to get default group: %v", err)
+			slog.Debug("failed to get default group", "error", err)
 		}
 		if defaultGroup != nil {
 			newClient.Groups = []string{groups.DefaultGroupName}
@@ -324,7 +324,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 	}
 
 	if len(groupNames) > 0 {
-		logger.Debugf("Filtering workloads to groups: %v", groupNames)
+		slog.Debug("filtering workloads to groups", "groups", groupNames)
 
 		filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
 		if err != nil {
@@ -354,7 +354,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 			err := config.UpdateConfig(func(c *config.Config) {
 				for _, registeredClient := range c.Clients.RegisteredClients {
 					if registeredClient == string(clientToRegister.Name) {
-						logger.Debugf("Client %s is already registered, skipping...", clientToRegister.Name)
+						slog.Debug("client already registered, skipping", "client", clientToRegister.Name)
 						return
 					}
 				}
@@ -365,7 +365,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 				return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
 			}
 
-			logger.Debugf("Successfully registered client: %s\n", clientToRegister.Name)
+			slog.Debug("successfully registered client", "client", clientToRegister.Name)
 		}
 
 		err = c.clientManager.RegisterClients(clients, runningWorkloads)
@@ -464,7 +464,7 @@ func (c *ClientRoutes) removeClientGlobally(
 				if registeredClient == string(clientToRemove.Name) {
 					// Remove client from slice
 					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-					logger.Debugf("Successfully unregistered client: %s\n", clientToRemove.Name)
+					slog.Debug("successfully unregistered client", "client", clientToRemove.Name)
 					return
 				}
 			}

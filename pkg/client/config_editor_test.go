@@ -16,14 +16,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestUpsertMCPServer(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		mcpServerPatchPath string // the path used by the patch operation
@@ -121,8 +117,6 @@ func TestUpsertMCPServer(t *testing.T) {
 
 func TestRemoveMCPServer(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		mcpServerPatchPath string // the path used by the patch operation
@@ -233,8 +227,6 @@ func getMCPServerFromFile(t *testing.T, configPath string, key string) MCPServer
 func TestEnsurePathExists(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
-
 	tests := []struct {
 		name           string
 		description    string
@@ -294,8 +286,6 @@ func TestEnsurePathExists(t *testing.T) {
 
 func TestYAMLConfigUpdaterUpsert(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	t.Run("AddNewMCPServerToEmptyYAML", func(t *testing.T) {
 		t.Parallel()
@@ -428,8 +418,6 @@ extensions:
 
 func TestYAMLConfigUpdaterRemove(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	t.Run("RemoveExistingMCPServerFromYAML", func(t *testing.T) {
 		t.Parallel()
@@ -600,8 +588,6 @@ const testServerName = "testServer"
 
 func TestTOMLConfigUpdaterUpsert(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	t.Run("AddNewMCPServerToEmptyTOML", func(t *testing.T) {
 		t.Parallel()
@@ -798,8 +784,6 @@ transport = "http"
 func TestTOMLConfigUpdaterRemove(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
-
 	t.Run("RemoveExistingServerFromTOML", func(t *testing.T) {
 		t.Parallel()
 
@@ -987,8 +971,6 @@ func indexOf(s, substr string) int {
 
 func TestTOMLMapConfigUpdaterUpsert(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	t.Run("AddNewMCPServerToEmptyTOML", func(t *testing.T) {
 		t.Parallel()
@@ -1206,8 +1188,6 @@ url = "http://localhost:8080"
 
 func TestTOMLMapConfigUpdaterRemove(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	t.Run("RemoveExistingServerFromTOMLMap", func(t *testing.T) {
 		t.Parallel()

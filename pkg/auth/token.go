@@ -755,6 +755,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 
 	if err != nil {
 		v.oidcDiscoveryErr = fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
+		//nolint:gosec // G706: issuer is from server configuration
 		slog.Error(
 			"OIDC discovery failed after retries",
 			"issuer", v.issuer, "attempts", oidcDiscoveryMaxAttempts, "error", err,
@@ -773,6 +774,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	v.jwksRegistrationMu.Lock()
 	v.jwksRegistered = false
 	v.jwksRegistrationMu.Unlock()
+	//nolint:gosec // G706: issuer and JWKS URL are from OIDC discovery
 	slog.Debug(
 		"OIDC discovery succeeded",
 		"issuer", v.issuer, "jwks_url", doc.JWKSURI,

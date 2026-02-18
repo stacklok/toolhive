@@ -4,11 +4,11 @@
 package streamable
 
 import (
+	"fmt"
+	"log/slog"
 	"time"
 
 	"golang.org/x/exp/jsonrpc2"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // dispatchResponses routes container responses to the appropriate waiter by request ID.
@@ -25,7 +25,8 @@ func (p *HTTPProxy) dispatchResponses() {
 			}
 			r, ok := resp.(*jsonrpc2.Response)
 			if !ok || !r.ID.IsValid() {
-				logger.Warnf("Received invalid message that is not a valid response: %T", resp)
+				slog.Warn("Received invalid message that is not a valid response",
+					"type", fmt.Sprintf("%T", resp))
 				continue
 			}
 
@@ -37,15 +38,17 @@ func (p *HTTPProxy) dispatchResponses() {
 						select {
 						case ch <- resp:
 						default:
-							logger.Warnf("Waiter channel full for compositeKey=%s; dropping response", sID)
+							slog.Warn("Waiter channel full; dropping response",
+								"composite_key", sID)
 						}
 						continue
 					}
 				}
-				logger.Warnf("No waiter found for compositeKey=%s; dropping", sID)
+				slog.Warn("No waiter found for composite key; dropping", "composite_key", sID)
 				continue
 			}
-			logger.Warnf("Non-string response id (expected composite string); dropping: %v", rawID)
+			slog.Warn("Non-string response id (expected composite string); dropping",
+				"raw_id", fmt.Sprintf("%v", rawID))
 		}
 	}
 }

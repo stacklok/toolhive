@@ -6,12 +6,12 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -84,8 +84,8 @@ func printJSONSearchResults(servers []types.ServerMetadata) error {
 func printTextSearchResults(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS"); err != nil {
-		logger.Warnf("Failed to write output: %v", err)
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS"); err != nil {
+		slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
 		return
 	}
 
@@ -109,7 +109,7 @@ func printTextSearchResults(servers []types.ServerMetadata) {
 			server.GetTransport(),
 			stars,
 		); err != nil {
-			logger.Debugf("Failed to write server information: %v", err)
+			slog.Debug(fmt.Sprintf("Failed to write server information: %v", err))
 		}
 	}
 

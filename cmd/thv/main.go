@@ -6,24 +6,31 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/adrg/xdg"
+	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/lockfile"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/migration"
 )
 
 func main() {
 	// Initialize the logger
-	logger.Initialize()
+	var opts []logging.Option
+	if viper.GetBool("debug") {
+		opts = append(opts, logging.WithLevel(slog.LevelDebug))
+	}
+	l := logging.New(opts...)
+	slog.SetDefault(l)
 
 	// Setup signal handling for graceful cleanup
 	ctx := setupSignalHandler()
@@ -34,7 +41,7 @@ func main() {
 	// Check if container runtime is available early, but skip for informational commands
 	if !app.IsInformationalCommand(os.Args) {
 		if err := container.CheckRuntimeAvailable(); err != nil {
-			logger.Errorf("%s", err.Error())
+			slog.Error(err.Error())
 			os.Exit(1)
 		}
 	}
@@ -79,7 +86,7 @@ func setupSignalHandler() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-sigCh
-		logger.Debugf("Received signal, cleaning up lock files...")
+		slog.Debug("Received signal, cleaning up lock files...")
 		lockfile.CleanupAllLocks()
 		cancel()
 	}()

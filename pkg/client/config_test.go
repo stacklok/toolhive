@@ -21,7 +21,6 @@ import (
 
 	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -337,11 +336,11 @@ func initializeTest(t *testing.T) *bytes.Buffer {
 		logging.WithFormat(logging.FormatText),
 	)
 
-	prev := logger.Get()
-	logger.Set(testLogger)
+	prev := slog.Default()
+	slog.SetDefault(testLogger)
 
 	t.Cleanup(func() {
-		logger.Set(prev)
+		slog.SetDefault(prev)
 	})
 
 	return &buf

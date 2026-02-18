@@ -31,7 +31,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -69,11 +68,8 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.Parse()
 
-	// Initialize the structured logger
-	logger.Initialize()
-
-	// Set the controller-runtime logger to use our structured logger
-	ctrl.SetLogger(logger.NewLogr())
+	// Note: controller-runtime logger is initialized using the default logger
+	// The operator does not use debug mode from viper, so we use the default level
 
 	options := ctrl.Options{
 		Scheme:                 scheme,

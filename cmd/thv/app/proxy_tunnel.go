@@ -7,13 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os/signal"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -60,7 +60,7 @@ func init() {
 
 	// Mark tunnel-provider as required
 	if err := proxyTunnelCmd.MarkFlagRequired("tunnel-provider"); err != nil {
-		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
+		slog.Warn(fmt.Sprintf("Failed to mark flag as required: %v", err))
 	}
 }
 
@@ -100,7 +100,7 @@ func proxyTunnelCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Consume until interrupt
 	<-ctx.Done()
-	logger.Info("Shutting down tunnel")
+	slog.Info("Shutting down tunnel")
 	return nil
 }
 

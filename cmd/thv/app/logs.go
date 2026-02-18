@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,7 +20,6 @@ import (
 	"github.com/spf13/viper"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -65,12 +65,12 @@ Examples:
 
 	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
 	if err != nil {
-		logger.Errorf("failed to bind flag: %v", err)
+		slog.Error(fmt.Sprintf("failed to bind flag: %v", err))
 	}
 
 	err = viper.BindPFlag("proxy", logsCommand.Flags().Lookup("proxy"))
 	if err != nil {
-		logger.Errorf("failed to bind flag: %v", err)
+		slog.Error(fmt.Sprintf("failed to bind flag: %v", err))
 	}
 
 	// Add prune subcommand for better discoverability
@@ -115,7 +115,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		// CLI gets all logs (0 = unlimited)
 		logs, err := manager.GetProxyLogs(ctx, workloadName, 0)
 		if err != nil {
-			logger.Infof("Proxy logs not found for workload %s", workloadName)
+			slog.Info(fmt.Sprintf("Proxy logs not found for workload %s", workloadName))
 			return nil
 		}
 		fmt.Print(logs)
@@ -223,10 +223,10 @@ func pruneOrphanedLogFiles(logFiles []string, managedNames map[string]bool) ([]s
 		if !managedNames[baseName] {
 			if err := os.Remove(logFile); err != nil {
 				errs = append(errs, fmt.Sprintf("failed to remove %s: %v", logFile, err))
-				logger.Warnf("Failed to remove log file %s: %v", logFile, err)
+				slog.Warn(fmt.Sprintf("Failed to remove log file %s: %v", logFile, err))
 			} else {
 				prunedFiles = append(prunedFiles, logFile)
-				logger.Debugf("Removed log file: %s", logFile)
+				slog.Debug(fmt.Sprintf("Removed log file: %s", logFile))
 			}
 		}
 	}
@@ -238,14 +238,14 @@ func reportPruneResults(prunedFiles, errs []string) {
 	if len(prunedFiles) == 0 {
 		fmt.Println("No orphaned log files found to prune")
 	} else {
-		logger.Debugf("Successfully pruned %d log file(s)", len(prunedFiles))
+		slog.Debug(fmt.Sprintf("Successfully pruned %d log file(s)", len(prunedFiles)))
 		for _, file := range prunedFiles {
 			fmt.Printf("Removed: %s\n", file)
 		}
 	}
 
 	if len(errs) > 0 {
-		logger.Warnf("Encountered %d error(s) during pruning:", len(errs))
+		slog.Warn(fmt.Sprintf("Encountered %d error(s) during pruning:", len(errs)))
 		for _, errMsg := range errs {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", errMsg)
 		}
@@ -265,7 +265,7 @@ func getProxyLogs(ctx context.Context, workloadName string) error {
 
 	// Check if the log file exists
 	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
-		logger.Infof("proxy log not found for workload %s", workloadName)
+		slog.Info(fmt.Sprintf("proxy log not found for workload %s", workloadName))
 		return nil
 	}
 
@@ -285,7 +285,7 @@ func followProxyLogFile(ctx context.Context, logFilePath string) error {
 	defer func() {
 		if err := file.Close(); err != nil {
 			// Non-fatal: file cleanup failure after reading
-			logger.Warnf("Failed to close log file: %v", err)
+			slog.Warn(fmt.Sprintf("Failed to close log file: %v", err))
 		}
 	}()
 

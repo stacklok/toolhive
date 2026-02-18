@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/signal"
@@ -20,7 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
@@ -158,7 +158,7 @@ func init() {
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
-		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
+		slog.Warn(fmt.Sprintf("Failed to mark flag as required: %v", err))
 	}
 	// Attach the subcommands to the main proxy command
 	proxyCmd.AddCommand(proxyTunnelCmd)
@@ -197,7 +197,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Debugf("Using host port: %d", port)
+	slog.Debug(fmt.Sprintf("Using host port: %d", port))
 
 	// Handle OAuth authentication to the remote server if needed
 	var tokenSource oauth2.TokenSource
@@ -216,10 +216,10 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 			if oauthConfig != nil {
 				introspectionURL = oauthConfig.IntrospectionEndpoint
-				logger.Debugf("Using OAuth config with introspection URL: %s", introspectionURL)
+				slog.Debug(fmt.Sprintf("Using OAuth config with introspection URL: %s", introspectionURL))
 			}
 		} else {
-			logger.Debug("No OAuth configuration available, proceeding without outgoing authentication")
+			slog.Debug("No OAuth configuration available, proceeding without outgoing authentication")
 		}
 	}
 
@@ -252,8 +252,8 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the transparent proxy
-	logger.Debugf("Setting up transparent proxy to forward from host port %d to %s",
-		port, proxyTargetURI)
+	slog.Debug(fmt.Sprintf("Setting up transparent proxy to forward from host port %d to %s",
+		port, proxyTargetURI))
 
 	// Create the transparent proxy with middlewares
 	proxy := transparent.NewTransparentProxy(
@@ -282,7 +282,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	fmt.Println("Interrupt received, proxy is shutting down. Please wait for connections to close...")
 
 	if err := proxy.CloseListener(); err != nil {
-		logger.Warnf("Error closing proxy listener: %v", err)
+		slog.Warn(fmt.Sprintf("Error closing proxy listener: %v", err))
 	}
 	// Use Background context for proxy shutdown. The parent context is already cancelled
 	// at this point, so we need a fresh context with its own timeout to ensure the
@@ -332,7 +332,7 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
 	}
 	if bearerToken != "" {
-		logger.Debug("Using bearer token authentication for remote server")
+		slog.Debug("Using bearer token authentication for remote server")
 		return &discovery.OAuthFlowResult{
 			TokenSource: remote.NewBearerTokenSource(bearerToken),
 		}, nil
@@ -381,12 +381,12 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 	// Try to detect authentication requirements from WWW-Authenticate header
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, proxyTargetURI, nil)
 	if err != nil {
-		logger.Debugf("Could not detect authentication from server: %v", err)
+		slog.Debug(fmt.Sprintf("Could not detect authentication from server: %v", err))
 		return nil, nil // Not an error, just no auth detected
 	}
 
 	if authInfo != nil {
-		logger.Debugf("Detected authentication requirement from server: %s", authInfo.Realm)
+		slog.Debug(fmt.Sprintf("Detected authentication requirement from server: %s", authInfo.Realm))
 
 		// Perform OAuth flow with discovered configuration
 		flowConfig := &discovery.OAuthFlowConfig{
@@ -435,7 +435,7 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			return fmt.Errorf("invalid token exchange configuration: %w", err)
 		}
 		if tokenExchangeConfig == nil {
-			logger.Warn("Token exchange URL provided but configuration could not be built")
+			slog.Warn("Token exchange URL provided but configuration could not be built")
 			return nil
 		}
 

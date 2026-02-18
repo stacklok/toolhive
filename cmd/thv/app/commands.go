@@ -5,11 +5,13 @@
 package app
 
 import (
+	"fmt"
+	"log/slog"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/stacklok/toolhive/pkg/desktop"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 )
 
@@ -26,12 +28,10 @@ container-based isolation for running MCP servers.`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		// If no subcommand is provided, print help
 		if err := cmd.Help(); err != nil {
-			logger.Errorf("Error displaying help: %v", err)
+			slog.Error(fmt.Sprintf("Error displaying help: %v", err))
 		}
 	},
 	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-		logger.Initialize()
-
 		// Check for desktop app conflict
 		return desktop.ValidateDesktopAlignment()
 	},
@@ -43,7 +43,7 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
 	err := viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 	if err != nil {
-		logger.Errorf("Error binding debug flag: %v", err)
+		slog.Error(fmt.Sprintf("Error binding debug flag: %v", err))
 	}
 
 	// Add subcommands
@@ -112,12 +112,12 @@ func checkForUpdates() {
 	updateChecker, err := updates.NewUpdateChecker(versionClient)
 	// treat update-related errors as non-fatal
 	if err != nil {
-		logger.Warnf("unable to create update client: %s", err)
+		slog.Warn(fmt.Sprintf("unable to create update client: %s", err))
 		return
 	}
 
 	err = updateChecker.CheckLatestVersion()
 	if err != nil {
-		logger.Warnf("could not check for updates: %s", err)
+		slog.Warn(fmt.Sprintf("could not check for updates: %s", err))
 	}
 }

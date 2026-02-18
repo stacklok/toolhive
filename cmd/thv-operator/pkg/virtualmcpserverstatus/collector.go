@@ -6,6 +6,7 @@ package virtualmcpserverstatus
 
 import (
 	"context"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,6 +87,41 @@ func (s *StatusCollector) SetAuthConfiguredCondition(reason, message string, sta
 	s.SetCondition(mcpv1alpha1.ConditionTypeAuthConfigured, reason, message, status)
 }
 
+// SetAuthConfigCondition sets a specific auth config condition with dynamic type.
+// This allows setting granular conditions for individual auth config failures.
+func (s *StatusCollector) SetAuthConfigCondition(conditionType, reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(conditionType, reason, message, status)
+}
+
+// RemoveConditionsWithPrefix removes all conditions whose type starts with the given prefix,
+// except for those in the exclude list. This is tracked as a change and will be applied
+// during UpdateStatus.
+func (s *StatusCollector) RemoveConditionsWithPrefix(prefix string, exclude []string) {
+	// Validate prefix to prevent removing all conditions
+	if prefix == "" {
+		return
+	}
+
+	// Build exclude map for quick lookup
+	excludeMap := make(map[string]bool)
+	for _, condType := range exclude {
+		excludeMap[condType] = true
+	}
+
+	// Mark conditions for removal by storing a condition with empty status
+	// The UpdateStatus method will handle the actual removal
+	for _, existingCondition := range s.vmcp.Status.Conditions {
+		if strings.HasPrefix(existingCondition.Type, prefix) && !excludeMap[existingCondition.Type] {
+			// Store a marker condition with empty status to indicate removal
+			s.conditions[existingCondition.Type] = metav1.Condition{
+				Type:   existingCondition.Type,
+				Status: "", // Empty status indicates removal
+			}
+			s.hasChanges = true
+		}
+	}
+}
+
 // SetReadyCondition sets the Ready condition.
 func (s *StatusCollector) SetReadyCondition(reason, message string, status metav1.ConditionStatus) {
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerReady, reason, message, status)
@@ -125,7 +161,12 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 
 		// Apply condition changes
 		for _, condition := range s.conditions {
-			meta.SetStatusCondition(&vmcpStatus.Conditions, condition)
+			if condition.Status == "" {
+				// Empty status indicates removal
+				meta.RemoveStatusCondition(&vmcpStatus.Conditions, condition.Type)
+			} else {
+				meta.SetStatusCondition(&vmcpStatus.Conditions, condition)
+			}
 		}
 
 		// Apply discovered backends change

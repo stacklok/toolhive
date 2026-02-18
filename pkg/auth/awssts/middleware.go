@@ -10,13 +10,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -153,7 +153,7 @@ func createAWSStsMiddlewareFunc(
 			// credentials and cannot fall through — every request must be signed.
 			identity, ok := auth.IdentityFromContext(r.Context())
 			if !ok {
-				logger.Warn("No identity found in context, rejecting request")
+				slog.Warn("No identity found in context, rejecting request")
 				http.Error(w, "Authentication required", http.StatusUnauthorized)
 				return
 			}
@@ -161,7 +161,7 @@ func createAWSStsMiddlewareFunc(
 			// Extract JWT claims from identity
 			claims := identity.Claims
 			if claims == nil {
-				logger.Warn("No claims in identity, rejecting request")
+				slog.Warn("No claims in identity, rejecting request")
 				http.Error(w, "Authentication required", http.StatusUnauthorized)
 				return
 			}
@@ -169,17 +169,18 @@ func createAWSStsMiddlewareFunc(
 			// Use RoleMapper to select the appropriate IAM role based on claims
 			roleArn, err := roleMapper.SelectRole(claims)
 			if err != nil {
-				logger.Warnf("Failed to select IAM role: %v", err)
+				slog.Warn("Failed to select IAM role", "error", err)
 				http.Error(w, "Failed to determine IAM role", http.StatusForbidden)
 				return
 			}
 
-			logger.Debugf("Selected IAM role: %s", roleArn)
+			//nolint:gosec // G706: roleArn is from server config, not user input
+			slog.Debug("Selected IAM role", "role_arn", roleArn)
 
 			// Extract bearer token from request
 			bearerToken, err := auth.ExtractBearerToken(r)
 			if err != nil {
-				logger.Warnf("No valid Bearer token found: %v", err)
+				slog.Warn("No valid Bearer token found", "error", err)
 				http.Error(w, "Bearer token required", http.StatusUnauthorized)
 				return
 			}
@@ -187,23 +188,25 @@ func createAWSStsMiddlewareFunc(
 			// Extract and validate session name from claims
 			sessionName, err := extractSessionName(claims, sessionNameClaim)
 			if err != nil {
-				logger.Warnf("Failed to extract session name: %v", err)
+				slog.Warn("Failed to extract session name", "error", err)
 				http.Error(w, "Missing session name claim", http.StatusUnauthorized)
 				return
 			}
 			if err := ValidateSessionName(sessionName); err != nil {
-				logger.Warnf("Invalid session name from claim %q: %v", sessionNameClaim, err)
-				logger.Debugf("Invalid session name value: %q", sessionName)
+				slog.Warn("Invalid session name from claim", "claim", sessionNameClaim, "error", err)
+				//nolint:gosec // G706: logged for debugging invalid input
+				slog.Debug("Invalid session name value", "session_name", sessionName)
 				http.Error(w, "Invalid session name", http.StatusUnauthorized)
 				return
 			}
 
-			logger.Debugf("Exchanging token for AWS credentials (session: %s)", sessionName)
+			//nolint:gosec // G706: session name is from validated JWT claims
+			slog.Debug("Exchanging token for AWS credentials", "session", sessionName)
 
 			// Exchange token for AWS credentials via STS
 			creds, err := exchanger.ExchangeToken(r.Context(), bearerToken, roleArn, sessionName, sessionDuration)
 			if err != nil {
-				logger.Warnf("STS token exchange failed: %v", err)
+				slog.Warn("STS token exchange failed", "error", err)
 				http.Error(w, "AWS credential exchange failed", http.StatusUnauthorized)
 				return
 			}
@@ -212,12 +215,12 @@ func createAWSStsMiddlewareFunc(
 			// overwrite r.Host / r.URL.Host — that rewriting is the reverse
 			// proxy's responsibility, not ours. We only add the SigV4 headers.
 			if err := signRequestForTarget(r, signer, creds, targetURL); err != nil {
-				logger.Warnf("Failed to sign request with SigV4: %v", err)
+				slog.Warn("Failed to sign request with SigV4", "error", err)
 				http.Error(w, "Request signing failed", http.StatusInternalServerError)
 				return
 			}
 
-			logger.Debug("Request signed with AWS SigV4")
+			slog.Debug("Request signed with AWS SigV4")
 
 			next.ServeHTTP(w, r)
 		})
@@ -262,7 +265,8 @@ func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Cre
 		signingReq.ContentLength = int64(len(bodyBytes))
 	}
 
-	logger.Debugf("Signing request for target host: %s", targetURL.Host)
+	//nolint:gosec // G706: target host is from server configuration
+	slog.Debug("Signing request for target host", "host", targetURL.Host)
 
 	if err := signer.SignRequest(r.Context(), signingReq, creds); err != nil {
 		return err

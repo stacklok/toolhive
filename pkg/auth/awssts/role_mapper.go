@@ -6,6 +6,7 @@ package awssts
 import (
 	"cmp"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	celgo "github.com/google/cel-go/cel"
 
 	"github.com/stacklok/toolhive-core/cel"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // claimBindingExpression is the generic CEL expression used for claim-based role mappings.
@@ -182,7 +182,8 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 	for _, mapping := range rm.mappings {
 		match, err := mapping.expr.EvaluateBool(mapping.evalContext(claims, roleClaim))
 		if err != nil {
-			logger.Debugw("CEL expression evaluation failed, skipping mapping",
+			//nolint:gosec // G706: role ARN is from server configuration
+			slog.Debug("CEL expression evaluation failed, skipping mapping",
 				"role_arn", mapping.roleArn, "error", err)
 			continue
 		}

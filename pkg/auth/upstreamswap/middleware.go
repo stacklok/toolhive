@@ -8,13 +8,13 @@ package upstreamswap
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -154,7 +154,8 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			// 1. Get identity from auth middleware
 			identity, ok := auth.IdentityFromContext(r.Context())
 			if !ok {
-				logger.Debug("upstreamswap: no identity in context, proceeding without swap")
+				slog.Debug("No identity in context, proceeding without swap",
+					"middleware", "upstreamswap")
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -162,7 +163,8 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			// 2. Extract tsid from claims
 			tsid, ok := identity.Claims[session.TokenSessionIDClaimKey].(string)
 			if !ok || tsid == "" {
-				logger.Debug("upstreamswap: no tsid claim in identity, proceeding without swap")
+				slog.Debug("No tsid claim in identity, proceeding without swap",
+					"middleware", "upstreamswap")
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -170,7 +172,8 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			// 3. Get storage
 			stor := storageGetter()
 			if stor == nil {
-				logger.Warn("upstreamswap: storage unavailable, proceeding without swap")
+				slog.Warn("Storage unavailable, proceeding without swap",
+					"middleware", "upstreamswap")
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -178,26 +181,30 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			// 4. Lookup upstream tokens
 			tokens, err := stor.GetUpstreamTokens(r.Context(), tsid)
 			if err != nil {
-				logger.Warnf("upstreamswap: failed to get upstream tokens: %v", err)
+				slog.Warn("Failed to get upstream tokens",
+					"middleware", "upstreamswap", "error", err)
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			// 5. Check if expired (MVP: just log warning, continue with token)
 			if tokens.IsExpired(time.Now()) {
-				logger.Warn("upstreamswap: upstream tokens expired")
+				slog.Warn("Upstream tokens expired",
+					"middleware", "upstreamswap")
 				// Continue with expired token - backend will reject if needed
 			}
 
 			// 6. Inject access token
 			if tokens.AccessToken == "" {
-				logger.Warn("upstreamswap: access token is empty")
+				slog.Warn("Access token is empty",
+					"middleware", "upstreamswap")
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			injectToken(r, tokens.AccessToken)
-			logger.Debug("upstreamswap: injected upstream access token")
+			slog.Debug("Injected upstream access token",
+				"middleware", "upstreamswap")
 
 			next.ServeHTTP(w, r)
 		})

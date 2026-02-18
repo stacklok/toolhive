@@ -18,7 +18,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
-	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
@@ -27,8 +26,6 @@ import (
 func TestIntegrationListFiltering(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger for tests
-	logger.Initialize()
 	// Create a realistic Cedar authorizer with role-based policies
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{

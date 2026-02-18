@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -17,7 +18,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // ConfigType is the configuration type identifier for Cedar authorization.
@@ -308,15 +308,15 @@ func (a *Authorizer) IsAuthorized(
 	}
 
 	// Debug logging for authorization
-	logger.Debugf("Cedar authorization check - Principal: %s, Action: %s, Resource: %s",
-		req.Principal, req.Action, req.Resource)
-	logger.Debugf("Cedar context: %+v", req.Context)
+	slog.Debug("Cedar authorization check",
+		"principal", req.Principal, "action", req.Action, "resource", req.Resource)
+	slog.Debug("Cedar context", "context", req.Context)
 
 	// Check authorization
 	decision, diagnostic := cedar.Authorize(a.policySet, entityMap, req)
 
 	// Log the decision
-	logger.Debugf("Cedar decision: %v, diagnostic: %+v", decision, diagnostic)
+	slog.Debug("Cedar decision", "decision", decision, "diagnostic", diagnostic)
 
 	// Cedar's Authorize returns a Decision and a Diagnostic
 	// Check if the Diagnostic contains any errors

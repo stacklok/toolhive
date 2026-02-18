@@ -17,17 +17,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const wellKnownOAuthPath = "/.well-known/oauth-protected-resource"
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 func TestParseWWWAuthenticate(t *testing.T) {
 	t.Parallel()

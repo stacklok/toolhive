@@ -5,12 +5,11 @@ package remote
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // TokenPersister is a callback function that persists OAuth refresh tokens.
@@ -61,9 +60,9 @@ func (p *PersistingTokenSource) Token() (*oauth2.Token, error) {
 		// Refresh token changed, persist it
 		if err := p.persister(token.RefreshToken, token.Expiry); err != nil {
 			// Log the error but don't fail the token retrieval
-			logger.Warnf("Failed to persist refreshed OAuth token: %v", err)
+			slog.Warn("Failed to persist refreshed OAuth token", "error", err)
 		} else {
-			logger.Debugf("Successfully persisted refreshed OAuth token")
+			slog.Debug("Successfully persisted refreshed OAuth token")
 		}
 		p.lastToken = token
 	}

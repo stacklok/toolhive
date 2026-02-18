@@ -173,6 +173,13 @@
           "minItems": 1,
           "uniqueItems": true
         },
+        "tool_definitions": {
+          "type": "array",
+          "description": "Full MCP Tool definitions describing the tools available from this server, including name, description, inputSchema, and annotations",
+          "items": {
+            "type": "object"
+          }
+        },
         "transport": {
           "type": "string",
           "description": "Communication transport protocol used by the MCP server",
@@ -547,6 +554,13 @@
           },
           "minItems": 1,
           "uniqueItems": true
+        },
+        "tool_definitions": {
+          "type": "array",
+          "description": "Full MCP Tool definitions describing the tools available from this server, including name, description, inputSchema, and annotations",
+          "items": {
+            "type": "object"
+          }
         },
         "headers": {
           "type": "array",

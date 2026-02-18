@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -77,6 +78,9 @@ type BaseServerMetadata struct {
 	// Unlike the Description field (limited to 500 chars), this supports
 	// full Markdown and is intended for rich rendering on catalog pages.
 	Overview string `json:"overview,omitempty" yaml:"overview,omitempty"`
+	// ToolDefinitions contains full MCP Tool definitions describing the tools
+	// available from this server, including name, description, inputSchema, and annotations.
+	ToolDefinitions []mcp.Tool `json:"tool_definitions,omitempty" yaml:"tool_definitions,omitempty"`
 	// CustomMetadata allows for additional user-defined metadata
 	CustomMetadata map[string]any `json:"custom_metadata,omitempty" yaml:"custom_metadata,omitempty"`
 }
@@ -294,6 +298,8 @@ type ServerMetadata interface {
 	GetTags() []string
 	// GetOverview returns the longer Markdown-formatted description
 	GetOverview() string
+	// GetToolDefinitions returns the full MCP Tool definitions
+	GetToolDefinitions() []mcp.Tool
 	// GetCustomMetadata returns custom metadata
 	GetCustomMetadata() map[string]any
 	// IsRemote returns true if this is a remote server
@@ -390,6 +396,14 @@ func (i *ImageMetadata) GetOverview() string {
 		return ""
 	}
 	return i.Overview
+}
+
+// GetToolDefinitions returns the full MCP Tool definitions
+func (i *ImageMetadata) GetToolDefinitions() []mcp.Tool {
+	if i == nil {
+		return nil
+	}
+	return i.ToolDefinitions
 }
 
 // GetCustomMetadata returns custom metadata
@@ -501,6 +515,14 @@ func (r *RemoteServerMetadata) GetOverview() string {
 		return ""
 	}
 	return r.Overview
+}
+
+// GetToolDefinitions returns the full MCP Tool definitions
+func (r *RemoteServerMetadata) GetToolDefinitions() []mcp.Tool {
+	if r == nil {
+		return nil
+	}
+	return r.ToolDefinitions
 }
 
 // GetCustomMetadata returns custom metadata

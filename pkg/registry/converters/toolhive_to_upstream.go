@@ -191,18 +191,19 @@ func createRemotesFromRemoteMetadata(remoteMetadata *registry.RemoteServerMetada
 // using the ServerExtensions type to ensure field names stay in sync with the type definition.
 func createImageExtensions(imageMetadata *registry.ImageMetadata) map[string]interface{} {
 	ext := registry.ServerExtensions{
-		Status:         imageMetadata.Status,
-		Tier:           imageMetadata.Tier,
-		Tools:          imageMetadata.Tools,
-		Tags:           imageMetadata.Tags,
-		Overview:       imageMetadata.Overview,
-		Metadata:       imageMetadata.Metadata,
-		CustomMetadata: imageMetadata.CustomMetadata,
-		Permissions:    imageMetadata.Permissions,
-		Args:           imageMetadata.Args,
-		Provenance:     imageMetadata.Provenance,
-		DockerTags:     imageMetadata.DockerTags,
-		ProxyPort:      imageMetadata.ProxyPort,
+		Status:          imageMetadata.Status,
+		Tier:            imageMetadata.Tier,
+		Tools:           imageMetadata.Tools,
+		Tags:            imageMetadata.Tags,
+		Overview:        imageMetadata.Overview,
+		ToolDefinitions: imageMetadata.ToolDefinitions,
+		Metadata:        imageMetadata.Metadata,
+		CustomMetadata:  imageMetadata.CustomMetadata,
+		Permissions:     imageMetadata.Permissions,
+		Args:            imageMetadata.Args,
+		Provenance:      imageMetadata.Provenance,
+		DockerTags:      imageMetadata.DockerTags,
+		ProxyPort:       imageMetadata.ProxyPort,
 	}
 
 	// Default status to "active" if empty
@@ -223,15 +224,16 @@ func createImageExtensions(imageMetadata *registry.ImageMetadata) map[string]int
 // using the ServerExtensions type to ensure field names stay in sync with the type definition.
 func createRemoteExtensions(remoteMetadata *registry.RemoteServerMetadata) map[string]interface{} {
 	ext := registry.ServerExtensions{
-		Status:         remoteMetadata.Status,
-		Tier:           remoteMetadata.Tier,
-		Tools:          remoteMetadata.Tools,
-		Tags:           remoteMetadata.Tags,
-		Overview:       remoteMetadata.Overview,
-		Metadata:       remoteMetadata.Metadata,
-		CustomMetadata: remoteMetadata.CustomMetadata,
-		OAuthConfig:    remoteMetadata.OAuthConfig,
-		EnvVars:        remoteMetadata.EnvVars,
+		Status:          remoteMetadata.Status,
+		Tier:            remoteMetadata.Tier,
+		Tools:           remoteMetadata.Tools,
+		Tags:            remoteMetadata.Tags,
+		Overview:        remoteMetadata.Overview,
+		ToolDefinitions: remoteMetadata.ToolDefinitions,
+		Metadata:        remoteMetadata.Metadata,
+		CustomMetadata:  remoteMetadata.CustomMetadata,
+		OAuthConfig:     remoteMetadata.OAuthConfig,
+		EnvVars:         remoteMetadata.EnvVars,
 	}
 
 	// Default status to "active" if empty

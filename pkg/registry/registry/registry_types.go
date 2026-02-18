@@ -70,6 +70,10 @@ type BaseServerMetadata struct {
 	RepositoryURL string `json:"repository_url,omitempty" yaml:"repository_url,omitempty"`
 	// Tags are categorization labels for the server to aid in discovery and filtering
 	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	// Overview is a longer Markdown-formatted description for web display.
+	// Unlike the Description field (limited to 500 chars), this supports
+	// full Markdown and is intended for rich rendering on catalog pages.
+	Overview string `json:"overview,omitempty" yaml:"overview,omitempty"`
 	// CustomMetadata allows for additional user-defined metadata
 	CustomMetadata map[string]any `json:"custom_metadata,omitempty" yaml:"custom_metadata,omitempty"`
 }
@@ -283,6 +287,8 @@ type ServerMetadata interface {
 	GetRepositoryURL() string
 	// GetTags returns the server tags
 	GetTags() []string
+	// GetOverview returns the longer Markdown-formatted description
+	GetOverview() string
 	// GetCustomMetadata returns custom metadata
 	GetCustomMetadata() map[string]any
 	// IsRemote returns true if this is a remote server
@@ -363,6 +369,14 @@ func (i *ImageMetadata) GetTags() []string {
 		return nil
 	}
 	return i.Tags
+}
+
+// GetOverview returns the longer Markdown-formatted description
+func (i *ImageMetadata) GetOverview() string {
+	if i == nil {
+		return ""
+	}
+	return i.Overview
 }
 
 // GetCustomMetadata returns custom metadata
@@ -458,6 +472,14 @@ func (r *RemoteServerMetadata) GetTags() []string {
 		return nil
 	}
 	return r.Tags
+}
+
+// GetOverview returns the longer Markdown-formatted description
+func (r *RemoteServerMetadata) GetOverview() string {
+	if r == nil {
+		return ""
+	}
+	return r.Overview
 }
 
 // GetCustomMetadata returns custom metadata

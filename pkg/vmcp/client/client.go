@@ -9,13 +9,14 @@ package client
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -187,37 +188,35 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		identity: identity,
 	}
 
-	// Add size limit layer for DoS protection
-	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		resp, err := baseTransport.RoundTrip(req)
-		if err != nil {
-			return nil, err
-		}
-		// Wrap response body with size limit
-		resp.Body = struct {
-			io.Reader
-			io.Closer
-		}{
-			Reader: io.LimitReader(resp.Body, maxResponseSize),
-			Closer: resp.Body,
-		}
-		return resp, nil
-	})
-
-	// Create HTTP client with configured transport chain
-	// Set timeouts to prevent long-lived connections that require continuous listening
-	httpClient := &http.Client{
-		Transport: sizeLimitedTransport,
-		Timeout:   30 * time.Second, // Prevent hanging on connections
-	}
-
 	var c *client.Client
 
 	switch target.TransportType {
 	case "streamable-http", "streamable":
+		// "streamable" is a legacy alias for "streamable-http".
+		//
+		// For streamable-HTTP each MCP call is a single bounded HTTP
+		// request/response pair, so a per-response body size limit is safe.
+		sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			resp, err := baseTransport.RoundTrip(req)
+			if err != nil {
+				return nil, err
+			}
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.LimitReader(resp.Body, maxResponseSize),
+				Closer: resp.Body,
+			}
+			return resp, nil
+		})
+		httpClient := &http.Client{
+			Transport: sizeLimitedTransport,
+			Timeout:   30 * time.Second,
+		}
 		c, err = client.NewStreamableHttpClient(
 			target.BaseURL,
-			transport.WithHTTPTimeout(30*time.Second), // Set timeout instead of 0
+			transport.WithHTTPTimeout(30*time.Second),
 			transport.WithHTTPBasicClient(httpClient),
 		)
 		if err != nil {
@@ -225,6 +224,11 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		}
 
 	case "sse":
+		// For SSE the entire session is one long-lived HTTP response body.
+		// Applying io.LimitReader would silently terminate the stream after
+		// maxResponseSize cumulative bytes — not per-event — which is wrong.
+		// http.Client.Timeout is also omitted: it would kill the stream.
+		httpClient := &http.Client{Transport: baseTransport}
 		c, err = client.NewSSEMCPClient(
 			target.BaseURL,
 			transport.WithHTTPClient(httpClient),
@@ -382,34 +386,11 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
 }
 
-// convertContent converts mcp.Content to vmcp.Content.
-// This preserves the full content structure from backend responses.
+// convertContent converts a single mcp.Content item to vmcp.Content.
+// Delegates to the shared conversion package; kept here for backward compatibility
+// with tests that call it directly.
 func convertContent(content mcp.Content) vmcp.Content {
-	if textContent, ok := mcp.AsTextContent(content); ok {
-		return vmcp.Content{
-			Type: "text",
-			Text: textContent.Text,
-		}
-	}
-	if imageContent, ok := mcp.AsImageContent(content); ok {
-		return vmcp.Content{
-			Type:     "image",
-			Data:     imageContent.Data,
-			MimeType: imageContent.MIMEType,
-		}
-	}
-	if audioContent, ok := mcp.AsAudioContent(content); ok {
-		return vmcp.Content{
-			Type:     "audio",
-			Data:     audioContent.Data,
-			MimeType: audioContent.MIMEType,
-		}
-	}
-	// Handle embedded resources if needed
-	// Unknown content types are marked as "unknown" type with no data
-	slog.Warn("encountered unknown content type, marking as unknown content",
-		"type", fmt.Sprintf("%T", content))
-	return vmcp.Content{Type: "unknown"}
+	return conversion.ConvertMCPContent(content)
 }
 
 // ListCapabilities queries a backend for its MCP capabilities.
@@ -467,19 +448,19 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 
 	// Convert tools
 	for i, tool := range toolsResp.Tools {
-		// Convert ToolInputSchema to map[string]any
-		// The ToolInputSchema is a struct with Type, Properties, Required fields
-		inputSchema := map[string]any{
-			"type": tool.InputSchema.Type,
-		}
-		if tool.InputSchema.Properties != nil {
-			inputSchema["properties"] = tool.InputSchema.Properties
-		}
-		if len(tool.InputSchema.Required) > 0 {
-			inputSchema["required"] = tool.InputSchema.Required
-		}
-		if tool.InputSchema.Defs != nil {
-			inputSchema["$defs"] = tool.InputSchema.Defs
+		// Use a JSON round-trip to capture all schema fields (type, properties,
+		// required, $defs, additionalProperties, etc.) rather than enumerating
+		// them manually. This is forward-safe: any fields the SDK adds in future
+		// versions are preserved automatically.
+		inputSchema := make(map[string]any)
+		if b, err := json.Marshal(tool.InputSchema); err == nil {
+			if jsonErr := json.Unmarshal(b, &inputSchema); jsonErr != nil {
+				slog.Debug("Failed to decode tool input schema; using type-only fallback", "tool", tool.Name, "error", jsonErr)
+				inputSchema = map[string]any{"type": tool.InputSchema.Type}
+			}
+		} else {
+			slog.Debug("Failed to encode tool input schema; using type-only fallback", "tool", tool.Name, "error", err)
+			inputSchema = map[string]any{"type": tool.InputSchema.Type}
 		}
 
 		capabilities.Tools[i] = vmcp.Tool{
@@ -608,11 +589,8 @@ func (h *httpBackendClient) CallTool(
 		// Continue processing - we return the result with IsError flag and metadata preserved
 	}
 
-	// Convert MCP content to vmcp.Content array
-	contentArray := make([]vmcp.Content, len(result.Content))
-	for i, content := range result.Content {
-		contentArray[i] = convertContent(content)
-	}
+	// Convert MCP content to vmcp.Content array.
+	contentArray := conversion.ConvertMCPContents(result.Content)
 
 	// Check for structured content first (preferred for composite tool step chaining).
 	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
@@ -683,33 +661,8 @@ func (h *httpBackendClient) ReadResource(
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all resource contents
-	// MCP resources can have multiple contents (text or blob)
-	var data []byte
-	var mimeType string
-	for i, content := range result.Contents {
-		// Try to convert to TextResourceContents
-		if textContent, ok := mcp.AsTextResourceContents(content); ok {
-			data = append(data, []byte(textContent.Text)...)
-			if i == 0 && textContent.MIMEType != "" {
-				mimeType = textContent.MIMEType
-			}
-		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
-			// Blob is base64-encoded per MCP spec, decode it to bytes
-			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
-			if err != nil {
-				slog.Warn("failed to decode base64 blob from resource",
-					"resource", uri, "backend", target.WorkloadID, "error", err)
-				// Append raw blob as fallback
-				data = append(data, []byte(blobContent.Blob)...)
-			} else {
-				data = append(data, decoded...)
-			}
-			if i == 0 && blobContent.MIMEType != "" {
-				mimeType = blobContent.MIMEType
-			}
-		}
-	}
+	// Concatenate all resource content items into a single byte slice.
+	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
 
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
@@ -772,19 +725,20 @@ func (h *httpBackendClient) GetPrompt(
 		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all prompt messages into a single string
-	// MCP prompts return messages with role and content (Content interface)
-	var prompt string
+	// Concatenate all prompt messages into a single string.
+	// MCP prompts return messages with role and multi-modal content; only text
+	// chunks are captured (non-text content is silently discarded — Phase 1 limitation).
+	var sb strings.Builder
 	for _, msg := range result.Messages {
 		if msg.Role != "" {
-			prompt += fmt.Sprintf("[%s] ", msg.Role)
+			fmt.Fprintf(&sb, "[%s] ", msg.Role)
 		}
-		// Try to convert content to TextContent
 		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
-			prompt += textContent.Text + "\n"
+			sb.WriteString(textContent.Text)
+			sb.WriteByte('\n')
 		}
-		// TODO: Handle other content types (image, audio, resource)
 	}
+	prompt := sb.String()
 
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)

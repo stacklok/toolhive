@@ -4,28 +4,28 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 // Helper functions to encapsulate conversion logic patterns
 
-// convertToolInputSchema simulates the conversion logic from client.go:138-151
+// convertToolInputSchema mirrors the JSON round-trip used in ListCapabilities.
 func convertToolInputSchema(schema mcp.ToolInputSchema) map[string]any {
-	inputSchema := map[string]any{
-		"type": schema.Type,
+	result := make(map[string]any)
+	if b, err := json.Marshal(schema); err == nil {
+		if jsonErr := json.Unmarshal(b, &result); jsonErr != nil {
+			return map[string]any{"type": schema.Type}
+		}
+	} else {
+		return map[string]any{"type": schema.Type}
 	}
-	if schema.Properties != nil {
-		inputSchema["properties"] = schema.Properties
-	}
-	if len(schema.Required) > 0 {
-		inputSchema["required"] = schema.Required
-	}
-	if schema.Defs != nil {
-		inputSchema["$defs"] = schema.Defs
-	}
-	return inputSchema
+	return result
 }
 
 // convertContentToMap simulates the conversion logic from conversion.ContentArrayToMap
@@ -54,31 +54,26 @@ func convertContentToMap(contents []mcp.Content) map[string]any {
 	return resultMap
 }
 
-// convertResourceContents simulates the conversion logic from client.go:276-289
+// convertResourceContents delegates to conversion.ConcatenateResourceContents,
+// returning only the data bytes for backward compatibility with existing tests.
 func convertResourceContents(contents []mcp.ResourceContents) []byte {
-	var data []byte
-	for _, content := range contents {
-		if textContent, ok := mcp.AsTextResourceContents(content); ok {
-			data = append(data, []byte(textContent.Text)...)
-		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
-			data = append(data, []byte(blobContent.Blob)...)
-		}
-	}
+	data, _ := conversion.ConcatenateResourceContents(contents)
 	return data
 }
 
-// convertPromptMessages simulates the conversion logic from client.go:315-327
+// convertPromptMessages simulates the conversion logic from client.go GetPrompt.
 func convertPromptMessages(messages []mcp.PromptMessage) string {
-	var prompt string
+	var sb strings.Builder
 	for _, msg := range messages {
 		if msg.Role != "" {
-			prompt += "[" + string(msg.Role) + "] "
+			fmt.Fprintf(&sb, "[%s] ", msg.Role)
 		}
 		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
-			prompt += textContent.Text + "\n"
+			sb.WriteString(textContent.Text)
+			sb.WriteByte('\n')
 		}
 	}
-	return prompt
+	return sb.String()
 }
 
 // convertPromptArguments simulates the conversion logic from client.go:306-309

@@ -40,7 +40,11 @@ func TestToolInputSchemaConversion(t *testing.T) {
 
 		assert.Equal(t, "object", inputSchema["type"])
 		assert.NotNil(t, inputSchema["properties"])
-		assert.Equal(t, []string{"title"}, inputSchema["required"])
+		// JSON round-trip returns []interface{} for arrays, not []string.
+		require.Contains(t, inputSchema, "required")
+		required, ok := inputSchema["required"].([]interface{})
+		require.True(t, ok, "required should be []interface{}")
+		assert.Equal(t, []interface{}{"title"}, required)
 
 		props := inputSchema["properties"].(map[string]any)
 		assert.Contains(t, props, "title")
@@ -84,13 +88,18 @@ func TestToolInputSchemaConversion(t *testing.T) {
 			InputSchema: mcp.ToolInputSchema{
 				Type:       "object",
 				Properties: map[string]any{"optional_param": map[string]any{"type": "string"}},
-				Required:   []string{},
+				Required:   nil,
 			},
 		}
 
 		inputSchema := convertToolInputSchema(sdkTool.InputSchema)
 
-		assert.NotContains(t, inputSchema, "required")
+		// mcp-go's custom MarshalJSON always emits "required" (as [] when empty),
+		// so the key is present but the slice is empty.
+		require.Contains(t, inputSchema, "required")
+		required, ok := inputSchema["required"].([]interface{})
+		require.True(t, ok, "required should be []interface{}")
+		assert.Empty(t, required)
 	})
 }
 
@@ -169,9 +178,11 @@ func TestResourceContentsHandling(t *testing.T) {
 		assert.Equal(t, []byte("Resource text content"), data)
 	})
 
-	t.Run("extracts blob resource content", func(t *testing.T) {
+	t.Run("extracts blob resource content (base64 decoded)", func(t *testing.T) {
 		t.Parallel()
 
+		// "YmFzZTY0ZGF0YQ==" is the base64 encoding of "base64data".
+		// The function decodes it, so we expect the decoded bytes.
 		resourceResult := &mcp.ReadResourceResult{
 			Contents: []mcp.ResourceContents{
 				mcp.BlobResourceContents{
@@ -183,7 +194,7 @@ func TestResourceContentsHandling(t *testing.T) {
 		}
 
 		data := convertResourceContents(resourceResult.Contents)
-		assert.Equal(t, []byte("YmFzZTY0ZGF0YQ=="), data)
+		assert.Equal(t, []byte("base64data"), data)
 	})
 
 	t.Run("concatenates multiple resource contents", func(t *testing.T) {

@@ -5,13 +5,12 @@ package optimizer
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	sqlitestore "github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/sqlite_store"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
@@ -21,6 +20,18 @@ import (
 // It is defined in the internal/types package and aliased here so that
 // external consumers continue to use optimizer.ToolStore.
 type ToolStore = types.ToolStore
+
+// EmbeddingClient generates vector embeddings from text.
+// It is defined in the internal/types package and aliased here so that
+// external consumers can reference the type.
+type EmbeddingClient = types.EmbeddingClient
+
+// NewEmbeddingClient creates an EmbeddingClient from the given optimizer
+// configuration. Returns (nil, nil) if cfg is nil or no embedding service
+// is configured, meaning only FTS5 full-text search will be used.
+func NewEmbeddingClient(cfg *vmcpconfig.OptimizerConfig) (EmbeddingClient, error) {
+	return similarity.NewEmbeddingClient(cfg)
+}
 
 // InMemoryToolStore implements ToolStore using an in-memory map with
 // case-insensitive substring matching. Thread-safe via sync.RWMutex.
@@ -95,48 +106,9 @@ func (s *InMemoryToolStore) Search(_ context.Context, query string, allowedTools
 	return matches, nil
 }
 
-// SQLiteStoreConfig configures the SQLite-backed ToolStore.
-// When nil is passed to NewSQLiteToolStore, only FTS5 search is used.
-type SQLiteStoreConfig struct {
-	// EmbeddingDimension enables semantic search with deterministic fake
-	// embeddings of the given dimensionality. Zero disables semantic search.
-	// Mutually exclusive with EmbeddingServiceURL.
-	EmbeddingDimension int
-
-	// EmbeddingServiceURL is the full URL of the TEI embedding endpoint
-	// (e.g. "http://my-embedding.ml.svc.cluster.local:8080").
-	// When set, a real TEI client is created for semantic search.
-	// Mutually exclusive with EmbeddingDimension.
-	EmbeddingServiceURL string
-
-	// EmbeddingServiceTimeout is the HTTP request timeout for embedding calls.
-	// Zero uses the TEI client default (30s).
-	EmbeddingServiceTimeout time.Duration
-}
-
 // NewSQLiteToolStore creates a new ToolStore backed by SQLite for search.
 // The store uses an in-memory SQLite database with shared cache for concurrent access.
-//
-// Embedding client selection (mutually exclusive, checked in order):
-//   - EmbeddingService set: creates a real TEI HTTP client for semantic search
-//   - EmbeddingDimension > 0: creates a deterministic fake embedding client
-//   - Neither: only FTS5 full-text search is used (no semantic search)
-func NewSQLiteToolStore(cfg *SQLiteStoreConfig) (ToolStore, error) {
-	var embClient types.EmbeddingClient
-	if cfg != nil {
-		switch {
-		case cfg.EmbeddingServiceURL != "":
-			var err error
-			embClient, err = similarity.NewTEIClient(similarity.TEIClientConfig{
-				BaseURL: cfg.EmbeddingServiceURL,
-				Timeout: cfg.EmbeddingServiceTimeout,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to create TEI embedding client: %w", err)
-			}
-		case cfg.EmbeddingDimension > 0:
-			embClient = similarity.NewFakeEmbeddingClient(cfg.EmbeddingDimension)
-		}
-	}
-	return sqlitestore.NewSQLiteToolStore(embClient)
+// If embeddingClient is nil, only FTS5 full-text search is used.
+func NewSQLiteToolStore(embeddingClient EmbeddingClient) (ToolStore, error) {
+	return sqlitestore.NewSQLiteToolStore(embeddingClient)
 }

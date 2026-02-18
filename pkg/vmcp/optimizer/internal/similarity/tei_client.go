@@ -11,6 +11,9 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
 const (
@@ -21,37 +24,35 @@ const (
 	embedPath = "/embed"
 )
 
-// TEIClientConfig configures the TEI embedding client.
-type TEIClientConfig struct {
-	// BaseURL is the full URL of the TEI embedding service
-	// (e.g. "http://my-embedding.ml.svc.cluster.local:8080").
-	// Required.
-	BaseURL string
-
-	// Timeout is the HTTP request timeout. Defaults to 30s.
-	Timeout time.Duration
+// NewEmbeddingClient creates an EmbeddingClient from the given optimizer
+// configuration. It returns (nil, nil) if cfg is nil or no embedding service
+// URL is configured, meaning semantic search will be disabled.
+func NewEmbeddingClient(cfg *vmcpconfig.OptimizerConfig) (types.EmbeddingClient, error) {
+	if cfg == nil || cfg.EmbeddingService == "" {
+		return nil, nil
+	}
+	return newTEIClient(cfg.EmbeddingService, time.Duration(cfg.EmbeddingServiceTimeout))
 }
 
-// TEIClient implements types.EmbeddingClient by calling the HuggingFace
+// teiClient implements types.EmbeddingClient by calling the HuggingFace
 // Text Embeddings Inference (TEI) HTTP API.
-type TEIClient struct {
+type teiClient struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-// NewTEIClient creates a new TEI embedding client that calls the specified endpoint.
-func NewTEIClient(cfg TEIClientConfig) (*TEIClient, error) {
-	if cfg.BaseURL == "" {
+// newTEIClient creates a new TEI embedding client that calls the specified endpoint.
+func newTEIClient(baseURL string, timeout time.Duration) (*teiClient, error) {
+	if baseURL == "" {
 		return nil, fmt.Errorf("TEI BaseURL is required")
 	}
 
-	timeout := cfg.Timeout
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
 
-	return &TEIClient{
-		baseURL: cfg.BaseURL,
+	return &teiClient{
+		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
@@ -60,12 +61,16 @@ func NewTEIClient(cfg TEIClientConfig) (*TEIClient, error) {
 
 // embedRequest is the JSON body sent to the TEI /embed endpoint.
 type embedRequest struct {
-	Inputs   []string `json:"inputs"`
-	Truncate bool     `json:"truncate"`
+	Inputs []string `json:"inputs"`
+	// Truncate tells the TEI server to silently truncate input texts that
+	// exceed the model's maximum token length instead of returning an error.
+	// We always set this to true because tool descriptions may exceed model
+	// limits and we prefer embedding a truncated description over a request failure.
+	Truncate bool `json:"truncate"`
 }
 
 // Embed returns a vector embedding for the given text.
-func (c *TEIClient) Embed(ctx context.Context, text string) ([]float32, error) {
+func (c *teiClient) Embed(ctx context.Context, text string) ([]float32, error) {
 	results, err := c.EmbedBatch(ctx, []string{text})
 	if err != nil {
 		return nil, err
@@ -77,7 +82,7 @@ func (c *TEIClient) Embed(ctx context.Context, text string) ([]float32, error) {
 }
 
 // EmbedBatch returns vector embeddings for multiple texts in a single request.
-func (c *TEIClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+func (c *teiClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -122,6 +127,6 @@ func (c *TEIClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32
 }
 
 // Close is a no-op for the TEI client.
-func (*TEIClient) Close() error {
+func (*teiClient) Close() error {
 	return nil
 }

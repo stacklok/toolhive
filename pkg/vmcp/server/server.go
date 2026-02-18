@@ -709,10 +709,12 @@ func (s *Server) Stop(ctx context.Context) error {
 // initOptimizer creates the optimizer tool store and wires the OptimizerFactory.
 // It registers the store's Close method as a shutdown function.
 func (s *Server) initOptimizer() error {
-	store, err := optimizer.NewSQLiteToolStore(&optimizer.SQLiteStoreConfig{
-		EmbeddingServiceURL:     s.config.OptimizerConfig.EmbeddingService,
-		EmbeddingServiceTimeout: time.Duration(s.config.OptimizerConfig.EmbeddingServiceTimeout),
-	})
+	embClient, err := optimizer.NewEmbeddingClient(s.config.OptimizerConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create embedding client: %w", err)
+	}
+
+	store, err := optimizer.NewSQLiteToolStore(embClient)
 	if err != nil {
 		return fmt.Errorf("failed to create optimizer store: %w", err)
 	}

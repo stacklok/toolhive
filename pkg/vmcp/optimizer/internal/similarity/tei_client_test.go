@@ -12,45 +12,60 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-func TestNewTEIClient(t *testing.T) {
+func TestNewEmbeddingClient(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		cfg     TEIClientConfig
+		cfg     *vmcpconfig.OptimizerConfig
+		wantNil bool
 		wantErr string
 	}{
 		{
-			name:    "empty base URL",
-			cfg:     TEIClientConfig{},
-			wantErr: "TEI BaseURL is required",
+			name:    "nil config returns nil",
+			cfg:     nil,
+			wantNil: true,
 		},
 		{
-			name: "valid config with URL",
-			cfg:  TEIClientConfig{BaseURL: "http://my-embedding:8080"},
+			name:    "empty embedding service returns nil",
+			cfg:     &vmcpconfig.OptimizerConfig{},
+			wantNil: true,
+		},
+		{
+			name: "valid URL creates client",
+			cfg:  &vmcpconfig.OptimizerConfig{EmbeddingService: "http://my-embedding:8080"},
 		},
 		{
 			name: "URL with namespace",
-			cfg:  TEIClientConfig{BaseURL: "http://my-embedding.ml.svc.cluster.local:8080"},
+			cfg:  &vmcpconfig.OptimizerConfig{EmbeddingService: "http://my-embedding.ml.svc.cluster.local:8080"},
 		},
 		{
 			name: "custom timeout",
-			cfg:  TEIClientConfig{BaseURL: "http://my-embedding:8080", Timeout: 5 * time.Second},
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:        "http://my-embedding:8080",
+				EmbeddingServiceTimeout: vmcpconfig.Duration(5 * time.Second),
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			client, err := NewTEIClient(tt.cfg)
+			client, err := NewEmbeddingClient(tt.cfg)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				require.Nil(t, client)
 			} else {
 				require.NoError(t, err)
-				require.NotNil(t, client)
+				if tt.wantNil {
+					require.Nil(t, client)
+				} else {
+					require.NotNil(t, client)
+				}
 			}
 		})
 	}
@@ -176,17 +191,17 @@ func TestTEIClient_EmbedBatch(t *testing.T) {
 func TestTEIClient_Close(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewTEIClient(TEIClientConfig{BaseURL: "http://my-embedding:8080"})
+	client, err := newTEIClient("http://my-embedding:8080", 0)
 	require.NoError(t, err)
 	require.NoError(t, client.Close())
 }
 
-// newTestTEIClient creates a TEIClient pointing at the given URL for testing.
-// This bypasses NewTEIClient since test servers have dynamic URLs that don't
+// newTestTEIClient creates a teiClient pointing at the given URL for testing.
+// This bypasses newTEIClient since test servers have dynamic URLs that don't
 // map to a Kubernetes service name.
-func newTestTEIClient(t *testing.T, baseURL string) *TEIClient {
+func newTestTEIClient(t *testing.T, baseURL string) *teiClient {
 	t.Helper()
-	return &TEIClient{
+	return &teiClient{
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: defaultTimeout},
 	}

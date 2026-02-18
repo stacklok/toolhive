@@ -144,6 +144,7 @@ func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) 
 
 	// Check cache first
 	if caps := m.getCachedCapabilities(cacheKey); caps != nil {
+		//nolint:gosec // G706: identity.Subject and cacheKey are internal identifiers for diagnostics
 		slog.Debug("cache hit for user", "user", identity.Subject, "key", cacheKey)
 		return caps, nil
 	}
@@ -213,6 +214,7 @@ func (m *DefaultManager) getCachedCapabilities(key string) *aggregator.Aggregate
 	if m.registry != nil {
 		currentVersion := m.registry.Version()
 		if entry.registryVersion != currentVersion {
+			//nolint:gosec // G706: version numbers are internal metadata for diagnostics
 			slog.Debug("cache entry stale", "current_version", currentVersion, "entry_version", entry.registryVersion)
 			return nil
 		}

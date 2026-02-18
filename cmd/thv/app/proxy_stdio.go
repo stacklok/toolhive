@@ -47,7 +47,7 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	if stdioWorkload.URL == "" || stdioWorkload.TransportType == "" {
 		return fmt.Errorf("workload %q does not have connection details (is it running?)", workloadName)
 	}
-	slog.Debug(fmt.Sprintf("Starting stdio proxy for workload=%q", workloadName))
+	slog.Debug("starting stdio proxy", "workload", workloadName)
 
 	bridge, err := transport.NewStdioBridge(workloadName, stdioWorkload.URL, stdioWorkload.TransportType)
 	if err != nil {

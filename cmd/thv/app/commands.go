@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/desktop"
 	"github.com/stacklok/toolhive/pkg/updates"
 )
@@ -32,6 +33,14 @@ container-based isolation for running MCP servers.`,
 		}
 	},
 	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		// Re-initialize logger now that cobra has parsed flags and viper has
+		// the correct value for "debug".
+		var opts []logging.Option
+		if viper.GetBool("debug") {
+			opts = append(opts, logging.WithLevel(slog.LevelDebug))
+		}
+		slog.SetDefault(logging.New(opts...))
+
 		// Check for desktop app conflict
 		return desktop.ValidateDesktopAlignment()
 	},

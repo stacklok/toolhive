@@ -389,28 +389,36 @@ func (r *VirtualMCPServer) Validate() error {
 	return r.validateEmbeddingServer()
 }
 
-// validateEmbeddingServer validates EmbeddingServerRef configuration.
+// validateEmbeddingServer validates EmbeddingServerRef and Optimizer configuration.
 // Rules:
-// - If config.optimizer is set, embeddingServerRef must be set
-// - If embeddingServerRef is set, config.optimizer must be set
 // - embeddingServerRef.name must be non-empty when ref is provided
+// - optimizer requires either embeddingServerRef or a manually set embeddingService
+// - if embeddingServerRef is set without optimizer, auto-populate optimizer with defaults
+//
+// The controller handles the remaining cases at runtime (event emission, URL population).
 func (r *VirtualMCPServer) validateEmbeddingServer() error {
-	hasRef := r.Spec.EmbeddingServerRef != nil
-	hasOptimizer := r.Spec.Config.Optimizer != nil
-
-	// If optimizer is set, embeddingServerRef must be set
-	if hasOptimizer && !hasRef {
-		return fmt.Errorf("spec.config.optimizer requires spec.embeddingServerRef to be set")
-	}
-
-	// If embeddingServerRef is set, optimizer must be set
-	if hasRef && !hasOptimizer {
-		return fmt.Errorf("spec.embeddingServerRef requires spec.config.optimizer to be set")
-	}
-
 	// Validate ref name is non-empty
-	if hasRef && r.Spec.EmbeddingServerRef.Name == "" {
+	if r.Spec.EmbeddingServerRef != nil && r.Spec.EmbeddingServerRef.Name == "" {
 		return fmt.Errorf("spec.embeddingServerRef.name is required")
+	}
+
+	hasOptimizer := r.Spec.Config.Optimizer != nil
+	hasRef := r.Spec.EmbeddingServerRef != nil
+	hasManualService := hasOptimizer && r.Spec.Config.Optimizer.EmbeddingService != ""
+
+	// Optimizer configured without any embedding source is an error.
+	// The user must either set embeddingServerRef or manually set optimizer.embeddingService.
+	if hasOptimizer && !hasRef && !hasManualService {
+		return fmt.Errorf(
+			"spec.config.optimizer requires an embedding service: " +
+				"set spec.embeddingServerRef (recommended) or spec.config.optimizer.embeddingService")
+	}
+
+	// EmbeddingServerRef is set but optimizer is not configured: auto-populate
+	// optimizer with default values so the embedding server is actually used.
+	// The controller emits a Kubernetes event for this case.
+	if hasRef && !hasOptimizer {
+		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
 	}
 
 	return nil

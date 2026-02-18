@@ -1846,7 +1846,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			expectedURL: "http://shared-embedding.default.svc.cluster.local:9090",
 		},
 		{
-			name: "no embedding server leaves EmbeddingService empty",
+			name: "ref without optimizer auto-populates optimizer with defaults",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-vmcp",
@@ -1854,13 +1854,17 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{
-						Group:     testGroup,
-						Optimizer: &vmcpconfig.OptimizerConfig{},
+						Group: testGroup,
+						// No Optimizer — validation auto-populates it when ref is set
 					},
-					// No EmbeddingServer or EmbeddingServerRef
+					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+						Name: "shared-embedding",
+					},
 				},
 			},
-			expectedURL: "",
+			esName:      "shared-embedding",
+			esPort:      customPort,
+			expectedURL: "http://shared-embedding.default.svc.cluster.local:9090",
 		},
 	}
 
@@ -1918,7 +1922,13 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testGroup)
 			require.NoError(t, err)
 
-			err = reconciler.ensureVmcpConfigConfigMap(ctx, tt.vmcp, workloadNames)
+			// Run validation (mirrors controller flow: validateSpec → ensureVmcpConfigConfigMap).
+			// Validate() may auto-populate optimizer defaults when embeddingServerRef is set.
+			err = tt.vmcp.Validate()
+			require.NoError(t, err)
+
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err = reconciler.ensureVmcpConfigConfigMap(ctx, tt.vmcp, workloadNames, statusManager)
 			require.NoError(t, err)
 
 			// Read back the ConfigMap and parse the config
@@ -1933,9 +1943,11 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
 			require.NoError(t, err)
 
-			require.NotNil(t, config.Optimizer, "Optimizer config should be present")
-			assert.Equal(t, tt.expectedURL, config.Optimizer.EmbeddingService,
-				"EmbeddingService should contain the full base URL from EmbeddingServer Status.URL")
+			if tt.expectedURL != "" {
+				require.NotNil(t, config.Optimizer, "Optimizer config should be present")
+				assert.Equal(t, tt.expectedURL, config.Optimizer.EmbeddingService,
+					"EmbeddingService should contain the full base URL from EmbeddingServer Status.URL")
+			}
 		})
 	}
 }

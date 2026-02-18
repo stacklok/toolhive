@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
@@ -377,6 +378,103 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 				if tt.errMsg != "" {
 					assert.Contains(t, err.Error(), tt.errMsg)
 				}
+			}
+		})
+	}
+}
+
+func TestValidateEmbeddingServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		server          *VirtualMCPServer
+		expectError     bool
+		errContains     string
+		expectOptimizer bool
+	}{
+		{
+			name: "ref_without_optimizer_auto_populates_defaults",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{Group: "test-group"},
+					EmbeddingServerRef: &EmbeddingServerRef{
+						Name: "my-embedding",
+					},
+				},
+			},
+			expectOptimizer: true,
+		},
+		{
+			name: "ref_with_optimizer_keeps_existing",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{
+						Group:     "test-group",
+						Optimizer: &config.OptimizerConfig{},
+					},
+					EmbeddingServerRef: &EmbeddingServerRef{
+						Name: "my-embedding",
+					},
+				},
+			},
+			expectOptimizer: true,
+		},
+		{
+			name: "optimizer_without_ref_or_service_errors",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{
+						Group:     "test-group",
+						Optimizer: &config.OptimizerConfig{},
+					},
+				},
+			},
+			expectError: true,
+			errContains: "spec.config.optimizer requires an embedding service",
+		},
+		{
+			name: "empty_ref_name_errors",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config:             config.Config{Group: "test-group"},
+					EmbeddingServerRef: &EmbeddingServerRef{Name: ""},
+				},
+			},
+			expectError: true,
+			errContains: "spec.embeddingServerRef.name is required",
+		},
+		{
+			name: "no_ref_no_optimizer_succeeds",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{Group: "test-group"},
+				},
+			},
+			expectOptimizer: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.server.Validate()
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+			require.NoError(t, err)
+
+			if tt.expectOptimizer {
+				assert.NotNil(t, tt.server.Spec.Config.Optimizer,
+					"Optimizer should be populated after validation")
+			} else {
+				assert.Nil(t, tt.server.Spec.Config.Optimizer,
+					"Optimizer should remain nil")
 			}
 		})
 	}

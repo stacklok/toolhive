@@ -14,35 +14,39 @@ import (
 )
 
 // isEmbeddingServerReady checks whether the referenced EmbeddingServer
-// is running and ready. If no embedding server is configured, returns true (no gate).
+// is running and ready. Returns a non-nil *string with the URL when ready.
+// Returns nil if no embedding server is configured (no gate).
+// The caller should check if vmcp.Spec.EmbeddingServerRef != nil && result == nil
+// to detect the "configured but not ready" case that requires requeue.
 func (r *VirtualMCPServerReconciler) isEmbeddingServerReady(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) (bool, string, error) {
+) (*string, error) {
 	name := embeddingServerNameForVMCP(vmcp)
 	if name == "" {
-		return true, "", nil // No embedding server configured, skip check
+		return nil, nil // No embedding server configured, skip check
 	}
 
 	es := &mcpv1alpha1.EmbeddingServer{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: vmcp.Namespace}, es)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return false, "", nil // Informer cache may not have caught up yet
+			return nil, nil // Informer cache may not have caught up yet
 		}
-		return false, "", fmt.Errorf("failed to get EmbeddingServer %s: %w", name, err)
+		return nil, fmt.Errorf("failed to get EmbeddingServer %s: %w", name, err)
 	}
 
 	if es.Status.Phase == mcpv1alpha1.EmbeddingServerPhaseRunning && es.Status.ReadyReplicas > 0 {
-		return true, es.Status.URL, nil
+		url := es.Status.URL
+		return &url, nil
 	}
 
 	// Propagate failure so the VirtualMCPServer surfaces it instead of staying Pending
 	if es.Status.Phase == mcpv1alpha1.EmbeddingServerPhaseFailed {
-		return false, "", fmt.Errorf("EmbeddingServer %s has failed", name)
+		return nil, fmt.Errorf("EmbeddingServer %s has failed", name)
 	}
 
-	return false, "", nil
+	return nil, nil // Not ready yet
 }
 
 // resolveEmbeddingServiceURL looks up the referenced EmbeddingServer CR

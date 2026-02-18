@@ -128,9 +128,13 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
 	// Run all pre-reconciliation validations.
-	// Returns an error when validation failed. Returns nil to continue.
-	if err := r.runValidations(ctx, vmcp, statusManager); err != nil {
+	// Returns (true, nil) to continue, (false, nil) when validation failed but
+	// should not requeue (user must fix spec), or (false, err) for transient errors
+	// that should trigger requeue.
+	if cont, err := r.runValidations(ctx, vmcp, statusManager); err != nil {
 		return ctrl.Result{}, err
+	} else if !cont {
+		return ctrl.Result{}, nil
 	}
 
 	// Ensure all resources
@@ -262,26 +266,31 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 }
 
 // runValidations runs all pre-reconciliation validations (PodTemplateSpec, GroupRef,
-// CompositeToolRefs, EmbeddingServerRef). Returns an error when validation failed.
-// Returns nil to continue.
+// CompositeToolRefs, EmbeddingServerRef).
+// Returns (true, nil) to continue reconciliation.
+// Returns (false, nil) for spec validation errors that should NOT trigger requeue
+// (user must fix the spec; next reconciliation is triggered by spec changes).
+// Returns (false, error) for transient errors that should trigger requeue.
 func (r *VirtualMCPServerReconciler) runValidations(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) error {
+) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	// Validate spec configuration early (schema-level validation from types.go)
+	// Validate spec configuration early (schema-level validation from types.go).
+	// Don't requeue on validation errors — user must fix spec.
 	if err := r.validateSpec(ctx, vmcp, statusManager); err != nil {
-		return err
+		return false, nil
 	}
 
-	// Validate PodTemplateSpec early - before other validations
+	// Validate PodTemplateSpec early - before other validations.
+	// Don't requeue — user must fix the PodTemplateSpec.
 	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp, statusManager) {
 		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
 			ctxLogger.Error(err, "Failed to apply status updates after PodTemplateSpec validation error")
 		}
-		return fmt.Errorf("PodTemplateSpec validation failed")
+		return false, nil
 	}
 
 	// Validate GroupRef
@@ -289,7 +298,7 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after GroupRef validation error")
 		}
-		return err
+		return false, err
 	}
 
 	// Validate CompositeToolRefs
@@ -297,7 +306,7 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after CompositeToolRefs validation error")
 		}
-		return err
+		return false, err
 	}
 
 	// Validate EmbeddingServerRef (when using reference mode)
@@ -306,11 +315,11 @@ func (r *VirtualMCPServerReconciler) runValidations(
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 				ctxLogger.Error(applyErr, "Failed to apply status updates after EmbeddingServerRef validation error")
 			}
-			return err
+			return false, err
 		}
 	}
 
-	return nil
+	return true, nil
 }
 
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
@@ -543,9 +552,12 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// Check EmbeddingServer readiness before proceeding to Deployment.
 	// RequeueAfter provides a safety net in case the Watches() events
 	// are missed (e.g., EmbeddingServer controller not running).
-	if ready, _, err := r.isEmbeddingServerReady(ctx, vmcp); err != nil {
+	esURL, err := r.isEmbeddingServerReady(ctx, vmcp)
+	if err != nil {
 		return ctrl.Result{}, err
-	} else if !ready {
+	}
+	// EmbeddingServer is configured but not yet ready — requeue
+	if esURL == nil && vmcp.Spec.EmbeddingServerRef != nil {
 		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
 		statusManager.SetMessage("Waiting for EmbeddingServer to become ready")
 		statusManager.SetEmbeddingServerReadyCondition(
@@ -557,7 +569,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	}
 
 	// If an embedding server is configured and ready, set the condition
-	if embeddingServerNameForVMCP(vmcp) != "" {
+	if esURL != nil {
 		statusManager.SetEmbeddingServerReadyCondition(
 			mcpv1alpha1.ConditionReasonEmbeddingServerReady,
 			"EmbeddingServer is ready",

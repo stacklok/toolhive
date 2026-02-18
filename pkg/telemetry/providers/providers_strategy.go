@@ -6,6 +6,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"go.opentelemetry.io/otel/metric"
@@ -15,7 +16,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/telemetry/providers/otlp"
 	"github.com/stacklok/toolhive/pkg/telemetry/providers/prometheus"
 )
@@ -38,7 +38,7 @@ func (*NoOpTracerStrategy) CreateTracerProvider(
 	_ Config,
 	_ *resource.Resource,
 ) (trace.TracerProvider, func(context.Context) error, error) {
-	logger.Debugf("Creating no-op tracer provider")
+	slog.Debug("creating no-op tracer provider")
 	return tracenoop.NewTracerProvider(), nil, nil
 }
 
@@ -52,8 +52,10 @@ func (*OTLPTracerStrategy) CreateTracerProvider(
 	config Config,
 	res *resource.Resource,
 ) (trace.TracerProvider, func(context.Context) error, error) {
-	logger.Debugf("Creating OTLP tracer provider for endpoint: %s with sampling rate: %.2f",
-		config.OTLPEndpoint, config.SamplingRate)
+	//nolint:gosec // G706: OTLP endpoint from config
+	slog.Debug("creating OTLP tracer provider",
+		"endpoint", config.OTLPEndpoint,
+		"sampling_rate", config.SamplingRate)
 
 	otlpConfig := otlp.Config{
 		Endpoint:     config.OTLPEndpoint,
@@ -91,7 +93,7 @@ func (*NoOpMeterStrategy) CreateMeterProvider(
 	_ Config,
 	_ *resource.Resource,
 ) (*MeterResult, error) {
-	logger.Debugf("Creating no-op meter provider")
+	slog.Debug("creating no-op meter provider")
 	return &MeterResult{
 		MeterProvider:     noop.NewMeterProvider(),
 		PrometheusHandler: nil,
@@ -117,7 +119,9 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 
 	// Add OTLP reader if enabled
 	if s.EnableOTLP {
-		logger.Debugf("Adding OTLP metrics reader for endpoint: %s", config.OTLPEndpoint)
+		//nolint:gosec // G706: OTLP endpoint from config
+		slog.Debug("adding OTLP metrics reader",
+			"endpoint", config.OTLPEndpoint)
 
 		otlpConfig := otlp.Config{
 			Endpoint:     config.OTLPEndpoint,
@@ -135,7 +139,7 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 
 	// Add Prometheus reader if enabled
 	if s.EnablePrometheus {
-		logger.Debugf("Adding Prometheus metrics reader")
+		slog.Debug("adding Prometheus metrics reader")
 		promConfig := prometheus.Config{
 			EnableMetricsPath:     true,
 			IncludeRuntimeMetrics: true,
@@ -193,7 +197,7 @@ func (s *StrategySelector) SelectTracerStrategy() TracerStrategy {
 
 	// Log informational message when endpoint is configured but tracing is disabled
 	if hasEndpoint && !tracingEnabled {
-		logger.Debugf("OTLP endpoint configured but tracing is disabled")
+		slog.Debug("OTLP endpoint configured but tracing is disabled")
 	}
 
 	return &NoOpTracerStrategy{}

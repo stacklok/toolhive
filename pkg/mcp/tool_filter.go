@@ -9,10 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -275,7 +275,8 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 					(*toolCallRequest.Params)["name"] = fix.Name()
 					bodyBytes, err = json.Marshal(toolCallRequest)
 					if err != nil {
-						logger.Errorf("Error marshalling tool call request: %v", err)
+						slog.Error("error marshalling tool call request",
+							"error", err)
 						next.ServeHTTP(w, r)
 						return
 					}
@@ -295,7 +296,8 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 
 				// This should never happen, but we handle it just in case.
 				default:
-					logger.Errorf("Error processing tool call of a filtered tool: %v", err)
+					slog.Error("error processing tool call of a filtered tool",
+						"error", err)
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -332,7 +334,7 @@ func (rw *toolFilterWriter) Flush() {
 		if mimeType == "" {
 			_, err := rw.ResponseWriter.Write(rw.buffer)
 			if err != nil {
-				logger.Errorf("Error writing buffer: %v", err)
+				slog.Error("error writing buffer", "error", err)
 			}
 			return
 		}
@@ -340,17 +342,17 @@ func (rw *toolFilterWriter) Flush() {
 		var b bytes.Buffer
 		err := processBuffer(rw.config, rw.buffer, mimeType, &b)
 		if errors.Is(err, errKeepBuffering) {
-			logger.Debugf("Buffered %d so far, keep buffering...", len(rw.buffer))
+			slog.Debug("keep buffering", "buffered_bytes", len(rw.buffer))
 			return
 		}
 		if err != nil {
-			logger.Errorf("Error flushing response: %v", err)
+			slog.Error("error flushing response", "error", err)
 		}
 
-		logger.Debugf("Flushing %d bytes...", len(b.Bytes()))
+		slog.Debug("flushing buffer", "bytes", len(b.Bytes()))
 		_, err = rw.ResponseWriter.Write(b.Bytes())
 		if err != nil {
-			logger.Errorf("Error writing buffer: %v", err)
+			slog.Error("error writing buffer", "error", err)
 		}
 		rw.buffer = rw.buffer[:0] // Reset buffer
 	}

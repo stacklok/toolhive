@@ -6,8 +6,8 @@ package aggregator
 
 import (
 	"context"
+	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -80,7 +80,7 @@ func processBackendTools(
 	// Apply the shared filtering/override logic from pkg/mcp
 	processed, err := mcp.ApplyToolFiltering(opts, simpleTools)
 	if err != nil {
-		logger.Warnf("Failed to apply tool filtering for backend %s: %v", backendID, err)
+		slog.Warn("Failed to apply tool filtering for backend", "backend", backendID, "error", err)
 		return tools // Return original tools if processing fails
 	}
 
@@ -98,7 +98,7 @@ func processBackendTools(
 		if !exists {
 			// This should not happen unless there's a bug in the filtering logic,
 			// but skip the tool rather than panicking
-			logger.Warnf("Tool %s not found in original tools map for backend %s, skipping", originalName, backendID)
+			slog.Warn("Tool not found in original tools map for backend, skipping", "tool", originalName, "backend", backendID)
 			continue
 		}
 

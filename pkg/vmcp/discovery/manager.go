@@ -14,12 +14,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 )
@@ -144,11 +144,11 @@ func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) 
 
 	// Check cache first
 	if caps := m.getCachedCapabilities(cacheKey); caps != nil {
-		logger.Debugf("Cache hit for user %s (key: %s)", identity.Subject, cacheKey)
+		slog.Debug("Cache hit for user", "user", identity.Subject, "key", cacheKey)
 		return caps, nil
 	}
 
-	logger.Debugf("Cache miss - performing capability discovery for user: %s", identity.Subject)
+	slog.Debug("Cache miss - performing capability discovery", "user", identity.Subject)
 
 	// Cache miss - perform aggregation
 	caps, err := m.aggregator.AggregateCapabilities(ctx, backends)
@@ -213,7 +213,7 @@ func (m *DefaultManager) getCachedCapabilities(key string) *aggregator.Aggregate
 	if m.registry != nil {
 		currentVersion := m.registry.Version()
 		if entry.registryVersion != currentVersion {
-			logger.Debugf("Cache entry stale (registry version %d != entry version %d)", currentVersion, entry.registryVersion)
+			slog.Debug("Cache entry stale", "current_version", currentVersion, "entry_version", entry.registryVersion)
 			return nil
 		}
 	}
@@ -231,7 +231,7 @@ func (m *DefaultManager) cacheCapabilities(key string, caps *aggregator.Aggregat
 	if len(m.cache) >= maxCacheSize {
 		_, exists := m.cache[key]
 		if !exists {
-			logger.Debugf("Cache at capacity (%d entries), not caching new entry", maxCacheSize)
+			slog.Debug("Cache at capacity, not caching new entry", "capacity", maxCacheSize)
 			return
 		}
 	}
@@ -282,6 +282,6 @@ func (m *DefaultManager) removeExpiredEntries() {
 	}
 
 	if removed > 0 {
-		logger.Debugf("Removed %d expired cache entries (%d remaining)", removed, len(m.cache))
+		slog.Debug("Removed expired cache entries", "removed", removed, "remaining", len(m.cache))
 	}
 }

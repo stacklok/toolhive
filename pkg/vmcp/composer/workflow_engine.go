@@ -8,13 +8,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
 
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
@@ -107,7 +107,7 @@ func (e *workflowEngine) ExecuteWorkflow(
 	def *WorkflowDefinition,
 	params map[string]any,
 ) (*WorkflowResult, error) {
-	logger.Infof("Starting workflow execution: %s", def.Name)
+	slog.Info("Starting workflow execution", "workflow", def.Name)
 
 	// Apply parameter defaults from JSON Schema before execution
 	paramsWithDefaults := applyParameterDefaults(def.Parameters, params)
@@ -148,7 +148,7 @@ func (e *workflowEngine) ExecuteWorkflow(
 			LastUpdateTime:      result.StartTime,
 		}
 		if err := e.stateStore.SaveState(execCtx, workflowCtx.WorkflowID, initialState); err != nil {
-			logger.Warnf("Failed to save initial workflow state: %v", err)
+			slog.Warn("Failed to save initial workflow state", "error", err)
 		}
 	}
 
@@ -180,7 +180,7 @@ func (e *workflowEngine) ExecuteWorkflow(
 
 	// Handle execution failure
 	if dagErr != nil {
-		logger.Errorf("Workflow %s failed: %v", def.Name, dagErr)
+		slog.Error("Workflow failed", "workflow", def.Name, "error", dagErr)
 
 		// Check if it was a timeout
 		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
@@ -204,7 +204,7 @@ func (e *workflowEngine) ExecuteWorkflow(
 				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
 			}
 
-			logger.Warnf("Workflow %s timed out after %v", def.Name, result.Duration)
+			slog.Warn("Workflow timed out", "workflow", def.Name, "duration", result.Duration)
 			return result, ErrWorkflowTimeout
 		}
 
@@ -267,7 +267,7 @@ func (e *workflowEngine) ExecuteWorkflow(
 				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
 			}
 
-			logger.Errorf("Workflow %s failed during output construction: %v", def.Name, err)
+			slog.Error("Workflow failed during output construction", "workflow", def.Name, "error", err)
 			return result, result.Error
 		}
 		result.Output = constructedOutput
@@ -289,11 +289,11 @@ func (e *workflowEngine) ExecuteWorkflow(
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState); err != nil {
-			logger.Warnf("Failed to save final workflow state: %v", err)
+			slog.Warn("Failed to save final workflow state", "error", err)
 		}
 	}
 
-	logger.Infof("Workflow %s completed successfully in %v", def.Name, result.Duration)
+	slog.Info("Workflow completed successfully", "workflow", def.Name, "duration", result.Duration)
 	return result, nil
 }
 
@@ -304,7 +304,7 @@ func (e *workflowEngine) executeStep(
 	workflowCtx *WorkflowContext,
 	_ string, // failureMode is handled at workflow level
 ) error {
-	logger.Debugf("Executing step: %s (type: %s)", step.ID, step.Type)
+	slog.Debug("Executing step", "step", step.ID, "type", step.Type)
 
 	// Record step start time for audit logging
 	stepStartTime := time.Now()
@@ -344,7 +344,7 @@ func (e *workflowEngine) executeStep(
 			return condErr
 		}
 		if !shouldExecute {
-			logger.Debugf("Step %s skipped due to condition", step.ID)
+			slog.Debug("Step skipped due to condition", "step", step.ID)
 			workflowCtx.RecordStepSkipped(step.ID, step.DefaultResults)
 
 			// Audit step skipped
@@ -393,7 +393,7 @@ func (e *workflowEngine) executeToolStep(
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 ) error {
-	logger.Debugf("Executing tool step: %s, tool: %s", step.ID, step.Tool)
+	slog.Debug("Executing tool step", "step", step.ID, "tool", step.Tool)
 
 	// Expand template arguments
 	expandedArgs, err := e.templateExpander.Expand(ctx, step.Arguments, workflowCtx)
@@ -455,14 +455,14 @@ func (e *workflowEngine) callToolWithRetry(
 		// TODO: For composite tools, we may want to propagate metadata from the parent request
 		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil)
 		if err != nil {
-			logger.Warnf("Tool call failed for step %s (attempt %d/%d): %v",
-				step.ID, attemptCount, maxRetries+1, err)
+			slog.Warn("Tool call failed for step",
+				"step", step.ID, "attempt", attemptCount, "max_attempts", maxRetries+1, "error", err)
 			return nil, err
 		}
 
 		// Safety check: result should never be nil if err is nil, but check defensively
 		if result == nil {
-			logger.Errorf("Tool call for step %s returned nil result without error", step.ID)
+			slog.Error("Tool call for step returned nil result without error", "step", step.ID)
 			return nil, fmt.Errorf("nil tool result for step %s", step.ID)
 		}
 
@@ -472,8 +472,8 @@ func (e *workflowEngine) callToolWithRetry(
 		if result.IsError {
 			// Extract error message from Content or StructuredContent
 			errorMsg := e.extractErrorMessage(result)
-			logger.Warnf("Tool %s execution failed for step %s (attempt %d/%d): %s",
-				step.Tool, step.ID, attemptCount, maxRetries+1, errorMsg)
+			slog.Warn("Tool execution failed for step",
+				"tool", step.Tool, "step", step.ID, "attempt", attemptCount, "max_attempts", maxRetries+1, "error", errorMsg)
 			return nil, fmt.Errorf("%w: %s", vmcp.ErrToolExecutionFailed, errorMsg)
 		}
 
@@ -496,7 +496,7 @@ func (e *workflowEngine) callToolWithRetry(
 		backoff.WithBackOff(expBackoff),
 		backoff.WithMaxTries(uint(maxRetries+1)), // #nosec G115 -- +1 because it includes the initial attempt
 		backoff.WithNotify(func(_ error, duration time.Duration) {
-			logger.Debugf("Retrying step %s after %v", step.ID, duration)
+			slog.Debug("Retrying step", "step", step.ID, "after", duration)
 		}),
 	)
 
@@ -543,8 +543,8 @@ func (*workflowEngine) getRetryConfig(step *WorkflowStep) (int, time.Duration) {
 
 		// Cap retry count to prevent infinite retry loops
 		if retries > maxRetryCount {
-			logger.Warnf("Step %s retry count %d exceeds maximum %d, capping to %d",
-				step.ID, retries, maxRetryCount, maxRetryCount)
+			slog.Warn("Step retry count exceeds maximum, capping",
+				"step", step.ID, "retries", retries, "max", maxRetryCount)
 			retries = maxRetryCount
 		}
 
@@ -574,7 +574,7 @@ func (*workflowEngine) handleToolStepFailure(
 
 	// Check if we should continue on error
 	if step.OnError != nil && step.OnError.ContinueOnError {
-		logger.Warnf("Continuing workflow despite step %s failure (continue_on_error=true)", step.ID)
+		slog.Warn("Continuing workflow despite step failure (continue_on_error=true)", "step", step.ID)
 		if result, exists := workflowCtx.GetStepResult(step.ID); exists && step.DefaultResults != nil {
 			result.Output = step.DefaultResults
 		}
@@ -602,7 +602,7 @@ func (e *workflowEngine) handleToolStepSuccess(
 	// Checkpoint workflow state
 	e.checkpointWorkflowState(ctx, workflowCtx)
 
-	logger.Debugf("Step %s completed successfully", step.ID)
+	slog.Debug("Step completed successfully", "step", step.ID)
 	return nil
 }
 
@@ -613,7 +613,7 @@ func (e *workflowEngine) executeElicitationStep(
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 ) error {
-	logger.Debugf("Executing elicitation step: %s", step.ID)
+	slog.Debug("Executing elicitation step", "step", step.ID)
 
 	// Check if elicitation handler is configured
 	if e.elicitationHandler == nil {
@@ -665,7 +665,7 @@ func (*workflowEngine) handleElicitationAccept(
 	workflowCtx *WorkflowContext,
 	response *ElicitationResponse,
 ) error {
-	logger.Debugf("User accepted elicitation for step %s", step.ID)
+	slog.Debug("User accepted elicitation for step", "step", step.ID)
 
 	// Store both the content and action in step output
 	// This allows templates to access:
@@ -677,7 +677,7 @@ func (*workflowEngine) handleElicitationAccept(
 	}
 
 	workflowCtx.RecordStepSuccess(step.ID, output)
-	logger.Debugf("Step %s completed with user-provided data", step.ID)
+	slog.Debug("Step completed with user-provided data", "step", step.ID)
 	return nil
 }
 
@@ -686,7 +686,7 @@ func (e *workflowEngine) handleElicitationDecline(
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 ) error {
-	logger.Debugf("User declined elicitation for step %s", step.ID)
+	slog.Debug("User declined elicitation for step", "step", step.ID)
 
 	// Check if we have an OnDecline handler
 	if step.Elicitation != nil && step.Elicitation.OnDecline != nil {
@@ -704,7 +704,7 @@ func (e *workflowEngine) handleElicitationCancel(
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 ) error {
-	logger.Debugf("User cancelled elicitation for step %s", step.ID)
+	slog.Debug("User cancelled elicitation for step", "step", step.ID)
 
 	// Check if we have an OnCancel handler
 	if step.Elicitation != nil && step.Elicitation.OnCancel != nil {
@@ -722,7 +722,7 @@ func (e *workflowEngine) handleElicitationTimeout(
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 ) error {
-	logger.Warnf("Elicitation timed out for step %s", step.ID)
+	slog.Warn("Elicitation timed out for step", "step", step.ID)
 
 	// Timeout is treated as cancel by default
 	if step.Elicitation != nil && step.Elicitation.OnCancel != nil {
@@ -745,7 +745,7 @@ func (*workflowEngine) handleElicitationAction(
 	switch action {
 	case "skip_remaining":
 		// Mark this step as skipped and signal to skip remaining steps
-		logger.Debugf("Skipping remaining steps after %s for step %s", reason, step.ID)
+		slog.Debug("Skipping remaining steps", "reason", reason, "step", step.ID)
 		output := map[string]any{
 			"action":  reason,
 			"skipped": true,
@@ -757,7 +757,7 @@ func (*workflowEngine) handleElicitationAction(
 
 	case "abort":
 		// Abort the workflow
-		logger.Debugf("Aborting workflow after %s for step %s", reason, step.ID)
+		slog.Debug("Aborting workflow", "reason", reason, "step", step.ID)
 		if reason == "decline" {
 			err := fmt.Errorf("%w: step %s", ErrElicitationDeclined, step.ID)
 			workflowCtx.RecordStepFailure(step.ID, err)
@@ -769,7 +769,7 @@ func (*workflowEngine) handleElicitationAction(
 
 	case "continue":
 		// Continue to next step
-		logger.Debugf("Continuing workflow after %s for step %s", reason, step.ID)
+		slog.Debug("Continuing workflow", "reason", reason, "step", step.ID)
 		output := map[string]any{
 			"action": reason,
 		}
@@ -821,7 +821,7 @@ func (e *workflowEngine) checkpointWorkflowState(ctx context.Context, workflowCt
 	defer cancel()
 
 	if err := e.stateStore.SaveState(saveCtx, workflowCtx.WorkflowID, state); err != nil {
-		logger.Warnf("Failed to checkpoint workflow state for %s: %v", workflowCtx.WorkflowID, err)
+		slog.Warn("Failed to checkpoint workflow state", "workflow", workflowCtx.WorkflowID, "error", err)
 	}
 }
 
@@ -1032,7 +1032,7 @@ func (e *workflowEngine) CancelWorkflow(ctx context.Context, workflowID string) 
 		return fmt.Errorf("failed to save cancelled state: %w", err)
 	}
 
-	logger.Infof("Workflow %s marked as cancelled", workflowID)
+	slog.Info("Workflow marked as cancelled", "workflow", workflowID)
 	return nil
 }
 
@@ -1109,7 +1109,7 @@ func applyParameterDefaults(inputSchema map[string]any, params map[string]any) m
 		if propMap, ok := propSchema.(map[string]any); ok {
 			if defaultValue, hasDefault := propMap["default"]; hasDefault {
 				result[paramName] = defaultValue
-				logger.Debugf("Applied default value for parameter %s: %v", paramName, defaultValue)
+				slog.Debug("Applied default value for parameter", "parameter", paramName, "value", defaultValue)
 			}
 		}
 	}

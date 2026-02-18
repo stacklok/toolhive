@@ -5,10 +5,10 @@ package server
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
@@ -54,19 +54,19 @@ func (a *sessionIDAdapter) Generate() string {
 	// Create and register the session with the manager
 	if err := a.manager.AddWithID(sessionID); err != nil {
 		// This shouldn't happen unless we have a UUID collision (extremely unlikely)
-		logger.Errorf("Failed to create session %s: %v", sessionID, err)
+		slog.Error("Failed to create session", "session", sessionID, "error", err)
 		// Generate another ID and try once more
 		sessionID = uuid.New().String()
 		if err := a.manager.AddWithID(sessionID); err != nil {
 			// Session storage is broken - return empty string as sentinel value.
 			// The SDK will check for empty string and not send Mcp-Session-Id header,
 			// causing subsequent client requests to fail validation gracefully.
-			logger.Errorf("Failed to create session %s on retry: %v - returning empty session ID", sessionID, err)
+			slog.Error("Failed to create session on retry - returning empty session ID", "session", sessionID, "error", err)
 			return ""
 		}
 	}
 
-	logger.Debugf("Generated new MCP session: %s", sessionID)
+	slog.Debug("Generated new MCP session", "session", sessionID)
 	return sessionID
 }
 
@@ -96,19 +96,19 @@ func (a *sessionIDAdapter) Validate(sessionID string) (isTerminated bool, err er
 		//   2. TTL expired and was cleaned up
 		//   3. Explicitly terminated and cleaned up
 		// Per MCP spec, we should return 404 for all these cases
-		logger.Debugf("Session validation failed: %s not found", sessionID)
+		slog.Debug("Session validation failed: not found", "session", sessionID)
 		return false, fmt.Errorf("session not found")
 	}
 
 	// Check if session is marked as terminated via metadata
 	// Terminated sessions are kept briefly to distinguish "terminated" from "never existed"
 	if sess.GetMetadata()["terminated"] == "true" {
-		logger.Debugf("Session %s is terminated", sessionID)
+		slog.Debug("Session is terminated", "session", sessionID)
 		return true, nil
 	}
 
 	// Session is valid and active
-	logger.Debugf("Session %s validated successfully", sessionID)
+	slog.Debug("Session validated successfully", "session", sessionID)
 	return false, nil
 }
 
@@ -134,7 +134,7 @@ func (a *sessionIDAdapter) Terminate(sessionID string) (isNotAllowed bool, err e
 	if !exists {
 		// Session doesn't exist - this is okay, return success
 		// Client may be deleting an already-expired session
-		logger.Debugf("Terminate called on non-existent session %s", sessionID)
+		slog.Debug("Terminate called on non-existent session", "session", sessionID)
 		return false, nil
 	}
 
@@ -142,7 +142,7 @@ func (a *sessionIDAdapter) Terminate(sessionID string) (isNotAllowed bool, err e
 	// Don't delete immediately - keep it for a short time to return proper
 	// isTerminated=true on Validate() calls for subsequent requests
 	sess.SetMetadata("terminated", "true")
-	logger.Infof("Session %s terminated", sessionID)
+	slog.Info("Session terminated", "session", sessionID)
 
 	// Note: The session.Manager's TTL cleanup will eventually delete this session.
 	// This is correct behavior - we keep terminated sessions briefly so Validate()

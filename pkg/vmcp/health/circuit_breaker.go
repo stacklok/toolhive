@@ -4,10 +4,9 @@
 package health
 
 import (
+	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // CircuitState represents the state of a circuit breaker
@@ -90,7 +89,7 @@ func (cb *circuitBreaker) RecordSuccess() {
 
 		// Log successful recovery
 		if previousState == CircuitHalfOpen {
-			logger.Infof("Circuit breaker for backend %s CLOSED (recovery successful)", cb.name)
+			slog.Info("Circuit breaker CLOSED (recovery successful)", "backend", cb.name)
 		}
 	}
 }
@@ -107,11 +106,11 @@ func (cb *circuitBreaker) RecordFailure() {
 
 	if cb.state == CircuitClosed && cb.failureCount >= cb.failureThreshold {
 		cb.transitionTo(CircuitOpen)
-		logger.Warnf("Circuit breaker for backend %s OPENED (threshold exceeded)", cb.name)
+		slog.Warn("Circuit breaker OPENED (threshold exceeded)", "backend", cb.name)
 	} else if cb.state == CircuitHalfOpen {
 		// Failed in half-open state, go back to open
 		cb.transitionTo(CircuitOpen)
-		logger.Warnf("Circuit breaker for backend %s returned to OPEN from half-open (recovery failed)", cb.name)
+		slog.Warn("Circuit breaker returned to OPEN from half-open (recovery failed)", "backend", cb.name)
 	}
 }
 

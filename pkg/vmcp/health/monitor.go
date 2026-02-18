@@ -7,12 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -231,8 +231,10 @@ func (m *Monitor) Start(ctx context.Context) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.started = true
 
-	logger.Infof("Starting health monitor for %d backends (interval: %v, threshold: %d)",
-		len(m.backends), m.checkInterval, m.statusTracker.unhealthyThreshold)
+	slog.Info("Starting health monitor",
+		"backends", len(m.backends),
+		"interval", m.checkInterval,
+		"threshold", m.statusTracker.unhealthyThreshold)
 
 	// Start health check goroutine for each backend
 	m.backendsMu.Lock()
@@ -277,7 +279,7 @@ func (m *Monitor) Stop() error {
 	backendCount := len(m.backends)
 	m.backendsMu.RUnlock()
 
-	logger.Infof("Stopping health monitor for %d backends", backendCount)
+	slog.Info("Stopping health monitor", "backends", backendCount)
 	m.cancel()
 	m.started = false
 	m.stopped = true
@@ -285,7 +287,7 @@ func (m *Monitor) Stop() error {
 
 	// Wait for all goroutines to complete
 	m.wg.Wait()
-	logger.Info("Health monitor stopped")
+	slog.Info("Health monitor stopped")
 
 	return nil
 }
@@ -324,7 +326,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// Start monitoring for new backends
 	for id, backend := range newBackendsMap {
 		if _, exists := oldBackends[id]; !exists {
-			logger.Infof("Starting health monitoring for new backend: %s", backend.Name)
+			slog.Info("Starting health monitoring for new backend", "backend", backend.Name)
 			backendCopy := backend
 
 			// Circuit breaker will be lazily initialized on first health check
@@ -342,7 +344,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// Stop monitoring for removed backends and clean up their state
 	for id, backend := range oldBackends {
 		if _, exists := newBackendsMap[id]; !exists {
-			logger.Infof("Stopping health monitoring for removed backend: %s", backend.Name)
+			slog.Info("Stopping health monitoring for removed backend", "backend", backend.Name)
 			if cancel, ok := m.activeChecks[id]; ok {
 				cancel()
 				delete(m.activeChecks, id)
@@ -361,7 +363,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isInitial bool) {
 	defer m.wg.Done()
 
-	logger.Debugf("Starting health monitoring for backend %s", backend.Name)
+	slog.Debug("Starting health monitoring for backend", "backend", backend.Name)
 
 	// Create ticker for periodic checks
 	ticker := time.NewTicker(m.checkInterval)
@@ -381,7 +383,7 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Debugf("Stopping health monitoring for backend %s", backend.Name)
+			slog.Debug("Stopping health monitoring for backend", "backend", backend.Name)
 			return
 
 		case <-ticker.C:
@@ -392,7 +394,7 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 
 // performHealthCheck performs a single health check for a backend and updates status.
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
-	logger.Debugf("Performing health check for backend %s (%s)", backend.Name, backend.BaseURL)
+	slog.Debug("Performing health check for backend", "backend", backend.Name, "url", backend.BaseURL)
 
 	// Check if circuit breaker allows health check
 	// Status tracker handles circuit breaker logic based on its configuration
@@ -420,12 +422,12 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 
 	// Record result in status tracker
 	if err != nil {
-		logger.Debugf("Health check failed for backend %s: %v (status: %s)", backend.Name, err, status)
+		slog.Debug("Health check failed for backend", "backend", backend.Name, "error", err, "status", status)
 		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
 	} else {
 		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
 		// RecordSuccess will further check for recovering state (had recent failures)
-		logger.Debugf("Health check succeeded for backend %s with status %s", backend.Name, status)
+		slog.Debug("Health check succeeded for backend", "backend", backend.Name, "status", status)
 		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
 	}
 }

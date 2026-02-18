@@ -6,8 +6,8 @@ package aggregator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -56,7 +56,7 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 	_ context.Context,
 	toolsByBackend map[string][]vmcp.Tool,
 ) (map[string]*ResolvedTool, error) {
-	logger.Debugf("Resolving conflicts using priority strategy (order: %v)", r.PriorityOrder)
+	slog.Debug("Resolving conflicts using priority strategy", "order", r.PriorityOrder)
 
 	resolved := make(map[string]*ResolvedTool)
 	droppedTools := 0
@@ -89,8 +89,8 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 			for i, c := range candidates {
 				backendIDs[i] = c.BackendID
 			}
-			logger.Debugf("Tool %s exists in backends %v not in priority order, using prefix fallback",
-				toolName, backendIDs)
+			slog.Debug("Tool exists in backends not in priority order, using prefix fallback",
+				"tool", toolName, "backends", backendIDs)
 
 			// Apply prefix strategy to these unmapped backends
 			for _, candidate := range candidates {
@@ -119,18 +119,18 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 		// Log dropped tools
 		for _, candidate := range candidates {
 			if candidate.BackendID != winner.BackendID {
-				logger.Warnf("Dropped tool %s from backend %s (lower priority than %s)",
-					toolName, candidate.BackendID, winner.BackendID)
+				slog.Warn("Dropped tool from backend (lower priority)",
+					"tool", toolName, "backend", candidate.BackendID, "winner", winner.BackendID)
 				droppedTools++
 			}
 		}
 	}
 
 	if droppedTools > 0 {
-		logger.Infof("Priority strategy: %d unique tools, %d conflicting tools dropped",
-			len(resolved), droppedTools)
+		slog.Info("Priority strategy resolved tools",
+			"count", len(resolved), "dropped", droppedTools)
 	} else {
-		logger.Infof("Priority strategy: %d unique tools", len(resolved))
+		slog.Info("Priority strategy resolved tools", "count", len(resolved))
 	}
 
 	return resolved, nil

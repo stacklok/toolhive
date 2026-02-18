@@ -16,14 +16,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state/mocks"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 const testGroupName = "testgroup"
 

@@ -6,10 +6,10 @@ package migration
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // migrationOnce ensures the migration only runs once
@@ -20,7 +20,7 @@ var migrationOnce sync.Once
 func CheckAndPerformDefaultGroupMigration() {
 	migrationOnce.Do(func() {
 		if err := performDefaultGroupMigration(); err != nil {
-			logger.Errorf("Failed to perform default group migration: %v", err)
+			slog.Error("Failed to perform default group migration", "error", err)
 			return
 		}
 	})

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -22,7 +23,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -169,7 +169,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 			target.WorkloadID, err)
 	}
 
-	logger.Debugf("Applied authentication strategy %q to backend %s", authStrategy.Name(), target.WorkloadID)
+	slog.Debug("Applied authentication strategy to backend", "strategy", authStrategy.Name(), "backend", target.WorkloadID)
 
 	// Add authentication layer with pre-resolved strategy
 	baseTransport = &authRoundTripper{
@@ -352,7 +352,7 @@ func queryTools(ctx context.Context, c *client.Client, supported bool, backendID
 		}
 		return result, nil
 	}
-	logger.Debugf("Backend %s does not advertise tools capability, skipping tools query", backendID)
+	slog.Debug("Backend does not advertise tools capability, skipping tools query", "backend", backendID)
 	return &mcp.ListToolsResult{Tools: []mcp.Tool{}}, nil
 }
 
@@ -365,7 +365,7 @@ func queryResources(ctx context.Context, c *client.Client, supported bool, backe
 		}
 		return result, nil
 	}
-	logger.Debugf("Backend %s does not advertise resources capability, skipping resources query", backendID)
+	slog.Debug("Backend does not advertise resources capability, skipping resources query", "backend", backendID)
 	return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
 }
 
@@ -378,7 +378,7 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 		}
 		return result, nil
 	}
-	logger.Debugf("Backend %s does not advertise prompts capability, skipping prompts query", backendID)
+	slog.Debug("Backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
 }
 
@@ -407,8 +407,8 @@ func convertContent(content mcp.Content) vmcp.Content {
 	}
 	// Handle embedded resources if needed
 	// Unknown content types are marked as "unknown" type with no data
-	logger.Warnf("Encountered unknown content type %T, marking as unknown content. "+
-		"This may indicate missing support for embedded resources or other MCP content types.", content)
+	slog.Warn("Encountered unknown content type, marking as unknown content",
+		"type", fmt.Sprintf("%T", content))
 	return vmcp.Content{Type: "unknown"}
 }
 
@@ -416,7 +416,7 @@ func convertContent(content mcp.Content) vmcp.Content {
 // Returns tools, resources, and prompts exposed by the backend.
 // Only queries capabilities that the server advertises during initialization.
 func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
-	logger.Debugf("Querying capabilities from backend %s (%s)", target.WorkloadName, target.BaseURL)
+	slog.Debug("Querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
 
 	// Create a client for this backend (not yet initialized)
 	c, err := h.clientFactory(ctx, target)
@@ -425,7 +425,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			logger.Debugf("Failed to close client: %v", err)
+			slog.Debug("Failed to close client", "error", err)
 		}
 	}()
 
@@ -435,8 +435,11 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
-	logger.Debugf("Backend %s capabilities: tools=%v, resources=%v, prompts=%v",
-		target.WorkloadID, serverCaps.Tools != nil, serverCaps.Resources != nil, serverCaps.Prompts != nil)
+	slog.Debug("Backend capabilities",
+		"backend", target.WorkloadID,
+		"tools", serverCaps.Tools != nil,
+		"resources", serverCaps.Resources != nil,
+		"prompts", serverCaps.Prompts != nil)
 
 	// Query each capability type based on server advertisement
 	// Check for nil BEFORE passing to functions to avoid interface{} nil pointer issues
@@ -520,8 +523,11 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	// TODO: Query server capabilities to detect logging/sampling support
 	// This requires additional MCP protocol support for capabilities introspection
 
-	logger.Debugf("Backend %s capabilities: %d tools, %d resources, %d prompts",
-		target.WorkloadName, len(capabilities.Tools), len(capabilities.Resources), len(capabilities.Prompts))
+	slog.Debug("Backend capabilities queried",
+		"backend", target.WorkloadName,
+		"tools", len(capabilities.Tools),
+		"resources", len(capabilities.Resources),
+		"prompts", len(capabilities.Prompts))
 
 	return capabilities, nil
 }
@@ -537,7 +543,7 @@ func (h *httpBackendClient) CallTool(
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	logger.Debugf("Calling tool %s on backend %s", toolName, target.WorkloadName)
+	slog.Debug("Calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -546,7 +552,7 @@ func (h *httpBackendClient) CallTool(
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			logger.Debugf("Failed to close client: %v", err)
+			slog.Debug("Failed to close client", "error", err)
 		}
 	}()
 
@@ -560,7 +566,7 @@ func (h *httpBackendClient) CallTool(
 	// we must use the original backend name when forwarding requests.
 	backendToolName := target.GetBackendCapabilityName(toolName)
 	if backendToolName != toolName {
-		logger.Debugf("Translating tool name: %s (client-facing) → %s (backend)", toolName, backendToolName)
+		slog.Debug("Translating tool name", "client_name", toolName, "backend_name", backendToolName)
 	}
 
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
@@ -593,10 +599,11 @@ func (h *httpBackendClient) CallTool(
 
 		// Log with metadata for distributed tracing
 		if responseMeta != nil {
-			logger.Warnf("Tool %s on backend %s returned IsError=true: %s (meta: %+v)",
-				toolName, target.WorkloadID, errorMsg, responseMeta)
+			slog.Warn("Tool returned IsError=true",
+				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg, "meta", responseMeta)
 		} else {
-			logger.Warnf("Tool %s on backend %s returned IsError=true: %s", toolName, target.WorkloadID, errorMsg)
+			slog.Warn("Tool returned IsError=true",
+				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg)
 		}
 		// Continue processing - we return the result with IsError flag and metadata preserved
 	}
@@ -613,12 +620,12 @@ func (h *httpBackendClient) CallTool(
 	var structuredContent map[string]any
 	if result.StructuredContent != nil {
 		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
-			logger.Debugf("Using structured content from tool %s on backend %s", toolName, target.WorkloadID)
+			slog.Debug("Using structured content from tool", "tool", toolName, "backend", target.WorkloadID)
 			structuredContent = structuredMap
 		} else {
 			// StructuredContent is not an object - fall through to Content processing
-			logger.Debugf("StructuredContent from tool %s on backend %s is not an object, falling back to Content",
-				toolName, target.WorkloadID)
+			slog.Debug("StructuredContent is not an object, falling back to Content",
+				"tool", toolName, "backend", target.WorkloadID)
 		}
 	}
 
@@ -642,7 +649,7 @@ func (h *httpBackendClient) CallTool(
 func (h *httpBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (*vmcp.ResourceReadResult, error) {
-	logger.Debugf("Reading resource %s from backend %s", uri, target.WorkloadName)
+	slog.Debug("Reading resource from backend", "resource", uri, "backend", target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -651,7 +658,7 @@ func (h *httpBackendClient) ReadResource(
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			logger.Debugf("Failed to close client: %v", err)
+			slog.Debug("Failed to close client", "error", err)
 		}
 	}()
 
@@ -664,7 +671,7 @@ func (h *httpBackendClient) ReadResource(
 	// When conflict resolution renames resources, we must use the original backend URI.
 	backendURI := target.GetBackendCapabilityName(uri)
 	if backendURI != uri {
-		logger.Debugf("Translating resource URI: %s (client-facing) → %s (backend)", uri, backendURI)
+		slog.Debug("Translating resource URI", "client_uri", uri, "backend_uri", backendURI)
 	}
 
 	result, err := c.ReadResource(ctx, mcp.ReadResourceRequest{
@@ -691,8 +698,8 @@ func (h *httpBackendClient) ReadResource(
 			// Blob is base64-encoded per MCP spec, decode it to bytes
 			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
 			if err != nil {
-				logger.Warnf("Failed to decode base64 blob from resource %s on backend %s: %v",
-					uri, target.WorkloadID, err)
+				slog.Warn("Failed to decode base64 blob from resource",
+					"resource", uri, "backend", target.WorkloadID, "error", err)
 				// Append raw blob as fallback
 				data = append(data, []byte(blobContent.Blob)...)
 			} else {
@@ -724,7 +731,7 @@ func (h *httpBackendClient) GetPrompt(
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	logger.Debugf("Getting prompt %s from backend %s", name, target.WorkloadName)
+	slog.Debug("Getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -733,7 +740,7 @@ func (h *httpBackendClient) GetPrompt(
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			logger.Debugf("Failed to close client: %v", err)
+			slog.Debug("Failed to close client", "error", err)
 		}
 	}()
 
@@ -746,7 +753,7 @@ func (h *httpBackendClient) GetPrompt(
 	// When conflict resolution renames prompts, we must use the original backend name.
 	backendPromptName := target.GetBackendCapabilityName(name)
 	if backendPromptName != name {
-		logger.Debugf("Translating prompt name: %s (client-facing) → %s (backend)", name, backendPromptName)
+		slog.Debug("Translating prompt name", "client_name", name, "backend_name", backendPromptName)
 	}
 
 	// Convert map[string]any to map[string]string

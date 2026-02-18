@@ -6,6 +6,7 @@ package aggregator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -14,7 +15,6 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -85,7 +85,7 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		span.End()
 	}()
 
-	logger.Debugf("Querying capabilities from backend %s", backend.ID)
+	slog.Debug("Querying capabilities from backend", "backend", backend.ID)
 
 	// Create a BackendTarget from the Backend
 	// Use BackendToTarget helper to ensure all fields (including auth) are copied
@@ -120,8 +120,8 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		attribute.Int("prompts.count", len(result.Prompts)),
 	)
 
-	logger.Debugf("Backend %s: %d tools (after filtering/overrides), %d resources, %d prompts",
-		backend.ID, len(result.Tools), len(result.Resources), len(result.Prompts))
+	slog.Debug("Backend capabilities queried",
+		"backend", backend.ID, "tools", len(result.Tools), "resources", len(result.Resources), "prompts", len(result.Prompts))
 
 	return result, nil
 }
@@ -145,7 +145,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		span.End()
 	}()
 
-	logger.Infof("Querying capabilities from %d backends", len(backends))
+	slog.Info("Querying capabilities from backends", "count", len(backends))
 
 	// Use errgroup for parallel queries with context cancellation
 	g, ctx := errgroup.WithContext(ctx)
@@ -162,7 +162,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 			caps, err := a.QueryCapabilities(ctx, backend)
 			if err != nil {
 				// Log the error but continue with other backends
-				logger.Warnf("Failed to query backend %s: %v", backend.ID, err)
+				slog.Warn("Failed to query backend", "backend", backend.ID, "error", err)
 				return nil // Don't fail the entire operation
 			}
 
@@ -188,7 +188,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		attribute.Int("successful.backends", len(capabilities)),
 	)
 
-	logger.Infof("Successfully queried %d/%d backends", len(capabilities), len(backends))
+	slog.Info("Successfully queried backends", "successful", len(capabilities), "total", len(backends))
 	return capabilities, nil
 }
 
@@ -211,7 +211,7 @@ func (a *defaultAggregator) ResolveConflicts(
 		span.End()
 	}()
 
-	logger.Debugf("Resolving conflicts across %d backends", len(capabilities))
+	slog.Debug("Resolving conflicts across backends", "count", len(capabilities))
 
 	// Group tools by backend for conflict resolution
 	toolsByBackend := make(map[string][]vmcp.Tool)
@@ -230,13 +230,13 @@ func (a *defaultAggregator) ResolveConflicts(
 		}
 	} else {
 		// Fallback: no conflict resolution (first wins, log warnings)
-		logger.Warnf("No conflict resolver configured, using fallback (first wins)")
+		slog.Warn("No conflict resolver configured, using fallback (first wins)")
 		resolvedTools = make(map[string]*ResolvedTool)
 		for backendID, tools := range toolsByBackend {
 			for _, tool := range tools {
 				if existing, exists := resolvedTools[tool.Name]; exists {
-					logger.Warnf("Tool name conflict: %s exists in both %s and %s (keeping first)",
-						tool.Name, existing.BackendID, backendID)
+					slog.Warn("Tool name conflict, keeping first",
+						"tool", tool.Name, "existing_backend", existing.BackendID, "conflicting_backend", backendID)
 					continue
 				}
 				resolvedTools[tool.Name] = &ResolvedTool{
@@ -273,8 +273,8 @@ func (a *defaultAggregator) ResolveConflicts(
 		attribute.Int("resolved.prompts", len(resolved.Prompts)),
 	)
 
-	logger.Debugf("Resolved %d unique tools, %d resources, %d prompts",
-		len(resolved.Tools), len(resolved.Resources), len(resolved.Prompts))
+	slog.Debug("Resolved capabilities",
+		"tools", len(resolved.Tools), "resources", len(resolved.Resources), "prompts", len(resolved.Prompts))
 
 	return resolved, nil
 }
@@ -301,7 +301,7 @@ func (a *defaultAggregator) MergeCapabilities(
 		span.End()
 	}()
 
-	logger.Debugf("Merging capabilities into final view")
+	slog.Debug("Merging capabilities into final view")
 
 	// Create routing table
 	routingTable := &vmcp.RoutingTable{
@@ -332,8 +332,8 @@ func (a *defaultAggregator) MergeCapabilities(
 		// Look up full backend information from registry
 		backend := registry.Get(ctx, resolvedTool.BackendID)
 		if backend == nil {
-			logger.Warnf("Backend %s not found in registry for tool %s, creating minimal target",
-				resolvedTool.BackendID, resolvedTool.ResolvedName)
+			slog.Warn("Backend not found in registry for tool, creating minimal target",
+				"backend", resolvedTool.BackendID, "tool", resolvedTool.ResolvedName)
 			routingTable.Tools[resolvedTool.ResolvedName] = &vmcp.BackendTarget{
 				WorkloadID:             resolvedTool.BackendID,
 				OriginalCapabilityName: resolvedTool.OriginalName,
@@ -351,8 +351,8 @@ func (a *defaultAggregator) MergeCapabilities(
 	for _, resource := range resolved.Resources {
 		backend := registry.Get(ctx, resource.BackendID)
 		if backend == nil {
-			logger.Warnf("Backend %s not found in registry for resource %s, creating minimal target",
-				resource.BackendID, resource.URI)
+			slog.Warn("Backend not found in registry for resource, creating minimal target",
+				"backend", resource.BackendID, "resource", resource.URI)
 			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
 				WorkloadID:             resource.BackendID,
 				OriginalCapabilityName: resource.URI,
@@ -369,8 +369,8 @@ func (a *defaultAggregator) MergeCapabilities(
 	for _, prompt := range resolved.Prompts {
 		backend := registry.Get(ctx, prompt.BackendID)
 		if backend == nil {
-			logger.Warnf("Backend %s not found in registry for prompt %s, creating minimal target",
-				prompt.BackendID, prompt.Name)
+			slog.Warn("Backend not found in registry for prompt, creating minimal target",
+				"backend", prompt.BackendID, "prompt", prompt.Name)
 			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
 				WorkloadID:             prompt.BackendID,
 				OriginalCapabilityName: prompt.Name,
@@ -417,8 +417,10 @@ func (a *defaultAggregator) MergeCapabilities(
 		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
 	)
 
-	logger.Infof("Merged capabilities: %d tools, %d resources, %d prompts",
-		aggregated.Metadata.ToolCount, aggregated.Metadata.ResourceCount, aggregated.Metadata.PromptCount)
+	slog.Info("Merged capabilities",
+		"tools", aggregated.Metadata.ToolCount,
+		"resources", aggregated.Metadata.ResourceCount,
+		"prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
 }
@@ -445,11 +447,11 @@ func (a *defaultAggregator) AggregateCapabilities(
 		span.End()
 	}()
 
-	logger.Infof("Starting capability aggregation for %d backends", len(backends))
+	slog.Info("Starting capability aggregation", "backends", len(backends))
 
 	// Step 1: Create registry from discovered backends
 	registry := vmcp.NewImmutableRegistry(backends)
-	logger.Debugf("Created backend registry with %d backends", registry.Count())
+	slog.Debug("Created backend registry", "count", registry.Count())
 
 	// Step 2: Query all backends
 	capabilities, err := a.QueryAllCapabilities(ctx, backends)
@@ -480,9 +482,9 @@ func (a *defaultAggregator) AggregateCapabilities(
 		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
 	)
 
-	logger.Infof("Capability aggregation complete: %d backends, %d tools, %d resources, %d prompts",
-		aggregated.Metadata.BackendCount, aggregated.Metadata.ToolCount,
-		aggregated.Metadata.ResourceCount, aggregated.Metadata.PromptCount)
+	slog.Info("Capability aggregation complete",
+		"backends", aggregated.Metadata.BackendCount, "tools", aggregated.Metadata.ToolCount,
+		"resources", aggregated.Metadata.ResourceCount, "prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
 }

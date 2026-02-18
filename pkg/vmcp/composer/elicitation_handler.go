@@ -11,11 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -137,7 +136,7 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 	stepID string,
 	config *ElicitationConfig,
 ) (*ElicitationResponse, error) {
-	logger.Debugf("Requesting elicitation for workflow %s, step %s", workflowID, stepID)
+	slog.Debug("Requesting elicitation", "workflow", workflowID, "step", stepID)
 
 	// Validate configuration
 	if err := validateConfig(config); err != nil {
@@ -150,8 +149,8 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 		timeout = defaultElicitationTimeout
 	}
 	if timeout > maxElicitationTimeout {
-		logger.Warnf("Elicitation timeout %s exceeds maximum %s for step %s, capping to maximum",
-			timeout, maxElicitationTimeout, stepID)
+		slog.Warn("Elicitation timeout exceeds maximum, capping to maximum",
+			"timeout", timeout, "max", maxElicitationTimeout, "step", stepID)
 		timeout = maxElicitationTimeout
 	}
 
@@ -173,7 +172,7 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 		},
 	}
 
-	logger.Debugf("Sending elicitation request for step %s", stepID)
+	slog.Debug("Sending elicitation request", "step", stepID)
 
 	// Call SDK (synchronous - blocks until response received or timeout)
 	// The SDK handles all JSON-RPC ID correlation internally
@@ -181,7 +180,7 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 	if err != nil {
 		// Check if timeout
 		if errors.Is(err, context.DeadlineExceeded) {
-			logger.Warnf("Elicitation timed out for step %s after %v", stepID, timeout)
+			slog.Warn("Elicitation timed out", "step", stepID, "timeout", timeout)
 			return nil, fmt.Errorf("%w: step %s", ErrElicitationTimeout, stepID)
 		}
 		return nil, fmt.Errorf("elicitation request failed for step %s: %w", stepID, err)
@@ -197,7 +196,7 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 		}
 	}
 
-	logger.Debugf("Received elicitation response for step %s (action: %s)", stepID, result.Action)
+	slog.Debug("Received elicitation response", "step", stepID, "action", result.Action)
 
 	// Transform SDK response to domain type
 	// Note: result.Content is of type 'any', convert to map[string]any if present
@@ -207,7 +206,7 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 			content = contentMap
 		} else {
 			// Unexpected content type - log and continue
-			logger.Warnf("Elicitation response content for step %s is not a map: %T", stepID, result.Content)
+			slog.Warn("Elicitation response content is not a map", "step", stepID, "type", fmt.Sprintf("%T", result.Content))
 		}
 	}
 

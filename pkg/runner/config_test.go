@@ -21,7 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -134,8 +133,6 @@ func TestRunConfig_WithPorts(t *testing.T) {
 			expectError: false,
 		},
 	}
-
-	logger.Initialize()
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -742,7 +739,6 @@ func TestRunConfigBuilder(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 	runtime := &runtimemocks.MockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
@@ -843,8 +839,6 @@ func TestRunConfigBuilder(t *testing.T) {
 // TestRunConfigBuilder_OIDCScopes tests that OIDC scopes are correctly stored in OIDCConfig
 func TestRunConfigBuilder_OIDCScopes(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -1057,7 +1051,6 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	tests := []struct {
 		name               string
@@ -1166,7 +1159,6 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
@@ -1213,7 +1205,6 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
@@ -1267,7 +1258,6 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
@@ -1320,7 +1310,6 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
@@ -1389,7 +1378,6 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
@@ -1716,8 +1704,6 @@ func TestConfigFileLoading(t *testing.T) {
 //nolint:tparallel,paralleltest // Subtests intentionally run sequentially to share the same listener
 func TestRunConfig_WithPorts_PortReuse(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	// Create a listener to occupy a port for the entire test
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

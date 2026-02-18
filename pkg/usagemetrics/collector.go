@@ -5,12 +5,12 @@ package usagemetrics
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 )
 
@@ -87,8 +87,9 @@ func (c *Collector) Flush() error {
 	currentDate := getCurrentDateUTC()
 	count := c.counter.Load()
 
-	logger.Debugf("Usage metrics flush triggered: count=%d, date=%s, instance_id=%s",
-		count, currentDate, c.instanceID)
+	//nolint:gosec // G706: instance ID and date from internal state
+	slog.Debug("usage metrics flush triggered",
+		"count", count, "date", currentDate, "instance_id", c.instanceID)
 
 	// Check if we crossed midnight UTC
 	if c.currentDate != currentDate {
@@ -99,7 +100,9 @@ func (c *Collector) Flush() error {
 		// (depending on when the flush runs), but we accept this small misattribution
 		// to avoid backend complexity.
 
-		logger.Debugf("Date changed from %s to %s, flushing previous day's count", c.currentDate, currentDate)
+		//nolint:gosec // G706: date values from internal state
+		slog.Debug("date changed, flushing previous day's count",
+			"previous_date", c.currentDate, "current_date", currentDate)
 
 		if count > 0 {
 			// Create fake timestamp for end of previous day
@@ -110,10 +113,13 @@ func (c *Collector) Flush() error {
 				Timestamp: previousDayTimestamp,
 			}
 
-			logger.Debugf("Flushing %d tool calls for previous day %s (midnight boundary)", count, c.currentDate)
+			//nolint:gosec // G706: date from internal state
+			slog.Debug("flushing tool calls for previous day at midnight boundary",
+				"count", count, "date", c.currentDate)
 
 			if err := c.client.SendMetrics(c.instanceID, record); err != nil {
-				logger.Debugf("Failed to send metrics for previous day: %v", err)
+				slog.Debug("failed to send metrics for previous day",
+					"error", err)
 				// Continue anyway - we'll reset for the new day
 			}
 		}
@@ -137,10 +143,11 @@ func (c *Collector) Flush() error {
 		Timestamp: timestamp,
 	}
 
-	logger.Debugf("Flushing %d tool calls at %s", count, timestamp)
+	//nolint:gosec // G706: timestamp from time.Now()
+	slog.Debug("flushing tool calls", "count", count, "timestamp", timestamp)
 
 	if err := c.client.SendMetrics(c.instanceID, record); err != nil {
-		logger.Debugf("Failed to send metrics: %v", err)
+		slog.Debug("failed to send metrics", "error", err)
 		// Don't return error - we'll retry on next flush
 		return nil
 	}
@@ -154,7 +161,7 @@ func (c *Collector) Shutdown(ctx context.Context) {
 		return
 	}
 
-	logger.Debugf("Shutting down usage metrics collector")
+	slog.Debug("shutting down usage metrics collector")
 	c.shutdown.Store(true)
 
 	// Signal stop to background goroutines (if started)
@@ -164,16 +171,16 @@ func (c *Collector) Shutdown(ctx context.Context) {
 
 	// Perform final flush
 	if err := c.Flush(); err != nil {
-		logger.Warnf("Failed to flush metrics on shutdown: %v", err)
+		slog.Warn("failed to flush metrics on shutdown", "error", err)
 	}
 
 	// Wait for goroutines to finish with timeout (only if started)
 	if c.started.Load() {
 		select {
 		case <-c.doneCh:
-			logger.Debugf("Collector stopped cleanly")
+			slog.Debug("collector stopped cleanly")
 		case <-ctx.Done():
-			logger.Warnf("Collector shutdown timed out: %v", ctx.Err())
+			slog.Warn("collector shutdown timed out", "error", ctx.Err())
 		}
 	}
 }
@@ -193,11 +200,11 @@ func (c *Collector) flushLoop() {
 		select {
 		case <-ticker.C:
 			if err := c.Flush(); err != nil {
-				logger.Warnf("Periodic flush failed: %v", err)
+				slog.Warn("periodic flush failed", "error", err)
 			}
 		case <-c.flushCh:
 			if err := c.Flush(); err != nil {
-				logger.Warnf("Manual flush failed: %v", err)
+				slog.Warn("manual flush failed", "error", err)
 			}
 		case <-c.stopCh:
 			return

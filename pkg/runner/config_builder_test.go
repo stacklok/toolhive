@@ -17,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
@@ -30,7 +29,6 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -246,7 +244,6 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	t.Parallel()
 
 	// Initialize logger to prevent nil pointer dereference when processing volume mounts
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -382,7 +379,6 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 	t.Parallel()
 
 	// Prevent nil pointer dereference in the logger.
-	logger.Initialize()
 
 	t.Run("token-exchange NOT added when config is nil", func(t *testing.T) {
 		t.Parallel()
@@ -447,7 +443,6 @@ func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -558,7 +553,6 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -637,7 +631,6 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -847,7 +840,6 @@ func TestBuildForOperator(t *testing.T) {
 	t.Parallel()
 
 	// Initialize logger to prevent nil pointer dereference
-	logger.Initialize()
 
 	testCases := []struct {
 		name           string
@@ -920,7 +912,6 @@ func TestWithEnvFileDir(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	testCases := []struct {
 		name        string
@@ -968,7 +959,6 @@ func TestWithEnvFileDir(t *testing.T) {
 func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
 	mockValidator := &mockEnvVarValidator{}
 
 	tests := []struct {
@@ -1013,7 +1003,6 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
 	mockValidator := &mockEnvVarValidator{}
 
 	tests := []struct {
@@ -1094,7 +1083,6 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 func TestEmbeddedAuthServerScopePropagation(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
 	mockValidator := &mockEnvVarValidator{}
 
 	t.Run("propagates AS scopes to empty OIDCConfig.Scopes", func(t *testing.T) {

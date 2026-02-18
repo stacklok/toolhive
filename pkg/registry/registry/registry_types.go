@@ -80,7 +80,7 @@ type BaseServerMetadata struct {
 	Overview string `json:"overview,omitempty" yaml:"overview,omitempty"`
 	// ToolDefinitions contains full MCP Tool definitions describing the tools
 	// available from this server, including name, description, inputSchema, and annotations.
-	ToolDefinitions []mcp.Tool `json:"tool_definitions,omitempty" yaml:"tool_definitions,omitempty"`
+	ToolDefinitions []mcp.Tool `json:"tool_definitions,omitempty" yaml:"tool_definitions,omitempty" swaggerignore:"true"`
 	// CustomMetadata allows for additional user-defined metadata
 	CustomMetadata map[string]any `json:"custom_metadata,omitempty" yaml:"custom_metadata,omitempty"`
 }

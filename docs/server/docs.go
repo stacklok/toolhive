@@ -843,6 +843,10 @@ const docTemplate = `{
                         "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
                         "type": "string"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
                     "permissions": {
                         "$ref": "#/components/schemas/permissions.Profile"
                     },
@@ -875,6 +879,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {
@@ -1089,6 +1097,10 @@ const docTemplate = `{
                     "oauth_config": {
                         "$ref": "#/components/schemas/registry.OAuthConfig"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
@@ -1107,6 +1119,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {

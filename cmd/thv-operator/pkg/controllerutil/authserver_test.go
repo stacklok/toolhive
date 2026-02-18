@@ -10,10 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -734,12 +732,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-
-			ctx := context.Background()
-			config, err := buildEmbeddedAuthServerRunnerConfig(ctx, fakeClient, "default", "test-server", tt.authConfig, tt.oidcConfig)
+			config, err := buildEmbeddedAuthServerRunnerConfig("default", "test-server", tt.authConfig, tt.oidcConfig)
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
@@ -1025,32 +1018,9 @@ func TestGenerateAuthServerEnvVars_RedisCredentials(t *testing.T) {
 func TestResolveSentinelAddrs(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, discoveryv1.AddToScheme(scheme))
-
-	// Helper to create an EndpointSlice for a given service
-	newEndpointSlice := func(name, namespace, serviceName string, ips []string) *discoveryv1.EndpointSlice {
-		var endpoints []discoveryv1.Endpoint
-		for _, ip := range ips {
-			endpoints = append(endpoints, discoveryv1.Endpoint{
-				Addresses:  []string{ip},
-				Conditions: discoveryv1.EndpointConditions{Ready: k8sptr.To(true)},
-			})
-		}
-		return &discoveryv1.EndpointSlice{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels:    map[string]string{discoveryv1.LabelServiceName: serviceName},
-			},
-			Endpoints: endpoints,
-		}
-	}
-
 	tests := []struct {
 		name      string
 		sentinel  *mcpv1alpha1.RedisSentinelConfig
-		objects   []runtime.Object
 		wantAddrs []string
 		wantErr   bool
 		errMsg    string
@@ -1064,7 +1034,7 @@ func TestResolveSentinelAddrs(t *testing.T) {
 			wantAddrs: []string{"10.0.0.1:26379", "10.0.0.2:26379"},
 		},
 		{
-			name: "service discovery resolves endpoints",
+			name: "service ref constructs DNS name with explicit port",
 			sentinel: &mcpv1alpha1.RedisSentinelConfig{
 				MasterName: "mymaster",
 				SentinelService: &mcpv1alpha1.SentinelServiceRef{
@@ -1072,28 +1042,20 @@ func TestResolveSentinelAddrs(t *testing.T) {
 					Port: 26379,
 				},
 			},
-			objects: []runtime.Object{
-				newEndpointSlice("redis-sentinel-abc", "default", "redis-sentinel",
-					[]string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}),
-			},
-			wantAddrs: []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"},
+			wantAddrs: []string{"redis-sentinel.default.svc.cluster.local:26379"},
 		},
 		{
-			name: "service discovery with default port",
+			name: "service ref with default port",
 			sentinel: &mcpv1alpha1.RedisSentinelConfig{
 				MasterName: "mymaster",
 				SentinelService: &mcpv1alpha1.SentinelServiceRef{
 					Name: "redis-sentinel",
 				},
 			},
-			objects: []runtime.Object{
-				newEndpointSlice("redis-sentinel-abc", "default", "redis-sentinel",
-					[]string{"10.0.0.1"}),
-			},
-			wantAddrs: []string{"10.0.0.1:26379"},
+			wantAddrs: []string{"redis-sentinel.default.svc.cluster.local:26379"},
 		},
 		{
-			name: "service discovery with custom namespace",
+			name: "service ref with custom namespace",
 			sentinel: &mcpv1alpha1.RedisSentinelConfig{
 				MasterName: "mymaster",
 				SentinelService: &mcpv1alpha1.SentinelServiceRef{
@@ -1102,33 +1064,7 @@ func TestResolveSentinelAddrs(t *testing.T) {
 					Port:      26379,
 				},
 			},
-			objects: []runtime.Object{
-				newEndpointSlice("redis-sentinel-abc", "redis-ns", "redis-sentinel",
-					[]string{"10.0.0.1"}),
-			},
-			wantAddrs: []string{"10.0.0.1:26379"},
-		},
-		{
-			name: "no ready endpoints returns error",
-			sentinel: &mcpv1alpha1.RedisSentinelConfig{
-				MasterName: "mymaster",
-				SentinelService: &mcpv1alpha1.SentinelServiceRef{
-					Name: "redis-sentinel",
-					Port: 26379,
-				},
-			},
-			objects: []runtime.Object{
-				&discoveryv1.EndpointSlice{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "redis-sentinel-abc",
-						Namespace: "default",
-						Labels:    map[string]string{discoveryv1.LabelServiceName: "redis-sentinel"},
-					},
-					Endpoints: []discoveryv1.Endpoint{},
-				},
-			},
-			wantErr: true,
-			errMsg:  "no ready addresses found",
+			wantAddrs: []string{"redis-sentinel.redis-ns.svc.cluster.local:26379"},
 		},
 		{
 			name: "neither addrs nor service returns error",
@@ -1138,31 +1074,13 @@ func TestResolveSentinelAddrs(t *testing.T) {
 			wantErr: true,
 			errMsg:  "either sentinelAddrs or sentinelService must be specified",
 		},
-		{
-			name: "no EndpointSlices found returns error",
-			sentinel: &mcpv1alpha1.RedisSentinelConfig{
-				MasterName: "mymaster",
-				SentinelService: &mcpv1alpha1.SentinelServiceRef{
-					Name: "non-existent",
-					Port: 26379,
-				},
-			},
-			wantErr: true,
-			errMsg:  "no ready addresses found",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(tt.objects...).
-				Build()
-
-			ctx := context.Background()
-			addrs, err := resolveSentinelAddrs(ctx, fakeClient, tt.sentinel, "default")
+			addrs, err := resolveSentinelAddrs(tt.sentinel, "default")
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -1181,14 +1099,9 @@ func TestResolveSentinelAddrs(t *testing.T) {
 func TestBuildStorageRunConfig(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, discoveryv1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-
 	tests := []struct {
 		name        string
 		authConfig  *mcpv1alpha1.EmbeddedAuthServerConfig
-		objects     []runtime.Object
 		wantNil     bool
 		wantErr     bool
 		errContains string
@@ -1241,18 +1154,18 @@ func TestBuildStorageRunConfig(t *testing.T) {
 				assert.Equal(t, "mymaster", cfg.RedisConfig.SentinelConfig.MasterName)
 				assert.Equal(t, []string{"10.0.0.1:26379"}, cfg.RedisConfig.SentinelConfig.SentinelAddrs)
 				assert.Equal(t, 2, cfg.RedisConfig.SentinelConfig.DB)
-				assert.Equal(t, "aclUser", cfg.RedisConfig.AuthType)
+				assert.Equal(t, storage.AuthTypeACLUser, cfg.RedisConfig.AuthType)
 				require.NotNil(t, cfg.RedisConfig.ACLUserConfig)
 				assert.Equal(t, authrunner.RedisUsernameEnvVar, cfg.RedisConfig.ACLUserConfig.UsernameEnvVar)
 				assert.Equal(t, authrunner.RedisPasswordEnvVar, cfg.RedisConfig.ACLUserConfig.PasswordEnvVar)
 				assert.Equal(t, "10s", cfg.RedisConfig.DialTimeout)
 				assert.Equal(t, "5s", cfg.RedisConfig.ReadTimeout)
 				assert.Equal(t, "5s", cfg.RedisConfig.WriteTimeout)
-				assert.Equal(t, "thv:auth:default:test-server:", cfg.RedisConfig.KeyPrefix)
+				assert.Equal(t, "thv:auth:{default:test-server}:", cfg.RedisConfig.KeyPrefix)
 			},
 		},
 		{
-			name: "Redis storage with service discovery",
+			name: "Redis storage with service discovery via DNS",
 			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
 				Storage: &mcpv1alpha1.AuthServerStorageConfig{
@@ -1272,24 +1185,10 @@ func TestBuildStorageRunConfig(t *testing.T) {
 					},
 				},
 			},
-			objects: []runtime.Object{
-				&discoveryv1.EndpointSlice{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "redis-sentinel-abc",
-						Namespace: "default",
-						Labels:    map[string]string{discoveryv1.LabelServiceName: "redis-sentinel"},
-					},
-					Endpoints: []discoveryv1.Endpoint{
-						{
-							Addresses:  []string{"10.0.0.1"},
-							Conditions: discoveryv1.EndpointConditions{Ready: k8sptr.To(true)},
-						},
-					},
-				},
-			},
 			checkFunc: func(t *testing.T, cfg *storage.RunConfig) {
 				t.Helper()
-				assert.Equal(t, []string{"10.0.0.1:26379"}, cfg.RedisConfig.SentinelConfig.SentinelAddrs)
+				assert.Equal(t, []string{"redis-sentinel.default.svc.cluster.local:26379"},
+					cfg.RedisConfig.SentinelConfig.SentinelAddrs)
 			},
 		},
 		{
@@ -1320,19 +1219,30 @@ func TestBuildStorageRunConfig(t *testing.T) {
 			wantErr:     true,
 			errContains: "sentinel config is required",
 		},
+		{
+			name: "Redis storage without ACL user config returns error",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1alpha1.RedisStorageConfig{
+						SentinelConfig: &mcpv1alpha1.RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"10.0.0.1:26379"},
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "ACL user config is required",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(tt.objects...).
-				Build()
-
-			ctx := context.Background()
-			cfg, err := buildStorageRunConfig(ctx, fakeClient, "default", "test-server", tt.authConfig)
+			cfg, err := buildStorageRunConfig("default", "test-server", tt.authConfig)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -1359,10 +1269,6 @@ func TestBuildStorageRunConfig(t *testing.T) {
 
 func TestBuildEmbeddedAuthServerRunnerConfig_WithRedisStorage(t *testing.T) {
 	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 
 	authConfig := &mcpv1alpha1.EmbeddedAuthServerConfig{
 		Issuer: "https://auth.example.com",
@@ -1392,10 +1298,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig_WithRedisStorage(t *testing.T) {
 		Scopes:      []string{"openid"},
 	}
 
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-
-	ctx := context.Background()
-	config, err := buildEmbeddedAuthServerRunnerConfig(ctx, fakeClient, "default", "my-mcp-server", authConfig, oidcConfig)
+	config, err := buildEmbeddedAuthServerRunnerConfig("default", "my-mcp-server", authConfig, oidcConfig)
 
 	require.NoError(t, err)
 	require.NotNil(t, config)

@@ -15,6 +15,10 @@ const (
 	// TypeRedis uses Redis Sentinel-backed storage for distributed deployments.
 	TypeRedis Type = "redis"
 
+	// AuthTypeACLUser is the Redis ACL user authentication type.
+	// This is currently the only supported auth type for Redis storage.
+	AuthTypeACLUser = "aclUser"
+
 	// DefaultCleanupInterval is how often the background cleanup runs.
 	DefaultCleanupInterval = 5 * time.Minute
 

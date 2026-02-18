@@ -8,7 +8,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -308,7 +307,7 @@ func AddEmbeddedAuthServerConfigOptions(
 	}
 
 	// Build the embedded auth server config for runner
-	embeddedConfig, err := buildEmbeddedAuthServerRunnerConfig(ctx, c, namespace, mcpServerName, authServerConfig, oidcConfig)
+	embeddedConfig, err := buildEmbeddedAuthServerRunnerConfig(namespace, mcpServerName, authServerConfig, oidcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)
 	}
@@ -326,8 +325,6 @@ func AddEmbeddedAuthServerConfigOptions(
 //   - AllowedAudiences: from oidcConfig.ResourceURL (required, validated in AddEmbeddedAuthServerConfigOptions)
 //   - ScopesSupported: from oidcConfig.Scopes (optional, nil uses auth server defaults)
 func buildEmbeddedAuthServerRunnerConfig(
-	ctx context.Context,
-	c client.Client,
 	namespace string,
 	mcpServerName string,
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
@@ -378,7 +375,7 @@ func buildEmbeddedAuthServerRunnerConfig(
 	}
 
 	// Build storage configuration
-	storageCfg, err := buildStorageRunConfig(ctx, c, namespace, mcpServerName, authConfig)
+	storageCfg, err := buildStorageRunConfig(namespace, mcpServerName, authConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build storage config: %w", err)
 	}
@@ -390,8 +387,6 @@ func buildEmbeddedAuthServerRunnerConfig(
 // buildStorageRunConfig converts CRD AuthServerStorageConfig to storage.RunConfig.
 // Returns nil (memory storage default) if no storage config is specified.
 func buildStorageRunConfig(
-	ctx context.Context,
-	c client.Client,
 	namespace string,
 	mcpServerName string,
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
@@ -413,14 +408,20 @@ func buildStorageRunConfig(
 		return nil, fmt.Errorf("sentinel config is required for Redis storage")
 	}
 
+	if redisConfig.ACLUserConfig == nil ||
+		redisConfig.ACLUserConfig.UsernameSecretRef == nil ||
+		redisConfig.ACLUserConfig.PasswordSecretRef == nil {
+		return nil, fmt.Errorf("ACL user config is required for Redis storage")
+	}
+
 	// Resolve Sentinel addresses (static or via Kubernetes Service discovery)
-	sentinelAddrs, err := resolveSentinelAddrs(ctx, c, redisConfig.SentinelConfig, namespace)
+	sentinelAddrs, err := resolveSentinelAddrs(redisConfig.SentinelConfig, namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve sentinel addresses: %w", err)
 	}
 
 	// Build key prefix for multi-tenancy using namespace and MCP server name
-	keyPrefix := fmt.Sprintf("thv:auth:%s:%s:", namespace, mcpServerName)
+	keyPrefix := storage.DeriveKeyPrefix(namespace, mcpServerName)
 
 	return &storage.RunConfig{
 		Type: string(storage.TypeRedis),
@@ -430,7 +431,7 @@ func buildStorageRunConfig(
 				SentinelAddrs: sentinelAddrs,
 				DB:            int(redisConfig.SentinelConfig.DB),
 			},
-			AuthType: "aclUser",
+			AuthType: storage.AuthTypeACLUser,
 			ACLUserConfig: &storage.ACLUserRunConfig{
 				UsernameEnvVar: authrunner.RedisUsernameEnvVar,
 				PasswordEnvVar: authrunner.RedisPasswordEnvVar,
@@ -443,10 +444,8 @@ func buildStorageRunConfig(
 	}, nil
 }
 
-// resolveSentinelAddrs resolves Sentinel addresses from static config or Kubernetes Service discovery.
+// resolveSentinelAddrs resolves Sentinel addresses from static config or Kubernetes Service DNS.
 func resolveSentinelAddrs(
-	ctx context.Context,
-	c client.Client,
 	sentinelConfig *mcpv1alpha1.RedisSentinelConfig,
 	defaultNamespace string,
 ) ([]string, error) {
@@ -455,59 +454,26 @@ func resolveSentinelAddrs(
 		return sentinelConfig.SentinelAddrs, nil
 	}
 
-	// Otherwise, discover from Kubernetes Service
+	// Otherwise, construct the Kubernetes Service DNS name.
+	// go-redis tries all sentinel addresses in parallel and auto-discovers
+	// other sentinels via the SENTINEL SENTINELS command after connecting,
+	// so a single DNS name is sufficient.
 	if sentinelConfig.SentinelService == nil {
 		return nil, fmt.Errorf("either sentinelAddrs or sentinelService must be specified")
 	}
 
-	return resolveSentinelServiceAddrs(ctx, c, sentinelConfig.SentinelService, defaultNamespace)
-}
-
-// resolveSentinelServiceAddrs discovers Sentinel addresses from a Kubernetes Service
-// by listing its EndpointSlices.
-func resolveSentinelServiceAddrs(
-	ctx context.Context,
-	c client.Client,
-	sentinelService *mcpv1alpha1.SentinelServiceRef,
-	defaultNamespace string,
-) ([]string, error) {
-	namespace := sentinelService.Namespace
+	svc := sentinelConfig.SentinelService
+	namespace := svc.Namespace
 	if namespace == "" {
 		namespace = defaultNamespace
 	}
-	port := sentinelService.Port
+	port := svc.Port
 	if port == 0 {
 		port = DefaultSentinelPort
 	}
 
-	// List EndpointSlices that belong to the Service via the standard label
-	var sliceList discoveryv1.EndpointSliceList
-	if err := c.List(ctx, &sliceList,
-		client.InNamespace(namespace),
-		client.MatchingLabels{discoveryv1.LabelServiceName: sentinelService.Name},
-	); err != nil {
-		return nil, fmt.Errorf("failed to list EndpointSlices for service %s/%s: %w",
-			namespace, sentinelService.Name, err)
-	}
-
-	var addrs []string
-	for i := range sliceList.Items {
-		for j := range sliceList.Items[i].Endpoints {
-			ep := &sliceList.Items[i].Endpoints[j]
-			// Only include ready endpoints
-			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
-				continue
-			}
-			for _, addr := range ep.Addresses {
-				addrs = append(addrs, fmt.Sprintf("%s:%d", addr, port))
-			}
-		}
-	}
-
-	if len(addrs) == 0 {
-		return nil, fmt.Errorf("no ready addresses found for Sentinel service %s/%s", namespace, sentinelService.Name)
-	}
-	return addrs, nil
+	dnsName := fmt.Sprintf("%s.%s.svc.cluster.local:%d", svc.Name, namespace, port)
+	return []string{dnsName}, nil
 }
 
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.

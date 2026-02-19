@@ -6,6 +6,7 @@ package skillsvc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	nameref "github.com/google/go-containerregistry/pkg/name"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
@@ -124,14 +129,12 @@ func (s *service) List(ctx context.Context, opts skills.ListOptions) ([]skills.I
 	return s.store.List(ctx, filter)
 }
 
-// Install installs a skill. When LayerData is provided, the skill is extracted
+// Install installs a skill. When the Name field contains an OCI reference
+// (detected by the presence of '/', ':', or '@'), the artifact is pulled from
+// the registry and extracted. When LayerData is provided, the skill is extracted
 // to disk and a full installation record is created. Without LayerData, a
-// pending record is created (backward-compatible with the OCI pull flow in #3650).
+// pending record is created.
 func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
-	if err := skills.ValidateSkillName(opts.Name); err != nil {
-		return nil, httperr.WithCode(err, http.StatusBadRequest)
-	}
-
 	scope := defaultScope(opts.Scope)
 
 	// Canonicalize the project root so that equivalent paths
@@ -139,6 +142,23 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// and DB record.
 	if opts.ProjectRoot != "" {
 		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	}
+
+	// Structural check: skill names never contain '/', ':', or '@'.
+	// OCI references always require at least one of these.
+	if strings.ContainsAny(opts.Name, "/:@") {
+		if _, err := nameref.ParseReference(opts.Name); err != nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("invalid OCI reference %q: %w", opts.Name, err),
+				http.StatusBadRequest,
+			)
+		}
+		return s.installFromOCI(ctx, opts, scope)
+	}
+
+	// Plain skill name — validate and proceed with existing flow.
+	if err := skills.ValidateSkillName(opts.Name); err != nil {
+		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
@@ -301,6 +321,175 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 	}
 
 	return nil
+}
+
+// ociPullTimeout is the maximum time allowed for pulling an OCI artifact.
+const ociPullTimeout = 5 * time.Minute
+
+// maxCompressedLayerSize is the maximum compressed layer size we'll load into
+// memory. Skills are typically small (< 1MB compressed); this limit prevents a
+// malicious artifact from causing OOM before the decompression limits kick in.
+const maxCompressedLayerSize int64 = 50 * 1024 * 1024 // 50 MB
+
+// installFromOCI pulls a skill artifact from a remote registry, extracts
+// metadata and layer data, then delegates to the standard extraction flow.
+func (s *service) installFromOCI(
+	ctx context.Context, opts skills.InstallOptions, scope skills.Scope,
+) (*skills.InstallResult, error) {
+	if s.registry == nil || s.ociStore == nil {
+		return nil, httperr.WithCode(
+			errors.New("OCI registry is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	if s.pathResolver == nil {
+		return nil, httperr.WithCode(
+			errors.New("path resolver is required for OCI installs"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	ociRef := opts.Name
+
+	pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
+	defer cancel()
+
+	pulledDigest, err := s.registry.Pull(pullCtx, s.ociStore, ociRef)
+	if err != nil {
+		return nil, fmt.Errorf("pulling OCI artifact %q: %w", ociRef, err)
+	}
+
+	layerData, skillConfig, err := s.extractOCIContent(ctx, pulledDigest)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := skills.ValidateSkillName(skillConfig.Name); err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("skill artifact contains invalid name: %w", err),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// Supply chain defense: the declared skill name must match the last path
+	// component of the OCI reference. The Agent Skills spec requires that the
+	// name field matches the parent directory name; by extension, it should
+	// match the repository name in the OCI reference. A mismatch could
+	// indicate a supply chain attack (e.g., a trusted reference pointing to
+	// an artifact that overwrites a different skill).
+	if ref, parseErr := nameref.ParseReference(ociRef); parseErr == nil {
+		repo := ref.Context().RepositoryStr()
+		if idx := strings.LastIndex(repo, "/"); idx >= 0 {
+			repo = repo[idx+1:]
+		}
+		if repo != skillConfig.Name {
+			return nil, httperr.WithCode(
+				fmt.Errorf(
+					"skill name %q in artifact does not match OCI reference repository %q",
+					skillConfig.Name, repo,
+				),
+				http.StatusUnprocessableEntity,
+			)
+		}
+	}
+
+	// Hydrate install options from the pulled artifact.
+	opts.Name = skillConfig.Name
+	opts.LayerData = layerData
+	opts.Reference = ociRef
+	opts.Digest = pulledDigest.String()
+	if opts.Version == "" && skillConfig.Version != "" {
+		opts.Version = skillConfig.Version
+	}
+
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
+
+	return s.installWithExtraction(ctx, opts, scope)
+}
+
+// extractOCIContent navigates the OCI content graph from a pulled digest,
+// extracting the skill config and raw layer data.
+func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byte, *ociskills.SkillConfig, error) {
+	isIndex, err := s.ociStore.IsIndex(ctx, d)
+	if err != nil {
+		return nil, nil, fmt.Errorf("checking OCI content type: %w", err)
+	}
+
+	manifestDigest := d
+	if isIndex {
+		// Skill content is platform-agnostic — all platforms share the same
+		// layer, so we can use the first manifest in the index.
+		index, indexErr := s.ociStore.GetIndex(ctx, d)
+		if indexErr != nil {
+			return nil, nil, fmt.Errorf("reading OCI index: %w", indexErr)
+		}
+		if len(index.Manifests) == 0 {
+			return nil, nil, httperr.WithCode(
+				errors.New("OCI index contains no manifests"),
+				http.StatusUnprocessableEntity,
+			)
+		}
+		manifestDigest = index.Manifests[0].Digest
+	}
+
+	manifestBytes, err := s.ociStore.GetManifest(ctx, manifestDigest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading OCI manifest: %w", err)
+	}
+
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return nil, nil, fmt.Errorf("parsing OCI manifest: %w", err)
+	}
+
+	if len(manifest.Layers) == 0 {
+		return nil, nil, httperr.WithCode(
+			errors.New("OCI manifest contains no layers"),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	if manifest.Layers[0].MediaType != ocispec.MediaTypeImageLayerGzip {
+		return nil, nil, httperr.WithCode(
+			fmt.Errorf("unexpected layer media type %q, expected %q",
+				manifest.Layers[0].MediaType, ocispec.MediaTypeImageLayerGzip),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// Extract skill config from the OCI image config.
+	configBytes, err := s.ociStore.GetBlob(ctx, manifest.Config.Digest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading OCI config blob: %w", err)
+	}
+
+	var imgConfig ocispec.Image
+	if err := json.Unmarshal(configBytes, &imgConfig); err != nil {
+		return nil, nil, fmt.Errorf("parsing OCI image config: %w", err)
+	}
+
+	skillConfig, err := ociskills.SkillConfigFromImageConfig(&imgConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("extracting skill config from OCI artifact: %w", err)
+	}
+
+	// Guard against oversized layers before loading into memory.
+	if manifest.Layers[0].Size > maxCompressedLayerSize {
+		return nil, nil, httperr.WithCode(
+			fmt.Errorf("compressed layer size %d bytes exceeds maximum %d bytes",
+				manifest.Layers[0].Size, maxCompressedLayerSize),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// Extract the raw tar.gz layer data.
+	layerData, err := s.ociStore.GetBlob(ctx, manifest.Layers[0].Digest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading OCI layer blob: %w", err)
+	}
+
+	return layerData, skillConfig, nil
 }
 
 // installPending creates a pending skill record (no extraction).

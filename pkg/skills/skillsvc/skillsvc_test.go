@@ -422,6 +422,280 @@ func TestInstallWithExtraction(t *testing.T) {
 	})
 }
 
+// buildTestArtifact creates a real OCI skill artifact in the store and returns
+// the index digest. This uses the real Packager so the store has a proper index,
+// manifest, config blob, and layer blob — identical to what a real pull would
+// produce.
+func buildTestArtifact(t *testing.T, store *ociskills.Store, skillName, version string) godigest.Digest {
+	t.Helper()
+
+	// Create a temporary skill directory.
+	skillDir := filepath.Join(t.TempDir(), skillName)
+	require.NoError(t, os.MkdirAll(skillDir, 0o750))
+	fm := fmt.Sprintf("---\nname: %s\ndescription: test skill\nversion: %s\n---\n# %s\nA test skill.\n",
+		skillName, version, skillName)
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(fm), 0o600))
+
+	packager := ociskills.NewPackager(store)
+	result, err := packager.Package(t.Context(), skillDir, ociskills.DefaultPackageOptions())
+	require.NoError(t, err)
+	return result.IndexDigest
+}
+
+func TestInstallFromOCI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		opts         skills.InstallOptions
+		setup        func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver)
+		wantCode     int
+		wantErr      string
+		wantName     string
+		wantVersion  string
+		wantDigest   bool
+		wantRefSaved string
+	}{
+		{
+			name: "registry not configured",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				return nil, nil, storemocks.NewMockSkillStore(ctrl), skillsmocks.NewMockPathResolver(ctrl)
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name: "ociStore not configured",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				return ocimocks.NewMockRegistryClient(ctrl), nil, storemocks.NewMockSkillStore(ctrl), skillsmocks.NewMockPathResolver(ctrl)
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name: "pathResolver not configured",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				return ocimocks.NewMockRegistryClient(ctrl), ociStore, storemocks.NewMockSkillStore(ctrl), nil
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name: "pull error propagates",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+					Return(godigest.Digest(""), fmt.Errorf("auth required"))
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return reg, ociStore, storemocks.NewMockSkillStore(ctrl), pr
+			},
+			wantErr: "auth required",
+		},
+		{
+			name: "invalid skill name in artifact",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/bad-artifact:v1"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+
+				// Build an artifact with an invalid skill name (uppercase).
+				skillDir := filepath.Join(t.TempDir(), "INVALID")
+				require.NoError(t, os.MkdirAll(skillDir, 0o750))
+				require.NoError(t, os.WriteFile(
+					filepath.Join(skillDir, "SKILL.md"),
+					[]byte("---\nname: INVALID\ndescription: test\n---\n# Bad"),
+					0o600,
+				))
+				packager := ociskills.NewPackager(ociStore)
+				result, pkgErr := packager.Package(t.Context(), skillDir, ociskills.DefaultPackageOptions())
+				require.NoError(t, pkgErr)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/bad-artifact:v1").
+					Return(result.IndexDigest, nil)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return reg, ociStore, storemocks.NewMockSkillStore(ctrl), pr
+			},
+			wantCode: http.StatusUnprocessableEntity,
+		},
+		{
+			name: "successful pull and install",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Client: "claude-code"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+					Return(indexDigest, nil)
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(t.TempDir(), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, "my-skill", sk.Metadata.Name)
+						assert.Equal(t, "1.0.0", sk.Metadata.Version)
+						assert.Equal(t, "ghcr.io/org/my-skill:v1", sk.Reference)
+						assert.Contains(t, sk.Digest, "sha256:")
+						assert.Equal(t, skills.InstallStatusInstalled, sk.Status)
+						return nil
+					})
+				return reg, ociStore, store, pr
+			},
+			wantName:     "my-skill",
+			wantVersion:  "1.0.0",
+			wantDigest:   true,
+			wantRefSaved: "ghcr.io/org/my-skill:v1",
+		},
+		{
+			name: "name mismatch between artifact and reference is rejected",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/some-repo:v1", Client: "claude-code"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				// The artifact declares itself as "actual-skill", not "some-repo".
+				indexDigest := buildTestArtifact(t, ociStore, "actual-skill", "2.0.0")
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/some-repo:v1").
+					Return(indexDigest, nil)
+
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return reg, ociStore, storemocks.NewMockSkillStore(ctrl), pr
+			},
+			wantCode: http.StatusUnprocessableEntity,
+			wantErr:  "does not match OCI reference repository",
+		},
+		{
+			name: "preserves caller version over config version",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Version: "override-version", Client: "claude-code"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+					Return(indexDigest, nil)
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(t.TempDir(), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, "override-version", sk.Metadata.Version)
+						return nil
+					})
+				return reg, ociStore, store, pr
+			},
+			wantName:    "my-skill",
+			wantVersion: "override-version",
+		},
+		{
+			name: "hydrates version from config when caller omits it",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Client: "claude-code"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "3.0.0")
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+					Return(indexDigest, nil)
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(t.TempDir(), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, "3.0.0", sk.Metadata.Version)
+						return nil
+					})
+				return reg, ociStore, store, pr
+			},
+			wantName:    "my-skill",
+			wantVersion: "3.0.0",
+		},
+		{
+			name: "invalid OCI reference returns 400",
+			opts: skills.InstallOptions{Name: "not://valid:ref:extra"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				return nil, nil, storemocks.NewMockSkillStore(ctrl), nil
+			},
+			wantCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			registry, ociStore, store, pr := tt.setup(t, ctrl)
+
+			var opts []Option
+			if registry != nil {
+				opts = append(opts, WithRegistryClient(registry))
+			}
+			if ociStore != nil {
+				opts = append(opts, WithOCIStore(ociStore))
+			}
+			if pr != nil {
+				opts = append(opts, WithPathResolver(pr))
+			}
+
+			svc := New(store, opts...)
+			result, err := svc.Install(t.Context(), tt.opts)
+
+			if tt.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				return
+			}
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantName != "" {
+				assert.Equal(t, tt.wantName, result.Skill.Metadata.Name)
+			}
+			if tt.wantVersion != "" {
+				assert.Equal(t, tt.wantVersion, result.Skill.Metadata.Version)
+			}
+			if tt.wantDigest {
+				assert.Contains(t, result.Skill.Digest, "sha256:")
+			}
+			if tt.wantRefSaved != "" {
+				assert.Equal(t, tt.wantRefSaved, result.Skill.Reference)
+			}
+		})
+	}
+}
+
 func TestUninstall(t *testing.T) {
 	t.Parallel()
 

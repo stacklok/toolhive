@@ -109,6 +109,7 @@ func AddExternalAuthConfigOptions(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
+	mcpServerName string,
 	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
@@ -135,7 +136,7 @@ func AddExternalAuthConfigOptions(
 		// No config to add for unauthenticated
 		return nil
 	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
-		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, externalAuthConfigRef, oidcConfig, options)
+		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, mcpServerName, externalAuthConfigRef, oidcConfig, options)
 	case mcpv1alpha1.ExternalAuthTypeAWSSts:
 		return addAWSStsConfig(externalAuthConfig, options)
 	default:

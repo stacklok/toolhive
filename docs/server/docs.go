@@ -1397,6 +1397,14 @@ const docTemplate = `{
                     "proxy_mode": {
                         "$ref": "#/components/schemas/types.ProxyMode"
                     },
+                    "publish": {
+                        "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/remote.Config"
                     },

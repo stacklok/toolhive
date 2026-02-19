@@ -155,6 +155,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays                     Debug: show resolved container paths for tmpfs overlays (default false)
       --proxy-mode string                           Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                              Port for the HTTP proxy to listen on (host port)
+  -p, --publish stringArray                         Publish a container's port(s) to the host (format: hostPort:containerPort)
       --remote-auth                                 Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string            OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-bearer-token string             Bearer token for remote server authentication (alternative to OAuth)

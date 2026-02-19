@@ -68,5 +68,5 @@ func NewContainerError(err error, containerID, message string) *ContainerError {
 
 // IsContainerNotFound checks if the error is a container not found error
 func IsContainerNotFound(err error) bool {
-	return errors.Is(err, ErrContainerNotFound) || (err != nil && err.Error() == ErrContainerNotFound.Error())
+	return errors.Is(err, ErrContainerNotFound)
 }

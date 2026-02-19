@@ -312,6 +312,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.Host,
 			r.Config.TargetPort,
 			r.Config.TargetHost,
+			r.Config.Publish,
 			scalingConfig,
 		)
 		if err != nil {

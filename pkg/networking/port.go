@@ -12,6 +12,9 @@ import (
 	"math/big"
 	"net"
 
+	"strconv"
+	"strings"
+
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
 
@@ -200,4 +203,46 @@ func GetProcessOnPort(port int) (int, error) {
 		}
 	}
 	return 0, nil
+}
+
+// ParsePortSpec parses a port specification string in the format "hostPort:containerPort" or just "containerPort".
+// Returns the host port string and container port integer.
+// If only a container port is provided, a random available host port is selected.
+func ParsePortSpec(portSpec string) (string, int, error) {
+	slog.Debug("Parsing port spec", "spec", portSpec)
+	// Check if it's in host:container format
+	if strings.Contains(portSpec, ":") {
+		parts := strings.Split(portSpec, ":")
+		if len(parts) != 2 {
+			return "", 0, fmt.Errorf("invalid port specification: %s (expected 'hostPort:containerPort')", portSpec)
+		}
+
+		hostPortStr := parts[0]
+		containerPortStr := parts[1]
+
+		// Verify host port is a valid integer (or empty string if we supported random host port with :, but here we expect explicit)
+		if _, err := strconv.Atoi(hostPortStr); err != nil {
+			return "", 0, fmt.Errorf("invalid host port in spec '%s': %w", portSpec, err)
+		}
+
+		containerPort, err := strconv.Atoi(containerPortStr)
+		if err != nil {
+			return "", 0, fmt.Errorf("invalid container port in spec '%s': %w", portSpec, err)
+		}
+
+		return hostPortStr, containerPort, nil
+	}
+
+	// Try parsing as just container port
+	containerPort, err := strconv.Atoi(portSpec)
+	if err == nil {
+		// Find a random available host port
+		hostPort := FindAvailable()
+		if hostPort == 0 {
+			return "", 0, fmt.Errorf("could not find an available port for container port %d", containerPort)
+		}
+		return fmt.Sprintf("%d", hostPort), containerPort, nil
+	}
+
+	return "", 0, fmt.Errorf("invalid port specification: %s (expected 'hostPort:containerPort' or 'containerPort')", portSpec)
 }

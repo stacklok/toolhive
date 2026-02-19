@@ -127,6 +127,29 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				assert.Equal(t, "abc123", marker.CLIChecksum)
 			},
 		},
+		{
+			name: "valid marker with flatpak method",
+			setupFile: func(t *testing.T, dir string) string {
+				t.Helper()
+				marker := cliSourceMarker{
+					SchemaVersion:  1,
+					Source:         "desktop",
+					InstallMethod:  "flatpak",
+					CLIVersion:     "1.0.0",
+					FlatpakTarget:  "/home/user/.local/share/flatpak/app/com.stacklok.ToolHive/x86_64/master/active/files/toolhive/resources/bin/linux-x64/thv",
+					InstalledAt:    "2026-01-22T10:30:00Z",
+					DesktopVersion: "2.0.0",
+				}
+				return writeMarkerFile(t, dir, marker)
+			},
+			wantErr:    nil,
+			wantMarker: true,
+			validateFn: func(t *testing.T, marker *cliSourceMarker) {
+				t.Helper()
+				assert.Equal(t, "flatpak", marker.InstallMethod)
+				assert.Contains(t, marker.FlatpakTarget, "com.stacklok.ToolHive")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -420,6 +443,26 @@ func TestGetTargetPath(t *testing.T) {
 		marker := &cliSourceMarker{
 			InstallMethod: "symlink",
 			SymlinkTarget: "",
+		}
+		result := getTargetPath(marker)
+		assert.Equal(t, "", result)
+	})
+
+	t.Run("flatpak method with target", func(t *testing.T) {
+		t.Parallel()
+		marker := &cliSourceMarker{
+			InstallMethod: "flatpak",
+			FlatpakTarget: "/home/user/.local/share/flatpak/app/com.stacklok.ToolHive/x86_64/master/active/files/toolhive/resources/bin/linux-x64/thv",
+		}
+		result := getTargetPath(marker)
+		assert.Equal(t, marker.FlatpakTarget, result)
+	})
+
+	t.Run("flatpak method without target", func(t *testing.T) {
+		t.Parallel()
+		marker := &cliSourceMarker{
+			InstallMethod: "flatpak",
+			FlatpakTarget: "",
 		}
 		result := getTargetPath(marker)
 		assert.Equal(t, "", result)
@@ -748,6 +791,75 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		// Should not conflict because the target binary doesn't exist
 		assert.False(t, result.HasConflict, "copy method on Windows should not conflict when target doesn't exist")
 	})
+}
+
+//nolint:paralleltest // subtests modify HOME env var
+func TestCheckDesktopAlignmentFlatpakMethod(t *testing.T) {
+	t.Run("flatpak method detects conflict when target exists and paths differ", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		// Create the .toolhive directory
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+
+		// Create a fake binary simulating the host-visible Flatpak binary
+		fakeFlatpakBinary := filepath.Join(dir, "flatpak-app", "thv")
+		require.NoError(t, os.MkdirAll(filepath.Dir(fakeFlatpakBinary), 0755))
+		require.NoError(t, os.WriteFile(fakeFlatpakBinary, []byte("fake"), 0755))
+
+		// Write a marker file with flatpak method
+		marker := cliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "flatpak",
+			CLIVersion:     "1.0.0",
+			FlatpakTarget:  fakeFlatpakBinary,
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		markerPath := filepath.Join(thDir, ".cli-source")
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(markerPath, data, 0600))
+
+		setHomeDir(t, dir)
+
+		result, err := checkDesktopAlignment()
+		require.NoError(t, err)
+		assert.True(t, result.HasConflict, "flatpak method should detect conflict when running a different CLI")
+		assert.NotEmpty(t, result.Message)
+	})
+
+	t.Run("flatpak method no conflict when target does not exist", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		// Create the .toolhive directory
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+
+		// Write a marker file pointing to a non-existent Flatpak binary
+		// (simulates Flatpak being uninstalled)
+		marker := cliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "flatpak",
+			CLIVersion:     "1.0.0",
+			FlatpakTarget:  "/nonexistent/flatpak/app/thv",
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		markerPath := filepath.Join(thDir, ".cli-source")
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(markerPath, data, 0600))
+
+		setHomeDir(t, dir)
+
+		result, err := checkDesktopAlignment()
+		require.NoError(t, err)
+		assert.False(t, result.HasConflict, "flatpak method should not conflict when target doesn't exist (Flatpak uninstalled)")
+	})
+
 }
 
 func TestBuildConflictMessageWithoutDesktopVersion(t *testing.T) {

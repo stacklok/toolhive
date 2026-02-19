@@ -3360,12 +3360,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/skills.BuildResult'
           description: OK
-        "501":
+        "400":
           content:
             application/json:
               schema:
                 type: string
-          description: Not Implemented
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
       summary: Build a skill
       tags:
       - skills
@@ -3390,12 +3396,24 @@ paths:
               schema:
                 type: string
           description: No Content
-        "501":
+        "400":
           content:
             application/json:
               schema:
                 type: string
-          description: Not Implemented
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
       summary: Push a skill
       tags:
       - skills
@@ -3420,12 +3438,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/skills.ValidationResult'
           description: OK
-        "501":
+        "400":
           content:
             application/json:
               schema:
                 type: string
-          description: Not Implemented
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
       summary: Validate a skill
       tags:
       - skills

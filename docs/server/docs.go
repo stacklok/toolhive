@@ -4177,7 +4177,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4185,7 +4185,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Build a skill",
@@ -4228,7 +4238,7 @@ const docTemplate = `{
                         },
                         "description": "No Content"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4236,7 +4246,27 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Push a skill",
@@ -4279,7 +4309,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4287,7 +4317,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Validate a skill",

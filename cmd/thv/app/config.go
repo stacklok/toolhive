@@ -78,6 +78,26 @@ var unsetRegistryCmd = &cobra.Command{
 	RunE:  unsetRegistryCmdFunc,
 }
 
+var setRegistryAuthCmd = &cobra.Command{
+	Use:   "set-registry-auth",
+	Short: "Configure OAuth authentication for the registry",
+	Long: `Configure OAuth/OIDC authentication for connecting to an authenticated MCP registry.
+
+The CLI will open a browser for the OAuth flow when first accessing the registry.
+
+Examples:
+  thv config set-registry-auth --issuer https://auth.company.com --client-id toolhive-cli
+  thv config set-registry-auth --issuer https://auth.company.com --client-id toolhive-cli --scopes registry:read`,
+	RunE: setRegistryAuthCmdFunc,
+}
+
+var unsetRegistryAuthCmd = &cobra.Command{
+	Use:   "unset-registry-auth",
+	Short: "Remove registry authentication configuration",
+	Long:  "Remove the registry authentication configuration. The registry URL is preserved.",
+	RunE:  unsetRegistryAuthCmdFunc,
+}
+
 var usageMetricsCmd = &cobra.Command{
 	Use:   "usage-metrics <enable|disable>",
 	Short: "Enable or disable anonymous usage metrics",
@@ -87,6 +107,11 @@ var usageMetricsCmd = &cobra.Command{
 
 var (
 	allowPrivateRegistryIp bool
+	authIssuer             string
+	authClientID           string
+	authScopes             []string
+	authAudience           string
+	authUsePKCE            bool
 )
 
 func init() {
@@ -107,6 +132,15 @@ func init() {
 	)
 	configCmd.AddCommand(getRegistryCmd)
 	configCmd.AddCommand(unsetRegistryCmd)
+	configCmd.AddCommand(setRegistryAuthCmd)
+	setRegistryAuthCmd.Flags().StringVar(&authIssuer, "issuer", "", "OIDC issuer URL (required)")
+	setRegistryAuthCmd.Flags().StringVar(&authClientID, "client-id", "", "OAuth client ID (required)")
+	setRegistryAuthCmd.Flags().StringSliceVar(&authScopes, "scopes", []string{"openid"}, "OAuth scopes")
+	setRegistryAuthCmd.Flags().StringVar(&authAudience, "audience", "", "OAuth audience / resource indicator (e.g., api://my-registry)")
+	setRegistryAuthCmd.Flags().BoolVar(&authUsePKCE, "use-pkce", true, "Enable PKCE (recommended)")
+	_ = setRegistryAuthCmd.MarkFlagRequired("issuer")
+	_ = setRegistryAuthCmd.MarkFlagRequired("client-id")
+	configCmd.AddCommand(unsetRegistryAuthCmd)
 	configCmd.AddCommand(usageMetricsCmd)
 
 	// Add OTEL parent command to config
@@ -186,11 +220,23 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	service := registry.NewConfigurator()
 	registryType, source := service.GetRegistryInfo()
 
+	// Get auth info
+	authConfigurator := registry.NewAuthConfigurator()
+	authType, hasCachedTokens := authConfigurator.GetAuthInfo()
+	authSuffix := ""
+	if authType == "oauth" {
+		if hasCachedTokens {
+			authSuffix = ", OAuth authenticated"
+		} else {
+			authSuffix = ", OAuth configured"
+		}
+	}
+
 	switch registryType {
 	case config.RegistryTypeAPI:
-		fmt.Printf("Current registry: %s (API endpoint)\n", source)
+		fmt.Printf("Current registry: %s (API endpoint%s)\n", source, authSuffix)
 	case config.RegistryTypeURL:
-		fmt.Printf("Current registry: %s (remote file)\n", source)
+		fmt.Printf("Current registry: %s (remote file%s)\n", source, authSuffix)
 	case config.RegistryTypeFile:
 		fmt.Printf("Current registry: %s (local file)\n", source)
 		// Check if the file still exists
@@ -265,6 +311,39 @@ func enhanceRegistryError(err error, url, registryType string) error {
 
 	// For other errors, return the original error with minimal enhancement
 	return fmt.Errorf("failed to set %s: %w", registryType, err)
+}
+
+func setRegistryAuthCmdFunc(_ *cobra.Command, _ []string) error {
+	configurator := registry.NewAuthConfigurator()
+	if err := configurator.SetOAuthAuth(authIssuer, authClientID, authAudience, authScopes, authUsePKCE); err != nil {
+		return fmt.Errorf("failed to configure registry authentication: %w", err)
+	}
+
+	// Reset provider to pick up new auth config
+	registry.ResetDefaultProvider()
+
+	fmt.Println("OAuth authentication configured successfully.")
+	fmt.Println("The OAuth flow will be triggered when you first access the registry.")
+	return nil
+}
+
+func unsetRegistryAuthCmdFunc(_ *cobra.Command, _ []string) error {
+	configurator := registry.NewAuthConfigurator()
+	authType, _ := configurator.GetAuthInfo()
+	if authType == "" {
+		fmt.Println("No registry authentication is currently configured.")
+		return nil
+	}
+
+	if err := configurator.UnsetAuth(); err != nil {
+		return fmt.Errorf("failed to remove registry authentication: %w", err)
+	}
+
+	// Reset provider to pick up cleared auth config
+	registry.ResetDefaultProvider()
+
+	fmt.Println("Registry authentication removed.")
+	return nil
 }
 
 func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {

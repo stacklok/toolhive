@@ -11,6 +11,7 @@ import (
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
 	"github.com/stacklok/toolhive/pkg/registry/api"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 	"github.com/stacklok/toolhive/pkg/registry/converters"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -24,10 +25,11 @@ type APIRegistryProvider struct {
 	client         api.Client
 }
 
-// NewAPIRegistryProvider creates a new API registry provider
-func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool) (*APIRegistryProvider, error) {
+// NewAPIRegistryProvider creates a new API registry provider.
+// If tokenSource is non-nil, all API requests will include authentication.
+func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth.TokenSource) (*APIRegistryProvider, error) {
 	// Create API client
-	client, err := api.NewClient(apiURL, allowPrivateIp)
+	client, err := api.NewClient(apiURL, allowPrivateIp, tokenSource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create API client: %w", err)
 	}
@@ -41,14 +43,18 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool) (*APIRegistryPro
 	// Initialize the base provider with the GetRegistry function
 	p.BaseProvider = NewBaseProvider(p.GetRegistry)
 
-	// Validate the endpoint by actually trying to use it (not checking openapi.yaml)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Skip validation probe when auth is configured. The OAuth browser flow
+	// requires user interaction which cannot complete within the validation timeout.
+	// The endpoint will be validated on first real use instead.
+	if tokenSource == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	// Try to list servers with a small limit to verify API functionality
-	_, err = client.ListServers(ctx, &api.ListOptions{Limit: 1})
-	if err != nil {
-		return nil, fmt.Errorf("API endpoint not functional: %w", err)
+		// Try to list servers with a small limit to verify API functionality
+		_, err = client.ListServers(ctx, &api.ListOptions{Limit: 1})
+		if err != nil {
+			return nil, fmt.Errorf("API endpoint not functional: %w", err)
+		}
 	}
 
 	return p, nil

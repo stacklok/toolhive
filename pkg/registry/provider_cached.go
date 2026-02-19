@@ -16,6 +16,7 @@ import (
 	"github.com/adrg/xdg"
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
@@ -48,8 +49,11 @@ type CachedAPIRegistryProvider struct {
 // NewCachedAPIRegistryProvider creates a new cached API registry provider.
 // If usePersistent is true, it will use a file cache in ~/.toolhive/cache/
 // The validation happens in NewAPIRegistryProvider by actually trying to use the API.
-func NewCachedAPIRegistryProvider(apiURL string, allowPrivateIp bool, usePersistent bool) (*CachedAPIRegistryProvider, error) {
-	base, err := NewAPIRegistryProvider(apiURL, allowPrivateIp)
+// If tokenSource is non-nil, all API requests will include authentication.
+func NewCachedAPIRegistryProvider(
+	apiURL string, allowPrivateIp bool, usePersistent bool, tokenSource auth.TokenSource,
+) (*CachedAPIRegistryProvider, error) {
+	base, err := NewAPIRegistryProvider(apiURL, allowPrivateIp, tokenSource)
 	if err != nil {
 		return nil, err
 	}

@@ -8,10 +8,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -98,7 +98,7 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	if err != nil {
 		// Template expansion failed - try to use default value
 		if !propertyDef.Default.IsEmpty() {
-			logger.Warnf("Failed to expand template for property %q: %v. Using default value.", propertyName, err)
+			slog.Warn("failed to expand template for property, using default value", "property", propertyName, "error", err)
 			return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 		}
 		// No default - propagate error
@@ -116,7 +116,7 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	// Check if template expansion returned "<no value>" placeholder (missing field)
 	// In this case, fallback to default value if available
 	if expandedStr == "<no value>" && !propertyDef.Default.IsEmpty() {
-		logger.Warnf("Template expanded to <no value> for property %q, using default value", propertyName)
+		slog.Warn("template expanded to <no value> for property, using default value", "property", propertyName)
 		return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 	}
 
@@ -129,7 +129,7 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 		if err := json.Unmarshal([]byte(expandedStr), &obj); err != nil {
 			// JSON deserialization failed - try default value
 			if !propertyDef.Default.IsEmpty() {
-				logger.Warnf("Failed to deserialize JSON for property %q: %v. Using default value.", propertyName, err)
+				slog.Warn("failed to deserialize JSON for property, using default value", "property", propertyName, "error", err)
 				return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 			}
 			return nil, fmt.Errorf("failed to deserialize JSON for object property %q: %w", propertyName, err)
@@ -143,7 +143,7 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 		if err := json.Unmarshal([]byte(expandedStr), &arr); err != nil {
 			// JSON deserialization failed - try default value
 			if !propertyDef.Default.IsEmpty() {
-				logger.Warnf("Failed to deserialize JSON array for property %q: %v. Using default value.", propertyName, err)
+				slog.Warn("failed to deserialize JSON array for property, using default value", "property", propertyName, "error", err)
 				return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 			}
 			return nil, fmt.Errorf("failed to deserialize JSON array for property %q: %w", propertyName, err)
@@ -156,7 +156,7 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	if err != nil {
 		// Type coercion failed - try default value
 		if !propertyDef.Default.IsEmpty() {
-			logger.Warnf("Failed to coerce value for property %q: %v. Using default value.", propertyName, err)
+			slog.Warn("failed to coerce value for property, using default value", "property", propertyName, "error", err)
 			return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 		}
 		return nil, fmt.Errorf("failed to coerce value for property %q: %w", propertyName, err)
@@ -267,14 +267,14 @@ func (*workflowEngine) coerceDefaultValue(defaultVal any, targetType string) (an
 			// Check for potential truncation
 			intVal := int64(v)
 			if float64(intVal) != v {
-				logger.Warnf("Potential precision loss converting float64 %v to int64 %d", v, intVal)
+				slog.Warn("potential precision loss converting float64 to int64", "float64", v, "int64", intVal)
 			}
 			return intVal, nil
 		case float32:
 			// Check for potential truncation
 			intVal := int64(v)
 			if float32(intVal) != v {
-				logger.Warnf("Potential precision loss converting float32 %v to int64 %d", v, intVal)
+				slog.Warn("potential precision loss converting float32 to int64", "float32", v, "int64", intVal)
 			}
 			return intVal, nil
 		case string:

@@ -95,7 +95,7 @@ func (p *TunnelProvider) StartTunnel(ctx context.Context, name, targetURI string
 		return nil
 	}
 	//nolint:gosec // G706: logging tunnel name and target URI from config
-	slog.Info("Starting ngrok tunnel", "name", name, "target", targetURI)
+	slog.Info("starting ngrok tunnel", "name", name, "target", targetURI)
 
 	agent, err := ngrok.NewAgent(
 		ngrok.WithAuthtoken(p.config.AuthToken),

@@ -95,7 +95,7 @@ func (s *SSEResponseProcessor) ProcessResponse(resp *http.Response) error {
 	go func() {
 		defer func() {
 			if err := pw.Close(); err != nil {
-				slog.Debug("Failed to close pipe writer", "error", err)
+				slog.Debug("failed to close pipe writer", "error", err)
 			}
 		}()
 		s.processSSEStream(originalBody, pw, rewriteConfig)
@@ -229,7 +229,7 @@ func (s *sseLineProcessor) extractSessionID(line string) {
 		}
 		s.proxy.setServerInitialized()
 		if err := s.proxy.sessionManager.AddWithID(sid); err != nil {
-			slog.Error("Failed to create session from SSE line", "error", err)
+			slog.Error("failed to create session from SSE line", "error", err)
 		}
 		s.sessionFound = true
 	}
@@ -240,13 +240,13 @@ func (s *sseLineProcessor) rewriteDataLine(line, dataContent string) string {
 	rewrittenURL, err := rewriteEndpointURL(dataContent, s.rewriteConfig)
 	if err != nil {
 		//nolint:gosec // G706: logging endpoint URL from SSE stream
-		slog.Warn("Failed to rewrite endpoint URL",
+		slog.Warn("failed to rewrite endpoint URL",
 			"url", dataContent, "error", err)
 		return line
 	}
 	if rewrittenURL != dataContent {
 		//nolint:gosec // G706: logging endpoint URLs from SSE stream
-		slog.Debug("Rewrote SSE endpoint URL",
+		slog.Debug("rewrote SSE endpoint URL",
 			"from", dataContent, "to", rewrittenURL)
 		return "data: " + rewrittenURL
 	}
@@ -275,12 +275,12 @@ func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.P
 	}
 
 	if err := scanner.Err(); err != nil {
-		slog.Error("Failed to scan response body", "error", err)
+		slog.Error("failed to scan response body", "error", err)
 	}
 
 	if readCloser, ok := originalBody.(io.ReadCloser); ok {
 		if _, err := io.Copy(pw, readCloser); err != nil && err != io.EOF {
-			slog.Error("Failed to copy response body", "error", err)
+			slog.Error("failed to copy response body", "error", err)
 		}
 	}
 }

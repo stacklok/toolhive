@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -36,7 +37,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
@@ -310,7 +310,7 @@ func setupUnixSocket(address string) (net.Listener, error) {
 
 func cleanupUnixSocket(address string) {
 	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
-		logger.Warnf("failed to remove socket file: %v", err)
+		slog.Warn("failed to remove socket file", "error", err)
 	}
 }
 
@@ -336,13 +336,15 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 
 				updateChecker, err := updates.NewUpdateChecker(versionClient)
 				if err != nil {
-					logger.Warnf("unable to create update client for %s: %s", component, err)
+					//nolint:gosec // G706: component is an internal string constant
+					slog.Warn("unable to create update client", "component", component, "error", err)
 					return
 				}
 
 				err = updateChecker.CheckLatestVersion()
 				if err != nil {
-					logger.Warnf("could not check for updates for %s: %s", component, err)
+					//nolint:gosec // G706: component is an internal string constant
+					slog.Warn("could not check for updates", "component", component, "error", err)
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -408,8 +410,8 @@ func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check Content-Length header first for early rejection
 			if r.ContentLength > maxSize {
-				logger.Warnf("Request body size %d exceeds limit %d for %s %s",
-					r.ContentLength, maxSize, r.Method, r.URL.Path)
+				slog.Warn("request body size exceeds limit", //nolint:gosec // G706: request metadata for diagnostics
+					"content_length", r.ContentLength, "limit", maxSize, "method", r.Method, "path", r.URL.Path)
 				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -497,7 +499,7 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 
 // Start starts the server and blocks until the context is cancelled
 func (s *Server) Start(ctx context.Context) error {
-	logger.Infof("starting %s server at %s", s.addrType, s.address)
+	slog.Info("starting server", "type", s.addrType, "address", s.address)
 
 	// Start server in a goroutine
 	serverErr := make(chan error, 1)
@@ -529,7 +531,7 @@ func (s *Server) shutdown() error {
 	}
 
 	s.cleanup()
-	logger.Debugf("%s server stopped", s.addrType)
+	slog.Debug("server stopped", "type", s.addrType)
 	return nil
 }
 
@@ -537,7 +539,7 @@ func (s *Server) shutdown() error {
 func (s *Server) cleanup() {
 	if s.storeCloser != nil {
 		if err := s.storeCloser.Close(); err != nil {
-			logger.Warnf("failed to close skill store: %v", err)
+			slog.Warn("failed to close skill store", "error", err)
 		}
 	}
 	if s.isUnixSocket {

@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/url"
 	"slices"
@@ -23,7 +24,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/recovery"
@@ -151,7 +151,7 @@ func WithTargetHost(targetHost string) RunConfigBuilderOption {
 			if err == nil {
 				targetHost = remoteURL.Host
 			} else {
-				logger.Warnf("Failed to parse remote URL: %v", err)
+				slog.Warn("Failed to parse remote URL", "error", err)
 				targetHost = transport.LocalhostIPv4
 			}
 		} else if targetHost == "" {
@@ -313,7 +313,7 @@ func WithLabels(labelStrings []string) RunConfigBuilderOption {
 		for _, labelString := range labelStrings {
 			key, value, err := labels.ParseLabel(labelString)
 			if err != nil {
-				logger.Warnf("Skipping invalid label: %s (%v)", labelString, err)
+				slog.Warn("Skipping invalid label", "label", labelString, "error", err)
 				continue
 			}
 			b.config.ContainerLabels[key] = value
@@ -606,7 +606,7 @@ func addCoreMiddlewares(
 		if tokenExchangeMwConfig, err := types.NewMiddlewareConfig(tokenexchange.MiddlewareType, tokenExchangeParams); err == nil {
 			middlewareConfigs = append(middlewareConfigs, *tokenExchangeMwConfig)
 		} else {
-			logger.Warnf("Failed to create token exchange middleware config: %v", err)
+			slog.Warn("Failed to create token exchange middleware config", "error", err)
 		}
 	}
 
@@ -711,7 +711,7 @@ func addAuditMiddleware(
 func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
-		logger.Warnf("failed to create recovery middleware: %v", err)
+		slog.Warn("failed to create recovery middleware", "error", err)
 		return middlewareConfigs
 	}
 	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
@@ -843,10 +843,10 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	mcpTransport := b.transportString
 	if mcpTransport == "" {
 		if imageMetadata != nil && imageMetadata.Transport != "" {
-			logger.Debugf("Using registry mcpTransport: %s", imageMetadata.Transport)
+			slog.Debug("Using registry transport", "transport", imageMetadata.Transport)
 			mcpTransport = imageMetadata.Transport
 		} else {
-			logger.Debugf("Defaulting mcpTransport to stdio")
+			slog.Debug("Defaulting mcpTransport to stdio")
 			mcpTransport = types.TransportTypeStdio.String()
 		}
 	}
@@ -864,12 +864,12 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 		if isHTTPServer {
 			// Use registry proxy port if not set by CLI
 			if proxyPort == 0 && imageMetadata.ProxyPort > 0 {
-				logger.Debugf("Using registry proxy port: %d", imageMetadata.ProxyPort)
+				slog.Debug("Using registry proxy port", "port", imageMetadata.ProxyPort)
 				proxyPort = imageMetadata.ProxyPort
 			}
 			// Use registry target port if not set by CLI
 			if targetPort == 0 && imageMetadata.TargetPort > 0 {
-				logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
+				slog.Debug("Using registry target port", "port", imageMetadata.TargetPort)
 				targetPort = imageMetadata.TargetPort
 			}
 		}
@@ -893,7 +893,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
 		}
 		c.PermissionProfile.Network.Mode = b.networkMode
-		logger.Debugf("Setting network mode to '%s' on permission profile", b.networkMode)
+		slog.Debug("Setting network mode on permission profile", "network_mode", b.networkMode)
 	}
 
 	// Process volume mounts
@@ -904,7 +904,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	// Generate container name if not already set
 	_, wasModified := c.WithContainerName()
 	if wasModified && c.Name != "" {
-		logger.Warnf("The provided name '%s' contained invalid characters and was sanitized", c.Name)
+		slog.Warn("The provided name contained invalid characters and was sanitized", "name", c.Name)
 	}
 
 	// Add standard labels
@@ -932,7 +932,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	if imageMetadata != nil && len(imageMetadata.Args) > 0 {
 		if len(c.CmdArgs) == 0 {
 			// No user args provided, use registry defaults
-			logger.Debugf("Using registry default args: %v", imageMetadata.Args)
+			slog.Debug("Using registry default args", "args", imageMetadata.Args)
 			c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
 		}
 	}
@@ -944,7 +944,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	}
 
 	if c.ToolsOverride != nil && imageMetadata != nil && imageMetadata.Tools != nil {
-		logger.Debugf("Using tools override: %v", c.ToolsOverride)
+		slog.Debug("Using tools override", "tools", c.ToolsOverride)
 		for toolName := range c.ToolsOverride {
 			if !slices.Contains(imageMetadata.Tools, toolName) {
 				return fmt.Errorf("tool %s not found in registry", toolName)
@@ -953,7 +953,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	}
 
 	if c.ToolsFilter != nil && imageMetadata != nil && imageMetadata.Tools != nil {
-		logger.Debugf("Using tools filter: %v", c.ToolsFilter)
+		slog.Debug("Using tools filter", "filter", c.ToolsFilter)
 		for _, tool := range c.ToolsFilter {
 			name := tool
 
@@ -997,12 +997,12 @@ func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *regtypes.ImageMe
 	// If a profile was not set by name or path, check the image metadata.
 	if imageMetadata != nil && imageMetadata.Permissions != nil {
 
-		logger.Debugf("Using registry permission profile: %v", imageMetadata.Permissions)
+		slog.Debug("Using registry permission profile", "permissions", imageMetadata.Permissions)
 		return imageMetadata.Permissions, nil
 	}
 
 	// If no metadata is available, use the network permission profile as default.
-	logger.Debugf("Using default permission profile: %s", permissions.ProfileNetwork)
+	slog.Debug("Using default permission profile", "profile", permissions.ProfileNetwork)
 	return permissions.BuiltinNetworkProfile(), nil
 }
 
@@ -1052,8 +1052,7 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 
 		// Check for duplicate mount target
 		if existingSource, isDuplicate := existingMounts[target]; isDuplicate {
-			logger.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
-				target, existingSource)
+			slog.Warn("Skipping duplicate mount target", "target", target, "existing_source", existingSource)
 			continue
 		}
 
@@ -1067,9 +1066,8 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		// Add to the map of existing mounts
 		existingMounts[target] = source
 
-		logger.Debugf("Adding volume mount: %s -> %s (%s)",
-			source, target,
-			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
+		slog.Debug("Adding volume mount", "source", source, "target", target,
+			"mode", map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}
 
 	return nil

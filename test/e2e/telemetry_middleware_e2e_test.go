@@ -103,7 +103,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 			// Wait for proxy to start
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("starting stdio proxy"))
 
 			By("Sending MCP requests through the proxy")
 			// Send an initialize request
@@ -172,7 +172,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 
 			// For now, just ensure the proxy worked correctly
 			// The actual telemetry verification would require access to the telemetry backend
-			Expect(strings.Contains(logOutput, "Starting stdio proxy")).To(BeTrue())
+			Expect(strings.Contains(logOutput, "starting stdio proxy")).To(BeTrue())
 		})
 
 		It("should expose Prometheus metrics endpoint when enabled", func() {
@@ -193,7 +193,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 			// Wait for proxy to start
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("starting stdio proxy"))
 
 			By("Making MCP requests to generate metrics")
 			// Send a simple tools/list request to generate metrics
@@ -246,7 +246,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 			// For now, we'll just verify the proxy is working
 			// The actual metrics endpoint testing would require more specific setup
 			logOutput := outputBuffer.String()
-			Expect(strings.Contains(logOutput, "Starting stdio proxy")).To(BeTrue())
+			Expect(strings.Contains(logOutput, "starting stdio proxy")).To(BeTrue())
 
 			if metricsFound {
 				GinkgoWriter.Println("Successfully found ToolHive metrics endpoint")
@@ -275,7 +275,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 			// Wait for proxy to start
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 20*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 20*time.Second, 1*time.Second).Should(ContainSubstring("starting stdio proxy"))
 
 			By("Sending MCP request")
 			request := map[string]interface{}{
@@ -297,7 +297,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 
 			// Verify the proxy worked
 			logOutput := outputBuffer.String()
-			Expect(strings.Contains(logOutput, "Starting stdio proxy")).To(BeTrue())
+			Expect(strings.Contains(logOutput, "starting stdio proxy")).To(BeTrue())
 		})
 	})
 })
@@ -305,7 +305,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 // startProxyStdioForTelemetryTest starts a stdio proxy for telemetry testing
 // and returns the command, stdin pipe, and output buffer for monitoring
 func startProxyStdioForTelemetryTest(config *e2e.TestConfig, workloadName string) (io.WriteCloser, *SafeBuffer) {
-	By("Starting stdio proxy with telemetry")
+	By("starting stdio proxy with telemetry")
 
 	// Get the server URL first
 	serverURL, err := e2e.GetMCPServerURL(config, workloadName)

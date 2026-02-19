@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -99,7 +99,7 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider)
 	if err != nil {
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
-		logger.Errorf("Failed to get registry provider: %v", err)
+		slog.Error("failed to get registry provider", "error", err)
 		return nil, false
 	}
 	return provider, true
@@ -247,7 +247,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -318,7 +318,7 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -340,7 +340,7 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 	if req.URL == nil && req.APIURL == nil && req.LocalPath == nil {
 		err := rr.configService.UnsetRegistry()
 		if err != nil {
-			logger.Errorf("Failed to unset registry: %v", err)
+			slog.Error("failed to unset registry", "error", err)
 			return "", fmt.Errorf("failed to reset registry configuration")
 		}
 		return "default", nil
@@ -366,7 +366,7 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 	// Use the service to set the registry
 	registryType, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
 	if err != nil {
-		logger.Errorf("Failed to set registry: %v", err)
+		slog.Error("failed to set registry", "error", err)
 		// Check if error is connectivity/timeout related
 		if isConnectivityError(err) {
 			return "", &connectivityError{
@@ -430,7 +430,7 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	// Get the full registry to access both container and remote servers
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		logger.Errorf("Failed to get registry: %v", err)
+		slog.Error("failed to get registry", "error", err)
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -453,7 +453,7 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -496,7 +496,8 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	// Try to get the server (could be container or remote)
 	server, err := provider.GetServer(decodedServerName)
 	if err != nil {
-		logger.Errorf("Failed to get server '%s': %v", decodedServerName, err)
+		//nolint:gosec // G706: server name from URL parameter for diagnostics
+		slog.Error("failed to get server", "server", decodedServerName, "error", err)
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}
@@ -521,7 +522,7 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}

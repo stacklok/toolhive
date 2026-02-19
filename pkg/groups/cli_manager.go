@@ -9,13 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 )
 
@@ -58,7 +58,7 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 	defer func() {
 		if err := writer.Close(); err != nil {
 			// Non-fatal: writer cleanup failure
-			logger.Warnf("Failed to close writer: %v", err)
+			slog.Warn("failed to close writer", "error", err)
 		}
 	}()
 
@@ -88,7 +88,7 @@ func (m *cliManager) Get(ctx context.Context, name string) (*Group, error) {
 	defer func() {
 		if err := reader.Close(); err != nil {
 			// Non-fatal: reader cleanup failure
-			logger.Debugf("Failed to close reader: %v", err)
+			slog.Debug("failed to close reader", "error", err)
 		}
 	}()
 
@@ -155,14 +155,14 @@ func (m *cliManager) RegisterClients(ctx context.Context, groupNames []string, c
 			}
 
 			if alreadyRegistered {
-				logger.Debugf("Client %s is already registered with group %s, skipping", clientName, groupName)
+				slog.Debug("client already registered with group, skipping", "client", clientName, "group", groupName)
 				continue
 			}
 
 			// Add the client to the group
 			group.RegisteredClients = append(group.RegisteredClients, clientName)
 			groupModified = true
-			logger.Debugf("Successfully registered client %s with group %s", clientName, groupName)
+			slog.Debug("successfully registered client with group", "client", clientName, "group", groupName)
 		}
 
 		// Only save if the group was actually modified
@@ -194,7 +194,7 @@ func (m *cliManager) UnregisterClients(ctx context.Context, groupNames []string,
 					// Remove client from slice
 					group.RegisteredClients = append(group.RegisteredClients[:i], group.RegisteredClients[i+1:]...)
 					groupModified = true
-					logger.Debugf("Successfully unregistered client %s from group %s", clientName, groupName)
+					slog.Debug("successfully unregistered client from group", "client", clientName, "group", groupName)
 					break
 				}
 			}
@@ -221,7 +221,7 @@ func (m *cliManager) saveGroup(ctx context.Context, group *Group) error {
 	defer func() {
 		if err := writer.Close(); err != nil {
 			// Non-fatal: writer cleanup failure
-			logger.Warnf("Failed to close writer: %v", err)
+			slog.Warn("failed to close writer", "error", err)
 		}
 	}()
 

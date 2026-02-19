@@ -50,7 +50,7 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 	if remoteURL != "" {
 		targetURL, err := url.Parse(remoteURL)
 		if err != nil {
-			slog.Error("Failed to parse target URI", "error", err)
+			slog.Error("failed to parse target URI", "error", err)
 			return ""
 		}
 

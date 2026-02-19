@@ -110,6 +110,14 @@
           "type": "string",
           "description": "Identifier for the MCP server, used when referencing the server in commands (auto-generated from the object key)"
         },
+        "title": {
+          "type": "string",
+          "description": "Optional human-readable display name for the server. If not provided, the name field is used for display."
+        },
+        "overview": {
+          "type": "string",
+          "description": "Longer Markdown-formatted description for web display. Unlike the description field (limited to 500 chars), this supports full Markdown and is intended for rich rendering on catalog pages."
+        },
         "permissions": {
           "description": "Security profile and access permissions for the server",
           "$ref": "#/definitions/permissions"
@@ -164,6 +172,13 @@
           },
           "minItems": 1,
           "uniqueItems": true
+        },
+        "tool_definitions": {
+          "type": "array",
+          "description": "Full MCP Tool definitions describing the tools available from this server, including name, description, inputSchema, and annotations",
+          "items": {
+            "type": "object"
+          }
         },
         "transport": {
           "type": "string",
@@ -490,6 +505,14 @@
           "type": "string",
           "description": "Identifier for the remote MCP server (auto-generated from the object key)"
         },
+        "title": {
+          "type": "string",
+          "description": "Optional human-readable display name for the server. If not provided, the name field is used for display."
+        },
+        "overview": {
+          "type": "string",
+          "description": "Longer Markdown-formatted description for web display. Unlike the description field (limited to 500 chars), this supports full Markdown and is intended for rich rendering on catalog pages."
+        },
         "url": {
           "type": "string",
           "description": "Endpoint URL for the remote MCP server",
@@ -531,6 +554,13 @@
           },
           "minItems": 1,
           "uniqueItems": true
+        },
+        "tool_definitions": {
+          "type": "array",
+          "description": "Full MCP Tool definitions describing the tools available from this server, including name, description, inputSchema, and annotations",
+          "items": {
+            "type": "object"
+          }
         },
         "headers": {
           "type": "array",

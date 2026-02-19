@@ -21,16 +21,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
 func TestGroupsRouter(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger to prevent panic
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -274,9 +270,6 @@ func TestGroupsRouter(t *testing.T) {
 
 func TestGroupsRouter_Integration(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger to prevent panic
-	logger.Initialize()
 
 	// Test with real managers (integration test)
 	// Use a test config provider to avoid modifying the real config file

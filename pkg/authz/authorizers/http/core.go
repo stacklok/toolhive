@@ -76,7 +76,7 @@ func NewAuthorizer(config ConfigOptions, serverName string) (*Authorizer, error)
 		return nil, err
 	}
 
-	slog.Debug("Creating new HTTP PDP authorizer", "config", config)
+	slog.Debug("creating new HTTP PDP authorizer", "config", config)
 	p, err := NewClient(config.HTTP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)

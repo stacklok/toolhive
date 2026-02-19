@@ -308,15 +308,15 @@ func (a *Authorizer) IsAuthorized(
 	}
 
 	// Debug logging for authorization
-	slog.Debug("Cedar authorization check",
+	slog.Debug("cedar authorization check",
 		"principal", req.Principal, "action", req.Action, "resource", req.Resource)
-	slog.Debug("Cedar context", "context", req.Context)
+	slog.Debug("cedar context", "context", req.Context)
 
 	// Check authorization
 	decision, diagnostic := cedar.Authorize(a.policySet, entityMap, req)
 
 	// Log the decision
-	slog.Debug("Cedar decision", "decision", decision, "diagnostic", diagnostic)
+	slog.Debug("cedar decision", "decision", decision, "diagnostic", diagnostic)
 
 	// Cedar's Authorize returns a Decision and a Diagnostic
 	// Check if the Diagnostic contains any errors

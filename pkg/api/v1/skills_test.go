@@ -18,7 +18,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/skills"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
@@ -26,7 +25,6 @@ import (
 
 func TestSkillsRouter(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -348,7 +346,6 @@ func TestSkillsRouter(t *testing.T) {
 
 func TestListSkillsResponseFormat(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	mockSvc := skillsmocks.NewMockSkillService(ctrl)

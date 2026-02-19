@@ -65,7 +65,7 @@ func (c *ConfigMapReader) GetRunConfigMap(ctx context.Context, configMapRef stri
 		return "", fmt.Errorf("invalid configmap reference: %w", err)
 	}
 
-	slog.Info("Loading runconfig.json from ConfigMap", "namespace", namespace, "name", name)
+	slog.Info("loading runconfig.json from ConfigMap", "namespace", namespace, "name", name)
 
 	// Get the ConfigMap
 	configMap, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -79,7 +79,7 @@ func (c *ConfigMapReader) GetRunConfigMap(ctx context.Context, configMapRef stri
 		return "", fmt.Errorf("ConfigMap '%s/%s' does not contain 'runconfig.json' key", namespace, name)
 	}
 
-	slog.Info("Successfully loaded runconfig.json from ConfigMap", "bytes", len(data), "namespace", namespace, "name", name)
+	slog.Info("successfully loaded runconfig.json from ConfigMap", "bytes", len(data), "namespace", namespace, "name", name)
 
 	return data, nil
 }

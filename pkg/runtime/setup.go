@@ -8,6 +8,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -122,7 +123,7 @@ func Setup(
 	}
 
 	// Create the container
-	logger.Debugf("Deploying workload %s from image %s...", containerName, image)
+	slog.Debug("deploying workload", "container", containerName, "image", image)
 	exposedPort, err := runtime.DeployWorkload(
 		ctx,
 		image,
@@ -138,7 +139,7 @@ func Setup(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
-	logger.Debugf("Container created: %s", containerName)
+	slog.Debug("container created", "container", containerName)
 
 	result := &SetupResult{
 		ContainerName: containerName,

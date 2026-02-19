@@ -178,7 +178,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		VersionedParams(attachOpts, scheme.ParameterCodec)
 	attachURL := req.URL()
 
-	slog.Info("Attaching to pod", "pod", podName, "workload", workloadName)
+	slog.Info("attaching to pod", "pod", podName, "workload", workloadName)
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -418,7 +418,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	//nolint:gosec // G706: statefulset name from Kubernetes API response
-	slog.Info("Applied statefulset", "name", createdStatefulSet.Name)
+	slog.Info("applied statefulset", "name", createdStatefulSet.Name)
 
 	if transportTypeRequiresHeadlessService(transportType) && options != nil {
 		// Create a headless service for SSE transport
@@ -608,13 +608,13 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
-			slog.Info("Statefulset not found, nothing to remove", "name", workloadName)
+			slog.Info("statefulset not found, nothing to remove", "name", workloadName)
 			return nil
 		}
 		return fmt.Errorf("failed to delete statefulset %s: %w", workloadName, err)
 	}
 
-	slog.Info("Deleted statefulset", "name", workloadName)
+	slog.Info("deleted statefulset", "name", workloadName)
 	return nil
 }
 
@@ -687,7 +687,7 @@ func waitForStatefulSetReady(
 			return true, nil
 		}
 
-		slog.Info("Waiting for statefulset to be ready",
+		slog.Info("waiting for statefulset to be ready",
 			"name", name,
 			"ready_replicas", statefulSet.Status.ReadyReplicas,
 			"desired_replicas", *statefulSet.Spec.Replicas,
@@ -904,7 +904,7 @@ func (c *Client) createHeadlessService(
 
 	// If no ports were configured, don't create a service
 	if len(servicePorts) == 0 {
-		slog.Info("No ports configured for SSE transport, skipping service creation")
+		slog.Info("no ports configured for SSE transport, skipping service creation")
 		return nil
 	}
 
@@ -944,7 +944,7 @@ func (c *Client) createHeadlessService(
 		return fmt.Errorf("failed to apply service: %w", err)
 	}
 
-	slog.Info("Created headless service for HTTP transport", "name", containerName)
+	slog.Info("created headless service for HTTP transport", "name", containerName)
 
 	options.SSEHeadlessServiceName = svcName
 	return nil
@@ -1248,7 +1248,7 @@ func configureContainer(
 
 		// For OpenShift, override certain fields even if they exist
 		if platform == PlatformOpenShift {
-			slog.Info("Setting OpenShift security context requirements", "container", *container.Name)
+			slog.Info("setting OpenShift security context requirements", "container", *container.Name)
 
 			if container.SecurityContext.RunAsUser != nil {
 				container.SecurityContext.RunAsUser = nil

@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/groups"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
@@ -24,13 +25,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
-// ensureVmcpConfigConfigMap ensures the vmcp Config ConfigMap exists and is up to date
+// ensureVmcpConfigConfigMap ensures the vmcp Config ConfigMap exists and is up to date.
 // workloadInfos is the list of workloads in the group, passed in to ensure consistency
 // across multiple calls that need the same workload list.
+// statusManager is used to set auth config conditions for any conversion failures.
 func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
+	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	// Create OIDC resolver and converter for CRD-to-config transformation
 	oidcResolver := oidc.NewResolver(r.Client)
@@ -43,41 +46,14 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
-	// Static mode (inline): Embed full backend details in ConfigMap.
-	// Dynamic mode (discovered): vMCP discovers backends at runtime via K8s API.
-	if config.OutgoingAuth != nil && config.OutgoingAuth.Source == "inline" {
-		// Build auth config with backend details
-		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-		if err != nil {
-			return fmt.Errorf("failed to build auth config for static mode: %w", err)
-		}
-		if discoveredAuthConfig != nil {
-			config.OutgoingAuth = discoveredAuthConfig
-		}
+	// Process outgoing auth configuration for both inline and discovered modes
+	if err := r.processOutgoingAuth(ctx, vmcp, config, typedWorkloads, statusManager); err != nil {
+		return err
+	}
 
-		// Discover backends with metadata
-		backends, err := r.discoverBackendsWithMetadata(ctx, vmcp)
-		if err != nil {
-			return fmt.Errorf("failed to discover backends for static mode: %w", err)
-		}
-
-		// Get transport types from workload specs
-		transportMap, err := r.buildTransportMap(ctx, vmcp.Namespace, typedWorkloads)
-		if err != nil {
-			return fmt.Errorf("failed to build transport map for static mode: %w", err)
-		}
-
-		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap)
-
-		// Validate at least one backend exists
-		if len(config.Backends) == 0 {
-			return fmt.Errorf(
-				"static mode requires at least one backend with valid transport (%v), "+
-					"but none were discovered in group %s",
-				vmcpconfig.StaticModeAllowedTransports,
-				config.Group,
-			)
-		}
+	// Auto-populate optimizer config from EmbeddingServerRef or emit warnings.
+	if err := r.populateOptimizerEmbeddingService(ctx, vmcp, config); err != nil {
+		return err
 	}
 
 	// Validate the vmcp Config before creating the ConfigMap
@@ -122,6 +98,86 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	return nil
 }
 
+// populateOptimizerEmbeddingService wires the EmbeddingServer URL into the optimizer
+// config and emits warnings for non-recommended configurations.
+//
+// Decision matrix (ref = EmbeddingServerRef, svc = config.optimizer.embeddingService):
+//
+//	ref set + optimizer set + svc set → ref overrides svc (warning)
+//	ref set + optimizer set + svc empty → ref populates svc (auto-configured event if defaulted by validation)
+//	ref nil + optimizer set + svc set → warning: prefer embeddingServerRef
+//	ref nil + optimizer set + svc empty → rejected earlier by Validate()
+//
+// Note: Validate() auto-populates optimizer with defaults when ref is set but optimizer is nil,
+// so the "ref set + optimizer nil" case no longer reaches this function.
+func (r *VirtualMCPServerReconciler) populateOptimizerEmbeddingService(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	config *vmcpconfig.Config,
+) error {
+	ctxLogger := log.FromContext(ctx)
+	hasRef := vmcp.Spec.EmbeddingServerRef != nil
+
+	if hasRef && config.Optimizer != nil {
+		// When the optimizer has no embeddingService set, it was auto-populated by
+		// validation with default values. Emit an event so the user is aware.
+		if config.Optimizer.EmbeddingService == "" {
+			ctxLogger.Info("optimizer auto-configured with default values because embeddingServerRef is set",
+				"embeddingServerRef", vmcp.Spec.EmbeddingServerRef.Name)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "OptimizerAutoConfigured",
+					"embeddingServerRef %q is set without spec.config.optimizer; "+
+						"optimizer has been auto-configured with default values",
+					vmcp.Spec.EmbeddingServerRef.Name)
+			}
+		}
+		return r.populateOptimizerFromRef(ctx, vmcp, config)
+	}
+
+	// No ref — warn if the user manually set the embedding service.
+	if config.Optimizer != nil && config.Optimizer.EmbeddingService != "" {
+		ctxLogger.Info("config.optimizer.embeddingService is set without embeddingServerRef; "+
+			"consider using embeddingServerRef for managed lifecycle",
+			"embeddingService", config.Optimizer.EmbeddingService)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "EmbeddingServiceManual",
+				"config.optimizer.embeddingService is set without embeddingServerRef; "+
+					"specifying an embeddingServerRef is the recommended configuration")
+		}
+	}
+	return nil
+}
+
+// populateOptimizerFromRef resolves the EmbeddingServer URL and writes it into
+// config.Optimizer.EmbeddingService, warning if it overrides a manually-set value.
+func (r *VirtualMCPServerReconciler) populateOptimizerFromRef(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	config *vmcpconfig.Config,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	esURL, err := r.resolveEmbeddingServiceURL(ctx, vmcp)
+	if err != nil {
+		return fmt.Errorf("failed to resolve embedding service URL: %w", err)
+	}
+	if config.Optimizer.EmbeddingService != "" && esURL != "" {
+		ctxLogger.Info("EmbeddingServerRef overrides config.optimizer.embeddingService",
+			"ref", vmcp.Spec.EmbeddingServerRef.Name,
+			"overridden", config.Optimizer.EmbeddingService,
+			"new", esURL)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "EmbeddingServiceOverridden",
+				"config.optimizer.embeddingService will be replaced by EmbeddingServerRef %q URL",
+				vmcp.Spec.EmbeddingServerRef.Name)
+		}
+	}
+	if esURL != "" {
+		config.Optimizer.EmbeddingService = esURL
+	}
+	return nil
+}
+
 // labelsForVmcpConfig returns labels for vmcp config ConfigMap
 func labelsForVmcpConfig(vmcpName string) map[string]string {
 	return map[string]string{
@@ -148,15 +204,10 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 			return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 		}
 
-		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without authentication",
-				"error", err,
-				"virtualmcpserver", vmcp.Name,
-				"namespace", vmcp.Namespace)
-			authConfig = nil // Continue without auth config on error
-		}
+		// Build auth config and collect any errors (but don't fail the operation)
+		// Note: Auth errors are collected and reported via status conditions by processOutgoingAuth.
+		// In static mode, we still attempt to build the auth config for ConfigMap embedding.
+		authConfig, _, _ = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 	}
 
 	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
@@ -214,4 +265,114 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 	}
 
 	return transportMap, nil
+}
+
+// extractInlineBackendNames extracts the list of inline backend names from the VirtualMCPServer spec.
+func extractInlineBackendNames(vmcp *mcpv1alpha1.VirtualMCPServer) []string {
+	if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
+		return nil
+	}
+	names := make([]string, 0, len(vmcp.Spec.OutgoingAuth.Backends))
+	for backendName := range vmcp.Spec.OutgoingAuth.Backends {
+		names = append(names, backendName)
+	}
+	return names
+}
+
+// determineValidInlineBackends determines which inline backends have valid auth configs.
+func determineValidInlineBackends(authConfig *vmcpconfig.OutgoingAuthConfig, inlineBackendNames []string) []string {
+	if authConfig == nil || authConfig.Backends == nil {
+		return nil
+	}
+	valid := make([]string, 0)
+	for backendName := range authConfig.Backends {
+		// Only count inline backends (not discovered backends)
+		for _, inlineBackend := range inlineBackendNames {
+			if backendName == inlineBackend {
+				valid = append(valid, backendName)
+				break
+			}
+		}
+	}
+	return valid
+}
+
+// processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
+// It builds auth configs, sets status conditions for all auth config types, and configures static backends for inline mode.
+func (r *VirtualMCPServerReconciler) processOutgoingAuth(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	config *vmcpconfig.Config,
+	typedWorkloads []workloads.TypedWorkload,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	// Clean up stale conditions if outgoing auth is not configured
+	if config.OutgoingAuth == nil {
+		setAuthConfigConditions(statusManager, nil, nil, false, nil, nil)
+		return nil
+	}
+
+	isInlineMode := config.OutgoingAuth.Source == OutgoingAuthSourceInline
+	isDiscoveredMode := config.OutgoingAuth.Source == OutgoingAuthSourceDiscovered
+
+	// Clean up stale conditions if not using inline or discovered mode
+	if !isInlineMode && !isDiscoveredMode {
+		setAuthConfigConditions(statusManager, nil, nil, false, nil, nil)
+		return nil
+	}
+
+	// Build auth config and collect all errors (default, backend-specific, discovered)
+	// All errors are non-fatal - the system continues in degraded mode with partial auth config
+	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+
+	// Extract inline backend names and determine valid auth configs
+	inlineBackendNames := extractInlineBackendNames(vmcp)
+	hasValidDefaultAuth := authConfig != nil && authConfig.Default != nil
+	validInlineBackends := determineValidInlineBackends(authConfig, inlineBackendNames)
+
+	// Set conditions for all auth config types (default, backend-specific, discovered)
+	// True for success, False for errors
+	setAuthConfigConditions(
+		statusManager,
+		backendsWithAuthConfig,
+		inlineBackendNames,
+		hasValidDefaultAuth,
+		validInlineBackends,
+		allAuthErrors,
+	)
+
+	// Static mode (inline): Embed full backend details in ConfigMap
+	if isInlineMode {
+		if authConfig != nil {
+			config.OutgoingAuth = authConfig
+		}
+
+		// Discover backends with metadata
+		backends, err := r.discoverBackendsWithMetadata(ctx, vmcp)
+		if err != nil {
+			return fmt.Errorf("failed to discover backends for static mode: %w", err)
+		}
+
+		// Get transport types from workload specs
+		transportMap, err := r.buildTransportMap(ctx, vmcp.Namespace, typedWorkloads)
+		if err != nil {
+			return fmt.Errorf("failed to build transport map for static mode: %w", err)
+		}
+
+		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap)
+
+		// Validate at least one backend exists
+		if len(config.Backends) == 0 {
+			return fmt.Errorf(
+				"static mode requires at least one backend with valid transport (%v), "+
+					"but none were discovered in group %s",
+				vmcpconfig.StaticModeAllowedTransports,
+				config.Group,
+			)
+		}
+	}
+	// Dynamic mode (discovered): vMCP discovers backends at runtime via K8s API
+	// Conditions are already set above, no additional ConfigMap config needed
+
+	return nil
 }

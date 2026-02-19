@@ -4,11 +4,11 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // TokenHandler handles POST /oauth/token requests.
@@ -27,8 +27,8 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)
 	if err != nil {
-		logger.Errorw("failed to create access request",
-			"error", err.Error(),
+		slog.Error("failed to create access request",
+			"error", err,
 		)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return
@@ -42,7 +42,7 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// for security reasons (simpler audience model, clearer token scope).
 	resources := accessRequest.GetRequestForm()["resource"]
 	if len(resources) > 1 {
-		logger.Debugw("multiple resource parameters not supported",
+		slog.Debug("multiple resource parameters not supported", //nolint:gosec // G706: count is an integer
 			"count", len(resources),
 		)
 		h.provider.WriteAccessError(ctx, w, accessRequest,
@@ -53,9 +53,9 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		resource := resources[0]
 		// Validate URI format per RFC 8707
 		if err := server.ValidateAudienceURI(resource); err != nil {
-			logger.Debugw("invalid resource URI format",
+			slog.Debug("invalid resource URI format", //nolint:gosec // G706: resource URI from token request
 				"resource", resource,
-				"error", err.Error(),
+				"error", err,
 			)
 			h.provider.WriteAccessError(ctx, w, accessRequest, err)
 			return
@@ -63,15 +63,15 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 
 		// Validate against allowed audiences list
 		if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
-			logger.Debugw("resource not in allowed audiences",
+			slog.Debug("resource not in allowed audiences", //nolint:gosec // G706: resource URI from token request
 				"resource", resource,
-				"error", err.Error(),
+				"error", err,
 			)
 			h.provider.WriteAccessError(ctx, w, accessRequest, err)
 			return
 		}
 
-		logger.Debugw("granting audience from resource parameter",
+		slog.Debug("granting audience from resource parameter", //nolint:gosec // G706: resource URI from token request
 			"resource", resource,
 		)
 		accessRequest.GrantAudience(resource)
@@ -80,8 +80,8 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Generate the access response (tokens)
 	response, err := h.provider.NewAccessResponse(ctx, accessRequest)
 	if err != nil {
-		logger.Errorw("failed to create access response",
-			"error", err.Error(),
+		slog.Error("failed to create access response",
+			"error", err,
 		)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return

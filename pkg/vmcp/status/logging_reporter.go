@@ -5,8 +5,8 @@ package status
 
 import (
 	"context"
+	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -27,7 +27,7 @@ func (*LoggingReporter) ReportStatus(_ context.Context, status *vmcptypes.Status
 		return nil
 	}
 
-	logger.Debugw("status update (not persisted in CLI mode)",
+	slog.Debug("status update (not persisted in CLI mode)",
 		"phase", status.Phase,
 		"message", status.Message,
 		"backend_count", len(status.DiscoveredBackends),

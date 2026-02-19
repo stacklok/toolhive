@@ -37,7 +37,7 @@ type Client struct {
 
 // NewClient creates a new HTTP client for PDP communication.
 func NewClient(config *ConnectionConfig) (*Client, error) {
-	slog.Debug("Creating new HTTP client", "config", config)
+	slog.Debug("creating new HTTP client", "config", config)
 
 	if config == nil {
 		return nil, fmt.Errorf("HTTP configuration is required")

@@ -217,7 +217,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "scopes_supported": {
-                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to [\"openid\", \"profile\", \"email\", \"offline_access\"].",
+                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to registration.DefaultScopes ([\"openid\", \"profile\", \"email\", \"offline_access\"]).",
                         "items": {
                             "type": "string"
                         },
@@ -843,6 +843,10 @@ const docTemplate = `{
                         "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
                         "type": "string"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
                     "permissions": {
                         "$ref": "#/components/schemas/permissions.Profile"
                     },
@@ -875,6 +879,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {
@@ -931,10 +939,6 @@ const docTemplate = `{
                     "last_updated": {
                         "description": "LastUpdated is the timestamp when the server was last updated, in RFC3339 format",
                         "type": "string"
-                    },
-                    "pulls": {
-                        "description": "Pulls indicates how many times the server image has been downloaded",
-                        "type": "integer"
                     },
                     "stars": {
                         "description": "Stars represents the popularity rating or number of stars for the server",
@@ -1093,6 +1097,10 @@ const docTemplate = `{
                     "oauth_config": {
                         "$ref": "#/components/schemas/registry.OAuthConfig"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
@@ -1111,6 +1119,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {

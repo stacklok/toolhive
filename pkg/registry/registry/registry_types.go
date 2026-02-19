@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -52,6 +53,9 @@ type BaseServerMetadata struct {
 	// Name is the identifier for the MCP server, used when referencing the server in commands
 	// If not provided, it will be auto-generated from the registry key
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+	// Title is an optional human-readable display name for the server.
+	// If not provided, the Name field is used for display purposes.
+	Title string `json:"title,omitempty" yaml:"title,omitempty"`
 	// Description is a human-readable description of the server's purpose and functionality
 	Description string `json:"description" yaml:"description"`
 	// Tier represents the tier classification level of the server, e.g., "Official" or "Community"
@@ -70,6 +74,13 @@ type BaseServerMetadata struct {
 	RepositoryURL string `json:"repository_url,omitempty" yaml:"repository_url,omitempty"`
 	// Tags are categorization labels for the server to aid in discovery and filtering
 	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	// Overview is a longer Markdown-formatted description for web display.
+	// Unlike the Description field (limited to 500 chars), this supports
+	// full Markdown and is intended for rich rendering on catalog pages.
+	Overview string `json:"overview,omitempty" yaml:"overview,omitempty"`
+	// ToolDefinitions contains full MCP Tool definitions describing the tools
+	// available from this server, including name, description, inputSchema, and annotations.
+	ToolDefinitions []mcp.Tool `json:"tool_definitions,omitempty" yaml:"tool_definitions,omitempty" swaggerignore:"true"`
 	// CustomMetadata allows for additional user-defined metadata
 	CustomMetadata map[string]any `json:"custom_metadata,omitempty" yaml:"custom_metadata,omitempty"`
 }
@@ -201,8 +212,6 @@ type RemoteServerMetadata struct {
 type Metadata struct {
 	// Stars represents the popularity rating or number of stars for the server
 	Stars int `json:"stars,omitempty" yaml:"stars,omitempty"`
-	// Pulls indicates how many times the server image has been downloaded
-	Pulls int `json:"pulls,omitempty" yaml:"pulls,omitempty"`
 	// LastUpdated is the timestamp when the server was last updated, in RFC3339 format
 	LastUpdated string `json:"last_updated,omitempty" yaml:"last_updated,omitempty"`
 	// Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster.
@@ -269,6 +278,8 @@ func (r *RemoteServerMetadata) UnmarshalYAML(node *yaml.Node) error {
 type ServerMetadata interface {
 	// GetName returns the server name
 	GetName() string
+	// GetTitle returns the optional human-readable display name
+	GetTitle() string
 	// GetDescription returns the server description
 	GetDescription() string
 	// GetTier returns the server tier
@@ -285,6 +296,10 @@ type ServerMetadata interface {
 	GetRepositoryURL() string
 	// GetTags returns the server tags
 	GetTags() []string
+	// GetOverview returns the longer Markdown-formatted description
+	GetOverview() string
+	// GetToolDefinitions returns the full MCP Tool definitions
+	GetToolDefinitions() []mcp.Tool
 	// GetCustomMetadata returns custom metadata
 	GetCustomMetadata() map[string]any
 	// IsRemote returns true if this is a remote server
@@ -301,6 +316,14 @@ func (i *ImageMetadata) GetName() string {
 		return ""
 	}
 	return i.Name
+}
+
+// GetTitle returns the optional human-readable display name
+func (i *ImageMetadata) GetTitle() string {
+	if i == nil {
+		return ""
+	}
+	return i.Title
 }
 
 // GetDescription returns the server description
@@ -367,6 +390,22 @@ func (i *ImageMetadata) GetTags() []string {
 	return i.Tags
 }
 
+// GetOverview returns the longer Markdown-formatted description
+func (i *ImageMetadata) GetOverview() string {
+	if i == nil {
+		return ""
+	}
+	return i.Overview
+}
+
+// GetToolDefinitions returns the full MCP Tool definitions
+func (i *ImageMetadata) GetToolDefinitions() []mcp.Tool {
+	if i == nil {
+		return nil
+	}
+	return i.ToolDefinitions
+}
+
 // GetCustomMetadata returns custom metadata
 func (i *ImageMetadata) GetCustomMetadata() map[string]any {
 	if i == nil {
@@ -396,6 +435,14 @@ func (r *RemoteServerMetadata) GetName() string {
 		return ""
 	}
 	return r.Name
+}
+
+// GetTitle returns the optional human-readable display name
+func (r *RemoteServerMetadata) GetTitle() string {
+	if r == nil {
+		return ""
+	}
+	return r.Title
 }
 
 // GetDescription returns the server description
@@ -460,6 +507,22 @@ func (r *RemoteServerMetadata) GetTags() []string {
 		return nil
 	}
 	return r.Tags
+}
+
+// GetOverview returns the longer Markdown-formatted description
+func (r *RemoteServerMetadata) GetOverview() string {
+	if r == nil {
+		return ""
+	}
+	return r.Overview
+}
+
+// GetToolDefinitions returns the full MCP Tool definitions
+func (r *RemoteServerMetadata) GetToolDefinitions() []mcp.Tool {
+	if r == nil {
+		return nil
+	}
+	return r.ToolDefinitions
 }
 
 // GetCustomMetadata returns custom metadata

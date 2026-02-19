@@ -1400,7 +1400,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		// Check if the DNS image exists locally before failing
 		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
 		if inspectErr == nil {
-			slog.Debug("DNS image exists locally, continuing despite pull failure", "image", DnsImage)
+			slog.Debug("dns image exists locally, continuing despite pull failure", "image", DnsImage)
 		} else {
 			return "", "", fmt.Errorf("failed to pull DNS image: %w", err)
 		}

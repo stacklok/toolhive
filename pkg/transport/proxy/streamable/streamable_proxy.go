@@ -113,12 +113,12 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	go p.dispatchResponses()
 
 	go func() {
-		slog.Debug("Streamable HTTP proxy started", "port", p.port)
+		slog.Debug("streamable HTTP proxy started", "port", p.port)
 		//nolint:gosec // G706: logging configured host and port
-		slog.Debug("Streamable HTTP endpoint",
+		slog.Debug("streamable HTTP endpoint",
 			"url", fmt.Sprintf("http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint))
 		if err := p.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("Streamable HTTP server error", "error", err)
+			slog.Error("streamable HTTP server error", "error", err)
 		}
 	}()
 
@@ -135,7 +135,7 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 		// Stop session manager cleanup and disconnect sessions
 		if p.sessionManager != nil {
 			if err := p.sessionManager.Stop(); err != nil {
-				slog.Error("Failed to stop session manager", "error", err)
+				slog.Error("failed to stop session manager", "error", err)
 			}
 			p.sessionManager.Range(func(_, value interface{}) bool {
 				if ss, ok := value.(*session.StreamableSession); ok {
@@ -233,7 +233,7 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := p.sessionManager.Delete(sessID); err != nil {
 		//nolint:gosec // G706: session ID is from validated request header
-		slog.Debug("Failed to delete session", "session_id", sessID, "error", err)
+		slog.Debug("failed to delete session", "session_id", sessID, "error", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -329,7 +329,7 @@ func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte, sessI
 	w.Header().Set("Content-Type", "application/json")
 	// It's valid to return an empty array if requests produced no responses
 	if err := json.NewEncoder(w).Encode(responses); err != nil {
-		slog.Error("Failed to encode batch response", "error", err)
+		slog.Error("failed to encode batch response", "error", err)
 	}
 }
 
@@ -348,11 +348,11 @@ func (p *HTTPProxy) handleSingleRequest(
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			//nolint:gosec // G706: method is from parsed JSON-RPC request
-			slog.Warn("Timeout waiting for response", "method", req.Method)
+			slog.Warn("timeout waiting for response", "method", req.Method)
 			writeHTTPError(w, http.StatusGatewayTimeout, "Timeout waiting for response from container")
 		} else {
 			//nolint:gosec // G706: method is from parsed JSON-RPC request
-			slog.Error("Failed to process request", "method", req.Method, "error", err)
+			slog.Error("failed to process request", "method", req.Method, "error", err)
 			writeHTTPError(w, http.StatusInternalServerError, "Failed to process request")
 		}
 		return
@@ -362,7 +362,7 @@ func (p *HTTPProxy) handleSingleRequest(
 		w.Header().Set("Mcp-Session-Id", sessID)
 	}
 	if err := writeJSONRPC(w, msg); err != nil {
-		slog.Error("Failed to write JSON-RPC response", "error", err)
+		slog.Error("failed to write JSON-RPC response", "error", err)
 	}
 }
 
@@ -409,7 +409,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 		}
 		if data, mErr := json.Marshal(errObj); mErr == nil {
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-				slog.Debug("Failed to write error message", "error", err)
+				slog.Debug("failed to write error message", "error", err)
 				return
 			}
 			flusher.Flush()
@@ -419,13 +419,13 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
-		slog.Error("Failed to encode JSON-RPC response", "error", err)
+		slog.Error("failed to encode JSON-RPC response", "error", err)
 		writeHTTPError(w, http.StatusInternalServerError, "Failed to encode response")
 		return
 	}
 	// Write SSE event with the JSON-RPC response and flush
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
-		slog.Debug("Failed to write response", "error", err)
+		slog.Debug("failed to write response", "error", err)
 		return
 	}
 	flusher.Flush()
@@ -437,14 +437,14 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 	msg, err := jsonrpc2.DecodeMessage(raw)
 	if err != nil {
 		//nolint:gosec // G706: logging raw JSON-RPC data from HTTP request body
-		slog.Warn("Skipping invalid message in batch", "raw", string(raw))
+		slog.Warn("skipping invalid message in batch", "raw", string(raw))
 		return nil
 	}
 
 	// Notifications: just forward and continue
 	if isNotification(msg) {
 		if err := p.SendMessageToDestination(msg); err != nil {
-			slog.Error("Failed to send notification to destination", "error", err)
+			slog.Error("failed to send notification to destination", "error", err)
 		}
 		return nil
 	}
@@ -452,14 +452,14 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 	// Client responses: accept and forward, no HTTP body
 	if _, ok := msg.(*jsonrpc2.Response); ok {
 		if err := p.SendMessageToDestination(msg); err != nil {
-			slog.Error("Failed to forward client response to destination", "error", err)
+			slog.Error("failed to forward client response to destination", "error", err)
 		}
 		return nil
 	}
 
 	req, ok := msg.(*jsonrpc2.Request)
 	if !ok || !req.ID.IsValid() {
-		slog.Warn("Skipping invalid batch item (not a request with ID/response/notification)",
+		slog.Warn("skipping invalid batch item (not a request with ID/response/notification)",
 			"type", fmt.Sprintf("%T", msg))
 		return nil
 	}
@@ -472,35 +472,35 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 	ck := compositeKey(sessID, bkey)
 	proxiedMsg, err := encodeRequestWithID(req, ck)
 	if err != nil {
-		slog.Error("Failed to encode batch request", "error", err)
+		slog.Error("failed to encode batch request", "error", err)
 		return nil
 	}
 	if err := p.SendMessageToDestination(proxiedMsg); err != nil {
-		slog.Error("Failed to send message to destination", "error", err)
+		slog.Error("failed to send message to destination", "error", err)
 		return nil
 	}
 
 	response := p.waitForResponse(waitCh, defaultResponseTimeout)
 	if response == nil {
-		slog.Warn("StreamableHTTP: batch timeout waiting for key", "key", bkey)
+		slog.Warn("streamableHTTP: batch timeout waiting for key", "key", bkey)
 		return nil
 	}
 
 	if r, ok := response.(*jsonrpc2.Response); ok && r.ID.IsValid() {
 		restored, err := p.restoreResponseID(r, ck)
 		if err != nil {
-			slog.Error("Failed to restore response ID", "error", err)
+			slog.Error("failed to restore response ID", "error", err)
 			return nil
 		}
 		data, err := jsonrpc2.EncodeMessage(restored)
 		if err != nil {
-			slog.Error("Failed to encode JSON-RPC response", "error", err)
+			slog.Error("failed to encode JSON-RPC response", "error", err)
 			return nil
 		}
 		return data
 	}
 
-	slog.Warn("Received invalid message that is not a valid response",
+	slog.Warn("received invalid message that is not a valid response",
 		"type", fmt.Sprintf("%T", response))
 	return nil
 }
@@ -664,7 +664,7 @@ func decodeBatch(w http.ResponseWriter, body []byte) ([]json.RawMessage, bool) {
 	var rawMessages []json.RawMessage
 	if err := json.Unmarshal(bytes.TrimSpace(body), &rawMessages); err != nil {
 		//nolint:gosec // G706: logging raw JSON-RPC batch data from HTTP request
-		slog.Warn("Failed to decode batch JSON-RPC", "body", string(body))
+		slog.Warn("failed to decode batch JSON-RPC", "body", string(body))
 		writeHTTPError(w, http.StatusBadRequest, "Invalid batch JSON-RPC")
 		return nil, false
 	}
@@ -676,7 +676,7 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 	msg, err := jsonrpc2.DecodeMessage(body)
 	if err != nil {
 		//nolint:gosec // G706: logging raw JSON-RPC data from HTTP request body
-		slog.Warn("Skipping message that failed to decode", "body", string(body))
+		slog.Warn("skipping message that failed to decode", "body", string(body))
 		writeHTTPError(w, http.StatusBadRequest, "Invalid JSON-RPC 2.0 message")
 		return nil, false
 	}
@@ -686,7 +686,7 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
 		if err := p.SendMessageToDestination(msg); err != nil {
-			slog.Error("Failed to send message to destination", "error", err)
+			slog.Error("failed to send message to destination", "error", err)
 		}
 		w.WriteHeader(http.StatusAccepted)
 		return true

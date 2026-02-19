@@ -158,7 +158,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
-		slog.Debug("Prometheus metrics endpoint enabled at /metrics")
+		slog.Debug("prometheus metrics endpoint enabled at /metrics")
 	}
 
 	// Create a listener to get the actual port when using port 0
@@ -188,16 +188,16 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		_, portStr, _ := net.SplitHostPort(actualAddr)
 		actualPort, _ := strconv.Atoi(portStr)
 
-		slog.Debug("HTTP proxy started", "port", actualPort)
+		slog.Debug("http proxy started", "port", actualPort)
 		//nolint:gosec // G706: logging configured SSE and JSON-RPC endpoint addresses
-		slog.Debug("SSE endpoint",
+		slog.Debug("sse endpoint",
 			"url", fmt.Sprintf("http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint))
 		//nolint:gosec // G706: logging configured JSON-RPC endpoint address
-		slog.Debug("JSON-RPC endpoint",
+		slog.Debug("json-RPC endpoint",
 			"url", fmt.Sprintf("http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint))
 
 		if err := p.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("HTTP server error", "error", err)
+			slog.Error("http server error", "error", err)
 		}
 	}()
 
@@ -215,7 +215,7 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 	// Stop the session manager cleanup routine
 	if p.sessionManager != nil {
 		if err := p.sessionManager.Stop(); err != nil {
-			slog.Error("Failed to stop session manager", "error", err)
+			slog.Error("failed to stop session manager", "error", err)
 		}
 	}
 
@@ -316,7 +316,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	// Create and register the SSE session
 	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
 	if err := p.sessionManager.AddSession(sseSession); err != nil {
-		slog.Error("Failed to add SSE session", "error", err)
+		slog.Error("failed to add SSE session", "error", err)
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -337,7 +337,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 
 	// Send the initial event
 	if _, err := fmt.Fprint(w, endpointMsg.ToSSEString()); err != nil { //nolint:gosec // G705: SSE data from internal MCP protocol
-		slog.Debug("Failed to write endpoint message", "error", err)
+		slog.Debug("failed to write endpoint message", "error", err)
 		return
 	}
 	flusher.Flush()
@@ -354,7 +354,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	go func() {
 		<-ctx.Done()
 		p.removeClient(clientID)
-		slog.Debug("Client disconnected", "client_id", clientID)
+		slog.Debug("client disconnected", "client_id", clientID)
 	}()
 
 	// Send messages to the client
@@ -367,14 +367,14 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 				return
 			}
 			if _, err := fmt.Fprint(w, msg); err != nil {
-				slog.Debug("Failed to write message", "error", err)
+				slog.Debug("failed to write message", "error", err)
 				return
 			}
 			flusher.Flush()
 		case <-keepAliveTicker.C:
 			// Send SSE comment as keep-alive
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
-				slog.Debug("Failed to write keep-alive", "error", err)
+				slog.Debug("failed to write keep-alive", "error", err)
 				return
 			}
 			flusher.Flush()
@@ -419,7 +419,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	slog.Debug("Received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
+	slog.Debug("received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {
@@ -430,7 +430,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	// Return a success response
 	w.WriteHeader(http.StatusAccepted)
 	if _, err := w.Write([]byte("Accepted")); err != nil {
-		slog.Warn("Failed to write response", "error", err)
+		slog.Warn("failed to write response", "error", err)
 	}
 }
 
@@ -458,9 +458,9 @@ func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 				// Log the error but continue sending to other clients
 				switch {
 				case errors.Is(err, session.ErrSessionDisconnected):
-					slog.Debug("Client is disconnected, skipping message", "client_id", clientID)
+					slog.Debug("client is disconnected, skipping message", "client_id", clientID)
 				case errors.Is(err, session.ErrMessageChannelFull):
-					slog.Debug("Client channel full, skipping message", "client_id", clientID)
+					slog.Debug("client channel full, skipping message", "client_id", clientID)
 				}
 			}
 		}
@@ -495,7 +495,7 @@ func (p *HTTPSSEProxy) removeClient(clientID string) {
 
 	// Remove the session from the manager
 	if err := p.sessionManager.Delete(clientID); err != nil {
-		slog.Debug("Failed to delete session", "client_id", clientID, "error", err)
+		slog.Debug("failed to delete session", "client_id", clientID, "error", err)
 	}
 
 	// Clean up closed clients map periodically (prevent memory leak)
@@ -527,7 +527,7 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 			// Message sent successfully
 		default:
 			// Channel is full, stop sending
-			slog.Error("Client channel full after sending pending messages",
+			slog.Error("client channel full after sending pending messages",
 				"client_id", clientID, "sent", i, "total", len(p.pendingMessages))
 			// Remove successfully sent messages and keep the rest
 			p.pendingMessages = p.pendingMessages[i:]

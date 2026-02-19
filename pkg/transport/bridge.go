@@ -62,7 +62,7 @@ func (b *StdioBridge) Shutdown() {
 
 func (b *StdioBridge) run(ctx context.Context) {
 	//nolint:gosec // G706: logging target URL and mode from config
-	slog.Debug("Starting StdioBridge", "target", b.rawTarget, "mode", b.mode)
+	slog.Debug("starting StdioBridge", "target", b.rawTarget, "mode", b.mode)
 	defer b.wg.Done()
 
 	up, err := b.connectUpstream(ctx)
@@ -72,13 +72,13 @@ func (b *StdioBridge) run(ctx context.Context) {
 	}
 	b.up = up
 	//nolint:gosec // G706: logging target URL from config
-	slog.Debug("Connected to upstream", "target", b.rawTarget)
+	slog.Debug("connected to upstream", "target", b.rawTarget)
 
 	if err := b.initializeUpstream(ctx); err != nil {
 		slog.Error("upstream initialize failed", "error", err)
 		return
 	}
-	slog.Debug("Upstream initialized successfully")
+	slog.Debug("upstream initialized successfully")
 
 	// Tiny local stdio server
 	b.srv = server.NewMCPServer(
@@ -88,7 +88,7 @@ func (b *StdioBridge) run(ctx context.Context) {
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
 	)
-	slog.Debug("Starting local stdio server")
+	slog.Debug("starting local stdio server")
 
 	b.up.OnConnectionLost(func(err error) { slog.Warn("upstream lost", "error", err) })
 
@@ -98,10 +98,10 @@ func (b *StdioBridge) run(ctx context.Context) {
 		// Convert the Params struct to JSON and back to a generic map
 		var params map[string]any
 		if buf, err := json.Marshal(n.Params); err != nil {
-			slog.Warn("Failed to marshal params", "error", err)
+			slog.Warn("failed to marshal params", "error", err)
 			params = map[string]any{}
 		} else if err := json.Unmarshal(buf, &params); err != nil {
-			slog.Warn("Failed to unmarshal to map", "error", err)
+			slog.Warn("failed to unmarshal to map", "error", err)
 			params = map[string]any{}
 		}
 
@@ -119,7 +119,7 @@ func (b *StdioBridge) run(ctx context.Context) {
 
 func (b *StdioBridge) connectUpstream(_ context.Context) (*client.Client, error) {
 	//nolint:gosec // G706: logging target URL and mode from config
-	slog.Debug("Connecting to upstream", "target", b.rawTarget, "mode", b.mode)
+	slog.Debug("connecting to upstream", "target", b.rawTarget, "mode", b.mode)
 
 	switch b.mode {
 	case types.TransportTypeStreamableHTTP:
@@ -179,7 +179,7 @@ func (b *StdioBridge) connectUpstream(_ context.Context) (*client.Client, error)
 
 func (b *StdioBridge) initializeUpstream(ctx context.Context) error {
 	//nolint:gosec // G706: logging target URL from config
-	slog.Debug("Initializing upstream", "target", b.rawTarget)
+	slog.Debug("initializing upstream", "target", b.rawTarget)
 	_, err := b.up.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
@@ -194,9 +194,9 @@ func (b *StdioBridge) initializeUpstream(ctx context.Context) error {
 }
 
 func (b *StdioBridge) forwardAll(ctx context.Context) {
-	slog.Debug("Forwarding all upstream data to local stdio server")
+	slog.Debug("forwarding all upstream data to local stdio server")
 	// Tools -> straight passthrough
-	slog.Debug("Forwarding tools from upstream to local stdio server")
+	slog.Debug("forwarding tools from upstream to local stdio server")
 	if lt, err := b.up.ListTools(ctx, mcp.ListToolsRequest{}); err == nil {
 		for _, tool := range lt.Tools {
 			toolCopy := tool
@@ -207,7 +207,7 @@ func (b *StdioBridge) forwardAll(ctx context.Context) {
 	}
 
 	// Resources -> return []mcp.ResourceContents
-	slog.Debug("Forwarding resources from upstream to local stdio server")
+	slog.Debug("forwarding resources from upstream to local stdio server")
 	if lr, err := b.up.ListResources(ctx, mcp.ListResourcesRequest{}); err == nil {
 		for _, res := range lr.Resources {
 			resCopy := res
@@ -222,7 +222,7 @@ func (b *StdioBridge) forwardAll(ctx context.Context) {
 	}
 
 	// Resource templates -> same return type as resources
-	slog.Debug("Forwarding resource templates from upstream to local stdio server")
+	slog.Debug("forwarding resource templates from upstream to local stdio server")
 	if lt, err := b.up.ListResourceTemplates(ctx, mcp.ListResourceTemplatesRequest{}); err == nil {
 		for _, tpl := range lt.ResourceTemplates {
 			tplCopy := tpl
@@ -237,7 +237,7 @@ func (b *StdioBridge) forwardAll(ctx context.Context) {
 	}
 
 	// Prompts -> straight passthrough
-	slog.Debug("Forwarding prompts from upstream to local stdio server")
+	slog.Debug("forwarding prompts from upstream to local stdio server")
 	if lp, err := b.up.ListPrompts(ctx, mcp.ListPromptsRequest{}); err == nil {
 		for _, p := range lp.Prompts {
 			pCopy := p

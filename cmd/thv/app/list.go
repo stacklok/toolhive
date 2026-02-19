@@ -6,6 +6,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"text/tabwriter"
 
@@ -13,7 +14,6 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -159,7 +159,7 @@ func printTextOutput(workloadList []core.Workload) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	if _, err := fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tGROUP\tCREATED"); err != nil {
-		logger.Warnf("Failed to write output header: %v", err)
+		slog.Warn(fmt.Sprintf("Failed to write output header: %v", err))
 		return
 	}
 
@@ -181,12 +181,12 @@ func printTextOutput(workloadList []core.Workload) {
 			c.Group,
 			c.CreatedAt,
 		); err != nil {
-			logger.Debugf("Failed to write workload information: %v", err)
+			slog.Debug(fmt.Sprintf("Failed to write workload information: %v", err))
 		}
 	}
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
-		logger.Errorf("Warning: Failed to flush tabwriter: %v", err)
+		slog.Error(fmt.Sprintf("Failed to flush tabwriter: %v", err))
 	}
 }

@@ -12,14 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize the logger for tests
-	logger.Initialize()
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()

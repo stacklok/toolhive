@@ -58,12 +58,12 @@ func (r *Registry) GetIntrospector(introspectURL string) TokenIntrospector {
 	for _, provider := range r.providers {
 		if provider.CanHandle(introspectURL) {
 			//nolint:gosec // G706: provider name and URL are from server configuration
-			slog.Debug("Selected provider for introspection", "provider", provider.Name(), "url", introspectURL)
+			slog.Debug("selected provider for introspection", "provider", provider.Name(), "url", introspectURL)
 			return provider
 		}
 	}
 	// Create a new fallback provider instance with the specific URL
-	slog.Debug("Using RFC7662 fallback provider for introspection", "url", introspectURL)
+	slog.Debug("using RFC7662 fallback provider for introspection", "url", introspectURL)
 	return NewRFC7662Provider(introspectURL)
 }
 
@@ -101,7 +101,7 @@ func (g *GoogleProvider) CanHandle(introspectURL string) bool {
 
 // IntrospectToken introspects a Google opaque token and returns JWT claims
 func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt.MapClaims, error) {
-	slog.Debug("Using Google tokeninfo provider for token introspection", "url", g.url)
+	slog.Debug("using Google tokeninfo provider for token introspection", "url", g.url)
 
 	// Parse the URL and add query parameters
 	u, err := url.Parse(g.url)
@@ -130,7 +130,7 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -149,7 +149,7 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 
 	// Parse the Google response and convert to JWT claims
 	//nolint:gosec // G706: HTTP status code is not sensitive
-	slog.Debug("Successfully received Google tokeninfo response", "status", resp.StatusCode)
+	slog.Debug("successfully received Google tokeninfo response", "status", resp.StatusCode)
 	return g.parseGoogleResponse(body)
 }
 
@@ -312,7 +312,7 @@ func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jw
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -455,7 +455,7 @@ func discoverOIDCConfiguration(
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -501,13 +501,13 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 
 	// Add Google provider if the introspection URL matches
 	if config.IntrospectionURL == GoogleTokeninfoURL {
-		slog.Debug("Registering Google tokeninfo provider", "url", config.IntrospectionURL)
+		slog.Debug("registering Google tokeninfo provider", "url", config.IntrospectionURL)
 		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
 	}
 
 	// Add GitHub provider if the introspection URL matches GitHub's API pattern
 	if strings.Contains(config.IntrospectionURL, GitHubTokenCheckURL) {
-		slog.Debug("Registering GitHub token validation provider", "url", config.IntrospectionURL)
+		slog.Debug("registering GitHub token validation provider", "url", config.IntrospectionURL)
 		githubProvider, err := NewGitHubProvider(
 			config.IntrospectionURL,
 			config.ClientID,
@@ -563,8 +563,8 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	// Log warning if insecure HTTP is enabled
 	if config.InsecureAllowHTTP {
 		slog.Warn(
-			"InsecureAllowHTTP is enabled - "+
-				"HTTP OIDC URLs are allowed. This is INSECURE and should NEVER be used in production!",
+			"insecure HTTP is enabled - "+
+				"HTTP OIDC URLs are allowed - this is INSECURE and should NEVER be used in production",
 			"issuer", config.Issuer,
 		)
 	}
@@ -747,7 +747,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 		backoff.WithMaxTries(oidcDiscoveryMaxAttempts),
 		backoff.WithNotify(func(err error, duration time.Duration) {
 			slog.Debug(
-				"OIDC discovery failed, retrying",
+				"oidc discovery failed, retrying",
 				"issuer", v.issuer, "retry_in", duration, "error", err,
 			)
 		}),
@@ -757,7 +757,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 		v.oidcDiscoveryErr = fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
 		//nolint:gosec // G706: issuer is from server configuration
 		slog.Error(
-			"OIDC discovery failed after retries",
+			"oidc discovery failed after retries",
 			"issuer", v.issuer, "attempts", oidcDiscoveryMaxAttempts, "error", err,
 		)
 		// Do NOT set oidcDiscovered = true -- allow retry on next ValidateToken call
@@ -776,7 +776,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	v.jwksRegistrationMu.Unlock()
 	//nolint:gosec // G706: issuer and JWKS URL are from OIDC discovery
 	slog.Debug(
-		"OIDC discovery succeeded",
+		"oidc discovery succeeded",
 		"issuer", v.issuer, "jwks_url", doc.JWKSURI,
 	)
 
@@ -1055,7 +1055,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// Convert claims to Identity
 		identity, err := claimsToIdentity(claims, tokenString)
 		if err != nil {
-			slog.Error("Failed to convert claims to identity", "error", err)
+			slog.Error("failed to convert claims to identity", "error", err)
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
 			http.Error(w, "Invalid authentication claims", http.StatusUnauthorized)
 			return
@@ -1072,12 +1072,12 @@ type RFC9728AuthInfo struct {
 	Resource               string   `json:"resource"`
 	AuthorizationServers   []string `json:"authorization_servers"`
 	BearerMethodsSupported []string `json:"bearer_methods_supported"`
-	JWKSURI                string   `json:"jwks_uri"`
+	JWKSURI                string   `json:"jwks_uri,omitempty"`
 	ScopesSupported        []string `json:"scopes_supported"`
 }
 
 // NewAuthInfoHandler creates an HTTP handler that returns RFC-9728 compliant OAuth Protected Resource metadata
-func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) http.Handler {
+func NewAuthInfoHandler(issuer, resourceURL string, scopes []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers for all requests
 		origin := r.Header.Get("Origin")
@@ -1115,7 +1115,6 @@ func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) ht
 			Resource:               resourceURL,
 			AuthorizationServers:   []string{issuer},
 			BearerMethodsSupported: []string{"header"},
-			JWKSURI:                jwksURL,
 			ScopesSupported:        supportedScopes,
 		}
 
@@ -1124,7 +1123,7 @@ func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) ht
 
 		// Encode and send the response
 		if err := json.NewEncoder(w).Encode(authInfo); err != nil {
-			slog.Error("Failed to encode OAuth discovery response", "error", err)
+			slog.Error("failed to encode OAuth discovery response", "error", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}

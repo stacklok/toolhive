@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive-core/httperr"
@@ -34,8 +36,35 @@ func WithInstaller(inst skills.Installer) Option {
 	}
 }
 
+// skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
+// Entries are never evicted. This is acceptable because the number of distinct
+// skills on a single machine is expected to remain small (< 1000).
+type skillLock struct {
+	mu sync.Mutex
+	// locks holds per-key mutexes. INVARIANT: entries must never be deleted
+	// from this map. The two-phase lock() method depends on pointers remaining
+	// valid after the global mutex is released. See lock() for details.
+	locks map[string]*sync.Mutex
+}
+
+// lock acquires a per-skill mutex and returns a function that releases it.
+func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) func() {
+	sl.mu.Lock()
+	key := string(scope) + "/" + name + "/" + projectRoot
+	m, ok := sl.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		sl.locks[key] = m
+	}
+	sl.mu.Unlock()
+
+	m.Lock()
+	return m.Unlock
+}
+
 // service is the default implementation of skills.SkillService.
 type service struct {
+	locks        skillLock
 	store        storage.SkillStore
 	pathResolver skills.PathResolver
 	installer    skills.Installer
@@ -43,7 +72,10 @@ type service struct {
 
 // New creates a new SkillService backed by the given store.
 func New(store storage.SkillStore, opts ...Option) skills.SkillService {
-	s := &service{store: store}
+	s := &service{
+		store: store,
+		locks: skillLock{locks: make(map[string]*sync.Mutex)},
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -71,6 +103,16 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 
 	scope := defaultScope(opts.Scope)
 
+	// Canonicalize the project root so that equivalent paths
+	// (e.g. trailing slash, ".." segments) produce the same lock key
+	// and DB record.
+	if opts.ProjectRoot != "" {
+		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	}
+
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
+
 	// Without layer data, fall back to creating a pending record.
 	if len(opts.LayerData) == 0 {
 		return s.installPending(ctx, opts, scope)
@@ -86,6 +128,13 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	}
 
 	scope := defaultScope(opts.Scope)
+
+	if opts.ProjectRoot != "" {
+		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	}
+
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
 
 	// Look up the existing record to find which clients have files.
 	existing, err := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)

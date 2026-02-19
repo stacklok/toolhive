@@ -12,13 +12,14 @@ import (
 
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 )
 
-// Compile-time assertions: defaultSession must implement both interfaces.
-var _ Session = (*defaultSession)(nil)
-var _ transportsession.Session = (*defaultSession)(nil)
+// Compile-time assertions: defaultMultiSession must implement both interfaces.
+var _ MultiSession = (*defaultMultiSession)(nil)
+var _ transportsession.Session = (*defaultMultiSession)(nil)
 
-// Sentinel errors returned by defaultSession methods.
+// Sentinel errors returned by defaultMultiSession methods.
 var (
 	// ErrSessionClosed is returned when an operation is attempted on a closed session.
 	ErrSessionClosed = errors.New("session is closed")
@@ -32,52 +33,22 @@ var (
 	// ErrPromptNotFound is returned when the requested prompt is not in the routing table.
 	ErrPromptNotFound = errors.New("prompt not found in session routing table")
 
-	// ErrNoBackendClient is returned when there is no client available for a backend.
+	// ErrNoBackendClient is returned when the routing table references a backend
+	// that has no entry in the connections map. This indicates an internal
+	// invariant violation: under normal operation MakeSession always populates
+	// both maps together, so this error should never be seen at runtime.
 	ErrNoBackendClient = errors.New("no client available for backend")
 )
 
-// connectedBackend abstracts a persistent, initialised MCP connection to a
-// single backend server. It is created once per backend during session creation
-// (MakeSession) and reused for the lifetime of the session.
-//
-// Implementations must be safe for concurrent use.
-type connectedBackend interface {
-	// callTool invokes a named tool on this backend.
-	// target is used for capability name translation via GetBackendCapabilityName.
-	callTool(
-		ctx context.Context,
-		target *vmcp.BackendTarget,
-		toolName string,
-		arguments map[string]any,
-		meta map[string]any,
-	) (*vmcp.ToolCallResult, error)
-
-	// readResource reads a resource from this backend.
-	readResource(ctx context.Context, target *vmcp.BackendTarget, uri string) (*vmcp.ResourceReadResult, error)
-
-	// getPrompt retrieves a prompt from this backend.
-	getPrompt(
-		ctx context.Context,
-		target *vmcp.BackendTarget,
-		name string,
-		arguments map[string]any,
-	) (*vmcp.PromptGetResult, error)
-
-	// sessionID returns the backend-assigned session ID (if any).
-	// Returns "" if the backend did not assign a session ID.
-	sessionID() string
-
-	// close closes the underlying transport connection.
-	close() error
-}
-
-// defaultSession is the production Session implementation.
+// defaultMultiSession is the production MultiSession implementation.
 //
 // # Thread-safety model
 //
-// mu guards connections, routingTable, closed, and the wg.Add call. RLock is
-// held only long enough to retrieve state and atomically increment the in-flight
-// counter (wg.Add); it is released before network I/O begins.
+// mu guards connections, closed, and the wg.Add call. RLock is held only
+// long enough to retrieve state and atomically increment the in-flight counter
+// (wg.Add); it is released before network I/O begins.
+// routingTable, tools, resources, and prompts are written once during
+// MakeSession and are read-only thereafter — they do not require lock protection.
 //
 // wg tracks in-flight operations. Close() sets closed=true under write lock,
 // then waits for wg to reach zero before tearing down backend connections.
@@ -87,13 +58,20 @@ type connectedBackend interface {
 //
 // # Lifecycle
 //
-//  1. Created by defaultSessionFactory.MakeSession (Phase 1: purely additive).
+//  1. Created by defaultMultiSessionFactory.MakeSession (Phase 1: purely additive).
 //  2. CallTool / ReadResource / GetPrompt increment wg, perform I/O, decrement wg.
-//  3. Close() sets closed=true, waits for wg, then closes all backend clients.
-type defaultSession struct {
+//  3. Close() sets closed=true, waits for wg, then closes all backend sessions.
+//
+// # Composite tools
+//
+// Composite tools (VirtualMCPCompositeToolDefinition) are out of scope for
+// Phase 1. When they are introduced they will be resolved at a higher layer
+// (e.g. the vMCP router or handler) and injected alongside the backend tool
+// list, rather than being routed through the backend connections held here.
+type defaultMultiSession struct {
 	transportsession.Session // embedded interface — provides ID, Type, timestamps, etc.
 
-	connections     map[string]connectedBackend // backend workload ID → persistent client
+	connections     map[string]backend.Session // backend workload ID → persistent backend session
 	routingTable    *vmcp.RoutingTable
 	tools           []vmcp.Tool
 	resources       []vmcp.Resource
@@ -106,7 +84,7 @@ type defaultSession struct {
 }
 
 // Tools returns a snapshot copy of the tools available in this session.
-func (s *defaultSession) Tools() []vmcp.Tool {
+func (s *defaultMultiSession) Tools() []vmcp.Tool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]vmcp.Tool, len(s.tools))
@@ -115,7 +93,7 @@ func (s *defaultSession) Tools() []vmcp.Tool {
 }
 
 // Resources returns a snapshot copy of the resources available in this session.
-func (s *defaultSession) Resources() []vmcp.Resource {
+func (s *defaultMultiSession) Resources() []vmcp.Resource {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]vmcp.Resource, len(s.resources))
@@ -124,7 +102,7 @@ func (s *defaultSession) Resources() []vmcp.Resource {
 }
 
 // Prompts returns a snapshot copy of the prompts available in this session.
-func (s *defaultSession) Prompts() []vmcp.Prompt {
+func (s *defaultMultiSession) Prompts() []vmcp.Prompt {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]vmcp.Prompt, len(s.prompts))
@@ -133,7 +111,7 @@ func (s *defaultSession) Prompts() []vmcp.Prompt {
 }
 
 // BackendSessions returns a snapshot copy of backend-assigned session IDs.
-func (s *defaultSession) BackendSessions() map[string]string {
+func (s *defaultMultiSession) BackendSessions() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make(map[string]string, len(s.backendSessions))
@@ -141,82 +119,82 @@ func (s *defaultSession) BackendSessions() map[string]string {
 	return result
 }
 
-// lookupBackend resolves capName against table and returns the routing target
-// and the live connection for the backend that owns it.
+// lookupBackend resolves capName against table and returns the live backend
+// session for the backend that owns it.
 //
 // On success, wg.Add(1) has been called before the lock is released. The
 // caller MUST call wg.Done() (typically via defer) when the I/O completes.
 // On error, wg.Add was never called.
-func (s *defaultSession) lookupBackend(
+func (s *defaultMultiSession) lookupBackend(
 	capName string,
 	table map[string]*vmcp.BackendTarget,
 	notFoundErr error,
-) (*vmcp.BackendTarget, connectedBackend, error) {
+) (backend.Session, error) {
 	// Hold RLock to atomically check closed and register the in-flight
 	// operation. wg.Add(1) is called while the lock is held so that Close()
 	// cannot slip in between "check closed" and "add to wait group".
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return nil, nil, ErrSessionClosed
+		return nil, ErrSessionClosed
 	}
 	target, ok := table[capName]
 	if !ok {
 		s.mu.RUnlock()
-		return nil, nil, fmt.Errorf("%w: %q", notFoundErr, capName)
+		return nil, fmt.Errorf("%w: %q", notFoundErr, capName)
 	}
 	conn, ok := s.connections[target.WorkloadID]
 	if !ok {
 		s.mu.RUnlock()
-		return nil, nil, fmt.Errorf("%w for backend %q", ErrNoBackendClient, target.WorkloadID)
+		return nil, fmt.Errorf("%w for backend %q", ErrNoBackendClient, target.WorkloadID)
 	}
 	s.wg.Add(1) // register before releasing the lock to avoid a race with Close()
 	s.mu.RUnlock()
-	return target, conn, nil
+	return conn, nil
 }
 
 // CallTool invokes toolName on the appropriate backend.
-func (s *defaultSession) CallTool(
+func (s *defaultMultiSession) CallTool(
 	ctx context.Context,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	target, conn, err := s.lookupBackend(toolName, s.routingTable.Tools, ErrToolNotFound)
+	conn, err := s.lookupBackend(toolName, s.routingTable.Tools, ErrToolNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer s.wg.Done()
-	return conn.callTool(ctx, target, toolName, arguments, meta)
+	return conn.CallTool(ctx, toolName, arguments, meta)
 }
 
 // ReadResource retrieves the resource identified by uri.
-func (s *defaultSession) ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error) {
-	target, conn, err := s.lookupBackend(uri, s.routingTable.Resources, ErrResourceNotFound)
+func (s *defaultMultiSession) ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error) {
+	conn, err := s.lookupBackend(uri, s.routingTable.Resources, ErrResourceNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer s.wg.Done()
-	return conn.readResource(ctx, target, uri)
+	return conn.ReadResource(ctx, uri)
 }
 
 // GetPrompt retrieves the named prompt from the appropriate backend.
-func (s *defaultSession) GetPrompt(
+func (s *defaultMultiSession) GetPrompt(
 	ctx context.Context,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	target, conn, err := s.lookupBackend(name, s.routingTable.Prompts, ErrPromptNotFound)
+	conn, err := s.lookupBackend(name, s.routingTable.Prompts, ErrPromptNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer s.wg.Done()
-	return conn.getPrompt(ctx, target, name, arguments)
+	return conn.GetPrompt(ctx, name, arguments)
 }
 
 // Close releases all resources. It is idempotent: subsequent calls return nil
 // without attempting to close backends again.
-func (s *defaultSession) Close() error {
+func (s *defaultMultiSession) Close() error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -236,7 +214,7 @@ func (s *defaultSession) Close() error {
 	// so no concurrent writer exists at this point.
 	var errs []error
 	for id, conn := range s.connections {
-		if err := conn.close(); err != nil {
+		if err := conn.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close backend %s: %w", id, err))
 		}
 	}

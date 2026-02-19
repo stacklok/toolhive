@@ -10,8 +10,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// Session is the vMCP domain session interface. It extends the transport-layer
-// Session with behaviour: capability access and session-scoped backend routing.
+// MultiSession is the vMCP domain session interface. It extends the
+// transport-layer Session with behaviour: capability access and session-scoped
+// backend routing across multiple backend connections.
+//
+// A MultiSession is a "session of sessions": each backend contributes its own
+// persistent connection (see [backend.Session] in pkg/vmcp/session/internal/backend),
+// and the MultiSession aggregates them behind a single routing table.
 //
 // # Distributed deployment note
 //
@@ -23,7 +28,7 @@ import (
 //
 // # Dual-layer storage model
 //
-// A Session separates two layers with different lifecycles:
+// A MultiSession separates two layers with different lifecycles:
 //
 //   - Metadata layer (serialisable): session ID, timestamps, identity reference,
 //     backend ID list. Stored via the transportsession.Storage interface and
@@ -34,7 +39,7 @@ import (
 //
 // All session metadata goes through the same Storage interface — no parallel
 // storage path is introduced.
-type Session interface {
+type MultiSession interface {
 	transportsession.Session
 
 	// Tools returns the resolved tools available in this session.

@@ -5,18 +5,19 @@ package session
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 )
 
 const (
@@ -34,11 +35,9 @@ const (
 	MetadataKeyBackendIDs = "vmcp.backend.ids"
 )
 
-// SessionFactory creates new Sessions for connecting clients.
-//
-//nolint:revive // SessionFactory is the canonical name per RFC THV-0038
-type SessionFactory interface {
-	// MakeSession creates a new Session for the given identity against the
+// MultiSessionFactory creates new MultiSessions for connecting clients.
+type MultiSessionFactory interface {
+	// MakeSession creates a new MultiSession for the given identity against the
 	// provided set of backends. Backend clients are initialised in parallel
 	// with bounded concurrency (see WithMaxBackendInitConcurrency).
 	//
@@ -49,45 +48,43 @@ type SessionFactory interface {
 	// If all backends fail, MakeSession still returns a valid (empty) session
 	// rather than an error, allowing clients to connect even when all backends
 	// are temporarily unavailable.
-	MakeSession(ctx context.Context, identity *auth.Identity, backends []*vmcp.Backend) (Session, error)
+	MakeSession(ctx context.Context, identity *auth.Identity, backends []*vmcp.Backend) (MultiSession, error)
 }
 
-// BackendConnector creates a connected, initialised backend entry for use
-// within a single session. It is called once per backend during MakeSession.
+// backendConnector creates a connected, initialised backend Session for use
+// within a single MultiSession. It is called once per backend during MakeSession.
 //
 // The connector is responsible for:
 //  1. Creating and starting the MCP client transport.
 //  2. Running the MCP Initialize handshake.
 //  3. Querying backend capabilities (tools, resources, prompts).
 //
-// The returned connectedBackend owns the underlying transport connection and
+// The returned backend.Session owns the underlying transport connection and
 // must be closed when the session ends. The returned CapabilityList is used
 // to populate the session's routing table and capability lists.
 //
 // On error the factory treats the failure as a partial failure: a warning is
 // logged and the backend is excluded from the session.
-type BackendConnector func(
+type backendConnector func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
-) (connectedBackend, *vmcp.CapabilityList, error)
+) (backend.Session, *vmcp.CapabilityList, error)
 
-// defaultSessionFactory is the production SessionFactory implementation.
-type defaultSessionFactory struct {
-	connector          BackendConnector
+// defaultMultiSessionFactory is the production MultiSessionFactory implementation.
+type defaultMultiSessionFactory struct {
+	connector          backendConnector
 	maxConcurrency     int
 	backendInitTimeout time.Duration
 }
 
-// SessionFactoryOption configures a defaultSessionFactory.
-//
-//nolint:revive // SessionFactoryOption matches SessionFactory naming per RFC THV-0038
-type SessionFactoryOption func(*defaultSessionFactory)
+// MultiSessionFactoryOption configures a defaultMultiSessionFactory.
+type MultiSessionFactoryOption func(*defaultMultiSessionFactory)
 
 // WithMaxBackendInitConcurrency sets the maximum number of backends that are
 // initialised concurrently during MakeSession. Defaults to 10.
-func WithMaxBackendInitConcurrency(n int) SessionFactoryOption {
-	return func(f *defaultSessionFactory) {
+func WithMaxBackendInitConcurrency(n int) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
 		if n > 0 {
 			f.maxConcurrency = n
 		}
@@ -96,20 +93,25 @@ func WithMaxBackendInitConcurrency(n int) SessionFactoryOption {
 
 // WithBackendInitTimeout sets the per-backend timeout during MakeSession.
 // Defaults to 30 s.
-func WithBackendInitTimeout(d time.Duration) SessionFactoryOption {
-	return func(f *defaultSessionFactory) {
+func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
 		if d > 0 {
 			f.backendInitTimeout = d
 		}
 	}
 }
 
-// NewSessionFactory creates a SessionFactory backed by connector.
-//
-// connector is called once per backend during MakeSession. For production use,
-// pass NewHTTPBackendConnector. For tests, inject a mock BackendConnector.
-func NewSessionFactory(connector BackendConnector, opts ...SessionFactoryOption) SessionFactory {
-	f := &defaultSessionFactory{
+// NewSessionFactory creates a MultiSessionFactory that connects to backends
+// over HTTP using the given outgoing auth registry.
+func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSessionFactoryOption) MultiSessionFactory {
+	return newSessionFactoryWithConnector(backend.NewHTTPConnector(registry), opts...)
+}
+
+// newSessionFactoryWithConnector creates a MultiSessionFactory backed by an
+// arbitrary connector. Used by tests to inject a fake connector without
+// requiring real HTTP backends.
+func newSessionFactoryWithConnector(connector backendConnector, opts ...MultiSessionFactoryOption) MultiSessionFactory {
+	f := &defaultMultiSessionFactory{
 		connector:          connector,
 		maxConcurrency:     defaultMaxBackendInitConcurrency,
 		backendInitTimeout: defaultBackendInitTimeout,
@@ -123,7 +125,7 @@ func NewSessionFactory(connector BackendConnector, opts ...SessionFactoryOption)
 // initResult captures the outcome of initialising a single backend.
 type initResult struct {
 	target *vmcp.BackendTarget
-	conn   connectedBackend
+	conn   backend.Session
 	caps   *vmcp.CapabilityList
 }
 
@@ -132,34 +134,34 @@ type initResult struct {
 // initialisation cases: connector errors, and nil conn/caps without an error.
 // Returns a non-nil *initResult on success, nil when the backend should be
 // skipped (failure already logged as a warning).
-func (f *defaultSessionFactory) initOneBackend(
+func (f *defaultMultiSessionFactory) initOneBackend(
 	ctx context.Context,
-	backend *vmcp.Backend,
+	b *vmcp.Backend,
 	identity *auth.Identity,
 ) *initResult {
 	bCtx, cancel := context.WithTimeout(ctx, f.backendInitTimeout)
 	defer cancel()
 
-	target := vmcp.BackendToTarget(backend)
+	target := vmcp.BackendToTarget(b)
 	conn, caps, err := f.connector(bCtx, target, identity)
 	if err != nil {
 		if conn != nil {
-			_ = conn.close()
+			_ = conn.Close()
 		}
 		slog.Warn("Failed to initialise backend for session; continuing without it",
-			"backendID", backend.ID,
-			"backendName", backend.Name,
+			"backendID", b.ID,
+			"backendName", b.Name,
 			"error", err,
 		)
 		return nil
 	}
 	if conn == nil || caps == nil {
 		if conn != nil {
-			_ = conn.close()
+			_ = conn.Close()
 		}
 		slog.Warn("Backend connector returned nil conn or caps with no error; skipping backend",
-			"backendID", backend.ID,
-			"backendName", backend.Name,
+			"backendID", b.ID,
+			"backendName", b.Name,
 		)
 		return nil
 	}
@@ -202,12 +204,12 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 	return rt, tools, resources, prompts
 }
 
-// MakeSession implements SessionFactory.
-func (f *defaultSessionFactory) MakeSession(
+// MakeSession implements MultiSessionFactory.
+func (f *defaultMultiSessionFactory) MakeSession(
 	ctx context.Context,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
-) (Session, error) {
+) (MultiSession, error) {
 	// Filter nil entries upfront so that every downstream dereference of a
 	// *vmcp.Backend is safe. Nil entries are logged and skipped, consistent
 	// with the partial-initialisation approach used for failed backends.
@@ -221,40 +223,35 @@ func (f *defaultSessionFactory) MakeSession(
 	}
 	backends = filtered
 
-	resultsCh := make(chan initResult, len(backends))
-
-	// Use errgroup to initialise backends in parallel with bounded concurrency.
-	// Goroutines always return nil: partial initialisation means failures are
-	// warned and skipped rather than propagated to cancel sibling goroutines.
-	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(f.maxConcurrency)
-
-	for _, b := range backends {
-		backend := b // capture loop variable
-		g.Go(func() error {
-			if r := f.initOneBackend(gCtx, backend, identity); r != nil {
-				resultsCh <- *r
-			}
-			return nil // always nil: partial init, failures already logged
-		})
+	// Initialise backends in parallel with bounded concurrency.
+	// Each goroutine writes to its own index so no lock on the slice is needed.
+	rawResults := make([]*initResult, len(backends))
+	sem := make(chan struct{}, f.maxConcurrency)
+	var wg sync.WaitGroup
+	wg.Add(len(backends))
+	for i, b := range backends {
+		go func(i int, b *vmcp.Backend) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			rawResults[i] = f.initOneBackend(ctx, b, identity)
+		}(i, b)
 	}
+	wg.Wait()
 
-	// Wait for all goroutines then close the results channel.
-	if err := g.Wait(); err != nil {
-		// Should never happen — goroutines always return nil.
-		return nil, fmt.Errorf("unexpected error during backend initialisation: %w", err)
-	}
-	close(resultsCh)
-
-	// Drain results; sort by WorkloadID so that capability-name conflicts are
-	// resolved deterministically: the alphabetically-earlier backend always wins.
-	connections := make(map[string]connectedBackend, len(backends))
+	// Collect successful results; sort by WorkloadID so that capability-name
+	// conflicts are resolved deterministically: the alphabetically-earlier
+	// backend always wins.
+	connections := make(map[string]backend.Session, len(backends))
 	backendSessions := make(map[string]string, len(backends))
 	results := make([]initResult, 0, len(backends))
-	for r := range resultsCh {
+	for _, r := range rawResults {
+		if r == nil {
+			continue
+		}
 		connections[r.target.WorkloadID] = r.conn
-		backendSessions[r.target.WorkloadID] = r.conn.sessionID()
-		results = append(results, r)
+		backendSessions[r.target.WorkloadID] = r.conn.SessionID()
+		results = append(results, *r)
 	}
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].target.WorkloadID < results[j].target.WorkloadID
@@ -287,7 +284,7 @@ func (f *defaultSessionFactory) MakeSession(
 		transportSess.SetMetadata(MetadataKeyBackendIDs, strings.Join(ids, ","))
 	}
 
-	return &defaultSession{
+	return &defaultMultiSession{
 		Session:         transportSess,
 		connections:     connections,
 		routingTable:    routingTable,

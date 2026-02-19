@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package session
+package backend
 
 import (
 	"context"
@@ -26,7 +26,7 @@ import (
 const (
 	// maxBackendResponseSize caps each HTTP response body for streamable-HTTP
 	// backends to prevent memory exhaustion. Not applied to SSE transports —
-	// see createSessionMCPClient for the rationale.
+	// see createMCPClient for the rationale.
 	maxBackendResponseSize = 100 * 1024 * 1024 // 100 MB
 
 	// defaultBackendRequestTimeout is the wall-clock deadline for individual
@@ -70,7 +70,10 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return i.base.RoundTrip(req)
 }
 
-// mcpConnectedBackend wraps a persistent mark3labs MCP client for one backend.
+// Compile-time assertion: mcpSession must implement Session.
+var _ Session = (*mcpSession)(nil)
+
+// mcpSession wraps a persistent mark3labs MCP client for one backend.
 // It is created once per backend during MakeSession and closed when the session ends.
 //
 // Phase 1 limitation — no reconnection: if the underlying transport drops
@@ -79,23 +82,26 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // closed and a new one created to reconnect. This affects SSE backends more
 // visibly because SSE uses a single long-lived HTTP stream; streamable-HTTP
 // backends open a new connection per request and are therefore more resilient.
-type mcpConnectedBackend struct {
+type mcpSession struct {
 	client           *mcpclient.Client
-	backendSessionID string // backend-assigned session ID (may be empty)
+	target           *vmcp.BackendTarget // bound at creation; used for capability name translation
+	backendSessionID string              // backend-assigned session ID (may be empty)
 }
 
-func (c *mcpConnectedBackend) sessionID() string { return c.backendSessionID }
+// SessionID returns the backend-assigned session ID.
+func (c *mcpSession) SessionID() string { return c.backendSessionID }
 
-func (c *mcpConnectedBackend) close() error { return c.client.Close() }
+// Close closes the underlying MCP client transport.
+func (c *mcpSession) Close() error { return c.client.Close() }
 
-func (c *mcpConnectedBackend) callTool(
+// CallTool invokes a named tool on this backend.
+func (c *mcpSession) CallTool(
 	ctx context.Context,
-	target *vmcp.BackendTarget,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	backendName := target.GetBackendCapabilityName(toolName)
+	backendName := c.target.GetBackendCapabilityName(toolName)
 	if backendName != toolName {
 		slog.Debug("Translating tool name", "clientName", toolName, "backendName", backendName)
 	}
@@ -108,7 +114,7 @@ func (c *mcpConnectedBackend) callTool(
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("tool %q call failed on backend %s: %w", toolName, target.WorkloadID, err)
+		return nil, fmt.Errorf("tool %q call failed on backend %s: %w", toolName, c.target.WorkloadID, err)
 	}
 
 	contentArray := conversion.ConvertMCPContents(result.Content)
@@ -131,12 +137,12 @@ func (c *mcpConnectedBackend) callTool(
 	}, nil
 }
 
-func (c *mcpConnectedBackend) readResource(
+// ReadResource reads a resource from this backend.
+func (c *mcpSession) ReadResource(
 	ctx context.Context,
-	target *vmcp.BackendTarget,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
-	backendURI := target.GetBackendCapabilityName(uri)
+	backendURI := c.target.GetBackendCapabilityName(uri)
 	if backendURI != uri {
 		slog.Debug("Translating resource URI", "clientURI", uri, "backendURI", backendURI)
 	}
@@ -145,7 +151,7 @@ func (c *mcpConnectedBackend) readResource(
 		Params: mcp.ReadResourceParams{URI: backendURI},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("resource %q read failed on backend %s: %w", uri, target.WorkloadID, err)
+		return nil, fmt.Errorf("resource %q read failed on backend %s: %w", uri, c.target.WorkloadID, err)
 	}
 
 	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
@@ -157,13 +163,13 @@ func (c *mcpConnectedBackend) readResource(
 	}, nil
 }
 
-func (c *mcpConnectedBackend) getPrompt(
+// GetPrompt retrieves a prompt from this backend.
+func (c *mcpSession) GetPrompt(
 	ctx context.Context,
-	target *vmcp.BackendTarget,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	backendName := target.GetBackendCapabilityName(name)
+	backendName := c.target.GetBackendCapabilityName(name)
 	if backendName != name {
 		slog.Debug("Translating prompt name", "clientName", name, "backendName", backendName)
 	}
@@ -177,7 +183,7 @@ func (c *mcpConnectedBackend) getPrompt(
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("prompt %q get failed on backend %s: %w", name, target.WorkloadID, err)
+		return nil, fmt.Errorf("prompt %q get failed on backend %s: %w", name, c.target.WorkloadID, err)
 	}
 
 	// NOTE: ConvertPromptMessages is lossy — non-text content (images, audio)
@@ -189,18 +195,22 @@ func (c *mcpConnectedBackend) getPrompt(
 	}, nil
 }
 
-// NewHTTPBackendConnector returns a BackendConnector that creates HTTP-based
-// (streamable-HTTP or SSE) persistent MCP clients for each backend.
+// NewHTTPConnector returns a function that creates an HTTP-based (streamable-HTTP
+// or SSE) persistent backend Session for each backend.
 //
 // registry provides the authentication strategy for outgoing backend requests.
 // Pass a registry configured with the "unauthenticated" strategy to disable auth.
-func NewHTTPBackendConnector(registry vmcpauth.OutgoingAuthRegistry) BackendConnector {
+func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	identity *auth.Identity,
+) (Session, *vmcp.CapabilityList, error) {
 	return func(
 		ctx context.Context,
 		target *vmcp.BackendTarget,
 		identity *auth.Identity,
-	) (connectedBackend, *vmcp.CapabilityList, error) {
-		c, err := createSessionMCPClient(target, identity, registry)
+	) (Session, *vmcp.CapabilityList, error) {
+		c, err := createMCPClient(target, identity, registry)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -221,14 +231,14 @@ func NewHTTPBackendConnector(registry vmcpauth.OutgoingAuthRegistry) BackendConn
 			backendSessionID = sh.GetSessionId()
 		}
 
-		return &mcpConnectedBackend{client: c, backendSessionID: backendSessionID}, caps, nil
+		return &mcpSession{client: c, target: target, backendSessionID: backendSessionID}, caps, nil
 	}
 }
 
-// createSessionMCPClient builds and starts a mark3labs MCP client for target.
+// createMCPClient builds and starts a mark3labs MCP client for target.
 // The transport is started with context.Background() so its lifetime is bound
 // to client.Close(), not to any caller-supplied init context.
-func createSessionMCPClient(
+func createMCPClient(
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	registry vmcpauth.OutgoingAuthRegistry,

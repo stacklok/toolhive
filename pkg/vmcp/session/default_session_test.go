@@ -18,60 +18,61 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	internalbk "github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 )
 
 // ---------------------------------------------------------------------------
 // Helpers / mocks
 // ---------------------------------------------------------------------------
 
-// mockConnectedBackend is an in-process connectedBackend for testing.
+// mockConnectedBackend is an in-process internalbk.Session for testing.
 type mockConnectedBackend struct {
-	callToolFunc     func(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
-	readResourceFunc func(ctx context.Context, target *vmcp.BackendTarget, uri string) (*vmcp.ResourceReadResult, error)
-	getPromptFunc    func(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
+	callToolFunc     func(ctx context.Context, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
+	readResourceFunc func(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
+	getPromptFunc    func(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
 	sessID           string
 	closeCalled      atomic.Bool
 	closeErr         error
 }
 
-func (m *mockConnectedBackend) callTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
+func (m *mockConnectedBackend) CallTool(ctx context.Context, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
 	if m.callToolFunc != nil {
-		return m.callToolFunc(ctx, target, toolName, arguments, meta)
+		return m.callToolFunc(ctx, toolName, arguments, meta)
 	}
 	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "ok"}}}, nil
 }
 
-func (m *mockConnectedBackend) readResource(ctx context.Context, target *vmcp.BackendTarget, uri string) (*vmcp.ResourceReadResult, error) {
+func (m *mockConnectedBackend) ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error) {
 	if m.readResourceFunc != nil {
-		return m.readResourceFunc(ctx, target, uri)
+		return m.readResourceFunc(ctx, uri)
 	}
 	return &vmcp.ResourceReadResult{Contents: []byte("data"), MimeType: "text/plain"}, nil
 }
 
-func (m *mockConnectedBackend) getPrompt(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
+func (m *mockConnectedBackend) GetPrompt(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
 	if m.getPromptFunc != nil {
-		return m.getPromptFunc(ctx, target, name, arguments)
+		return m.getPromptFunc(ctx, name, arguments)
 	}
 	return &vmcp.PromptGetResult{Messages: "hello"}, nil
 }
 
-func (m *mockConnectedBackend) sessionID() string { return m.sessID }
-func (m *mockConnectedBackend) close() error {
+func (m *mockConnectedBackend) SessionID() string { return m.sessID }
+func (m *mockConnectedBackend) Close() error {
 	m.closeCalled.Store(true)
 	return m.closeErr
 }
 
-// buildTestSession creates a defaultSession wired with mock backends.
+// buildTestSession creates a defaultMultiSession wired with mock backends.
 //
 //nolint:unparam // backendID is intentionally a parameter for readability; callers consistently use "b1"
 func buildTestSession(
 	t *testing.T,
 	backendID string,
-	conn connectedBackend,
+	conn internalbk.Session,
 	tools []vmcp.Tool,
 	resources []vmcp.Resource,
 	prompts []vmcp.Prompt,
-) *defaultSession {
+) *defaultMultiSession {
 	t.Helper()
 
 	target := &vmcp.BackendTarget{
@@ -95,9 +96,9 @@ func buildTestSession(
 		rt.Prompts[prompt.Name] = target
 	}
 
-	return &defaultSession{
+	return &defaultMultiSession{
 		Session:         transportsession.NewStreamableSession("test-session-id"),
-		connections:     map[string]connectedBackend{backendID: conn},
+		connections:     map[string]internalbk.Session{backendID: conn},
 		routingTable:    rt,
 		tools:           tools,
 		resources:       resources,
@@ -144,7 +145,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 	tests := []struct {
 		name        string
 		toolName    string
-		mockFn      func(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
+		mockFn      func(ctx context.Context, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
 		wantErr     bool
 		wantErrIs   error
 		wantContent string
@@ -152,7 +153,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 		{
 			name:     "successful tool call",
 			toolName: "search",
-			mockFn: func(_ context.Context, _ *vmcp.BackendTarget, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+			mockFn: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
 				return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "result"}}}, nil
 			},
 			wantContent: "result",
@@ -166,7 +167,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 		{
 			name:     "backend returns error",
 			toolName: "search",
-			mockFn: func(_ context.Context, _ *vmcp.BackendTarget, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+			mockFn: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
 				return nil, errors.New("backend boom")
 			},
 			wantErr: true,
@@ -208,7 +209,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 	tests := []struct {
 		name      string
 		uri       string
-		mockFn    func(ctx context.Context, target *vmcp.BackendTarget, uri string) (*vmcp.ResourceReadResult, error)
+		mockFn    func(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
 		wantErr   bool
 		wantErrIs error
 		wantData  string
@@ -216,7 +217,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 		{
 			name: "successful read",
 			uri:  "file://readme",
-			mockFn: func(_ context.Context, _ *vmcp.BackendTarget, _ string) (*vmcp.ResourceReadResult, error) {
+			mockFn: func(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
 				return &vmcp.ResourceReadResult{Contents: []byte("hello"), MimeType: "text/plain"}, nil
 			},
 			wantData: "hello",
@@ -230,7 +231,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 		{
 			name: "backend returns error",
 			uri:  "file://readme",
-			mockFn: func(_ context.Context, _ *vmcp.BackendTarget, _ string) (*vmcp.ResourceReadResult, error) {
+			mockFn: func(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
 				return nil, errors.New("backend boom")
 			},
 			wantErr: true,
@@ -272,7 +273,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 	tests := []struct {
 		name      string
 		prompt    string
-		mockFn    func(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
+		mockFn    func(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
 		wantErr   bool
 		wantErrIs error
 		wantMsg   string
@@ -280,7 +281,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 		{
 			name:   "successful get",
 			prompt: "greet",
-			mockFn: func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+			mockFn: func(_ context.Context, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
 				return &vmcp.PromptGetResult{Messages: "hi there"}, nil
 			},
 			wantMsg: "hi there",
@@ -294,7 +295,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 		{
 			name:   "backend error is propagated",
 			prompt: "greet",
-			mockFn: func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+			mockFn: func(_ context.Context, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
 				return nil, errors.New("backend unavailable")
 			},
 			wantErr: true,
@@ -359,7 +360,7 @@ func TestDefaultSession_Close(t *testing.T) {
 		callRelease := make(chan struct{})
 
 		mock := &mockConnectedBackend{
-			callToolFunc: func(_ context.Context, _ *vmcp.BackendTarget, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
 				close(callInProgress)
 				<-callRelease
 				return &vmcp.ToolCallResult{}, nil
@@ -438,9 +439,9 @@ func TestDefaultSession_ErrNoBackendClient(t *testing.T) {
 	// connections map has no entry for it. This exercises the ErrNoBackendClient
 	// path in CallTool, ReadResource, and GetPrompt.
 	target := &vmcp.BackendTarget{WorkloadID: "b1"}
-	sess := &defaultSession{
+	sess := &defaultMultiSession{
 		Session:     transportsession.NewStreamableSession("test-no-client"),
-		connections: map[string]connectedBackend{}, // deliberately empty
+		connections: map[string]internalbk.Session{}, // deliberately empty
 		routingTable: &vmcp.RoutingTable{
 			Tools:     map[string]*vmcp.BackendTarget{"search": target},
 			Resources: map[string]*vmcp.BackendTarget{"file://readme": target},
@@ -471,9 +472,9 @@ func TestDefaultSession_Close_AllBackendsAttemptedOnError(t *testing.T) {
 	b1 := &mockConnectedBackend{closeErr: errors.New("b1 close error")}
 	b2 := &mockConnectedBackend{closeErr: errors.New("b2 close error")}
 
-	sess := &defaultSession{
+	sess := &defaultMultiSession{
 		Session: transportsession.NewStreamableSession("test-multi-close"),
-		connections: map[string]connectedBackend{
+		connections: map[string]internalbk.Session{
 			"b1": b1,
 			"b2": b2,
 		},
@@ -512,7 +513,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 	}
 
 	//nolint:unparam // second return is always nil by design in the success-path connector
-	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return &mockConnectedBackend{sessID: "bs-1"}, &vmcp.CapabilityList{
 			Tools:     []vmcp.Tool{tool},
 			Resources: []vmcp.Resource{resource},
@@ -523,7 +524,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 	t.Run("creates session with backend capabilities", func(t *testing.T) {
 		t.Parallel()
 
-		factory := NewSessionFactory(successConnector)
+		factory := newSessionFactoryWithConnector(successConnector)
 		sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
 		require.NoError(t, err)
 		require.NotNil(t, sess)
@@ -541,7 +542,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 	t.Run("each session gets a unique ID", func(t *testing.T) {
 		t.Parallel()
 
-		factory := NewSessionFactory(successConnector)
+		factory := newSessionFactoryWithConnector(successConnector)
 		s1, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
 		require.NoError(t, err)
 		s2, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
@@ -556,7 +557,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 	t.Run("no backends produces empty session", func(t *testing.T) {
 		t.Parallel()
 
-		factory := NewSessionFactory(successConnector)
+		factory := newSessionFactoryWithConnector(successConnector)
 		sess, err := factory.MakeSession(context.Background(), nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
@@ -570,7 +571,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 	t.Run("nil backend entries are skipped without panic", func(t *testing.T) {
 		t.Parallel()
 
-		factory := NewSessionFactory(successConnector)
+		factory := newSessionFactoryWithConnector(successConnector)
 		// Mix of valid and nil entries; nil must not cause a panic.
 		backends := []*vmcp.Backend{nil, backend, nil}
 		sess, err := factory.MakeSession(context.Background(), nil, backends)
@@ -591,7 +592,7 @@ func TestNewSessionFactory_PartialInitialisation(t *testing.T) {
 		{ID: "fail", Name: "fail", BaseURL: "http://fail:9999", TransportType: "streamable-http"},
 	}
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		if target.WorkloadID == "fail" {
 			return nil, nil, errors.New("backend unavailable")
 		}
@@ -600,7 +601,7 @@ func TestNewSessionFactory_PartialInitialisation(t *testing.T) {
 		}, nil
 	}
 
-	factory := NewSessionFactory(connector)
+	factory := newSessionFactoryWithConnector(connector)
 	sess, err := factory.MakeSession(context.Background(), nil, backends)
 	require.NoError(t, err, "partial init must not return an error")
 	require.NotNil(t, sess)
@@ -620,25 +621,25 @@ func TestNewSessionFactory_ConnectorReturnsNilWithoutError(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		connector     BackendConnector
+		connector     backendConnector
 		wantConnClose bool // true when the connector returns a non-nil conn that must be closed
 	}{
 		{
 			name: "nil conn with nil caps",
-			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 				return nil, nil, nil
 			},
 		},
 		{
 			name: "nil conn with non-nil caps",
-			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 				return nil, &vmcp.CapabilityList{}, nil
 			},
 		},
 		{
 			name:          "non-nil conn with nil caps must close conn to avoid leak",
 			wantConnClose: true,
-			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 				return &mockConnectedBackend{}, nil, nil
 			},
 		},
@@ -651,7 +652,7 @@ func TestNewSessionFactory_ConnectorReturnsNilWithoutError(t *testing.T) {
 			// Replace the connector with one that captures the mock so we can
 			// inspect closeCalled after MakeSession returns.
 			var captured *mockConnectedBackend
-			wrappedConnector := func(ctx context.Context, target *vmcp.BackendTarget, id *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+			wrappedConnector := func(ctx context.Context, target *vmcp.BackendTarget, id *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 				conn, caps, err := tt.connector(ctx, target, id)
 				if m, ok := conn.(*mockConnectedBackend); ok {
 					captured = m
@@ -659,7 +660,7 @@ func TestNewSessionFactory_ConnectorReturnsNilWithoutError(t *testing.T) {
 				return conn, caps, err
 			}
 
-			factory := NewSessionFactory(wrappedConnector)
+			factory := newSessionFactoryWithConnector(wrappedConnector)
 			sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
 			require.NoError(t, err)
 			require.NotNil(t, sess)
@@ -682,11 +683,11 @@ func TestNewSessionFactory_ConnectorReturnsConnWithError(t *testing.T) {
 	backend := &vmcp.Backend{ID: "b1", Name: "b1", BaseURL: "http://x:9", TransportType: "streamable-http"}
 	leaked := &mockConnectedBackend{}
 
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return leaked, nil, errors.New("init failed but conn was partially opened")
 	}
 
-	factory := NewSessionFactory(connector)
+	factory := newSessionFactoryWithConnector(connector)
 	sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err, "partial failure must not abort the session")
 	require.NotNil(t, sess)
@@ -707,7 +708,7 @@ func TestNewSessionFactory_CapabilityNameConflictIsResolvedDeterministically(t *
 		{ID: "alpha", Name: "alpha", BaseURL: "http://alpha:9", TransportType: "streamable-http"},
 	}
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return &mockConnectedBackend{sessID: target.WorkloadID}, &vmcp.CapabilityList{
 			Tools:     []vmcp.Tool{{Name: "fetch", BackendID: target.WorkloadID}},
 			Resources: []vmcp.Resource{{URI: "file://data", BackendID: target.WorkloadID}},
@@ -715,7 +716,7 @@ func TestNewSessionFactory_CapabilityNameConflictIsResolvedDeterministically(t *
 		}, nil
 	}
 
-	factory := NewSessionFactory(connector)
+	factory := newSessionFactoryWithConnector(connector)
 	sess, err := factory.MakeSession(context.Background(), nil, backends)
 	require.NoError(t, err)
 	require.NotNil(t, sess)
@@ -741,11 +742,11 @@ func TestNewSessionFactory_AllBackendsFail(t *testing.T) {
 	t.Parallel()
 
 	backend := &vmcp.Backend{ID: "b1", Name: "b1", BaseURL: "http://x:9", TransportType: "streamable-http"}
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, errors.New("down")
 	}
 
-	factory := NewSessionFactory(connector)
+	factory := newSessionFactoryWithConnector(connector)
 	sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err, "all-fail must still return a valid (empty) session")
 	require.NotNil(t, sess)
@@ -760,7 +761,7 @@ func TestNewSessionFactory_BackendInitTimeout(t *testing.T) {
 	backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
 
 	released := make(chan struct{})
-	connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		select {
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
@@ -769,7 +770,7 @@ func TestNewSessionFactory_BackendInitTimeout(t *testing.T) {
 		}
 	}
 
-	factory := NewSessionFactory(connector, WithBackendInitTimeout(50*time.Millisecond))
+	factory := newSessionFactoryWithConnector(connector, WithBackendInitTimeout(50*time.Millisecond))
 	sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err, "timeout is a partial failure, not a hard error")
 	require.NotNil(t, sess)
@@ -798,7 +799,7 @@ func TestNewSessionFactory_ParallelInit(t *testing.T) {
 	var mu sync.Mutex
 	var maxConcurrent, current int32
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		mu.Lock()
 		current++
 		if current > maxConcurrent {
@@ -818,7 +819,7 @@ func TestNewSessionFactory_ParallelInit(t *testing.T) {
 		}, nil
 	}
 
-	factory := NewSessionFactory(connector, WithMaxBackendInitConcurrency(3))
+	factory := newSessionFactoryWithConnector(connector, WithMaxBackendInitConcurrency(3))
 	sess, err := factory.MakeSession(context.Background(), nil, backends)
 	require.NoError(t, err)
 
@@ -839,16 +840,16 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 	backend2 := &vmcp.Backend{ID: "b2", Name: "backend-2", BaseURL: "http://localhost:9002", TransportType: "streamable-http"}
 
 	//nolint:unparam // error return is always nil by design in the success-path connector
-	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return &mockConnectedBackend{}, &vmcp.CapabilityList{}, nil
 	}
-	failConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (connectedBackend, *vmcp.CapabilityList, error) {
+	failConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, errors.New("connection refused")
 	}
 
 	tests := []struct {
 		name           string
-		connector      BackendConnector
+		connector      backendConnector
 		identity       *auth.Identity
 		backends       []*vmcp.Backend
 		wantSubject    string // non-empty → assert equal; empty → assert key absent
@@ -893,7 +894,7 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			factory := NewSessionFactory(tt.connector)
+			factory := newSessionFactoryWithConnector(tt.connector)
 			sess, err := factory.MakeSession(context.Background(), tt.identity, tt.backends)
 			require.NoError(t, err)
 			require.NotNil(t, sess)
@@ -1055,7 +1056,7 @@ func TestBuildRoutingTable(t *testing.T) {
 func TestWithMaxBackendInitConcurrency_IgnoresNonPositive(t *testing.T) {
 	t.Parallel()
 
-	f := &defaultSessionFactory{maxConcurrency: defaultMaxBackendInitConcurrency}
+	f := &defaultMultiSessionFactory{maxConcurrency: defaultMaxBackendInitConcurrency}
 	WithMaxBackendInitConcurrency(0)(f)
 	assert.Equal(t, defaultMaxBackendInitConcurrency, f.maxConcurrency)
 
@@ -1066,7 +1067,7 @@ func TestWithMaxBackendInitConcurrency_IgnoresNonPositive(t *testing.T) {
 func TestWithBackendInitTimeout_IgnoresNonPositive(t *testing.T) {
 	t.Parallel()
 
-	f := &defaultSessionFactory{backendInitTimeout: defaultBackendInitTimeout}
+	f := &defaultMultiSessionFactory{backendInitTimeout: defaultBackendInitTimeout}
 	WithBackendInitTimeout(0)(f)
 	assert.Equal(t, defaultBackendInitTimeout, f.backendInitTimeout)
 

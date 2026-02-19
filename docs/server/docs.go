@@ -1691,11 +1691,11 @@ const docTemplate = `{
             "storage.ACLUserRunConfig": {
                 "description": "ACLUserConfig contains ACL user authentication configuration.",
                 "properties": {
-                    "passwordEnvVar": {
+                    "password_env_var": {
                         "description": "PasswordEnvVar is the environment variable containing the Redis password.",
                         "type": "string"
                     },
-                    "usernameEnvVar": {
+                    "username_env_var": {
                         "description": "UsernameEnvVar is the environment variable containing the Redis username.",
                         "type": "string"
                     }
@@ -1705,29 +1705,29 @@ const docTemplate = `{
             "storage.RedisRunConfig": {
                 "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
                 "properties": {
-                    "aclUserConfig": {
+                    "acl_user_config": {
                         "$ref": "#/components/schemas/storage.ACLUserRunConfig"
                     },
-                    "authType": {
+                    "auth_type": {
                         "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
                         "type": "string"
                     },
-                    "dialTimeout": {
+                    "dial_timeout": {
                         "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
                         "type": "string"
                     },
-                    "keyPrefix": {
+                    "key_prefix": {
                         "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
                         "type": "string"
                     },
-                    "readTimeout": {
+                    "read_timeout": {
                         "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
                         "type": "string"
                     },
-                    "sentinelConfig": {
+                    "sentinel_config": {
                         "$ref": "#/components/schemas/storage.SentinelRunConfig"
                     },
-                    "writeTimeout": {
+                    "write_timeout": {
                         "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
                         "type": "string"
                     }
@@ -1737,7 +1737,7 @@ const docTemplate = `{
             "storage.RunConfig": {
                 "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
                 "properties": {
-                    "redisConfig": {
+                    "redis_config": {
                         "$ref": "#/components/schemas/storage.RedisRunConfig"
                     },
                     "type": {
@@ -1754,11 +1754,11 @@ const docTemplate = `{
                         "description": "DB is the Redis database number (default: 0).",
                         "type": "integer"
                     },
-                    "masterName": {
+                    "master_name": {
                         "description": "MasterName is the name of the Redis Sentinel master.",
                         "type": "string"
                     },
-                    "sentinelAddrs": {
+                    "sentinel_addrs": {
                         "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
                         "items": {
                             "type": "string"

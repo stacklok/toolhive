@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -102,6 +103,13 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 
 	scope := defaultScope(opts.Scope)
 
+	// Canonicalize the project root so that equivalent paths
+	// (e.g. trailing slash, ".." segments) produce the same lock key
+	// and DB record.
+	if opts.ProjectRoot != "" {
+		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	}
+
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
@@ -120,6 +128,10 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	}
 
 	scope := defaultScope(opts.Scope)
+
+	if opts.ProjectRoot != "" {
+		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	}
 
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()

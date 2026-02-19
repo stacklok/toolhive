@@ -14,12 +14,14 @@ import (
 	"testing"
 	"time"
 
+	godigest "github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	ocimocks "github.com/stacklok/toolhive-core/oci/skills/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
@@ -696,25 +698,296 @@ func TestValidate(t *testing.T) {
 		assert.False(t, result.Valid)
 		assert.Contains(t, result.Errors, "SKILL.md not found in skill directory")
 	})
+
+	t.Run("empty path returns 400", func(t *testing.T) {
+		t.Parallel()
+		svc := New(&storage.NoopSkillStore{})
+		_, err := svc.Validate(t.Context(), "")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	})
+
+	t.Run("relative path returns 400", func(t *testing.T) {
+		t.Parallel()
+		svc := New(&storage.NoopSkillStore{})
+		_, err := svc.Validate(t.Context(), "relative/path")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	})
+
+	t.Run("path traversal returns 400", func(t *testing.T) {
+		t.Parallel()
+		svc := New(&storage.NoopSkillStore{})
+		_, err := svc.Validate(t.Context(), "/foo/../../../etc")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	})
 }
 
-func TestBuildAndPush_NotImplemented(t *testing.T) {
+// putTestManifest stores a minimal manifest in the OCI store and returns its digest.
+func putTestManifest(t *testing.T, store *ociskills.Store) godigest.Digest {
+	t.Helper()
+	d, err := store.PutManifest(t.Context(), []byte(`{"schemaVersion":2}`))
+	require.NoError(t, err)
+	return d
+}
+
+func TestBuild(t *testing.T) {
 	t.Parallel()
-	svc := New(&storage.NoopSkillStore{})
 
-	t.Run("build", func(t *testing.T) {
-		t.Parallel()
-		_, err := svc.Build(t.Context(), skills.BuildOptions{})
-		require.Error(t, err)
-		assert.Equal(t, http.StatusNotImplemented, httperr.Code(err))
-	})
+	tests := []struct {
+		name     string
+		opts     skills.BuildOptions
+		setup    func(*gomock.Controller) (ociskills.SkillPackager, *ociskills.Store)
+		wantCode int
+		wantRef  string
+		wantErr  string
+	}{
+		{
+			name: "nil packager returns 500",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(_ *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				return nil, nil
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name: "empty path returns 400",
+			opts: skills.BuildOptions{Path: ""},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				return ocimocks.NewMockSkillPackager(ctrl), ociStore
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "relative path returns 400",
+			opts: skills.BuildOptions{Path: "relative/path"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				return ocimocks.NewMockSkillPackager(ctrl), ociStore
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "path traversal returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir/../../../etc"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				return ocimocks.NewMockSkillPackager(ctrl), ociStore
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "invalid tag returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir", Tag: "invalid tag!@#"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				return ocimocks.NewMockSkillPackager(ctrl), ociStore
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "packager error propagates",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(nil, fmt.Errorf("packaging failed"))
+				return p, ociStore
+			},
+			wantErr: "packaging skill",
+		},
+		{
+			name: "successful build with explicit tag",
+			opts: skills.BuildOptions{Path: "/some/dir", Tag: "v1.0.0"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				d := putTestManifest(t, ociStore)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(&ociskills.PackageResult{
+						IndexDigest: d,
+						Config:      &ociskills.SkillConfig{Name: "my-skill"},
+					}, nil)
+				return p, ociStore
+			},
+			wantRef: "v1.0.0",
+		},
+		{
+			name: "build without tag uses config name",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				d := putTestManifest(t, ociStore)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(&ociskills.PackageResult{
+						IndexDigest: d,
+						Config:      &ociskills.SkillConfig{Name: "my-skill"},
+					}, nil)
+				return p, ociStore
+			},
+			wantRef: "my-skill",
+		},
+		{
+			name: "build without tag or config name returns digest",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				d := putTestManifest(t, ociStore)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(&ociskills.PackageResult{
+						IndexDigest: d,
+						Config:      &ociskills.SkillConfig{},
+					}, nil)
+				return p, ociStore
+			},
+			// wantRef is set dynamically below since the digest depends on store content
+		},
+	}
 
-	t.Run("push", func(t *testing.T) {
-		t.Parallel()
-		err := svc.Push(t.Context(), skills.PushOptions{})
-		require.Error(t, err)
-		assert.Equal(t, http.StatusNotImplemented, httperr.Code(err))
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			packager, ociStore := tt.setup(ctrl)
+
+			svc := New(&storage.NoopSkillStore{},
+				WithPackager(packager),
+				WithOCIStore(ociStore),
+			)
+
+			result, err := svc.Build(t.Context(), tt.opts)
+			if tt.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				return
+			}
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantRef != "" {
+				assert.Equal(t, tt.wantRef, result.Reference)
+			} else {
+				// Fallback case returns a digest string
+				assert.Contains(t, result.Reference, "sha256:")
+			}
+		})
+	}
+}
+
+func TestPush(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		opts     skills.PushOptions
+		setup    func(*gomock.Controller) (ociskills.RegistryClient, *ociskills.Store)
+		wantCode int
+		wantErr  string
+	}{
+		{
+			name: "nil registry returns 500",
+			opts: skills.PushOptions{Reference: "ghcr.io/test/skill:v1"},
+			setup: func(_ *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
+				return nil, nil
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name: "empty reference returns 400",
+			opts: skills.PushOptions{Reference: ""},
+			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				return ocimocks.NewMockRegistryClient(ctrl), ociStore
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "resolve not found returns 404",
+			opts: skills.PushOptions{Reference: "nonexistent"},
+			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				return ocimocks.NewMockRegistryClient(ctrl), ociStore
+			},
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name: "registry push error propagates",
+			opts: skills.PushOptions{Reference: "my-tag"},
+			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				// Create a manifest so Resolve succeeds.
+				d, tagErr := ociStore.PutManifest(t.Context(), []byte(`{"schemaVersion":2}`))
+				require.NoError(t, tagErr)
+				require.NoError(t, ociStore.Tag(t.Context(), d, "my-tag"))
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Push(gomock.Any(), ociStore, d, "my-tag").
+					Return(fmt.Errorf("auth failed"))
+				return reg, ociStore
+			},
+			wantErr: "pushing to registry",
+		},
+		{
+			name: "successful push",
+			opts: skills.PushOptions{Reference: "my-tag"},
+			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				d, tagErr := ociStore.PutManifest(t.Context(), []byte(`{"schemaVersion":2}`))
+				require.NoError(t, tagErr)
+				require.NoError(t, ociStore.Tag(t.Context(), d, "my-tag"))
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Push(gomock.Any(), ociStore, d, "my-tag").Return(nil)
+				return reg, ociStore
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			registry, ociStore := tt.setup(ctrl)
+
+			svc := New(&storage.NoopSkillStore{},
+				WithRegistryClient(registry),
+				WithOCIStore(ociStore),
+			)
+
+			err := svc.Push(t.Context(), tt.opts)
+			if tt.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				return
+			}
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestNewWithZeroOptions(t *testing.T) {

@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
@@ -239,10 +240,29 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		b.skillStoreCloser = store
 		cm, cmErr := client.NewClientManager()
 		if cmErr != nil {
-			_ = store.Close() // clean up opened store on error
+			_ = store.Close()
 			return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
 		}
-		b.skillManager = skillsvc.New(store, skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}))
+
+		ociStore, ociErr := ociskills.NewStore(ociskills.DefaultStoreRoot())
+		if ociErr != nil {
+			_ = store.Close()
+			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
+		}
+		registry, regErr := ociskills.NewRegistry()
+		if regErr != nil {
+			_ = store.Close()
+			// ociStore is directory-backed with no open handles; no cleanup needed.
+			return fmt.Errorf("failed to create OCI registry client: %w", regErr)
+		}
+		packager := ociskills.NewPackager(ociStore)
+
+		b.skillManager = skillsvc.New(store,
+			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
+			skillsvc.WithOCIStore(ociStore),
+			skillsvc.WithPackager(packager),
+			skillsvc.WithRegistryClient(registry),
+		)
 	}
 
 	return nil

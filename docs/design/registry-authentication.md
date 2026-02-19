@@ -1,264 +1,273 @@
 # Design: Registry Authentication
 
 **Issue**: [#2962](https://github.com/stacklok/toolhive/issues/2962)
-**Status**: Draft
-**Author**: TBD
+**Status**: Phase 1 Implemented
 **Date**: 2026-02-18
 
 ## Summary
 
-Add support for authenticating the ToolHive CLI to remote MCP server registries. Today, all registry HTTP requests (both static JSON and API endpoints) are unauthenticated. This prevents organizations from hosting private registries that require authentication.
+Add support for authenticating the ToolHive CLI to remote MCP server registries. Previously, all registry HTTP requests were unauthenticated. This prevents organizations from hosting private registries that require authentication.
+
+Phase 1 (implemented) adds OAuth/OIDC authentication with PKCE — the CLI opens a browser for the user to log in, receives tokens via a local callback, and injects them into all subsequent registry API requests. Phase 2 (future) will add static bearer token support for CI/CD environments.
 
 ## Motivation
 
-Organizations hosting private MCP server registries need to restrict access to authorized users. The ToolHive CLI currently has no mechanism to attach credentials when communicating with remote registries. This means:
+Organizations hosting private MCP server registries need to restrict access to authorized users. The ToolHive CLI previously had no mechanism to attach credentials when communicating with remote registries. This means:
 
 - Private registries behind authentication cannot be used
 - Organizations cannot control who can discover their MCP servers
 
-Meanwhile, ToolHive already has mature authentication infrastructure for remote MCP *servers* (`pkg/auth/remote/`) and a flexible HTTP client builder (`pkg/networking/http_client.go`) that supports bearer token injection. The gap is simply that the registry providers don't use it.
+ToolHive already has mature OAuth/OIDC infrastructure for remote MCP *servers* (`pkg/auth/oauth/`, `pkg/auth/remote/`) and a secrets manager for credential persistence (`pkg/secrets/`). The registry auth feature reuses this infrastructure.
 
 ## Goals
 
-1. Allow users to configure authentication credentials for remote registries
-2. Support common auth mechanisms: bearer tokens, OAuth/OIDC
+1. Allow users to authenticate to remote registries via browser-based OAuth/OIDC
+2. Cache and refresh tokens transparently across CLI invocations
 3. Store credentials securely using existing secrets infrastructure
 4. Maintain backward compatibility (unauthenticated registries continue to work)
 5. Provide a clean CLI experience for configuring registry auth
 
 ## Non-Goals
 
-- Per-server authentication
+- Per-server authentication (auth is per-registry)
+- Client secret management (Phase 1 uses public clients with PKCE only)
 
-## Current Architecture
+## Architecture
 
 ### Registry Provider Chain
 
 ```
 thv config set-registry <url>
+thv config set-registry-auth --issuer <url> --client-id <id>
         │
         ▼
 ┌─────────────────────┐
 │  pkg/registry/      │
 │  factory.go         │──▶ Priority: API > Remote > Local > Embedded
 │                     │
-│  NewRegistryProvider│
+│  NewRegistryProvider│──▶ resolveTokenSource() from config
 └────────┬────────────┘
          │
-         ├──▶ CachedAPIRegistryProvider ──▶ api/client.go ──▶ HTTP GET (no auth)
+         ├──▶ CachedAPIRegistryProvider ──▶ api/client.go ──▶ HTTP + auth.Transport
          ├──▶ RemoteRegistryProvider    ──▶ HttpClientBuilder ──▶ HTTP GET (no auth)
          └──▶ LocalRegistryProvider     ──▶ (no network)
 ```
 
-### Existing Auth Infrastructure
+### Key Components
 
-| Component | Location | Capabilities |
-|-----------|----------|-------------|
-| Remote auth config | `pkg/auth/remote/config.go` | OAuth/OIDC, bearer tokens, DCR, token caching |
-| HTTP client builder | `pkg/networking/http_client.go` | Bearer token from file, CA bundles |
-| Secrets manager | `pkg/secrets/` | Encrypted storage, 1Password, env vars |
-| Config storage | `pkg/config/config.go` | YAML config with `UpdateConfig()` locking |
+| Component | Location | Role |
+|-----------|----------|------|
+| OAuth flow | `pkg/auth/oauth/flow.go` | Browser-based PKCE flow with local callback server |
+| OIDC discovery | `pkg/auth/oauth/oidc.go` | Auto-discovers auth/token endpoints from issuer |
+| Token source | `pkg/registry/auth/oauth_token_source.go` | Token lifecycle: cache → restore → browser flow |
+| Auth transport | `pkg/registry/auth/transport.go` | Injects `Authorization: Bearer` on HTTP requests |
+| Auth configurator | `pkg/registry/auth_configurator.go` | Business logic for set/unset/get auth config |
+| Token persistence | `pkg/auth/remote/persisting_token_source.go` | Wraps token source to persist refresh tokens |
+| Secrets manager | `pkg/secrets/` | Encrypted storage for refresh tokens |
+| Config storage | `pkg/config/config.go` | YAML config with `RegistryAuth` section |
 
-### Key Observation
+## Phase 1: OAuth/OIDC with PKCE (Implemented)
 
-The `HttpClientBuilder` already supports `.WithTokenFromFile(path)` which wraps the transport with `oauth2.Transport` for bearer token injection. The API client in `pkg/registry/api/client.go` builds an HTTP client but never uses this capability.
-
-## Proposed Design
-
-### Phased Approach
-
-The implementation is split into two phases to keep PRs small and reviewable:
-
-- **Phase 1**: Bearer token authentication (covers most private registry use cases)
-- **Phase 2**: OAuth/OIDC authentication (for registries using standard identity providers)
-
-### Phase 1: Bearer Token Authentication
-
-#### Configuration Model
-
-Add a `RegistryAuth` section to the existing config:
+### Configuration Model
 
 ```yaml
 # ~/.config/toolhive/config.yaml
 registry_api_url: "https://registry.company.com"
 registry_auth:
-  type: "bearer"                    # "bearer", "oauth", or "" (none)
-  bearer_token_ref: "REGISTRY_TOKEN"  # Reference to secret in secrets manager
-  bearer_token_file: ""              # Alternative: path to token file
+  type: "oauth"
+  oauth:
+    issuer: "https://auth.company.com"
+    client_id: "toolhive-cli"
+    scopes: ["openid"]
+    audience: "api://my-registry"
+    use_pkce: true
+    callback_port: 8666
+    # Populated automatically after first login:
+    cached_refresh_token_ref: "REGISTRY_OAUTH_REFRESH_TOKEN"
+    cached_token_expiry: "2026-02-20T12:00:00Z"
 ```
 
-**Config struct** (`pkg/config/config.go`):
+**Config structs** (`pkg/config/config.go`):
 
 ```go
 type RegistryAuth struct {
-    Type            string `yaml:"type,omitempty"`              // "bearer", "oauth", ""
-    BearerTokenRef  string `yaml:"bearer_token_ref,omitempty"`  // Secret manager reference
-    BearerTokenFile string `yaml:"bearer_token_file,omitempty"` // Path to token file
+    Type  string              `yaml:"type,omitempty"`   // "oauth" or "" (none)
+    OAuth *RegistryOAuthConfig `yaml:"oauth,omitempty"`
+}
+
+type RegistryOAuthConfig struct {
+    Issuer       string   `yaml:"issuer"`
+    ClientID     string   `yaml:"client_id"`
+    ClientSecret string   `yaml:"client_secret,omitempty"` // For confidential clients (optional)
+    Scopes       []string `yaml:"scopes,omitempty"`
+    Audience     string   `yaml:"audience,omitempty"`       // RFC 8707 resource indicator
+    UsePKCE      bool     `yaml:"use_pkce"`
+    CallbackPort int      `yaml:"callback_port,omitempty"`
+
+    CachedRefreshTokenRef string    `yaml:"cached_refresh_token_ref,omitempty"`
+    CachedTokenExpiry     time.Time `yaml:"cached_token_expiry,omitempty"`
 }
 ```
 
-#### Token Resolution Order
+### CLI Commands
 
-When the registry provider needs a token, it resolves in this order:
-
-1. **Environment variable** `TOOLHIVE_REGISTRY_AUTH_TOKEN` (highest priority, enables CI/CD)
-2. **Token file** from `bearer_token_file` config field
-3. **Secrets manager** via `bearer_token_ref` config field
-4. **No auth** (if none configured)
-
-This matches the pattern used by secrets provider selection (`pkg/config/config.go:GetProviderTypeWithEnv`).
-
-#### Registry Auth Package
-
-Create `pkg/registry/auth/` to encapsulate token resolution:
-
-```go
-// pkg/registry/auth/auth.go
-package auth
-
-// Config holds registry authentication configuration
-type Config struct {
-    Type            string // "bearer", "oauth", ""
-    BearerTokenRef  string // Secret manager reference
-    BearerTokenFile string // Path to token file
-}
-
-// TokenSource provides tokens for registry HTTP requests
-type TokenSource interface {
-    // Token returns the current token, or empty string if no auth configured
-    Token(ctx context.Context) (string, error)
-}
-
-// NewTokenSource creates a TokenSource from the auth config.
-// Resolution order: env var > token file > secrets manager > no auth
-func NewTokenSource(cfg *Config) (TokenSource, error)
-```
-
-#### HTTP Client Integration
-
-Modify the registry API client to accept an optional `TokenSource`:
-
-```go
-// pkg/registry/api/client.go
-
-func NewClient(baseURL string, allowPrivateIp bool, tokenSource auth.TokenSource) (Client, error) {
-    builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIp)
-
-    // ... existing builder configuration ...
-
-    httpClient, err := builder.Build()
-    if err != nil {
-        return nil, fmt.Errorf("failed to build HTTP client: %w", err)
-    }
-
-    // Wrap transport with auth if token source provided
-    if tokenSource != nil {
-        httpClient.Transport = &authTransport{
-            base:   httpClient.Transport,
-            source: tokenSource,
-        }
-    }
-
-    return &mcpRegistryClient{
-        baseURL:    baseURL,
-        httpClient: httpClient,
-        // ...
-    }, nil
-}
-```
-
-The `authTransport` is a thin `http.RoundTripper` wrapper that calls `tokenSource.Token(ctx)` on each request and sets the `Authorization: Bearer <token>` header. This is preferable to modifying `HttpClientBuilder` because:
-
-- The token may need to be refreshed (for OAuth phase 2)
-- The token resolution involves context (secrets manager, env vars)
-- It keeps `HttpClientBuilder` simple and stateless
-
-#### Provider Factory Changes
-
-Thread auth config through the provider creation chain:
-
-```go
-// pkg/registry/factory.go
-
-func NewRegistryProvider(cfg *config.Config) (Provider, error) {
-    // Resolve auth configuration
-    var tokenSource auth.TokenSource
-    if cfg != nil && cfg.RegistryAuth.Type != "" {
-        var err error
-        tokenSource, err = auth.NewTokenSource(&cfg.RegistryAuth)
-        if err != nil {
-            return nil, fmt.Errorf("failed to configure registry authentication: %w", err)
-        }
-    }
-
-    if cfg != nil && len(cfg.RegistryApiUrl) > 0 {
-        provider, err := NewCachedAPIRegistryProvider(
-            cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true, tokenSource,
-        )
-        // ...
-    }
-    if cfg != nil && len(cfg.RegistryUrl) > 0 {
-        provider, err := NewRemoteRegistryProvider(
-            cfg.RegistryUrl, cfg.AllowPrivateRegistryIp, tokenSource,
-        )
-        // ...
-    }
-    // Local providers don't need auth
-    // ...
-}
-```
-
-#### CLI Commands
-
-**Option A (recommended): Extend `set-registry` with auth flags**
+**Setup:**
 
 ```bash
-# Set registry with inline token (stored in secrets manager)
-thv config set-registry https://registry.company.com --auth-token <token>
+# Configure the registry URL
+thv config set-registry https://registry.company.com/api
 
-# Set registry with token from file
-thv config set-registry https://registry.company.com --auth-token-file /path/to/token
+# Configure OAuth authentication
+thv config set-registry-auth \
+    --issuer https://auth.company.com \
+    --client-id toolhive-cli \
+    --audience api://my-registry
 
-# Set registry without auth (existing behavior, unchanged)
-thv config set-registry https://registry.company.com
-```
+# View current configuration
+thv config get-registry
+# → Current registry: https://registry.company.com/api (API endpoint, OAuth configured)
 
-When `--auth-token` is provided:
-1. Store the token in the secrets manager under a well-known key (e.g., `TOOLHIVE_REGISTRY_AUTH_TOKEN`)
-2. Set `registry_auth.type = "bearer"` and `registry_auth.bearer_token_ref = "TOOLHIVE_REGISTRY_AUTH_TOKEN"` in config
-3. Validate connectivity with the token before saving
-
-When `--auth-token-file` is provided:
-1. Validate the file exists and is readable
-2. Set `registry_auth.type = "bearer"` and `registry_auth.bearer_token_file = <path>` in config
-3. Validate connectivity with the token before saving
-
-**Update `get-registry` output:**
-
-```bash
-$ thv config get-registry
-Current registry: https://registry.company.com (API endpoint, authenticated)
-```
-
-**Update `unset-registry`:**
-
-Clearing the registry also clears auth config. Optionally clean up the stored secret.
-
-**New command for managing auth independently:**
-
-```bash
-# Update auth without changing registry URL
-thv config set-registry-auth --token <token>
-thv config set-registry-auth --token-file /path/to/token
-
-# Remove auth but keep registry
+# Remove auth (keeps registry URL)
 thv config unset-registry-auth
+```
+
+**Flags for `set-registry-auth`:**
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--issuer` | Yes | — | OIDC issuer URL |
+| `--client-id` | Yes | — | OAuth client ID |
+| `--scopes` | No | `openid` | OAuth scopes (comma-separated) |
+| `--audience` | No | — | OAuth audience / resource indicator |
+| `--use-pkce` | No | `true` | Enable PKCE (recommended for public clients) |
+
+The `set-registry-auth` command validates the issuer by performing OIDC discovery before saving the configuration. This catches typos and unreachable issuers early.
+
+### Token Lifecycle
+
+```
+First request (no cached tokens):
+  Token() → no in-memory token → no stored refresh token → browser OAuth flow
+    → Opens browser to issuer's authorize endpoint (with PKCE challenge)
+    → User authenticates in browser
+    → Issuer redirects to http://localhost:8666/callback with auth code
+    → Exchange code + PKCE verifier for access + refresh tokens
+    → Persist refresh token in secrets manager
+    → Return access token
+
+Subsequent CLI invocations:
+  Token() → no in-memory token → restore refresh token from secrets manager
+    → Use refresh token to get new access token (silent, no browser)
+    → Return access token
+
+Within same process:
+  Token() → in-memory token source → auto-refresh via oauth2 library
+    → Return access token
+
+Refresh token expired/revoked:
+  Token() → restore fails → browser OAuth flow (same as first request)
+```
+
+### Data Flow
+
+```
+Setup:
+  thv config set-registry-auth --issuer ... --client-id ...
+    │
+    ├──▶ OIDC Discovery (validates issuer)
+    │
+    └──▶ Save to config.yaml: registry_auth.type="oauth", registry_auth.oauth={...}
+
+Runtime:
+  thv registry list
+    │
+    ▼
+  factory.go: resolveTokenSource(cfg)
+    │
+    ├──▶ cfg.RegistryAuth.Type == "oauth" → create oauthTokenSource
+    │
+    ▼
+  NewCachedAPIRegistryProvider(url, allowPrivate, usePersistent, tokenSource)
+    │
+    ├──▶ Skip validation probe (auth requires user interaction)
+    │
+    ▼
+  api/client.go: NewClient(url, allowPrivate, tokenSource)
+    │
+    ├──▶ Wrap HTTP transport with auth.Transport
+    │
+    ▼
+  First HTTP request triggers tokenSource.Token(ctx)
+    │
+    ├──▶ Try in-memory cache → miss
+    ├──▶ Try secrets manager (refresh token) → miss (first time)
+    ├──▶ Browser OAuth flow:
+    │      1. OIDC Discovery → auth + token endpoints
+    │      2. Generate PKCE verifier/challenge
+    │      3. Start local server on :8666
+    │      4. Open browser → issuer authorize endpoint
+    │      5. User authenticates
+    │      6. Callback received with auth code
+    │      7. Exchange code for tokens
+    │      8. Persist refresh token → secrets manager
+    │      9. Update config with token reference
+    │
+    └──▶ HTTP request sent with Authorization: Bearer <access_token>
+```
+
+### Design Decisions
+
+**Why skip API validation when auth is configured:**
+The API provider normally validates the endpoint on creation by making a test request. When OAuth is configured, this test request would trigger the browser flow within a 10-second timeout, which cannot complete. Instead, validation is deferred to the first real API call.
+
+**Why PKCE without client secret:**
+CLI applications are public clients — they cannot securely store a client secret. PKCE (RFC 7636) provides equivalent security without requiring a secret. The identity provider must be configured as a "Native App" (public client) to accept requests without client authentication.
+
+**Why reuse `pkg/auth/oauth/` instead of a new implementation:**
+ToolHive already has a battle-tested OAuth flow for remote MCP server authentication. The registry auth reuses the same `oauth.NewFlow`, `oauth.CreateOAuthConfigFromOIDC`, and `remote.NewPersistingTokenSource` functions, ensuring consistency and avoiding duplication.
+
+**Why a separate `pkg/registry/auth/` package:**
+Registry auth has different concerns than MCP server auth (different config model, different token persistence keys, different lifecycle). A separate package keeps the boundaries clean while reusing the underlying OAuth primitives.
+
+## Phase 2: Bearer Token Authentication (Future)
+
+### Motivation
+
+CI/CD pipelines and automated environments cannot use browser-based OAuth flows. These environments need static bearer token support where a pre-obtained token is provided via environment variable, file, or secrets manager.
+
+### Design
+
+Extend the `TokenSource` interface with a bearer token implementation:
+
+```yaml
+registry_auth:
+  type: "bearer"
+  bearer_token_ref: "REGISTRY_TOKEN"     # Secret manager reference
+  bearer_token_file: "/path/to/token"    # Alternative: path to token file
+```
+
+**Token resolution order:**
+
+1. Environment variable `TOOLHIVE_REGISTRY_AUTH_TOKEN` (highest priority, enables CI/CD)
+2. Token file from `bearer_token_file` config field
+3. Secrets manager via `bearer_token_ref` config field
+
+**CLI commands:**
+
+```bash
+# Set auth with inline token (stored in secrets manager)
+thv config set-registry-auth --token <token>
+
+# Set auth with token file
+thv config set-registry-auth --token-file /path/to/token
 
 # Environment variable (no config change needed)
 TOOLHIVE_REGISTRY_AUTH_TOKEN=<token> thv registry list
 ```
 
-#### Error Handling
+The bearer token source implements the same `TokenSource` interface as the OAuth source, so the registry providers remain agnostic to the auth mechanism.
+
+### Error Handling
 
 When a registry returns `401 Unauthorized` or `403 Forbidden`:
 
@@ -266,207 +275,54 @@ When a registry returns `401 Unauthorized` or `403 Forbidden`:
 Error: registry at https://registry.company.com returned 401 Unauthorized.
 
 If this registry requires authentication, configure it with:
-  thv config set-registry https://registry.company.com --auth-token <token>
+  thv config set-registry-auth --issuer <issuer-url> --client-id <client-id>
 
-Or set the TOOLHIVE_REGISTRY_AUTH_TOKEN environment variable.
+For CI/CD environments:
+  thv config set-registry-auth --token <token>
+  # or: TOOLHIVE_REGISTRY_AUTH_TOKEN=<token> thv registry list
 ```
-
-This follows ToolHive's pattern of actionable error messages with hints.
-
-### Phase 2: OAuth/OIDC Authentication
-
-#### Motivation
-
-Some registries (e.g., those behind corporate identity providers) use OAuth/OIDC rather than static tokens. The [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) already supports enterprise OAuth 2.0/OIDC authentication.
-
-#### Design
-
-Extend `RegistryAuth` config to support OAuth:
-
-```yaml
-registry_auth:
-  type: "oauth"
-  oauth:
-    issuer: "https://auth.company.com"
-    client_id: "toolhive-cli"
-    scopes: ["registry:read"]
-    use_pkce: true
-```
-
-Reuse the existing OAuth infrastructure:
-
-- `pkg/auth/oauth/oidc.go` for OIDC discovery
-- `pkg/auth/remote/` patterns for token caching and refresh
-- Secrets manager for storing refresh tokens (same pattern as `CachedRefreshTokenRef`)
-
-**CLI flow:**
-
-```bash
-# Configure OAuth-authenticated registry
-thv config set-registry https://registry.company.com \
-    --auth-type oauth \
-    --auth-issuer https://auth.company.com \
-    --auth-client-id toolhive-cli
-
-# First registry access triggers browser-based OAuth login
-thv registry list
-# → Opens browser for authentication
-# → Caches tokens for future requests
-```
-
-The OAuth token source would implement the same `TokenSource` interface from Phase 1, making the registry providers agnostic to the auth mechanism.
-
-#### Token Lifecycle
-
-```
-First request:
-  TokenSource.Token() → no cached token → trigger OAuth flow → cache tokens → return access token
-
-Subsequent requests:
-  TokenSource.Token() → cached access token valid → return access token
-
-Token expired:
-  TokenSource.Token() → access token expired → use refresh token → return new access token
-
-Refresh token expired:
-  TokenSource.Token() → refresh failed → trigger OAuth flow → cache tokens → return access token
-```
-
-## Data Flow
-
-### Phase 1 Bearer Token Flow
-
-```
-User: thv config set-registry https://registry.company.com --auth-token <token>
-  │
-  ▼
-┌──────────────┐     ┌──────────────┐     ┌───────────────┐
-│ CLI          │────▶│ Secrets Mgr  │────▶│ Encrypted     │
-│ config.go    │     │ pkg/secrets/ │     │ Storage       │
-└──────┬───────┘     └──────────────┘     └───────────────┘
-       │
-       ▼
-┌──────────────┐
-│ Config YAML  │  registry_auth:
-│              │    type: bearer
-│              │    bearer_token_ref: TOOLHIVE_REGISTRY_AUTH_TOKEN
-└──────────────┘
-
-User: thv registry list
-  │
-  ▼
-┌──────────────┐     ┌──────────────┐     ┌───────────────┐
-│ Registry     │────▶│ TokenSource  │────▶│ 1. Env var?   │
-│ Factory      │     │              │     │ 2. Token file?│
-│              │     │              │     │ 3. Secret mgr?│
-└──────┬───────┘     └──────┬───────┘     └───────────────┘
-       │                    │
-       ▼                    ▼
-┌──────────────┐     ┌──────────────┐
-│ API Client   │────▶│ HTTP Request │──▶ Authorization: Bearer <token>
-│              │     │ + authTransport│
-└──────────────┘     └──────────────┘
-```
-
-## Implementation Plan
-
-### PR 1: Config and Token Resolution (~150 LOC)
-
-**Files:**
-- `pkg/config/config.go` — Add `RegistryAuth` struct to `Config`
-- `pkg/registry/auth/auth.go` — New package: `Config`, `TokenSource` interface, bearer token resolution
-- `pkg/registry/auth/auth_test.go` — Unit tests for token resolution order
-
-**Testing:**
-- Env var takes precedence over file
-- File takes precedence over secret ref
-- Empty config returns nil token source
-- Invalid token file returns error
-
-### PR 2: Wire Auth into Registry Providers (~200 LOC)
-
-**Files:**
-- `pkg/registry/api/client.go` — Accept `TokenSource`, add `authTransport`
-- `pkg/registry/provider_api.go` — Pass token source through
-- `pkg/registry/provider_remote.go` — Pass token source through
-- `pkg/registry/provider_cached.go` — Pass token source through
-- `pkg/registry/factory.go` — Resolve auth config, create token source, pass to providers
-
-**Testing:**
-- API client sends `Authorization` header when token source configured
-- API client works without auth (nil token source)
-- 401/403 responses return actionable error messages
-- Factory creates authenticated providers from config
-
-### PR 3: CLI Commands (~150 LOC)
-
-**Files:**
-- `cmd/thv/app/config.go` — Add `--auth-token`, `--auth-token-file` flags to `set-registry`; add `set-registry-auth` and `unset-registry-auth` commands
-- `pkg/registry/configurator.go` (or equivalent) — Business logic for setting auth config + storing token in secrets manager
-
-**Testing:**
-- E2E: `thv config set-registry <url> --auth-token <token>` stores config correctly
-- E2E: `thv config get-registry` shows auth status
-- E2E: `thv config unset-registry-auth` clears auth
-- E2E: `TOOLHIVE_REGISTRY_AUTH_TOKEN=xxx thv registry list` uses env var
-
-### PR 4: OAuth/OIDC Support (Phase 2, ~300 LOC)
-
-**Files:**
-- `pkg/registry/auth/oauth.go` — OAuth token source implementation reusing `pkg/auth/oauth/`
-- `pkg/registry/auth/oauth_test.go` — Tests
-- `cmd/thv/app/config.go` — OAuth-specific flags
-- Config struct extensions for OAuth fields
-
-**Testing:**
-- Token caching works across CLI invocations
-- Token refresh works when access token expires
-- Browser-based flow triggers correctly
 
 ## Security Considerations
 
-1. **Token storage**: Bearer tokens provided via `--auth-token` are stored in the secrets manager (encrypted at rest), not in plaintext config. The config only stores a *reference* to the secret.
+1. **No client secrets in config**: Phase 1 uses public clients with PKCE. The `client_secret` field exists for future confidential client support but is not required.
 
-2. **Token file permissions**: When using `--auth-token-file`, the CLI should warn if the file has overly permissive permissions (not 0600).
+2. **Refresh token storage**: Refresh tokens are stored in the secrets manager (encrypted at rest via keyring or 1Password), not in plaintext config. The config only stores a *reference* key (`cached_refresh_token_ref`).
 
-3. **Environment variable**: `TOOLHIVE_REGISTRY_AUTH_TOKEN` follows the existing pattern (`TOOLHIVE_SECRET_*`, `TOOLHIVE_REMOTE_AUTH_BEARER_TOKEN`) and is suitable for CI/CD where secrets are injected by the pipeline.
+3. **No tokens in logs**: Token values never appear in debug logs. Only token *presence* is logged (e.g., "using cached refresh token").
 
-4. **No tokens in logs**: Token values must never appear in debug logs. Log token *presence* ("using bearer token from env var") not token *values*.
+4. **HTTPS enforcement**: The existing `ValidatingTransport` in `HttpClientBuilder` enforces HTTPS by default. Access tokens are not sent over plain HTTP unless `--allow-private-ip` is used (which enables HTTP for localhost testing).
 
-5. **HTTPS enforcement**: The existing `ValidatingTransport` in `HttpClientBuilder` already enforces HTTPS by default. Auth tokens will not be sent over plain HTTP unless `--allow-private-ip` is used (which also enables HTTP for localhost testing).
+5. **PKCE protection**: The authorization code flow uses S256 PKCE challenges, preventing authorization code interception attacks even for public clients.
 
-6. **Credential rotation**: Token file and env var approaches support rotation without CLI reconfiguration. Secret manager references support rotation via `thv secret set`.
+6. **Callback port**: The local callback server runs on `localhost:8666` and only accepts a single callback before shutting down, minimizing the attack surface.
 
 ## Alternatives Considered
 
-### A. Embed auth in registry URL (e.g., `https://user:token@registry.com`)
+### A. Bearer tokens first, OAuth second
 
-**Rejected**: Credentials in URLs appear in logs, shell history, and process listings. Not secure.
+**Not chosen**: The primary use case is corporate registries behind identity providers (Okta, Azure AD, etc.). Browser-based OAuth provides a better user experience ("just log in") compared to manually obtaining and rotating bearer tokens. Bearer tokens are deferred to Phase 2 for CI/CD use cases.
 
-### B. Always use secrets manager (no env var or file support)
+### B. Embed auth in registry URL (e.g., `https://user:token@registry.com`)
 
-**Rejected**: Requires `thv secret setup` before using authenticated registries. Env vars are essential for CI/CD. Token files are standard in cloud-native tooling (e.g., Kubernetes service account tokens).
+**Rejected**: Credentials in URLs appear in logs, shell history, and process listings.
 
 ### C. Add auth to `HttpClientBuilder` directly
 
-**Rejected**: The builder is stateless and builds a client once. Registry auth may need dynamic token resolution (env vars, secrets manager lookups, OAuth refresh). A `TokenSource`-based `RoundTripper` is more flexible.
+**Rejected**: The builder is stateless and builds a client once. Registry auth needs dynamic token resolution (OAuth refresh, secrets manager lookups). A `TokenSource`-based `RoundTripper` is more flexible.
 
 ### D. Separate auth config file
 
 **Rejected**: Adds complexity. The existing `config.yaml` already stores registry configuration and is the natural place for registry auth.
 
-## Open Questions
+### E. Dynamic Client Registration (RFC 7591)
 
-1. **Secrets manager dependency**: Should `--auth-token` require secrets manager setup (`thv secret setup`), or should we fall back to storing the token in the config file with a warning? Current recommendation: require secrets manager, matching how remote server auth works.
-
-2. **Token validation on set**: Should `thv config set-registry --auth-token` validate the token works (make an authenticated test request) before saving? Current recommendation: yes, matching how `set-registry` already validates connectivity.
-
-3. **Per-registry auth (future)**: If ToolHive ever supports multiple registries, the auth config would need to be a map keyed by registry URL. The current single-registry model keeps things simple.
+**Deferred**: Auto-registering the CLI as an OAuth client with the identity provider would eliminate manual client ID configuration. However, not all identity providers support DCR, and it adds complexity. May be revisited if multiple registries with different IdPs become common.
 
 ## References
 
 - [MCP Registry API Specification](https://github.com/modelcontextprotocol/registry)
 - [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server)
-- [RFC 6750: Bearer Token Usage](https://tools.ietf.org/html/rfc6750)
+- [RFC 7636: PKCE](https://tools.ietf.org/html/rfc7636)
 - [RFC 8707: Resource Indicators for OAuth 2.0](https://tools.ietf.org/html/rfc8707)
-- Existing auth patterns: `pkg/auth/remote/config.go`, `pkg/networking/http_client.go`
+- [RFC 6750: Bearer Token Usage](https://tools.ietf.org/html/rfc6750)
+- Existing auth infrastructure: `pkg/auth/oauth/`, `pkg/auth/remote/`, `pkg/secrets/`

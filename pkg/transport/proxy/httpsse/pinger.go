@@ -54,7 +54,7 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	// Send the ping request
 	select {
 	case messageCh <- pingRequest:
-		slog.Debug("Sent MCP ping request", "id", pingID)
+		slog.Debug("sent MCP ping request", "id", pingID)
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	default:
@@ -67,6 +67,6 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	// In a real implementation, you might want to set up a response listener
 	duration := time.Since(start)
 
-	slog.Debug("MCP ping request sent", "duration", duration)
+	slog.Debug("mcp ping request sent", "duration", duration)
 	return duration, nil
 }

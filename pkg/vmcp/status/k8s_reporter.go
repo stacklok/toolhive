@@ -106,7 +106,7 @@ func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status
 	})
 
 	if err != nil {
-		slog.Error("Failed to update VirtualMCPServer status after retries", "namespace", r.namespace, "name", r.name, "error", err)
+		slog.Error("failed to update VirtualMCPServer status after retries", "namespace", r.namespace, "name", r.name, "error", err)
 		return fmt.Errorf("failed to update status: %w", err)
 	}
 
@@ -174,7 +174,7 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, statu
 		if !newConditionTypes[condType] {
 			// Log warning for core conditions that should always be present
 			if condType == "Ready" || condType == "BackendsDiscovered" {
-				slog.Warn("Core condition missing from new status - this may indicate a bug in status building", "condition", condType)
+				slog.Warn("core condition missing from new status - this may indicate a bug in status building", "condition", condType)
 			}
 			meta.RemoveStatusCondition(&vmcpServer.Status.Conditions, condType)
 		}

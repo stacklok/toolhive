@@ -217,7 +217,7 @@ func NewOIDCProvider(
 		ClientID: config.ClientID,
 	})
 
-	slog.Debug("OIDC provider created successfully",
+	slog.Debug("oidc provider created successfully",
 		"issuer", p.endpoints.Issuer,
 		"pkce_supported", p.supportsPKCE(),
 		"id_token_validation_enabled", p.verifier != nil,
@@ -255,7 +255,7 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	// Validate ID token with nonce in a single pass — no double-validation.
 	validatedToken, err := p.validateIDToken(ctx, tokens.IDToken, nonce)
 	if err != nil {
-		slog.Debug("ID token validation failed", "error", err)
+		slog.Debug("id token validation failed", "error", err)
 		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
 	}
 

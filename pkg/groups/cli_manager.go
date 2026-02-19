@@ -58,7 +58,7 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 	defer func() {
 		if err := writer.Close(); err != nil {
 			// Non-fatal: writer cleanup failure
-			slog.Warn("Failed to close writer", "error", err)
+			slog.Warn("failed to close writer", "error", err)
 		}
 	}()
 
@@ -88,7 +88,7 @@ func (m *cliManager) Get(ctx context.Context, name string) (*Group, error) {
 	defer func() {
 		if err := reader.Close(); err != nil {
 			// Non-fatal: reader cleanup failure
-			slog.Debug("Failed to close reader", "error", err)
+			slog.Debug("failed to close reader", "error", err)
 		}
 	}()
 
@@ -155,14 +155,14 @@ func (m *cliManager) RegisterClients(ctx context.Context, groupNames []string, c
 			}
 
 			if alreadyRegistered {
-				slog.Debug("Client already registered with group, skipping", "client", clientName, "group", groupName)
+				slog.Debug("client already registered with group, skipping", "client", clientName, "group", groupName)
 				continue
 			}
 
 			// Add the client to the group
 			group.RegisteredClients = append(group.RegisteredClients, clientName)
 			groupModified = true
-			slog.Debug("Successfully registered client with group", "client", clientName, "group", groupName)
+			slog.Debug("successfully registered client with group", "client", clientName, "group", groupName)
 		}
 
 		// Only save if the group was actually modified
@@ -194,7 +194,7 @@ func (m *cliManager) UnregisterClients(ctx context.Context, groupNames []string,
 					// Remove client from slice
 					group.RegisteredClients = append(group.RegisteredClients[:i], group.RegisteredClients[i+1:]...)
 					groupModified = true
-					slog.Debug("Successfully unregistered client from group", "client", clientName, "group", groupName)
+					slog.Debug("successfully unregistered client from group", "client", clientName, "group", groupName)
 					break
 				}
 			}
@@ -221,7 +221,7 @@ func (m *cliManager) saveGroup(ctx context.Context, group *Group) error {
 	defer func() {
 		if err := writer.Close(); err != nil {
 			// Non-fatal: writer cleanup failure
-			slog.Warn("Failed to close writer", "error", err)
+			slog.Warn("failed to close writer", "error", err)
 		}
 	}()
 

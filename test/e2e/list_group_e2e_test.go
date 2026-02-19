@@ -5,18 +5,20 @@ package e2e_test
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
 func init() {
-	logger.Initialize()
+	l := logging.New()
+	slog.SetDefault(l)
 }
 
 var _ = Describe("List Group", Label("core", "groups", "e2e"), func() {

@@ -660,7 +660,7 @@ func (s *MemoryStorage) GetPKCERequestSession(_ context.Context, signature strin
 
 	entry, ok := s.pkceRequests[signature]
 	if !ok {
-		slog.Debug("PKCE request not found")
+		slog.Debug("pkce request not found")
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
 	}
 	return entry.value, nil

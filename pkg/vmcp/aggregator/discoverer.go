@@ -135,11 +135,11 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 		}
 	}()
 
-	slog.Info("Discovering backends in group", "group", groupRef)
+	slog.Info("discovering backends in group", "group", groupRef)
 
 	// Static mode: Use pre-configured backends if available
 	if len(d.staticBackends) > 0 {
-		slog.Info("Using pre-configured static backends (no K8s API access)", "count", len(d.staticBackends))
+		slog.Info("using pre-configured static backends (no K8s API access)", "count", len(d.staticBackends))
 		return d.discoverFromStaticConfig(), nil
 	}
 
@@ -147,12 +147,12 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 	// this discoverer was created for static mode with an empty backend list.
 	// Return empty list instead of falling through to dynamic mode which would panic.
 	if d.staticBackends != nil && d.groupsManager == nil {
-		slog.Info("Static mode with empty backend list, returning no backends")
+		slog.Info("static mode with empty backend list, returning no backends")
 		return []vmcp.Backend{}, nil
 	}
 
 	// Dynamic mode: Discover backends from K8s API at runtime
-	slog.Info("Dynamic mode: discovering backends from K8s API")
+	slog.Info("dynamic mode: discovering backends from K8s API")
 
 	// Verify that the group exists
 	exists, err := d.groupsManager.Exists(ctx, groupRef)
@@ -170,17 +170,17 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 	}
 
 	if len(typedWorkloads) == 0 {
-		slog.Info("No workloads found in group", "group", groupRef)
+		slog.Info("no workloads found in group", "group", groupRef)
 		return []vmcp.Backend{}, nil
 	}
 
-	slog.Debug("Found workloads in group, discovering backends", "count", len(typedWorkloads), "group", groupRef)
+	slog.Debug("found workloads in group, discovering backends", "count", len(typedWorkloads), "group", groupRef)
 
 	// Query each workload and convert to backend
 	for _, workload := range typedWorkloads {
 		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, workload)
 		if err != nil {
-			slog.Warn("Failed to get workload, skipping", "workload", workload.Name, "error", err)
+			slog.Warn("failed to get workload, skipping", "workload", workload.Name, "error", err)
 			continue
 		}
 
@@ -202,11 +202,11 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 	}
 
 	if len(backends) == 0 {
-		slog.Info("No accessible backends found in group (all workloads lack URLs)", "group", groupRef)
+		slog.Info("no accessible backends found in group (all workloads lack URLs)", "group", groupRef)
 		return []vmcp.Backend{}, nil
 	}
 
-	slog.Info("Discovered backends in group", "count", len(backends), "group", groupRef)
+	slog.Info("discovered backends in group", "count", len(backends), "group", groupRef)
 	return backends, nil
 }
 
@@ -241,19 +241,19 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 		useDiscoveredAuth = false
 	default:
 		// Unknown source mode - default to config-based auth for safety
-		slog.Warn("Unknown auth source mode, defaulting to config-based auth", "source", d.authConfig.Source)
+		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", d.authConfig.Source)
 		useDiscoveredAuth = false
 	}
 
 	if useDiscoveredAuth {
 		// Keep the auth discovered from MCPServer (already populated in backend)
-		slog.Debug("Backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
+		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
 	} else {
 		// Use auth from config (inline mode)
 		authConfig := d.authConfig.ResolveForBackend(backendName)
 		if authConfig != nil {
 			backend.AuthConfig = authConfig
-			slog.Debug("Backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
+			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
 		}
 	}
 }
@@ -282,13 +282,13 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 		}
 		// Warn if user provided a conflicting group value
 		if existingGroup, exists := backend.Metadata["group"]; exists && existingGroup != d.groupRef {
-			slog.Warn("Backend has user-provided group metadata which will be overridden",
+			slog.Warn("backend has user-provided group metadata which will be overridden",
 				"backend", staticBackend.Name, "existing_group", existingGroup, "new_group", d.groupRef)
 		}
 		backend.Metadata["group"] = d.groupRef
 
 		backends = append(backends, backend)
-		slog.Info("Loaded static backend", "name", staticBackend.Name, "url", staticBackend.URL, "transport", staticBackend.Transport)
+		slog.Info("loaded static backend", "name", staticBackend.Name, "url", staticBackend.URL, "transport", staticBackend.Transport)
 	}
 
 	return backends

@@ -81,7 +81,7 @@ func NewIncomingAuthMiddleware(
 			return authMiddleware(withParser)
 		}
 
-		slog.Info("Authorization middleware enabled with Cedar policies")
+		slog.Info("authorization middleware enabled with Cedar policies")
 		return composedMiddleware, authInfoHandler, nil
 	}
 
@@ -94,7 +94,7 @@ func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) h
 		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
 
-	slog.Info("Creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
+	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
 	// Build the Cedar config structure expected by the authorizer factory
 	cedarConfig := cedar.Config{
@@ -132,11 +132,11 @@ func newOIDCAuthMiddleware(
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
 	}
 
-	slog.Info("Creating OIDC incoming authentication middleware")
+	slog.Info("creating OIDC incoming authentication middleware")
 
 	// Use Resource field if specified, otherwise fall back to Audience
 	if oidcCfg.Resource == "" {
-		slog.Warn("No Resource defined in OIDC configuration")
+		slog.Warn("no Resource defined in OIDC configuration")
 	}
 
 	oidcConfig := &auth.TokenValidatorConfig{
@@ -155,7 +155,7 @@ func newOIDCAuthMiddleware(
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
 	}
 
-	slog.Info("OIDC authentication configured",
+	slog.Info("oIDC authentication configured",
 		"issuer", oidcCfg.Issuer, "client_id", oidcCfg.ClientID, "resource", oidcCfg.Resource)
 
 	return authMw, authInfo, nil
@@ -165,7 +165,7 @@ func newOIDCAuthMiddleware(
 // Reuses pkg/auth.GetAuthenticationMiddleware with nil config to trigger local auth mode.
 // The middleware now directly creates Identity in context (no separate conversion needed).
 func newLocalAuthMiddleware(ctx context.Context) (func(http.Handler) http.Handler, http.Handler, error) {
-	slog.Info("Creating local user authentication middleware")
+	slog.Info("creating local user authentication middleware")
 
 	// Passing nil to GetAuthenticationMiddleware triggers local auth mode
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
@@ -180,7 +180,7 @@ func newLocalAuthMiddleware(ctx context.Context) (func(http.Handler) http.Handle
 // newAnonymousAuthMiddleware creates anonymous authentication middleware.
 // Calls pkg/auth.AnonymousMiddleware directly since GetAuthenticationMiddleware doesn't support anonymous.
 func newAnonymousAuthMiddleware() (func(http.Handler) http.Handler, http.Handler, error) {
-	slog.Info("Creating anonymous authentication middleware")
+	slog.Info("creating anonymous authentication middleware")
 
 	return auth.AnonymousMiddleware, nil, nil
 }

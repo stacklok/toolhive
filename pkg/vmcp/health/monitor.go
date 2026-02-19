@@ -231,7 +231,7 @@ func (m *Monitor) Start(ctx context.Context) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.started = true
 
-	slog.Info("Starting health monitor",
+	slog.Info("starting health monitor",
 		"backends", len(m.backends),
 		"interval", m.checkInterval,
 		"threshold", m.statusTracker.unhealthyThreshold)
@@ -279,7 +279,7 @@ func (m *Monitor) Stop() error {
 	backendCount := len(m.backends)
 	m.backendsMu.RUnlock()
 
-	slog.Info("Stopping health monitor", "backends", backendCount)
+	slog.Info("stopping health monitor", "backends", backendCount)
 	m.cancel()
 	m.started = false
 	m.stopped = true
@@ -287,7 +287,7 @@ func (m *Monitor) Stop() error {
 
 	// Wait for all goroutines to complete
 	m.wg.Wait()
-	slog.Info("Health monitor stopped")
+	slog.Info("health monitor stopped")
 
 	return nil
 }
@@ -326,7 +326,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// Start monitoring for new backends
 	for id, backend := range newBackendsMap {
 		if _, exists := oldBackends[id]; !exists {
-			slog.Info("Starting health monitoring for new backend", "backend", backend.Name)
+			slog.Info("starting health monitoring for new backend", "backend", backend.Name)
 			backendCopy := backend
 
 			// Circuit breaker will be lazily initialized on first health check
@@ -344,7 +344,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// Stop monitoring for removed backends and clean up their state
 	for id, backend := range oldBackends {
 		if _, exists := newBackendsMap[id]; !exists {
-			slog.Info("Stopping health monitoring for removed backend", "backend", backend.Name)
+			slog.Info("stopping health monitoring for removed backend", "backend", backend.Name)
 			if cancel, ok := m.activeChecks[id]; ok {
 				cancel()
 				delete(m.activeChecks, id)
@@ -363,7 +363,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isInitial bool) {
 	defer m.wg.Done()
 
-	slog.Debug("Starting health monitoring for backend", "backend", backend.Name)
+	slog.Debug("starting health monitoring for backend", "backend", backend.Name)
 
 	// Create ticker for periodic checks
 	ticker := time.NewTicker(m.checkInterval)
@@ -383,7 +383,7 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Debug("Stopping health monitoring for backend", "backend", backend.Name)
+			slog.Debug("stopping health monitoring for backend", "backend", backend.Name)
 			return
 
 		case <-ticker.C:
@@ -394,7 +394,7 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 
 // performHealthCheck performs a single health check for a backend and updates status.
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
-	slog.Debug("Performing health check for backend", "backend", backend.Name, "url", backend.BaseURL)
+	slog.Debug("performing health check for backend", "backend", backend.Name, "url", backend.BaseURL)
 
 	// Check if circuit breaker allows health check
 	// Status tracker handles circuit breaker logic based on its configuration
@@ -422,12 +422,12 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 
 	// Record result in status tracker
 	if err != nil {
-		slog.Debug("Health check failed for backend", "backend", backend.Name, "error", err, "status", status)
+		slog.Debug("health check failed for backend", "backend", backend.Name, "error", err, "status", status)
 		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
 	} else {
 		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
 		// RecordSuccess will further check for recovering state (had recent failures)
-		slog.Debug("Health check succeeded for backend", "backend", backend.Name, "status", status)
+		slog.Debug("health check succeeded for backend", "backend", backend.Name, "status", status)
 		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
 	}
 }

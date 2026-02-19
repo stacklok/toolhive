@@ -187,7 +187,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		slog.Debug("Streamable HTTP proxy started, processing messages...")
+		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
 			t.host,
@@ -199,7 +199,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		slog.Debug("HTTP SSE proxy started, processing messages...")
+		slog.Debug("http SSE proxy started, processing messages")
 	default:
 		return fmt.Errorf("unsupported proxy mode: %v", t.proxyMode)
 	}
@@ -262,14 +262,14 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 	// Stop the HTTP proxy
 	if t.httpProxy != nil {
 		if err := t.httpProxy.Stop(ctx); err != nil {
-			slog.Warn("Failed to stop HTTP proxy", "error", err)
+			slog.Warn("failed to stop HTTP proxy", "error", err)
 		}
 	}
 
 	// Close stdin and stdout if they're open
 	if t.stdin != nil {
 		if err := t.stdin.Close(); err != nil {
-			slog.Warn("Failed to close stdin", "error", err)
+			slog.Warn("failed to close stdin", "error", err)
 		}
 		t.stdin = nil
 	}
@@ -280,11 +280,11 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		running, err := t.deployer.IsWorkloadRunning(ctx, t.containerName)
 		if err != nil {
 			// If there's an error checking the workload status, it might be gone already
-			slog.Warn("Failed to check workload status", "error", err)
+			slog.Warn("failed to check workload status", "error", err)
 		} else if running {
 			// Only try to stop the workload if it's still running
 			if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
-				slog.Warn("Failed to stop workload", "error", err)
+				slog.Warn("failed to stop workload", "error", err)
 			}
 		}
 	}
@@ -382,15 +382,15 @@ func (t *StdioTransport) processMessages(ctx context.Context, _ io.WriteCloser, 
 		case <-ctx.Done():
 			return
 		case msg := <-messageCh:
-			slog.Debug("Processing incoming message and sending to container")
+			slog.Debug("processing incoming message and sending to container")
 			// Use t.stdin instead of parameter so it uses the current stdin after re-attachment
 			t.mutex.Lock()
 			currentStdin := t.stdin
 			t.mutex.Unlock()
 			if err := t.sendMessageToContainer(ctx, currentStdin, msg); err != nil {
-				slog.Error("Error sending message to container", "error", err)
+				slog.Error("error sending message to container", "error", err)
 			}
-			slog.Debug("Message processed")
+			slog.Debug("message processed")
 		}
 	}
 }
@@ -426,36 +426,36 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		if checkErr != nil {
 			// Check if error is due to Docker being unavailable
 			if isDockerSocketError(checkErr) {
-				slog.Warn("Docker socket unavailable, will retry",
+				slog.Warn("docker socket unavailable, will retry",
 					"attempt", attemptCount, "max_retries", maxRetries, "error", checkErr)
 				return nil, checkErr // Retry
 			}
-			slog.Warn("Error checking if container is running",
+			slog.Warn("error checking if container is running",
 				"attempt", attemptCount, "max_retries", maxRetries, "error", checkErr)
 			return nil, checkErr // Retry
 		}
 
 		if !running {
-			slog.Info("Container not running",
+			slog.Info("container not running",
 				"attempt", attemptCount, "max_retries", maxRetries)
 			return nil, backoff.Permanent(fmt.Errorf("container not running"))
 		}
 
-		slog.Warn("Container is still running after stdout EOF - attempting to re-attach")
+		slog.Warn("container is still running after stdout EOF, attempting to re-attach")
 
 		// Try to re-attach to the container
 		newStdin, newStdout, attachErr := t.deployer.AttachToWorkload(ctx, t.containerName)
 		if attachErr != nil {
-			slog.Error("Failed to re-attach to container",
+			slog.Error("failed to re-attach to container",
 				"attempt", attemptCount, "max_retries", maxRetries, "error", attachErr)
 			return nil, attachErr // Retry
 		}
 
-		slog.Debug("Successfully re-attached to container - restarting message processing")
+		slog.Debug("successfully re-attached to container, restarting message processing")
 
 		// Close old stdout and log any errors
 		if closeErr := stdout.Close(); closeErr != nil {
-			slog.Warn("Error closing old stdout during re-attachment", "error", closeErr)
+			slog.Warn("error closing old stdout during re-attachment", "error", closeErr)
 		}
 
 		// Update stdio references with proper synchronization
@@ -467,7 +467,7 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		// Start ONLY the stdout reader, not the full processMessages
 		// The existing processMessages goroutine is still running and handling stdin
 		go t.processStdout(ctx, newStdout)
-		slog.Debug("Restarted stdout processing with new pipe")
+		slog.Debug("restarted stdout processing with new pipe")
 		return nil, nil // Success
 	}
 
@@ -477,16 +477,16 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		backoff.WithBackOff(expBackoff),
 		backoff.WithMaxTries(uint(maxRetries)), // #nosec G115
 		backoff.WithNotify(func(_ error, duration time.Duration) {
-			slog.Info("Retry attempt",
+			slog.Info("retry attempt",
 				"attempt", attemptCount+1, "max_retries", maxRetries, "after", duration)
 		}),
 	)
 
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			slog.Warn("Re-attachment cancelled or timed out", "error", err)
+			slog.Warn("re-attachment cancelled or timed out", "error", err)
 		} else {
-			slog.Warn("Failed to re-attach after all retry attempts")
+			slog.Warn("failed to re-attach after all retry attempts")
 		}
 		return false
 	}
@@ -511,16 +511,16 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 			n, err := stdout.Read(readBuffer)
 			if err != nil {
 				if err == io.EOF {
-					slog.Warn("Container stdout closed - checking if container is still running")
+					slog.Warn("container stdout closed, checking if container is still running")
 
 					// Try to re-attach to the container
 					if t.attemptReattachment(ctx, stdout) {
 						return
 					}
 
-					slog.Debug("Container stdout closed - exiting read loop")
+					slog.Debug("container stdout closed, exiting read loop")
 				} else {
-					slog.Error("Error reading from container stdout", "error", err)
+					slog.Error("error reading from container stdout", "error", err)
 				}
 				return
 			}
@@ -617,17 +617,17 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Try to parse the JSON
 	msg, err := jsonrpc2.DecodeMessage([]byte(jsonData))
 	if err != nil {
-		slog.Error("Error parsing JSON-RPC message", "error", err)
+		slog.Error("error parsing JSON-RPC message", "error", err)
 		return
 	}
 
-	slog.Debug("Received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
+	slog.Debug("received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
 
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
 		if t.proxyMode == types.ProxyModeStreamableHTTP {
-			slog.Error("Error forwarding to streamable-http client", "error", err)
+			slog.Error("error forwarding to streamable-http client", "error", err)
 		} else {
-			slog.Error("Error forwarding to SSE clients", "error", err)
+			slog.Error("error forwarding to SSE clients", "error", err)
 		}
 	}
 }
@@ -644,11 +644,11 @@ func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer
 	data = append(data, '\n')
 
 	// Write to stdin
-	slog.Debug("Writing to container stdin")
+	slog.Debug("writing to container stdin")
 	if _, err := stdin.Write(data); err != nil {
 		return fmt.Errorf("failed to write to container stdin: %w", err)
 	}
-	slog.Debug("Wrote to container stdin")
+	slog.Debug("wrote to container stdin")
 
 	return nil
 }
@@ -661,7 +661,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 	case err, ok := <-t.errorCh:
 		// Check if the channel is closed
 		if !ok {
-			slog.Debug("Container monitor channel closed",
+			slog.Debug("container monitor channel closed",
 				"container", t.containerName)
 			return
 		}
@@ -672,16 +672,16 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 		t.exitErrMutex.Unlock()
 
 		//nolint:gosec // G706: logging container name from config
-		slog.Warn("Container exited", "container", t.containerName, "error", err)
+		slog.Warn("container exited", "container", t.containerName, "error", err)
 
 		// Check if container was removed (not just exited) using typed error
 		if errors.Is(err, docker.ErrContainerRemoved) {
 			//nolint:gosec // G706: logging container name from config
-			slog.Debug("Container was removed. Stopping proxy and cleaning up.",
+			slog.Debug("container was removed, stopping proxy and cleaning up",
 				"container", t.containerName)
 		} else {
 			//nolint:gosec // G706: logging container name from config
-			slog.Debug("Container exited. Will attempt automatic restart.",
+			slog.Debug("container exited, will attempt automatic restart",
 				"container", t.containerName)
 		}
 
@@ -689,7 +689,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 		select {
 		case <-t.shutdownCh:
 			// Transport is already stopping or stopped
-			slog.Debug("Transport is already stopping or stopped",
+			slog.Debug("transport is already stopping or stopped",
 				"container", t.containerName)
 			return
 		default:
@@ -699,7 +699,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 			defer cancel()
 
 			if stopErr := t.Stop(stopCtx); stopErr != nil {
-				slog.Error("Error stopping transport after container exit", "error", stopErr)
+				slog.Error("error stopping transport after container exit", "error", stopErr)
 			}
 		}
 	}

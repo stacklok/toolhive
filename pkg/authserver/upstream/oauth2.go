@@ -285,7 +285,7 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		opt(p)
 	}
 
-	slog.Info("OAuth2 provider created successfully",
+	slog.Info("oauth2 provider created successfully",
 		"authorization_endpoint", config.AuthorizationEndpoint,
 		"token_endpoint", config.TokenEndpoint,
 	)

@@ -122,13 +122,13 @@ func (v *CLIEnvVarValidator) Validate(
 					if secretsManager != nil {
 						value, err := secretsManager.GetSecret(ctx, envVar.Name)
 						if err != nil {
-							slog.Warn("Unable to find secret in the secrets manager", "name", envVar.Name, "error", err)
+							slog.Warn("unable to find secret in the secrets manager", "name", envVar.Name, "error", err)
 						} else {
 							addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
 							continue
 						}
 					} else {
-						slog.Warn("Secrets manager not configured (setup incomplete or missing provider) - " +
+						slog.Warn("secrets manager not configured (setup incomplete or missing provider) - " +
 							"falling back to prompt")
 					}
 
@@ -216,17 +216,17 @@ func addAsSecret(
 
 	if err := secretsManager.SetSecret(ctx, secretName, value); err != nil {
 		slog.Warn("failed to store secret", "secret_name", secretName, "error", err)
-		slog.Warn("Falling back to environment variable", "name", envVar.Name)
+		slog.Warn("falling back to environment variable", "name", envVar.Name)
 		(*envVars)[envVar.Name] = value
-		slog.Debug("Added environment variable (secret fallback)", "name", envVar.Name)
+		slog.Debug("added environment variable (secret fallback)", "name", envVar.Name)
 	} else {
 		// Create secret reference for RunConfig
 		secretEntry := fmt.Sprintf("%s,target=%s", secretName, envVar.Name)
 		*secretsList = append(*secretsList, secretEntry)
 		if envVar.Required {
-			slog.Debug("Created secret", "name", envVar.Name, "secret_name", secretName)
+			slog.Debug("created secret", "name", envVar.Name, "secret_name", secretName)
 		} else {
-			slog.Debug("Created secret with default value", "name", envVar.Name, "secret_name", secretName)
+			slog.Debug("created secret with default value", "name", envVar.Name, "secret_name", secretName)
 		}
 	}
 }
@@ -249,7 +249,7 @@ func (v *CLIEnvVarValidator) initializeSecretsManagerIfNeeded(registryEnvVars []
 	secretsManager, err := v.getSecretsManager()
 	if err != nil {
 		slog.Warn("failed to initialize secrets manager", "error", err)
-		slog.Warn("Secret environment variables will be stored as regular environment variables")
+		slog.Warn("secret environment variables will be stored as regular environment variables")
 		return nil
 	}
 
@@ -330,15 +330,15 @@ func addAsEnvironmentVariable(
 
 	if envVar.Secret {
 		if envVar.Required {
-			slog.Debug("Added secret as environment variable (no secrets manager)", "name", envVar.Name)
+			slog.Debug("added secret as environment variable (no secrets manager)", "name", envVar.Name)
 		} else {
-			slog.Debug("Added default secret as environment variable (no secrets manager)", "name", envVar.Name)
+			slog.Debug("added default secret as environment variable (no secrets manager)", "name", envVar.Name)
 		}
 	} else {
 		if envVar.Required {
-			slog.Debug("Added environment variable", "name", envVar.Name)
+			slog.Debug("added environment variable", "name", envVar.Name)
 		} else {
-			slog.Debug("Using default value", "name", envVar.Name, "default_value", value)
+			slog.Debug("using default value", "name", envVar.Name, "default_value", value)
 		}
 	}
 }

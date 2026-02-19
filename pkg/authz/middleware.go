@@ -220,7 +220,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 			if err := filteringWriter.FlushAndFilter(); err != nil {
 				// If flushing fails, we've already started writing the response,
 				// so we can't return an error response. Just log it.
-				slog.Warn("Error flushing filtered response", "error", err)
+				slog.Warn("error flushing filtered response", "error", err)
 			}
 			return
 		}

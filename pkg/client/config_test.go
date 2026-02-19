@@ -21,7 +21,6 @@ import (
 
 	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -313,7 +312,7 @@ func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it u
 		logOutput := logBuf.String()
 
 		// Verify that the error was logged (slog uses structured key-value pairs)
-		assert.Contains(t, logOutput, "Unable to process client config", "Should log warning about client config")
+		assert.Contains(t, logOutput, "unable to process client config", "Should log warning about client config")
 		assert.Contains(t, logOutput, "client=cursor", "Should log cursor as the client attribute")
 		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
 	})
@@ -337,11 +336,11 @@ func initializeTest(t *testing.T) *bytes.Buffer {
 		logging.WithFormat(logging.FormatText),
 	)
 
-	prev := logger.Get()
-	logger.Set(testLogger)
+	prev := slog.Default()
+	slog.SetDefault(testLogger)
 
 	t.Cleanup(func() {
-		logger.Set(prev)
+		slog.SetDefault(prev)
 	})
 
 	return &buf

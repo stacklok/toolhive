@@ -92,7 +92,7 @@ func (s *inMemoryStateStore) SaveState(_ context.Context, workflowID string, sta
 
 	s.states[workflowID] = &stateCopy
 
-	slog.Debug("Saved state for workflow", "workflow", workflowID, "status", state.Status)
+	slog.Debug("saved state for workflow", "workflow", workflowID, "status", state.Status)
 	return nil
 }
 
@@ -140,7 +140,7 @@ func (s *inMemoryStateStore) DeleteState(_ context.Context, workflowID string) e
 	}
 
 	delete(s.states, workflowID)
-	slog.Debug("Deleted state for workflow", "workflow", workflowID)
+	slog.Debug("deleted state for workflow", "workflow", workflowID)
 	return nil
 }
 
@@ -180,7 +180,7 @@ func (s *inMemoryStateStore) runCleanup() {
 		case <-ticker.C:
 			s.cleanup()
 		case <-s.stopCleanup:
-			slog.Debug("State store cleanup goroutine stopped")
+			slog.Debug("state store cleanup goroutine stopped")
 			return
 		}
 	}
@@ -209,7 +209,7 @@ func (s *inMemoryStateStore) cleanup() {
 	}
 
 	if removed > 0 {
-		slog.Debug("Cleaned up stale workflows", "count", removed)
+		slog.Debug("cleaned up stale workflows", "count", removed)
 	}
 
 	// Log state store metrics for observability (every cleanup cycle)
@@ -245,7 +245,7 @@ func (s *inMemoryStateStore) logMetrics() {
 		}
 	}
 
-	slog.Info("Workflow state store metrics",
+	slog.Info("workflow state store metrics",
 		"total", total, "running", running, "pending", pending, "waiting", waiting,
 		"completed", completed, "failed", failed, "cancelled", cancelled, "timed_out", timedOut)
 }

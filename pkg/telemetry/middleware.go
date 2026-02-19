@@ -703,7 +703,7 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		m.recordOperationDuration(ctx, r, mcpMethod, mcpResourceID, rw.statusCode, duration)
 	} else {
 		//nolint:gosec // G706: HTTP method and URL path from request
-		slog.Warn("MCP method could not be determined, middleware may be misconfigured",
+		slog.Warn("mcp method could not be determined, middleware may be misconfigured",
 			"http_method", r.Method, "path", r.URL.Path)
 	}
 
@@ -886,7 +886,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	if prometheusHandler != nil {
 		runner.SetPrometheusHandler(prometheusHandler)
 		//nolint:gosec // G706: port number from config
-		slog.Info("Prometheus metrics will be exposed at /metrics",
+		slog.Info("prometheus metrics will be exposed at /metrics",
 			"port", runner.GetConfig().GetPort())
 	}
 

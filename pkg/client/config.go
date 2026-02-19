@@ -871,15 +871,15 @@ func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]Con
 		cf, err := cm.FindClientConfig(clientStatus.ClientType)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
-				slog.Debug("Client config file not found, creating", "client", clientStatus.ClientType)
+				slog.Debug("client config file not found, creating", "client", clientStatus.ClientType)
 				cf, err = cm.CreateClientConfig(clientStatus.ClientType)
 				if err != nil {
-					slog.Warn("Unable to create client config", "client", clientStatus.ClientType, "error", err)
+					slog.Warn("unable to create client config", "client", clientStatus.ClientType, "error", err)
 					continue
 				}
-				slog.Debug("Successfully created client config file", "client", clientStatus.ClientType)
+				slog.Debug("successfully created client config file", "client", clientStatus.ClientType)
 			} else {
-				slog.Warn("Unable to process client config", "client", clientStatus.ClientType, "error", err)
+				slog.Warn("unable to process client config", "client", clientStatus.ClientType, "error", err)
 				continue
 			}
 		}
@@ -915,7 +915,7 @@ func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, 
 	}
 
 	// Create the file if it does not exist
-	slog.Debug("Creating new client config file", "path", path)
+	slog.Debug("creating new client config file", "path", path)
 
 	// Create parent directories if they don't exist
 	parentDir := filepath.Dir(path)

@@ -85,7 +85,7 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		span.End()
 	}()
 
-	slog.Debug("Querying capabilities from backend", "backend", backend.ID)
+	slog.Debug("querying capabilities from backend", "backend", backend.ID)
 
 	// Create a BackendTarget from the Backend
 	// Use BackendToTarget helper to ensure all fields (including auth) are copied
@@ -120,7 +120,7 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		attribute.Int("prompts.count", len(result.Prompts)),
 	)
 
-	slog.Debug("Backend capabilities queried",
+	slog.Debug("backend capabilities queried",
 		"backend", backend.ID, "tools", len(result.Tools), "resources", len(result.Resources), "prompts", len(result.Prompts))
 
 	return result, nil
@@ -145,7 +145,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		span.End()
 	}()
 
-	slog.Info("Querying capabilities from backends", "count", len(backends))
+	slog.Info("querying capabilities from backends", "count", len(backends))
 
 	// Use errgroup for parallel queries with context cancellation
 	g, ctx := errgroup.WithContext(ctx)
@@ -162,7 +162,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 			caps, err := a.QueryCapabilities(ctx, backend)
 			if err != nil {
 				// Log the error but continue with other backends
-				slog.Warn("Failed to query backend", "backend", backend.ID, "error", err)
+				slog.Warn("failed to query backend", "backend", backend.ID, "error", err)
 				return nil // Don't fail the entire operation
 			}
 
@@ -188,7 +188,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		attribute.Int("successful.backends", len(capabilities)),
 	)
 
-	slog.Info("Successfully queried backends", "successful", len(capabilities), "total", len(backends))
+	slog.Info("successfully queried backends", "successful", len(capabilities), "total", len(backends))
 	return capabilities, nil
 }
 
@@ -211,7 +211,7 @@ func (a *defaultAggregator) ResolveConflicts(
 		span.End()
 	}()
 
-	slog.Debug("Resolving conflicts across backends", "count", len(capabilities))
+	slog.Debug("resolving conflicts across backends", "count", len(capabilities))
 
 	// Group tools by backend for conflict resolution
 	toolsByBackend := make(map[string][]vmcp.Tool)
@@ -230,12 +230,12 @@ func (a *defaultAggregator) ResolveConflicts(
 		}
 	} else {
 		// Fallback: no conflict resolution (first wins, log warnings)
-		slog.Warn("No conflict resolver configured, using fallback (first wins)")
+		slog.Warn("no conflict resolver configured, using fallback (first wins)")
 		resolvedTools = make(map[string]*ResolvedTool)
 		for backendID, tools := range toolsByBackend {
 			for _, tool := range tools {
 				if existing, exists := resolvedTools[tool.Name]; exists {
-					slog.Warn("Tool name conflict, keeping first",
+					slog.Warn("tool name conflict, keeping first",
 						"tool", tool.Name, "existing_backend", existing.BackendID, "conflicting_backend", backendID)
 					continue
 				}
@@ -273,7 +273,7 @@ func (a *defaultAggregator) ResolveConflicts(
 		attribute.Int("resolved.prompts", len(resolved.Prompts)),
 	)
 
-	slog.Debug("Resolved capabilities",
+	slog.Debug("resolved capabilities",
 		"tools", len(resolved.Tools), "resources", len(resolved.Resources), "prompts", len(resolved.Prompts))
 
 	return resolved, nil
@@ -301,7 +301,7 @@ func (a *defaultAggregator) MergeCapabilities(
 		span.End()
 	}()
 
-	slog.Debug("Merging capabilities into final view")
+	slog.Debug("merging capabilities into final view")
 
 	// Create routing table
 	routingTable := &vmcp.RoutingTable{
@@ -332,7 +332,7 @@ func (a *defaultAggregator) MergeCapabilities(
 		// Look up full backend information from registry
 		backend := registry.Get(ctx, resolvedTool.BackendID)
 		if backend == nil {
-			slog.Warn("Backend not found in registry for tool, creating minimal target",
+			slog.Warn("backend not found in registry for tool, creating minimal target",
 				"backend", resolvedTool.BackendID, "tool", resolvedTool.ResolvedName)
 			routingTable.Tools[resolvedTool.ResolvedName] = &vmcp.BackendTarget{
 				WorkloadID:             resolvedTool.BackendID,
@@ -351,7 +351,7 @@ func (a *defaultAggregator) MergeCapabilities(
 	for _, resource := range resolved.Resources {
 		backend := registry.Get(ctx, resource.BackendID)
 		if backend == nil {
-			slog.Warn("Backend not found in registry for resource, creating minimal target",
+			slog.Warn("backend not found in registry for resource, creating minimal target",
 				"backend", resource.BackendID, "resource", resource.URI)
 			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
 				WorkloadID:             resource.BackendID,
@@ -369,7 +369,7 @@ func (a *defaultAggregator) MergeCapabilities(
 	for _, prompt := range resolved.Prompts {
 		backend := registry.Get(ctx, prompt.BackendID)
 		if backend == nil {
-			slog.Warn("Backend not found in registry for prompt, creating minimal target",
+			slog.Warn("backend not found in registry for prompt, creating minimal target",
 				"backend", prompt.BackendID, "prompt", prompt.Name)
 			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
 				WorkloadID:             prompt.BackendID,
@@ -417,7 +417,7 @@ func (a *defaultAggregator) MergeCapabilities(
 		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
 	)
 
-	slog.Info("Merged capabilities",
+	slog.Info("merged capabilities",
 		"tools", aggregated.Metadata.ToolCount,
 		"resources", aggregated.Metadata.ResourceCount,
 		"prompts", aggregated.Metadata.PromptCount)
@@ -447,11 +447,11 @@ func (a *defaultAggregator) AggregateCapabilities(
 		span.End()
 	}()
 
-	slog.Info("Starting capability aggregation", "backends", len(backends))
+	slog.Info("starting capability aggregation", "backends", len(backends))
 
 	// Step 1: Create registry from discovered backends
 	registry := vmcp.NewImmutableRegistry(backends)
-	slog.Debug("Created backend registry", "count", registry.Count())
+	slog.Debug("created backend registry", "count", registry.Count())
 
 	// Step 2: Query all backends
 	capabilities, err := a.QueryAllCapabilities(ctx, backends)
@@ -482,7 +482,7 @@ func (a *defaultAggregator) AggregateCapabilities(
 		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
 	)
 
-	slog.Info("Capability aggregation complete",
+	slog.Info("capability aggregation complete",
 		"backends", aggregated.Metadata.BackendCount, "tools", aggregated.Metadata.ToolCount,
 		"resources", aggregated.Metadata.ResourceCount, "prompts", aggregated.Metadata.PromptCount)
 

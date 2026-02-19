@@ -25,7 +25,7 @@ func (p *HTTPProxy) dispatchResponses() {
 			}
 			r, ok := resp.(*jsonrpc2.Response)
 			if !ok || !r.ID.IsValid() {
-				slog.Warn("Received invalid message that is not a valid response",
+				slog.Warn("received invalid message that is not a valid response",
 					"type", fmt.Sprintf("%T", resp))
 				continue
 			}
@@ -38,16 +38,16 @@ func (p *HTTPProxy) dispatchResponses() {
 						select {
 						case ch <- resp:
 						default:
-							slog.Warn("Waiter channel full; dropping response",
+							slog.Warn("waiter channel full; dropping response",
 								"composite_key", sID)
 						}
 						continue
 					}
 				}
-				slog.Warn("No waiter found for composite key; dropping", "composite_key", sID)
+				slog.Warn("no waiter found for composite key; dropping", "composite_key", sID)
 				continue
 			}
-			slog.Warn("Non-string response id (expected composite string); dropping",
+			slog.Warn("non-string response id (expected composite string); dropping",
 				"raw_id", fmt.Sprintf("%v", rawID))
 		}
 	}

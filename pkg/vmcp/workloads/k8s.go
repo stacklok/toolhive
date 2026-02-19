@@ -144,13 +144,13 @@ func (d *k8sDiscoverer) getMCPServerAsBackend(ctx context.Context, workloadName 
 
 	// If auth discovery failed, mcpServerToBackend returns nil
 	if backend == nil {
-		slog.Warn("Skipping workload due to auth discovery failure", "workload", workloadName)
+		slog.Warn("skipping workload due to auth discovery failure", "workload", workloadName)
 		return nil, nil
 	}
 
 	// Skip workloads without a URL (not accessible)
 	if backend.BaseURL == "" {
-		slog.Debug("Skipping workload without URL", "workload", workloadName)
+		slog.Debug("skipping workload without URL", "workload", workloadName)
 		return nil, nil
 	}
 
@@ -173,13 +173,13 @@ func (d *k8sDiscoverer) getMCPRemoteProxyAsBackend(ctx context.Context, proxyNam
 
 	// If conversion failed, return nil
 	if backend == nil {
-		slog.Warn("Skipping remote proxy due to conversion failure", "proxy", proxyName)
+		slog.Warn("skipping remote proxy due to conversion failure", "proxy", proxyName)
 		return nil, nil
 	}
 
 	// Skip workloads without a URL (not accessible)
 	if backend.BaseURL == "" {
-		slog.Debug("Skipping remote proxy without URL", "proxy", proxyName)
+		slog.Debug("skipping remote proxy without URL", "proxy", proxyName)
 		return nil, nil
 	}
 
@@ -193,7 +193,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	// Parse transport type
 	transportType, err := transporttypes.ParseTransportType(mcpServer.Spec.Transport)
 	if err != nil {
-		slog.Warn("Failed to parse transport type for MCPServer",
+		slog.Warn("failed to parse transport type for MCPServer",
 			"transport", mcpServer.Spec.Transport,
 			"server", mcpServer.Name,
 			"error", err)
@@ -276,7 +276,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 		// If auth discovery fails, we must fail - don't silently allow unauthorized access
 		// This is a security-critical operation: if auth is configured but fails to load,
 		// we should not proceed without it
-		slog.Error("Failed to discover auth config for MCPServer", "server", mcpServer.Name, "error", err)
+		slog.Error("failed to discover auth config for MCPServer", "server", mcpServer.Name, "error", err)
 		return nil
 	}
 
@@ -329,7 +329,7 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 
 	// If no auth was discovered, nothing to populate
 	if strategy == nil {
-		slog.Debug("No ExternalAuthConfigRef, no auth config to discover", "kind", resourceKind, "name", resourceName)
+		slog.Debug("no ExternalAuthConfigRef, no auth config to discover", "kind", resourceKind, "name", resourceName)
 		return nil
 	}
 
@@ -339,7 +339,7 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 	// This is used for status reporting and debugging
 	backend.AuthConfigRef = authConfigRef.Name
 
-	slog.Debug("Discovered auth config",
+	slog.Debug("discovered auth config",
 		"kind", resourceKind,
 		"name", resourceName,
 		"strategy", strategy.Type,
@@ -385,7 +385,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	// Parse transport type from proxy spec
 	transportType, err := transporttypes.ParseTransportType(proxy.Spec.Transport)
 	if err != nil {
-		slog.Warn("Failed to parse transport type for MCPRemoteProxy",
+		slog.Warn("failed to parse transport type for MCPRemoteProxy",
 			"transport", proxy.Spec.Transport,
 			"proxy", proxy.Name,
 			"error", err)
@@ -446,7 +446,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	// Discover and populate authentication configuration from MCPRemoteProxy
 	if err := d.discoverRemoteProxyAuthConfig(ctx, proxy, backend); err != nil {
 		// If auth discovery fails, we must fail - don't silently allow unauthorized access
-		slog.Error("Failed to discover auth config for MCPRemoteProxy", "proxy", proxy.Name, "error", err)
+		slog.Error("failed to discover auth config for MCPRemoteProxy", "proxy", proxy.Name, "error", err)
 		return nil
 	}
 

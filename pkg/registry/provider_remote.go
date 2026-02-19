@@ -62,7 +62,7 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -110,7 +110,7 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 

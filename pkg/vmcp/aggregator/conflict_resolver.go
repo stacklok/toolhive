@@ -19,7 +19,7 @@ import (
 func NewConflictResolver(aggregationConfig *config.AggregationConfig) (ConflictResolver, error) {
 	if aggregationConfig == nil {
 		// Default to prefix strategy with default format
-		slog.Info("No aggregation config provided, using default prefix strategy")
+		slog.Info("no aggregation config provided, using default prefix strategy")
 		return NewPrefixConflictResolver("{workload}_"), nil
 	}
 
@@ -30,7 +30,7 @@ func NewConflictResolver(aggregationConfig *config.AggregationConfig) (ConflictR
 			aggregationConfig.ConflictResolutionConfig.PrefixFormat != "" {
 			prefixFormat = aggregationConfig.ConflictResolutionConfig.PrefixFormat
 		}
-		slog.Info("Using prefix conflict resolution strategy", "format", prefixFormat)
+		slog.Info("using prefix conflict resolution strategy", "format", prefixFormat)
 		return NewPrefixConflictResolver(prefixFormat), nil
 
 	case vmcp.ConflictStrategyPriority:
@@ -38,11 +38,11 @@ func NewConflictResolver(aggregationConfig *config.AggregationConfig) (ConflictR
 			len(aggregationConfig.ConflictResolutionConfig.PriorityOrder) == 0 {
 			return nil, fmt.Errorf("priority strategy requires priority_order in conflict_resolution_config")
 		}
-		slog.Info("Using priority conflict resolution strategy", "order", aggregationConfig.ConflictResolutionConfig.PriorityOrder)
+		slog.Info("using priority conflict resolution strategy", "order", aggregationConfig.ConflictResolutionConfig.PriorityOrder)
 		return NewPriorityConflictResolver(aggregationConfig.ConflictResolutionConfig.PriorityOrder)
 
 	case vmcp.ConflictStrategyManual:
-		slog.Info("Using manual conflict resolution strategy")
+		slog.Info("using manual conflict resolution strategy")
 		return NewManualConflictResolver(aggregationConfig.Tools)
 
 	default:

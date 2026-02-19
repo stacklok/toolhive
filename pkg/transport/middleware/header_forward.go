@@ -115,7 +115,7 @@ func createHeaderForwardHandler(addHeaders map[string]string) (types.MiddlewareF
 		}
 
 		if canonical == "Authorization" {
-			slog.Warn("Authorization header is configured for forwarding; ensure the value is appropriate for the target server")
+			slog.Warn("authorization header is configured for forwarding; ensure the value is appropriate for the target server")
 		}
 
 		canonicalHeaders[canonical] = value
@@ -123,7 +123,7 @@ func createHeaderForwardHandler(addHeaders map[string]string) (types.MiddlewareF
 
 	// Log configured header names once at startup (never log values)
 	headerNames := slices.Sorted(maps.Keys(canonicalHeaders))
-	slog.Debug("Header forward middleware configured",
+	slog.Debug("header forward middleware configured",
 		"headers", strings.Join(headerNames, ", "))
 
 	return func(next http.Handler) http.Handler {

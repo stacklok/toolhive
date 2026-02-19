@@ -56,7 +56,7 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 	_ context.Context,
 	toolsByBackend map[string][]vmcp.Tool,
 ) (map[string]*ResolvedTool, error) {
-	slog.Debug("Resolving conflicts using priority strategy", "order", r.PriorityOrder)
+	slog.Debug("resolving conflicts using priority strategy", "order", r.PriorityOrder)
 
 	resolved := make(map[string]*ResolvedTool)
 	droppedTools := 0
@@ -89,7 +89,7 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 			for i, c := range candidates {
 				backendIDs[i] = c.BackendID
 			}
-			slog.Debug("Tool exists in backends not in priority order, using prefix fallback",
+			slog.Debug("tool exists in backends not in priority order, using prefix fallback",
 				"tool", toolName, "backends", backendIDs)
 
 			// Apply prefix strategy to these unmapped backends
@@ -119,7 +119,7 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 		// Log dropped tools
 		for _, candidate := range candidates {
 			if candidate.BackendID != winner.BackendID {
-				slog.Warn("Dropped tool from backend (lower priority)",
+				slog.Warn("dropped tool from backend (lower priority)",
 					"tool", toolName, "backend", candidate.BackendID, "winner", winner.BackendID)
 				droppedTools++
 			}
@@ -127,10 +127,10 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 	}
 
 	if droppedTools > 0 {
-		slog.Info("Priority strategy resolved tools",
+		slog.Info("priority strategy resolved tools",
 			"count", len(resolved), "dropped", droppedTools)
 	} else {
-		slog.Info("Priority strategy resolved tools", "count", len(resolved))
+		slog.Info("priority strategy resolved tools", "count", len(resolved))
 	}
 
 	return resolved, nil

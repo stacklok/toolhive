@@ -258,7 +258,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			Host:   remoteURL.Host,
 		}).String()
 		//nolint:gosec // G706: logging proxy port and remote URL from config
-		slog.Debug("Setting up transparent proxy to forward to remote URL",
+		slog.Debug("setting up transparent proxy to forward to remote URL",
 			"port", t.proxyPort, "target", targetURI)
 	} else {
 		if t.containerName == "" {
@@ -271,7 +271,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		}
 		targetURI = t.targetURI
 		//nolint:gosec // G706: logging proxy port and target URI from config
-		slog.Debug("Setting up transparent proxy to forward to target",
+		slog.Debug("setting up transparent proxy to forward to target",
 			"port", t.proxyPort, "target", targetURI)
 	}
 
@@ -317,7 +317,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	}
 
 	//nolint:gosec // G706: logging container name and port from config
-	slog.Debug("HTTP transport started",
+	slog.Debug("http transport started",
 		"container", t.containerName, "port", t.proxyPort)
 
 	// For remote MCP servers, we don't need container monitoring
@@ -371,7 +371,7 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 	// Stop the transparent proxy
 	if t.proxy != nil {
 		if err := t.proxy.Stop(ctx); err != nil {
-			slog.Warn("Failed to stop proxy", "error", err)
+			slog.Warn("failed to stop proxy", "error", err)
 		}
 	}
 
@@ -390,22 +390,22 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 		t.exitErrMutex.Unlock()
 
 		//nolint:gosec // G706: logging container name from config
-		slog.Warn("Container exited", "container", t.containerName, "error", err)
+		slog.Warn("container exited", "container", t.containerName, "error", err)
 
 		// Check if container was removed (not just exited) using typed error
 		if errors.Is(err, docker.ErrContainerRemoved) {
 			//nolint:gosec // G706: logging container name from config
-			slog.Debug("Container was removed. Stopping proxy and cleaning up.",
+			slog.Debug("container was removed, stopping proxy and cleaning up",
 				"container", t.containerName)
 		} else {
 			//nolint:gosec // G706: logging container name from config
-			slog.Debug("Container exited. Will attempt automatic restart.",
+			slog.Debug("container exited, will attempt automatic restart",
 				"container", t.containerName)
 		}
 
 		// Stop the transport when the container exits/removed
 		if stopErr := t.Stop(ctx); stopErr != nil {
-			slog.Error("Error stopping transport after container exit", "error", stopErr)
+			slog.Error("error stopping transport after container exit", "error", stopErr)
 		}
 	}
 }

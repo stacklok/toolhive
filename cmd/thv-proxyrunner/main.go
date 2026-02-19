@@ -5,15 +5,23 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 
+	"github.com/spf13/viper"
+
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/cmd/thv-proxyrunner/app"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func main() {
 	// Initialize the logger
-	logger.Initialize()
+	var opts []logging.Option
+	if viper.GetBool("debug") {
+		opts = append(opts, logging.WithLevel(slog.LevelDebug))
+	}
+	l := logging.New(opts...)
+	slog.SetDefault(l)
 
 	// Skip update check for completion command or if we are running in kubernetes
 	if err := app.NewRootCmd().Execute(); err != nil {

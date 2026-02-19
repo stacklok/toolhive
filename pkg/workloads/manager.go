@@ -193,7 +193,7 @@ func (d *DefaultManager) GetWorkloadAsVMCPBackend(ctx context.Context, workloadN
 
 	// Skip workloads without a URL (not accessible)
 	if workload.URL == "" {
-		slog.Debug("Skipping workload without URL", "workload", workloadName)
+		slog.Debug("skipping workload without URL", "workload", workloadName)
 		return nil, nil
 	}
 
@@ -277,7 +277,7 @@ func (d *DefaultManager) ListWorkloads(ctx context.Context, listAll bool, labelF
 	// Get remote workloads from the state store
 	remoteWorkloads, err := d.getRemoteWorkloadsFromState(ctx, listAll, labelFilters)
 	if err != nil {
-		slog.Warn("Failed to get remote workloads from state", "error", err)
+		slog.Warn("failed to get remote workloads from state", "error", err)
 		// Continue with container workloads only
 	} else {
 		// Combine container and remote workloads
@@ -332,14 +332,14 @@ func (d *DefaultManager) stopSingleWorkload(ctx context.Context, name string) er
 
 // stopRemoteWorkload stops a remote workload
 func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) error {
-	slog.Debug("Stopping remote workload", "workload", name)
+	slog.Debug("stopping remote workload", "workload", name)
 
 	// Check if the workload is running by checking its status
 	workload, err := d.statuses.GetWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			// Log but don't fail the entire operation for not found workload
-			slog.Warn("Failed to stop workload", "workload", name, "error", err)
+			slog.Warn("failed to stop workload", "workload", name, "error", err)
 			return nil
 		}
 		return fmt.Errorf("failed to find workload %s: %w", name, err)
@@ -352,7 +352,7 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 
 	// Set status to stopping
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
-		slog.Debug("Failed to set workload status to stopping", "workload", name, "error", err)
+		slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 	}
 
 	// Stop proxy if running
@@ -363,16 +363,16 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 	// For remote workloads, we only need to clean up client configurations
 	// The saved state should be preserved for restart capability
 	if err := removeClientConfigurations(name, false); err != nil {
-		slog.Warn("Failed to remove client configurations", "error", err)
+		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
-		slog.Debug("Client configurations removed", "workload", name)
+		slog.Debug("client configurations removed", "workload", name)
 	}
 
 	// Set status to stopped
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
-		slog.Debug("Failed to set workload status to stopped", "workload", name, "error", err)
+		slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
 	}
-	slog.Debug("Remote workload stopped", "workload", name)
+	slog.Debug("remote workload stopped", "workload", name)
 	return nil
 }
 
@@ -382,7 +382,7 @@ func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			// Log but don't fail the entire operation for not found containers
-			slog.Warn("Failed to stop workload", "workload", name, "error", err)
+			slog.Warn("failed to stop workload", "workload", name, "error", err)
 			return nil
 		}
 		return fmt.Errorf("failed to find workload %s: %w", name, err)
@@ -397,7 +397,7 @@ func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string)
 
 	// Transition workload to `stopping` state.
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
-		slog.Debug("Failed to set workload status to stopping", "workload", name, "error", err)
+		slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 	}
 
 	// Use the existing stopWorkloads method for container workloads
@@ -418,7 +418,7 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if attempt > 1 {
-			slog.Info("Restart attempt", "attempt", attempt, "maxRetries", maxRetries, "workload", runConfig.BaseName, "delay", retryDelay)
+			slog.Info("restart attempt", "attempt", attempt, "maxRetries", maxRetries, "workload", runConfig.BaseName, "delay", retryDelay)
 			time.Sleep(retryDelay)
 
 			// Exponential backoff: 5s, 10s, 20s, 40s, 60s (capped)
@@ -434,15 +434,15 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 		if err != nil {
 			// Check if this is a "container exited, restart needed" error
 			if errors.Is(err, runner.ErrContainerExitedRestartNeeded) {
-				slog.Warn("Workload exited unexpectedly, restarting",
+				slog.Warn("workload exited unexpectedly, restarting",
 					"workload", runConfig.BaseName, "attempt", attempt, "maxRetries", maxRetries)
 
 				// Remove from client config so clients notice the restart
 				clientManager, clientErr := client.NewManager(ctx)
 				if clientErr == nil {
-					slog.Debug("Removing from client configurations before restart", "workload", runConfig.BaseName)
+					slog.Debug("removing from client configurations before restart", "workload", runConfig.BaseName)
 					if removeErr := clientManager.RemoveServerFromClients(ctx, runConfig.BaseName, runConfig.Group); removeErr != nil {
-						slog.Warn("Failed to remove from client config", "error", removeErr)
+						slog.Warn("failed to remove from client config", "error", removeErr)
 					}
 				}
 
@@ -454,7 +454,7 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 					"Container exited, restarting",
 				)
 				if statusErr != nil {
-					slog.Warn("Failed to set workload status to starting", "workload", runConfig.BaseName, "error", statusErr)
+					slog.Warn("failed to set workload status to starting", "workload", runConfig.BaseName, "error", statusErr)
 				}
 
 				// If we haven't exhausted retries, continue the loop
@@ -463,7 +463,7 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 				}
 
 				// Exhausted all retries
-				slog.Error("Failed to restart after max attempts, giving up", "workload", runConfig.BaseName, "maxRetries", maxRetries)
+				slog.Error("failed to restart after max attempts, giving up", "workload", runConfig.BaseName, "maxRetries", maxRetries)
 				statusErr = d.statuses.SetWorkloadStatus(
 					ctx,
 					runConfig.BaseName,
@@ -471,13 +471,13 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 					"Failed to restart after container exit",
 				)
 				if statusErr != nil {
-					slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
+					slog.Warn("failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
 				}
 				return fmt.Errorf("container restart failed after %d attempts", maxRetries)
 			}
 
 			// Some other error - don't retry
-			slog.Error("Workload failed with error", "workload", runConfig.BaseName, "error", err)
+			slog.Error("workload failed with error", "workload", runConfig.BaseName, "error", err)
 			if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 				slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
 			}
@@ -542,15 +542,15 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// #nosec G304 - This is safe as baseName is generated by the application
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		slog.Info("Failed to create log file", "error", err)
+		slog.Info("failed to create log file", "error", err)
 	} else {
 		defer func() {
 			if err := logFile.Close(); err != nil {
-				slog.Warn("Failed to close log file", "error", err)
+				slog.Warn("failed to close log file", "error", err)
 			}
 		}()
 		// Keeping this log at INFO level until https://github.com/stacklok/toolhive/issues/3377 is fixed
-		slog.Info("Logging to", "path", logFilePath)
+		slog.Info("logging to", "path", logFilePath)
 	}
 
 	// Use the start command to start the detached process
@@ -614,10 +614,10 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 
 	// Write the PID to a file so the stop command can kill the process
 	if err := d.statuses.SetWorkloadPID(ctx, runConfig.BaseName, detachedCmd.Process.Pid); err != nil {
-		slog.Warn("Failed to set workload PID", "workload", runConfig.BaseName, "error", err)
+		slog.Warn("failed to set workload PID", "workload", runConfig.BaseName, "error", err)
 	}
 
-	slog.Debug("MCP server is running in the background", "pid", detachedCmd.Process.Pid)
+	slog.Debug("mcp server is running in the background", "pid", detachedCmd.Process.Pid)
 
 	return nil
 }
@@ -714,11 +714,11 @@ func (d *DefaultManager) deleteWorkload(ctx context.Context, name string) error 
 
 // deleteRemoteWorkload handles deletion of a remote workload
 func (d *DefaultManager) deleteRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) error {
-	slog.Debug("Removing remote workload", "workload", name)
+	slog.Debug("removing remote workload", "workload", name)
 
 	// Set status to removing
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, ""); err != nil {
-		slog.Warn("Failed to set workload status to removing", "workload", name, "error", err)
+		slog.Warn("failed to set workload status to removing", "workload", name, "error", err)
 		return err
 	}
 
@@ -735,7 +735,7 @@ func (d *DefaultManager) deleteRemoteWorkload(ctx context.Context, name string, 
 		return fmt.Errorf("failed to delete workload status for %s: %v", name, err)
 	}
 
-	slog.Debug("Remote workload removed", "workload", name)
+	slog.Debug("remote workload removed", "workload", name)
 	return nil
 }
 
@@ -750,7 +750,7 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 
 	// Set status to removing
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, ""); err != nil {
-		slog.Warn("Failed to set workload status to removing", "workload", name, "error", err)
+		slog.Warn("failed to set workload status to removing", "workload", name, "error", err)
 	}
 
 	// Determine baseName and isAuxiliary for cleanup (needed even if container doesn't exist)
@@ -771,7 +771,7 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 		// Use the workload name as baseName (they're typically the same)
 		baseName = name
 		isAuxiliary = false
-		slog.Debug("Container not found for workload, proceeding with state cleanup", "workload", name)
+		slog.Debug("container not found for workload, proceeding with state cleanup", "workload", name)
 	}
 
 	// Stop proxy-runner process AFTER container removal to prevent recreation
@@ -779,7 +779,7 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 	if !isAuxiliary {
 		d.stopProxyIfNeeded(ctx, name, baseName)
 	} else {
-		slog.Debug("Skipping proxy-runner stop for auxiliary workload", "workload", name)
+		slog.Debug("skipping proxy-runner stop for auxiliary workload", "workload", name)
 	}
 
 	// Clean up associated resources (must happen even if container doesn't exist)
@@ -799,7 +799,7 @@ func (d *DefaultManager) getWorkloadContainer(ctx context.Context, name string) 
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			// Log but don't fail the entire operation for not found containers
-			slog.Warn("Failed to get workload", "workload", name, "error", err)
+			slog.Warn("failed to get workload", "workload", name, "error", err)
 			return nil, nil
 		}
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
@@ -835,34 +835,34 @@ func (d *DefaultManager) isSupervisorProcessAlive(ctx context.Context, name stri
 // stopProcess stops the proxy process associated with the container
 func (d *DefaultManager) stopProcess(ctx context.Context, name string) {
 	if name == "" {
-		slog.Warn("Could not find base container name in labels")
+		slog.Warn("could not find base container name in labels")
 		return
 	}
 
 	// Try to read the PID and kill the process
 	pid, err := d.statuses.GetWorkloadPID(ctx, name)
 	if err != nil {
-		slog.Debug("No PID found, proxy may not be running in detached mode", "workload", name)
+		slog.Debug("no PID found, proxy may not be running in detached mode", "workload", name)
 		return
 	}
 
 	// PID found, try to kill the process
-	slog.Debug("Stopping proxy process", "pid", pid)
+	slog.Debug("stopping proxy process", "pid", pid)
 	if err := process.KillProcess(pid); err != nil {
-		slog.Debug("Failed to kill proxy process", "error", err)
+		slog.Debug("failed to kill proxy process", "error", err)
 	} else {
-		slog.Debug("Proxy process stopped")
+		slog.Debug("proxy process stopped")
 	}
 
 	// Remove the PID of the terminated process
 	if err := d.statuses.ResetWorkloadPID(ctx, name); err != nil {
-		slog.Warn("Failed to reset workload PID", "workload", name, "error", err)
+		slog.Warn("failed to reset workload PID", "workload", name, "error", err)
 	}
 }
 
 // stopProxyIfNeeded stops the proxy process if the workload has a base name
 func (d *DefaultManager) stopProxyIfNeeded(ctx context.Context, name, baseName string) {
-	slog.Debug("Removing proxy process", "workload", name)
+	slog.Debug("removing proxy process", "workload", name)
 	if baseName != "" {
 		d.stopProcess(ctx, baseName)
 	}
@@ -870,7 +870,7 @@ func (d *DefaultManager) stopProxyIfNeeded(ctx context.Context, name, baseName s
 
 // removeContainer removes the container from the runtime
 func (d *DefaultManager) removeContainer(ctx context.Context, name string) error {
-	slog.Debug("Removing container", "workload", name)
+	slog.Debug("removing container", "workload", name)
 	if err := d.runtime.RemoveWorkload(ctx, name); err != nil {
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 			slog.Warn("Failed to set workload status to error", "workload", name, "error", statusErr)
@@ -887,11 +887,11 @@ func (d *DefaultManager) removeContainer(ctx context.Context, name string) error
 		if err != nil {
 			if errors.Is(err, rt.ErrWorkloadNotFound) {
 				// Container is gone, deletion complete
-				slog.Debug("Container removed from runtime", "workload", name)
+				slog.Debug("container removed from runtime", "workload", name)
 				return nil
 			}
 			// Some other error occurred
-			slog.Warn("Error checking container status during removal", "error", err)
+			slog.Warn("error checking container status during removal", "error", err)
 			return fmt.Errorf("failed to verify container removal: %w", err)
 		}
 		// Container still exists, wait and retry
@@ -914,28 +914,28 @@ func (d *DefaultManager) cleanupWorkloadResources(ctx context.Context, name, bas
 
 	// Clean up temporary permission profile
 	if err := d.cleanupTempPermissionProfile(ctx, baseName); err != nil {
-		slog.Warn("Failed to cleanup temporary permission profile", "error", err)
+		slog.Warn("failed to cleanup temporary permission profile", "error", err)
 	}
 
 	// Remove client configurations
 	if err := removeClientConfigurations(name, isAuxiliary); err != nil {
-		slog.Warn("Failed to remove client configurations", "error", err)
+		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
-		slog.Debug("Client configurations removed", "workload", name)
+		slog.Debug("client configurations removed", "workload", name)
 	}
 
 	// Delete the saved state last (skip for auxiliary workloads that don't have run configs)
 	if !isAuxiliary {
 		if err := state.DeleteSavedRunConfig(ctx, baseName); err != nil {
-			slog.Warn("Failed to delete saved state", "error", err)
+			slog.Warn("failed to delete saved state", "error", err)
 		} else {
-			slog.Debug("Saved state removed", "workload", baseName)
+			slog.Debug("saved state removed", "workload", baseName)
 		}
 	} else {
-		slog.Debug("Skipping saved state deletion for auxiliary workload", "workload", name)
+		slog.Debug("skipping saved state deletion for auxiliary workload", "workload", name)
 	}
 
-	slog.Debug("Container removed", "workload", name)
+	slog.Debug("container removed", "workload", name)
 }
 
 // DeleteWorkloads deletes the specified workloads by name.
@@ -998,23 +998,23 @@ func (d *DefaultManager) updateSingleWorkload(ctx context.Context, workloadName 
 	childCtx, cancel := context.WithTimeout(ctx, AsyncOperationTimeout)
 	defer cancel()
 
-	slog.Info("Starting update for workload", "workload", workloadName)
+	slog.Info("starting update for workload", "workload", workloadName)
 
 	// Stop the existing workload
 	if err := d.stopSingleWorkload(childCtx, workloadName); err != nil {
 		return fmt.Errorf("failed to stop workload: %w", err)
 	}
-	slog.Debug("Stopped workload", "workload", workloadName)
+	slog.Debug("stopped workload", "workload", workloadName)
 
 	// Delete the existing workload
 	if err := d.deleteWorkload(childCtx, workloadName); err != nil {
 		return fmt.Errorf("failed to delete workload: %w", err)
 	}
-	slog.Debug("Deleted workload", "workload", workloadName)
+	slog.Debug("deleted workload", "workload", workloadName)
 
 	// Save the new workload configuration state
 	if err := newConfig.SaveState(childCtx); err != nil {
-		slog.Error("Failed to save workload config", "error", err)
+		slog.Error("failed to save workload config", "error", err)
 		return fmt.Errorf("failed to save workload config: %w", err)
 	}
 
@@ -1025,7 +1025,7 @@ func (d *DefaultManager) updateSingleWorkload(ctx context.Context, workloadName 
 		return fmt.Errorf("failed to start new workload: %w", err)
 	}
 
-	slog.Debug("Completed update for workload", "workload", workloadName)
+	slog.Debug("completed update for workload", "workload", workloadName)
 	return nil
 }
 
@@ -1092,16 +1092,16 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 
 		if supervisorAlive {
 			// Workload is running and healthy - preserve old behavior (no-op)
-			slog.Debug("Remote workload is already running", "workload", name)
+			slog.Debug("remote workload is already running", "workload", name)
 			return nil, nil
 		}
 
 		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
-		slog.Debug("Remote workload is running but supervisor is dead, cleaning up before restart", "workload", name)
+		slog.Debug("remote workload is running but supervisor is dead, cleaning up before restart", "workload", name)
 
 		// Set status to stopping
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
-			slog.Debug("Failed to set workload status to stopping", "workload", name, "error", err)
+			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 		}
 
 		// Stop the supervisor process (proxy) if it exists (may already be dead)
@@ -1110,12 +1110,12 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 
 		// Clean up client configurations
 		if err := removeClientConfigurations(name, false); err != nil {
-			slog.Warn("Failed to remove client configurations", "error", err)
+			slog.Warn("failed to remove client configurations", "error", err)
 		}
 
 		// Set status to stopped after cleanup is complete
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
-			slog.Debug("Failed to set workload status to stopped", "workload", name, "error", err)
+			slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
 		}
 	}
 
@@ -1130,7 +1130,7 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 		slog.Warn("Failed to set workload status to starting", "workload", name, "error", err)
 	}
 
-	slog.Debug("Loaded configuration from state", "workload", runConfig.BaseName)
+	slog.Debug("loaded configuration from state", "workload", runConfig.BaseName)
 	return mcpRunner, nil
 }
 
@@ -1189,12 +1189,12 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 
 		if supervisorAlive {
 			// Workload is running and healthy - preserve old behavior (no-op)
-			slog.Debug("Workload is already running", "workload", workloadName)
+			slog.Debug("workload is already running", "workload", workloadName)
 			return "", nil, nil
 		}
 
 		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
-		slog.Debug("Workload is running but supervisor is dead, cleaning up before restart", "workload", workloadName)
+		slog.Debug("workload is running but supervisor is dead, cleaning up before restart", "workload", workloadName)
 	}
 
 	// Check if we need to stop the workload before restarting
@@ -1210,7 +1210,7 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 
 	// If we need to stop, do it now (including cleanup of any remaining supervisor process)
 	if shouldStop {
-		slog.Debug("Stopping workload before restart", "workload", workloadName)
+		slog.Debug("stopping workload before restart", "workload", workloadName)
 
 		// Set status to stopping
 		if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStopping, ""); err != nil {
@@ -1231,12 +1231,12 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 				}
 				return "", nil, fmt.Errorf("failed to stop container %s: %w", containerName, err)
 			}
-			slog.Debug("Workload stopped", "workload", workloadName)
+			slog.Debug("workload stopped", "workload", workloadName)
 		}
 
 		// Clean up client configurations
 		if err := removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
-			slog.Warn("Failed to remove client configurations", "error", err)
+			slog.Warn("failed to remove client configurations", "error", err)
 		}
 
 		// Set status to stopped after cleanup is complete
@@ -1262,7 +1262,7 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 
 // startWorkload starts the workload in either foreground or background mode
 func (d *DefaultManager) startWorkload(ctx context.Context, name string, mcpRunner *runner.Runner, foreground bool) error {
-	slog.Debug("Starting tooling server", "workload", name)
+	slog.Debug("starting tooling server", "workload", name)
 
 	var err error
 	if foreground {
@@ -1289,7 +1289,7 @@ func removeClientConfigurations(containerName string, isAuxiliary bool) error {
 	if err != nil {
 		// Only warn for non-auxiliary workloads since auxiliary workloads don't have run configs
 		if !isAuxiliary {
-			slog.Warn("Failed to load run config, will use backward compatible behavior", "workload", containerName, "error", err)
+			slog.Warn("failed to load run config, will use backward compatible behavior", "workload", containerName, "error", err)
 		}
 		// Continue with empty group (backward compatibility)
 	} else {
@@ -1298,7 +1298,7 @@ func removeClientConfigurations(containerName string, isAuxiliary bool) error {
 
 	clientManager, err := client.NewManager(context.Background())
 	if err != nil {
-		slog.Warn("Failed to create client manager, skipping client config removal", "workload", containerName, "error", err)
+		slog.Warn("failed to create client manager, skipping client config removal", "workload", containerName, "error", err)
 		return nil
 	}
 
@@ -1342,7 +1342,7 @@ func (*DefaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 	runConfig, err := runner.LoadState(ctx, baseName)
 	if err != nil {
 		// If we can't load the state, there's nothing to clean up
-		slog.Debug("Could not load state, skipping permission profile cleanup", "workload", baseName, "error", err)
+		slog.Debug("could not load state, skipping permission profile cleanup", "workload", baseName, "error", err)
 		return nil
 	}
 
@@ -1364,12 +1364,12 @@ func (d *DefaultManager) stopSingleContainerWorkload(ctx context.Context, worklo
 	name := labels.GetContainerBaseName(workload.Labels)
 	// Stop the proxy process (skip for auxiliary workloads like inspector)
 	if labels.IsAuxiliaryWorkload(workload.Labels) {
-		slog.Debug("Skipping proxy stop for auxiliary workload", "workload", name)
+		slog.Debug("skipping proxy stop for auxiliary workload", "workload", name)
 	} else {
 		d.stopProcess(ctx, name)
 	}
 
-	slog.Debug("Stopping containers", "workload", name)
+	slog.Debug("stopping containers", "workload", name)
 	// Stop the container
 	if err := d.runtime.StopWorkload(childCtx, workload.Name); err != nil {
 		if statusErr := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
@@ -1379,9 +1379,9 @@ func (d *DefaultManager) stopSingleContainerWorkload(ctx context.Context, worklo
 	}
 
 	if err := removeClientConfigurations(name, labels.IsAuxiliaryWorkload(workload.Labels)); err != nil {
-		slog.Warn("Failed to remove client configurations", "error", err)
+		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
-		slog.Debug("Client configurations removed", "workload", name)
+		slog.Debug("client configurations removed", "workload", name)
 	}
 
 	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStopped, ""); err != nil {
@@ -1407,7 +1407,7 @@ func (*DefaultManager) MoveToGroup(ctx context.Context, workloadNames []string, 
 
 		// Check if the workload is actually in the specified group
 		if runnerConfig.Group != groupFrom {
-			slog.Debug("Workload is not in group, skipping",
+			slog.Debug("workload is not in group, skipping",
 				"workload", workloadName, "expectedGroup", groupFrom, "currentGroup", runnerConfig.Group)
 			continue
 		}
@@ -1464,7 +1464,7 @@ func (*DefaultManager) ListWorkloadsUsingSecret(ctx context.Context, secretName 
 		runConfig, err := runner.LoadState(ctx, name)
 		if err != nil {
 			// Skip configs we can't load - they may be corrupted or from an older version
-			slog.Debug("Failed to load state", "workload", name, "error", err)
+			slog.Debug("failed to load state", "workload", name, "error", err)
 			continue
 		}
 
@@ -1520,7 +1520,7 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 		// Load the run configuration
 		runConfig, err := runner.LoadState(ctx, name)
 		if err != nil {
-			slog.Warn("Failed to load state", "workload", name, "error", err)
+			slog.Warn("failed to load state", "workload", name, "error", err)
 			continue
 		}
 
@@ -1532,7 +1532,7 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 		// Check the status from the status file
 		workloadStatus, err := d.statuses.GetWorkload(ctx, name)
 		if err != nil {
-			slog.Warn("Failed to get status for remote workload", "workload", name, "error", err)
+			slog.Warn("failed to get status for remote workload", "workload", name, "error", err)
 			continue
 		}
 

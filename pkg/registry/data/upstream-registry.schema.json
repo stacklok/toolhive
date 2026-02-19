@@ -76,6 +76,13 @@
               }
             }
           }
+        },
+        "skills": {
+          "type": "array",
+          "description": "Array of skills in the registry",
+          "items": {
+            "$ref": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/skill.schema.json"
+          }
         }
       }
     }

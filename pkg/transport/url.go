@@ -6,9 +6,9 @@ package transport
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/streamable"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -50,7 +50,7 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 	if remoteURL != "" {
 		targetURL, err := url.Parse(remoteURL)
 		if err != nil {
-			logger.Errorf("Failed to parse target URI: %v", err)
+			slog.Error("failed to parse target URI", "error", err)
 			return ""
 		}
 

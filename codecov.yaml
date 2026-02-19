@@ -3,7 +3,6 @@ coverage:
     - "cmd/help/"
     - "cmd/thv/"
     - "cmd/thv-proxyrunner/"
-    - "cmd/regup/"
     - "containers/egress-proxy"
     - "docs/"
     - "examples/"

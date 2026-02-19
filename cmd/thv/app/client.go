@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -15,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -248,7 +248,7 @@ func registerClientsWithGroups(
 	clientManager client.Manager,
 	runningWorkloads []core.Workload,
 ) error {
-	logger.Debugf("Filtering workloads to groups: %v\n", groupNames)
+	slog.Debug(fmt.Sprintf("Filtering workloads to groups: %v", groupNames))
 
 	groupManager, err := groups.NewManager()
 	if err != nil {
@@ -290,7 +290,7 @@ func registerClientsGlobally(
 		err := config.UpdateConfig(func(c *config.Config) {
 			for _, registeredClient := range c.Clients.RegisteredClients {
 				if registeredClient == string(clientToRegister.Name) {
-					logger.Debugf("Client %s is already registered, skipping...\n", clientToRegister.Name)
+					slog.Debug(fmt.Sprintf("Client %s is already registered, skipping...", clientToRegister.Name))
 					return
 				}
 			}
@@ -301,7 +301,7 @@ func registerClientsGlobally(
 			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
 		}
 
-		logger.Debugf("Successfully registered client: %s\n", clientToRegister.Name)
+		slog.Debug(fmt.Sprintf("Successfully registered client: %s", clientToRegister.Name))
 	}
 
 	// Add the workloads to the client's configuration file
@@ -349,7 +349,7 @@ func removeClientFromGroups(
 	groupManager groups.Manager,
 	clientManager client.Manager,
 ) error {
-	logger.Debugf("Filtering workloads to groups: %v\n", groupNames)
+	slog.Debug(fmt.Sprintf("Filtering workloads to groups: %v", groupNames))
 
 	// Remove client from specific groups only
 	filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
@@ -369,7 +369,7 @@ func removeClientFromGroups(
 		return fmt.Errorf("failed to unregister client from groups: %w", err)
 	}
 
-	logger.Debugf("Successfully removed client %s from groups: %v\n", clientToRemove.Name, groupNames)
+	slog.Debug(fmt.Sprintf("Successfully removed client %s from groups: %v", clientToRemove.Name, groupNames))
 
 	return nil
 }
@@ -411,7 +411,7 @@ func removeClientGlobally(
 			if registeredClient == string(clientToRemove.Name) {
 				// Remove client from slice
 				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-				logger.Debugf("Successfully unregistered client: %s\n", clientToRemove.Name)
+				slog.Debug(fmt.Sprintf("Successfully unregistered client: %s", clientToRemove.Name))
 				return
 			}
 		}

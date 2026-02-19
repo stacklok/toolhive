@@ -5,12 +5,12 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container/images"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -90,7 +90,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Parse build arguments using os.Args to find everything after --
 	buildArgs := parseCommandArguments(os.Args)
-	logger.Debugf("Build args: %v", buildArgs)
+	slog.Debug(fmt.Sprintf("Build args: %v", buildArgs)) // #nosec G706 -- buildArgs are CLI arguments we control
 
 	// Create image manager (even for dry-run, we pass it but it won't be used)
 	imageManager := images.NewImageManager(ctx)
@@ -105,10 +105,11 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 		// Write to output file if specified
 		if buildFlags.Output != "" {
+			// #nosec G703 -- buildFlags.Output is a user-provided CLI flag for output path
 			if err := os.WriteFile(buildFlags.Output, []byte(dockerfileContent), 0600); err != nil {
 				return fmt.Errorf("failed to write Dockerfile to %s: %w", buildFlags.Output, err)
 			}
-			logger.Debugf("Dockerfile written to: %s", buildFlags.Output)
+			slog.Debug(fmt.Sprintf("Dockerfile written to: %s", buildFlags.Output))
 		} else {
 			// Output to stdout
 			fmt.Print(dockerfileContent)
@@ -116,7 +117,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	logger.Debugf("Building container for protocol scheme: %s", protocolScheme)
+	slog.Debug(fmt.Sprintf("Building container for protocol scheme: %s", protocolScheme))
 
 	// Build the image using the new protocol handler with custom name
 	imageName, err := runner.BuildFromProtocolSchemeWithName(
@@ -126,7 +127,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Keep this log at INFO level so users see the generated image name and tag
-	logger.Infof("Successfully built container image: %s", imageName)
+	slog.Info(fmt.Sprintf("Successfully built container image: %s", imageName)) // #nosec G706 -- imageName is from our build process
 
 	return nil
 }

@@ -30,12 +30,20 @@ const RecommendedMaxSkillMDLines = 500
 // ValidateSkillDir validates a skill directory at the given path.
 // I/O errors are returned as error; validation issues are returned in ValidationResult.
 func ValidateSkillDir(path string) (*ValidationResult, error) {
+	// Defense-in-depth: sanitize and validate the path before any filesystem access.
+	// The caller (skillsvc.Validate) also validates via validateLocalPath, but we
+	// re-check here because ValidateSkillDir is exported and may be called directly.
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("path must be absolute, got %q", path)
+	}
+
 	var errs []string
 	var warnings []string
 
 	// Check SKILL.md exists
-	skillMDPath := filepath.Join(filepath.Clean(path), "SKILL.md")
-	content, err := os.ReadFile(skillMDPath) //nolint:gosec // path is validated by caller
+	skillMDPath := filepath.Join(path, "SKILL.md")
+	content, err := os.ReadFile(skillMDPath) //#nosec G304 -- path is cleaned and validated as absolute above
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &ValidationResult{
@@ -47,7 +55,7 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 	}
 
 	// Check for symlinks and path traversal in a single walk
-	if err := checkFilesystem(path); err != nil {
+	if err := CheckFilesystem(path); err != nil {
 		errs = append(errs, err.Error())
 	}
 
@@ -62,7 +70,7 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 	}
 
 	// Validate parsed fields
-	errs = append(errs, validateFields(result, filepath.Base(filepath.Clean(path)))...)
+	errs = append(errs, validateFields(result, filepath.Base(path))...)
 
 	// Collect warnings
 	warnings = append(warnings, collectWarnings(result, content)...)
@@ -141,8 +149,8 @@ func ValidateSkillName(name string) error {
 	return nil
 }
 
-// checkFilesystem walks the directory once, checking for symlinks and path traversal.
-func checkFilesystem(path string) error {
+// CheckFilesystem walks the directory once, checking for symlinks and path traversal.
+func CheckFilesystem(path string) error {
 	return filepath.WalkDir(path, func(p string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip inaccessible paths

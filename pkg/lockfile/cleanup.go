@@ -5,14 +5,13 @@
 package lockfile
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/gofrs/flock"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 var (
@@ -49,11 +48,11 @@ func (lr *lockRegistry) CleanupAll() {
 
 	for lockPath, lock := range lr.locks {
 		if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
-			logger.Warnf("failed to unlock file %s: %v", lockPath, err)
+			slog.Warn("failed to unlock file", "path", lockPath, "error", err)
 		}
 
 		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
-			logger.Warnf("failed to remove lock file %s: %v", lockPath, err)
+			slog.Warn("failed to remove lock file", "path", lockPath, "error", err)
 		}
 	}
 
@@ -71,11 +70,11 @@ func NewTrackedLock(lockPath string) *flock.Flock {
 // ReleaseTrackedLock unlocks, removes, and unregisters a lock file
 func ReleaseTrackedLock(lockPath string, lock *flock.Flock) {
 	if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
-		logger.Warnf("failed to unlock file %s: %v", lockPath, err)
+		slog.Warn("failed to unlock file", "path", lockPath, "error", err)
 	}
 
 	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
-		logger.Warnf("failed to remove lock file %s: %v", lockPath, err)
+		slog.Warn("failed to remove lock file", "path", lockPath, "error", err)
 	}
 
 	globalRegistry.UnregisterLock(lockPath)
@@ -94,7 +93,7 @@ func CleanupStaleLocks(directories []string, maxAge time.Duration) {
 	for _, dir := range directories {
 		matches, err := filepath.Glob(filepath.Join(dir, "*.lock"))
 		if err != nil {
-			logger.Warnf("failed to glob lock files in %s: %v", dir, err)
+			slog.Warn("failed to glob lock files", "dir", dir, "error", err)
 			continue
 		}
 
@@ -110,12 +109,12 @@ func CleanupStaleLocks(directories []string, maxAge time.Duration) {
 				if locked, err := lock.TryLock(); err == nil && locked {
 					// Lock was acquired, so it was stale
 					if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
-						logger.Warnf("failed to unlock stale lock file %s: %v", lockFile, err)
+						slog.Warn("failed to unlock stale lock file", "path", lockFile, "error", err)
 					}
 					if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
-						logger.Warnf("failed to remove stale lock file %s: %v", lockFile, err)
+						slog.Warn("failed to remove stale lock file", "path", lockFile, "error", err)
 					} else {
-						logger.Debugf("removed stale lock file: %s", lockFile)
+						slog.Debug("removed stale lock file", "path", lockFile)
 					}
 				}
 			}

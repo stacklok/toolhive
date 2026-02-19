@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -21,7 +22,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
@@ -315,7 +315,7 @@ func BuildRunnerConfig(
 	}
 
 	if runFlags.RemoteURL != "" {
-		logger.Debugf("Attempting to run remote MCP server: %s", runFlags.RemoteURL)
+		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
 			nil, envVarValidator, oidcConfig, telemetryConfig)
 	}
@@ -1018,7 +1018,7 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 	customAttrs, err := telemetry.ParseCustomAttributes(otelCustomAttributes)
 	if err != nil {
 		// Log the error but don't fail - telemetry is optional
-		logger.Warnf("Failed to parse custom attributes: %v", err)
+		slog.Warn(fmt.Sprintf("Failed to parse custom attributes: %v", err))
 		customAttrs = nil
 	}
 

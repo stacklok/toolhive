@@ -17,14 +17,10 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestResponseFilteringWriter(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger for tests
-	logger.Initialize()
 
 	// Create a Cedar authorizer with specific tool permissions
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{

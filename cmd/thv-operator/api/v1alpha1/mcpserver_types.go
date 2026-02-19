@@ -530,7 +530,7 @@ type InlineOIDCConfig struct {
 	// ClientSecret is the client secret for introspection (optional)
 	// Deprecated: Use ClientSecretRef instead for better security
 	// +optional
-	ClientSecret string `json:"clientSecret,omitempty"`
+	ClientSecret string `json:"clientSecret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
 	// If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence

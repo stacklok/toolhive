@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -24,9 +25,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/streamable"
@@ -187,7 +186,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		logger.Debug("Streamable HTTP proxy started, processing messages...")
+		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
 			t.host,
@@ -199,7 +198,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		logger.Debug("HTTP SSE proxy started, processing messages...")
+		slog.Debug("http SSE proxy started, processing messages")
 	default:
 		return fmt.Errorf("unsupported proxy mode: %v", t.proxyMode)
 	}
@@ -262,14 +261,14 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 	// Stop the HTTP proxy
 	if t.httpProxy != nil {
 		if err := t.httpProxy.Stop(ctx); err != nil {
-			logger.Warnf("Warning: Failed to stop HTTP proxy: %v", err)
+			slog.Warn("failed to stop HTTP proxy", "error", err)
 		}
 	}
 
 	// Close stdin and stdout if they're open
 	if t.stdin != nil {
 		if err := t.stdin.Close(); err != nil {
-			logger.Warnf("Warning: Failed to close stdin: %v", err)
+			slog.Warn("failed to close stdin", "error", err)
 		}
 		t.stdin = nil
 	}
@@ -280,11 +279,11 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		running, err := t.deployer.IsWorkloadRunning(ctx, t.containerName)
 		if err != nil {
 			// If there's an error checking the workload status, it might be gone already
-			logger.Warnf("Warning: Failed to check workload status: %v", err)
+			slog.Warn("failed to check workload status", "error", err)
 		} else if running {
 			// Only try to stop the workload if it's still running
 			if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
-				logger.Warnf("Warning: Failed to stop workload: %v", err)
+				slog.Warn("failed to stop workload", "error", err)
 			}
 		}
 	}
@@ -382,15 +381,15 @@ func (t *StdioTransport) processMessages(ctx context.Context, _ io.WriteCloser, 
 		case <-ctx.Done():
 			return
 		case msg := <-messageCh:
-			logger.Debug("Processing incoming message and sending to container")
+			slog.Debug("processing incoming message and sending to container")
 			// Use t.stdin instead of parameter so it uses the current stdin after re-attachment
 			t.mutex.Lock()
 			currentStdin := t.stdin
 			t.mutex.Unlock()
 			if err := t.sendMessageToContainer(ctx, currentStdin, msg); err != nil {
-				logger.Errorf("Error sending message to container: %v", err)
+				slog.Error("error sending message to container", "error", err)
 			}
-			logger.Debug("Message processed")
+			slog.Debug("message processed")
 		}
 	}
 }
@@ -426,32 +425,36 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		if checkErr != nil {
 			// Check if error is due to Docker being unavailable
 			if isDockerSocketError(checkErr) {
-				logger.Warnf("Docker socket unavailable (attempt %d/%d), will retry: %v", attemptCount, maxRetries, checkErr)
+				slog.Warn("docker socket unavailable, will retry",
+					"attempt", attemptCount, "max_retries", maxRetries, "error", checkErr)
 				return nil, checkErr // Retry
 			}
-			logger.Warnf("Error checking if container is running (attempt %d/%d): %v", attemptCount, maxRetries, checkErr)
+			slog.Warn("error checking if container is running",
+				"attempt", attemptCount, "max_retries", maxRetries, "error", checkErr)
 			return nil, checkErr // Retry
 		}
 
 		if !running {
-			logger.Infof("Container not running (attempt %d/%d)", attemptCount, maxRetries)
+			slog.Info("container not running",
+				"attempt", attemptCount, "max_retries", maxRetries)
 			return nil, backoff.Permanent(fmt.Errorf("container not running"))
 		}
 
-		logger.Warn("Container is still running after stdout EOF - attempting to re-attach")
+		slog.Warn("container is still running after stdout EOF, attempting to re-attach")
 
 		// Try to re-attach to the container
 		newStdin, newStdout, attachErr := t.deployer.AttachToWorkload(ctx, t.containerName)
 		if attachErr != nil {
-			logger.Errorf("Failed to re-attach to container (attempt %d/%d): %v", attemptCount, maxRetries, attachErr)
+			slog.Error("failed to re-attach to container",
+				"attempt", attemptCount, "max_retries", maxRetries, "error", attachErr)
 			return nil, attachErr // Retry
 		}
 
-		logger.Debug("Successfully re-attached to container - restarting message processing")
+		slog.Debug("successfully re-attached to container, restarting message processing")
 
 		// Close old stdout and log any errors
 		if closeErr := stdout.Close(); closeErr != nil {
-			logger.Warnf("Error closing old stdout during re-attachment: %v", closeErr)
+			slog.Warn("error closing old stdout during re-attachment", "error", closeErr)
 		}
 
 		// Update stdio references with proper synchronization
@@ -463,7 +466,7 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		// Start ONLY the stdout reader, not the full processMessages
 		// The existing processMessages goroutine is still running and handling stdin
 		go t.processStdout(ctx, newStdout)
-		logger.Debug("Restarted stdout processing with new pipe")
+		slog.Debug("restarted stdout processing with new pipe")
 		return nil, nil // Success
 	}
 
@@ -473,15 +476,16 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		backoff.WithBackOff(expBackoff),
 		backoff.WithMaxTries(uint(maxRetries)), // #nosec G115
 		backoff.WithNotify(func(_ error, duration time.Duration) {
-			logger.Infof("Retry attempt %d/%d after %v", attemptCount+1, maxRetries, duration)
+			slog.Info("retry attempt",
+				"attempt", attemptCount+1, "max_retries", maxRetries, "after", duration)
 		}),
 	)
 
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			logger.Warnf("Re-attachment cancelled or timed out: %v", err)
+			slog.Warn("re-attachment cancelled or timed out", "error", err)
 		} else {
-			logger.Warn("Failed to re-attach after all retry attempts")
+			slog.Warn("failed to re-attach after all retry attempts")
 		}
 		return false
 	}
@@ -506,16 +510,16 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 			n, err := stdout.Read(readBuffer)
 			if err != nil {
 				if err == io.EOF {
-					logger.Warn("Container stdout closed - checking if container is still running")
+					slog.Warn("container stdout closed, checking if container is still running")
 
 					// Try to re-attach to the container
 					if t.attemptReattachment(ctx, stdout) {
 						return
 					}
 
-					logger.Debug("Container stdout closed - exiting read loop")
+					slog.Debug("container stdout closed, exiting read loop")
 				} else {
-					logger.Errorf("Error reading from container stdout: %v", err)
+					slog.Error("error reading from container stdout", "error", err)
 				}
 				return
 			}
@@ -599,10 +603,11 @@ func isSpace(r rune) bool {
 
 // parseAndForwardJSONRPC parses a JSON-RPC message and forwards it.
 func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string) {
-	// Log the raw line for debugging
-	logger.Debugf("JSON-RPC raw: %s", line)
+	//nolint:gosec // G706: logging raw JSON-RPC data from container stdout
+	slog.Debug("JSON-RPC raw", "line", line)
 	jsonData := sanitizeJSONString(line)
-	logger.Debugf("Sanitized JSON: %s", jsonData)
+	//nolint:gosec // G706: logging sanitized JSON data from container stdout
+	slog.Debug("Sanitized JSON", "data", jsonData)
 
 	if jsonData == "" || jsonData == "[]" {
 		return
@@ -611,18 +616,17 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Try to parse the JSON
 	msg, err := jsonrpc2.DecodeMessage([]byte(jsonData))
 	if err != nil {
-		logger.Errorf("Error parsing JSON-RPC message: %v", err)
+		slog.Error("error parsing JSON-RPC message", "error", err)
 		return
 	}
 
-	// Log the message
-	logger.Debugf("Received JSON-RPC message: %T", msg)
+	slog.Debug("received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
 
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
 		if t.proxyMode == types.ProxyModeStreamableHTTP {
-			logger.Errorf("Error forwarding to streamable-http client: %v", err)
+			slog.Error("error forwarding to streamable-http client", "error", err)
 		} else {
-			logger.Errorf("Error forwarding to SSE clients: %v", err)
+			slog.Error("error forwarding to SSE clients", "error", err)
 		}
 	}
 }
@@ -639,11 +643,11 @@ func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer
 	data = append(data, '\n')
 
 	// Write to stdin
-	logger.Debug("Writing to container stdin")
+	slog.Debug("writing to container stdin")
 	if _, err := stdin.Write(data); err != nil {
 		return fmt.Errorf("failed to write to container stdin: %w", err)
 	}
-	logger.Debug("Wrote to container stdin")
+	slog.Debug("wrote to container stdin")
 
 	return nil
 }
@@ -656,7 +660,8 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 	case err, ok := <-t.errorCh:
 		// Check if the channel is closed
 		if !ok {
-			logger.Debugf("Container monitor channel closed for %s", t.containerName)
+			slog.Debug("container monitor channel closed",
+				"container", t.containerName)
 			return
 		}
 
@@ -665,20 +670,26 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 		t.containerExitErr = err
 		t.exitErrMutex.Unlock()
 
-		logger.Warnf("Container %s exited: %v", t.containerName, err)
+		//nolint:gosec // G706: logging container name from config
+		slog.Warn("container exited", "container", t.containerName, "error", err)
 
 		// Check if container was removed (not just exited) using typed error
-		if errors.Is(err, docker.ErrContainerRemoved) {
-			logger.Debugf("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+		if errors.Is(err, rt.ErrContainerRemoved) {
+			//nolint:gosec // G706: logging container name from config
+			slog.Debug("container was removed, stopping proxy and cleaning up",
+				"container", t.containerName)
 		} else {
-			logger.Debugf("Container %s exited. Will attempt automatic restart.", t.containerName)
+			//nolint:gosec // G706: logging container name from config
+			slog.Debug("container exited, will attempt automatic restart",
+				"container", t.containerName)
 		}
 
 		// Check if the transport is already stopped before trying to stop it
 		select {
 		case <-t.shutdownCh:
 			// Transport is already stopping or stopped
-			logger.Debugf("Transport for %s is already stopping or stopped", t.containerName)
+			slog.Debug("transport is already stopping or stopped",
+				"container", t.containerName)
 			return
 		default:
 			// Transport is still running, stop it
@@ -687,7 +698,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 			defer cancel()
 
 			if stopErr := t.Stop(stopCtx); stopErr != nil {
-				logger.Errorf("Error stopping transport after container exit: %v", stopErr)
+				slog.Error("error stopping transport after container exit", "error", stopErr)
 			}
 		}
 	}
@@ -704,5 +715,5 @@ func (t *StdioTransport) ShouldRestart() bool {
 	}
 
 	// Don't restart if container was removed (use typed error check)
-	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
+	return !errors.Is(t.containerExitErr, rt.ErrContainerRemoved)
 }

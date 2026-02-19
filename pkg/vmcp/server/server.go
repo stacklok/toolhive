@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -23,7 +24,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -314,7 +314,7 @@ func New(
 		if err != nil {
 			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
 		}
-		logger.Info("Workflow audit logging enabled")
+		slog.Info("workflow audit logging enabled")
 	}
 
 	// Create workflow engine (composer) for executing composite tools
@@ -360,13 +360,13 @@ func New(
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health monitor: %w", err)
 		}
-		logger.Infow("Health monitoring enabled",
+		slog.Info("health monitoring enabled",
 			"check_interval", cfg.HealthMonitorConfig.CheckInterval,
 			"unhealthy_threshold", cfg.HealthMonitorConfig.UnhealthyThreshold,
 			"timeout", cfg.HealthMonitorConfig.Timeout,
 			"degraded_threshold", cfg.HealthMonitorConfig.DegradedThreshold)
 	} else {
-		logger.Info("Health monitoring disabled")
+		slog.Info("health monitoring disabled")
 	}
 
 	// Create Server instance
@@ -396,22 +396,17 @@ func New(
 	return srv, nil
 }
 
-// Start starts the Virtual MCP Server and begins serving requests.
+// Handler builds and returns the MCP HTTP handler without starting a listener.
+// This enables embedding the vmcp server inside another HTTP server or framework.
 //
-//nolint:gocyclo // Complexity from health monitoring and middleware setup is acceptable
-func (s *Server) Start(ctx context.Context) error {
-	// Create optimizer store if optimizer is enabled
-	if s.config.OptimizerEnabled {
-		store, err := optimizer.NewSQLiteToolStore()
-		if err != nil {
-			return fmt.Errorf("failed to create optimizer store: %w", err)
-		}
-		s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
-			return store.Close()
-		})
-		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store)
-	}
-
+// The returned handler includes all routes (health, metrics, well-known, MCP)
+// and the full middleware chain (recovery, header validation, auth, audit,
+// discovery, backend enrichment, MCP parsing, telemetry).
+//
+// Each call builds a fresh handler. The method is safe to call multiple times.
+// All returned handlers share the same underlying MCPServer and SessionManager,
+// so callers should not serve concurrent traffic through multiple handlers.
+func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Create session adapter to expose ToolHive's session.Manager via SDK interface
 	// Sessions are ENTIRELY managed by ToolHive's session.Manager (storage, TTL, cleanup).
 	// The SDK only calls our Generate/Validate/Terminate methods during MCP protocol flows.
@@ -439,9 +434,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.config.TelemetryProvider != nil {
 		if prometheusHandler := s.config.TelemetryProvider.PrometheusHandler(); prometheusHandler != nil {
 			mux.Handle("/metrics", prometheusHandler)
-			logger.Info("Prometheus metrics endpoint enabled at /metrics")
+			slog.Info("prometheus metrics endpoint enabled at /metrics")
 		} else {
-			logger.Warn("Prometheus metrics endpoint is not enabled, but telemetry provider is configured")
+			slog.Warn("prometheus metrics endpoint is not enabled, but telemetry provider is configured")
 		}
 	}
 
@@ -449,7 +444,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
 	if wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler); wellKnownHandler != nil {
 		mux.Handle("/.well-known/", wellKnownHandler)
-		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
+		slog.Info("rFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
@@ -460,7 +455,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
-		logger.Info("Telemetry middleware enabled for MCP endpoints")
+		slog.Info("telemetry middleware enabled for MCP endpoints")
 	}
 
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
@@ -472,7 +467,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// This runs after discovery populates the routing table, so it can extract backend names
 	if s.config.AuditConfig != nil {
 		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
-		logger.Info("Backend enrichment middleware enabled for audit events")
+		slog.Info("backend enrichment middleware enabled for audit events")
 	}
 
 	// Apply discovery middleware (runs after audit/auth middleware)
@@ -480,33 +475,37 @@ func (s *Server) Start(ctx context.Context) error {
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
 	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
 	// Pass health monitor to enable filtering based on current health status (respects circuit breaker)
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
 	var healthStatusProvider health.StatusProvider
-	if s.healthMonitor != nil {
-		healthStatusProvider = s.healthMonitor
+	if healthMon != nil {
+		healthStatusProvider = healthMon
 	}
 	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider)(mcpHandler)
-	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
+	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
 	if s.config.AuditConfig != nil {
 		if err := s.config.AuditConfig.Validate(); err != nil {
-			return fmt.Errorf("invalid audit configuration: %w", err)
+			return nil, fmt.Errorf("invalid audit configuration: %w", err)
 		}
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport
 		)
 		if err != nil {
-			return fmt.Errorf("failed to create auditor: %w", err)
+			return nil, fmt.Errorf("failed to create auditor: %w", err)
 		}
 		mcpHandler = auditor.Middleware(mcpHandler)
-		logger.Info("Audit middleware enabled for MCP endpoints")
+		slog.Info("audit middleware enabled for MCP endpoints")
 	}
 
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
-		logger.Info("Authentication middleware enabled for MCP endpoints")
+		slog.Info("authentication middleware enabled for MCP endpoints")
 	}
 
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
@@ -514,15 +513,40 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Apply recovery middleware as outermost (catches panics from all inner middleware)
 	mcpHandler = recovery.Middleware(mcpHandler)
-	logger.Info("Recovery middleware enabled for MCP endpoints")
+	slog.Info("recovery middleware enabled for MCP endpoints")
 
 	mux.Handle("/", mcpHandler)
+
+	return mux, nil
+}
+
+// Start starts the Virtual MCP Server and begins serving requests.
+//
+//nolint:gocyclo // Complexity from health monitoring and startup orchestration is acceptable
+func (s *Server) Start(ctx context.Context) error {
+	// Create optimizer store if optimizer is enabled
+	if s.config.OptimizerEnabled {
+		store, err := optimizer.NewSQLiteToolStore(nil)
+		if err != nil {
+			return fmt.Errorf("failed to create optimizer store: %w", err)
+		}
+		s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
+			return store.Close()
+		})
+		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store, optimizer.DefaultTokenCounter())
+	}
+
+	// Build the HTTP handler (middleware chain, routes, mux)
+	handler, err := s.Handler(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to build handler: %w", err)
+	}
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.httpServer = &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
@@ -541,9 +565,12 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listenerMu.Unlock()
 
 	actualAddr := listener.Addr().String()
-	logger.Infof("Starting Virtual MCP Server at %s%s", actualAddr, s.config.EndpointPath)
-	logger.Infof("Health endpoints available at %s/health, %s/ping, %s/status, and %s/api/backends/health",
-		actualAddr, actualAddr, actualAddr, actualAddr)
+	slog.Info("starting Virtual MCP Server", "address", actualAddr, "endpoint", s.config.EndpointPath)
+	slog.Info("health endpoints available",
+		"health", actualAddr+"/health",
+		"ping", actualAddr+"/ping",
+		"status", actualAddr+"/status",
+		"backends_health", actualAddr+"/api/backends/health")
 
 	// Start server in background
 	errCh := make(chan error, 1)
@@ -567,12 +594,12 @@ func (s *Server) Start(ctx context.Context) error {
 		if err := healthMon.Start(ctx); err != nil {
 			// Log error and disable health monitoring - treat as if it wasn't configured
 			// This ensures getter methods correctly report monitoring as disabled
-			logger.Warnf("Failed to start health monitor, disabling health monitoring: %v", err)
+			slog.Warn("failed to start health monitor, disabling health monitoring", "error", err)
 			s.healthMonitorMu.Lock()
 			s.healthMonitor = nil
 			s.healthMonitorMu.Unlock()
 		} else {
-			logger.Info("Health monitor started")
+			slog.Info("health monitor started")
 		}
 	}
 
@@ -609,11 +636,11 @@ func (s *Server) Start(ctx context.Context) error {
 	// Wait for either context cancellation or server error
 	select {
 	case <-ctx.Done():
-		logger.Info("Context cancelled, shutting down server")
+		slog.Info("context cancelled, shutting down server")
 		return s.Stop(context.Background())
 	case err := <-errCh:
 		// HTTP server error - log and tear down cleanly
-		logger.Errorf("HTTP server error: %v", err)
+		slog.Error("hTTP server error", "error", err)
 		if stopErr := s.Stop(context.Background()); stopErr != nil {
 			// Combine errors if Stop() also fails
 			return fmt.Errorf("server error: %w; stop error: %v", err, stopErr)
@@ -624,7 +651,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Stop gracefully stops the Virtual MCP Server.
 func (s *Server) Stop(ctx context.Context) error {
-	logger.Info("Stopping Virtual MCP Server")
+	slog.Info("stopping Virtual MCP Server")
 
 	var errs []error
 
@@ -675,11 +702,11 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	if len(errs) > 0 {
-		logger.Errorf("Errors during shutdown: %v", errs)
+		slog.Error("errors during shutdown", "errors", errs)
 		return errors.Join(errs...)
 	}
 
-	logger.Info("Virtual MCP Server stopped")
+	slog.Info("virtual MCP Server stopped")
 	return nil
 }
 
@@ -717,7 +744,7 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	// Encode response. If this fails (extremely unlikely for simple map[string]string),
 	// the 200 OK status has already been sent above.
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode health response: %v", err)
+		slog.Error("failed to encode health response", "error", err)
 	}
 }
 
@@ -755,7 +782,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			logger.Errorf("Failed to encode readiness response: %v", err)
+			slog.Error("failed to encode readiness response", "error", err)
 		}
 		return
 	}
@@ -774,7 +801,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			logger.Errorf("Failed to encode readiness response: %v", err)
+			slog.Error("failed to encode readiness response", "error", err)
 		}
 		return
 	}
@@ -787,7 +814,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode readiness response: %v", err)
+		slog.Error("failed to encode readiness response", "error", err)
 	}
 }
 
@@ -839,7 +866,7 @@ func (s *Server) injectCapabilities(
 		if err := s.mcpServer.AddSessionTools(sessionID, sdkTools...); err != nil {
 			return fmt.Errorf("failed to add session tools: %w", err)
 		}
-		logger.Debugw("added session backend tools", "session_id", sessionID, "count", len(sdkTools))
+		slog.Debug("added session backend tools", "session_id", sessionID, "count", len(sdkTools))
 	}
 
 	// Convert and add composite tools
@@ -852,7 +879,7 @@ func (s *Server) injectCapabilities(
 		if err := s.mcpServer.AddSessionTools(sessionID, compositeSDKTools...); err != nil {
 			return fmt.Errorf("failed to add session composite tools: %w", err)
 		}
-		logger.Debugw("added session composite tools", "session_id", sessionID, "count", len(compositeSDKTools))
+		slog.Debug("added session composite tools", "session_id", sessionID, "count", len(compositeSDKTools))
 	}
 
 	// Convert and add resources
@@ -862,7 +889,7 @@ func (s *Server) injectCapabilities(
 		if err := s.mcpServer.AddSessionResources(sessionID, sdkResources...); err != nil {
 			return fmt.Errorf("failed to add session resources: %w", err)
 		}
-		logger.Debugw("added session resources", "session_id", sessionID, "count", len(sdkResources))
+		slog.Debug("added session resources", "session_id", sessionID, "count", len(sdkResources))
 	}
 
 	// Note: SDK v0.43.0 does not support per-session prompts yet.
@@ -870,7 +897,7 @@ func (s *Server) injectCapabilities(
 	// Prompts cannot be registered globally via mcpServer.AddPrompt() without leaking
 	// capability information across session boundaries (e.g., admin prompts visible to regular users).
 	if len(caps.Prompts) > 0 {
-		logger.Warnw("prompts discovered but not exposed - awaiting SDK support for per-session prompts",
+		slog.Warn("prompts discovered but not exposed - awaiting SDK support for per-session prompts",
 			"session_id", sessionID,
 			"prompt_count", len(caps.Prompts),
 			"sdk_version", "v0.43.0",
@@ -881,7 +908,7 @@ func (s *Server) injectCapabilities(
 		// Implementation will be: s.mcpServer.AddSessionPrompts(sessionID, sdkPrompts...)
 	}
 
-	logger.Infow("session capabilities injected during initialization",
+	slog.Info("session capabilities injected during initialization",
 		"session_id", sessionID,
 		"backend_tools", len(caps.Tools),
 		"composite_tools", len(caps.CompositeTools),
@@ -924,7 +951,7 @@ func (s *Server) injectOptimizerCapabilities(
 	// Create optimizer tools (find_tool, call_tool)
 	optimizerTools := adapter.CreateOptimizerTools(opt)
 
-	logger.Debugw("created optimizer tools for session",
+	slog.Debug("created optimizer tools for session",
 		"session_id", sessionID,
 		"backend_tool_count", len(caps.Tools),
 		"composite_tool_count", len(caps.CompositeTools),
@@ -974,19 +1001,19 @@ func (s *Server) handleSessionRegistration(
 	sessionManager *transportsession.Manager,
 ) {
 	sessionID := session.SessionID()
-	logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
+	slog.Debug("onRegisterSession hook called", "session_id", sessionID)
 
 	// Get capabilities from context (discovered by middleware)
 	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
 	if !ok || caps == nil {
-		logger.Warnw("no discovered capabilities in context for OnRegisterSession hook",
+		slog.Warn("no discovered capabilities in context for OnRegisterSession hook",
 			"session_id", sessionID)
 		return
 	}
 
 	// Validate that routing table exists
 	if caps.RoutingTable == nil {
-		logger.Warnw("routing table is nil in discovered capabilities",
+		slog.Warn("routing table is nil in discovered capabilities",
 			"session_id", sessionID)
 		return
 	}
@@ -999,7 +1026,7 @@ func (s *Server) handleSessionRegistration(
 
 		// Validate no conflicts between composite tool names and backend tool names
 		if err := validateNoToolConflicts(caps.Tools, compositeTools); err != nil {
-			logger.Errorw("composite tool name conflict detected",
+			slog.Error("composite tool name conflict detected",
 				"session_id", sessionID,
 				"error", err)
 			// Don't add composite tools if there are conflicts
@@ -1008,7 +1035,7 @@ func (s *Server) handleSessionRegistration(
 		}
 
 		caps.CompositeTools = compositeTools
-		logger.Debugw("added composite tools to session capabilities",
+		slog.Debug("added composite tools to session capabilities",
 			"session_id", sessionID,
 			"composite_tool_count", len(compositeTools))
 	}
@@ -1018,7 +1045,7 @@ func (s *Server) handleSessionRegistration(
 	// without re-running discovery for every request
 	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
 	if err != nil {
-		logger.Errorw("failed to get VMCPSession for routing table storage",
+		slog.Error("failed to get VMCPSession for routing table storage",
 			"error", err,
 			"session_id", sessionID)
 		return
@@ -1026,7 +1053,7 @@ func (s *Server) handleSessionRegistration(
 
 	vmcpSess.SetRoutingTable(caps.RoutingTable)
 	vmcpSess.SetTools(caps.Tools)
-	logger.Debugw("routing table and tools stored in VMCPSession",
+	slog.Debug("routing table and tools stored in VMCPSession",
 		"session_id", sessionID,
 		"tool_count", len(caps.RoutingTable.Tools),
 		"resource_count", len(caps.RoutingTable.Resources),
@@ -1035,24 +1062,24 @@ func (s *Server) handleSessionRegistration(
 	if s.config.OptimizerFactory != nil {
 		err = s.injectOptimizerCapabilities(ctx, sessionID, caps)
 		if err != nil {
-			logger.Errorw("failed to create optimizer tools",
+			slog.Error("failed to create optimizer tools",
 				"error", err,
 				"session_id", sessionID)
 		} else {
-			logger.Infow("optimizer capabilities injected")
+			slog.Info("optimizer capabilities injected")
 		}
 		return
 	}
 
 	// Inject capabilities into SDK session
 	if err := s.injectCapabilities(sessionID, caps); err != nil {
-		logger.Errorw("failed to inject session capabilities",
+		slog.Error("failed to inject session capabilities",
 			"error", err,
 			"session_id", sessionID)
 		return
 	}
 
-	logger.Infow("session capabilities injected",
+	slog.Info("session capabilities injected",
 		"session_id", sessionID,
 		"tool_count", len(caps.Tools),
 		"resource_count", len(caps.Resources))
@@ -1085,11 +1112,11 @@ func validateAndCreateExecutors(
 
 		validDefs[name] = def
 		validExecutors[name] = newComposerWorkflowExecutor(validator, def)
-		logger.Debugf("Validated workflow definition: %s", name)
+		slog.Debug("validated workflow definition", "name", name)
 	}
 
 	if len(validDefs) > 0 {
-		logger.Infof("Loaded %d valid composite tool workflows", len(validDefs))
+		slog.Info("loaded valid composite tool workflows", "count", len(validDefs))
 	}
 
 	return validDefs, validExecutors, nil
@@ -1184,7 +1211,7 @@ func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
 	// Encode response before writing headers to ensure encoding succeeds
 	data, err := json.Marshal(response)
 	if err != nil {
-		logger.Errorf("Failed to encode backend health response: %v", err)
+		slog.Error("failed to encode backend health response", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -1192,7 +1219,7 @@ func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(data); err != nil {
-		logger.Errorf("Failed to write backend health response: %v", err)
+		slog.Error("failed to write backend health response", "error", err)
 	}
 }
 
@@ -1212,7 +1239,7 @@ func headerValidatingMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotAcceptable)
 			if _, err := w.Write(notAcceptableBody); err != nil {
-				logger.Errorf("Failed to write not-acceptable response: %v", err)
+				slog.Error("failed to write not-acceptable response", "error", err)
 			}
 			return
 		}

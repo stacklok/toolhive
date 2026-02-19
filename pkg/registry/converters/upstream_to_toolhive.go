@@ -32,6 +32,7 @@ func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*types.ImageMet
 	imageMetadata := &types.ImageMetadata{
 		BaseServerMetadata: types.BaseServerMetadata{
 			Name:        serverJSON.Name,
+			Title:       serverJSON.Title,
 			Description: serverJSON.Description,
 			Transport:   pkg.Transport.Type,
 		},
@@ -236,6 +237,7 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*types.R
 	remoteMetadata := &types.RemoteServerMetadata{
 		BaseServerMetadata: types.BaseServerMetadata{
 			Name:        serverJSON.Name,
+			Title:       serverJSON.Title,
 			Description: serverJSON.Description,
 			Transport:   remote.Type,
 		},
@@ -280,6 +282,8 @@ func extractImageExtensions(serverJSON *upstream.ServerJSON, imageMetadata *type
 	imageMetadata.Tier = ext.Tier
 	imageMetadata.Tools = ext.Tools
 	imageMetadata.Tags = ext.Tags
+	imageMetadata.Overview = ext.Overview
+	imageMetadata.ToolDefinitions = ext.ToolDefinitions
 	imageMetadata.Metadata = ext.Metadata
 	imageMetadata.CustomMetadata = ext.CustomMetadata
 	imageMetadata.Permissions = ext.Permissions
@@ -305,6 +309,8 @@ func extractRemoteExtensions(serverJSON *upstream.ServerJSON, remoteMetadata *ty
 	remoteMetadata.Tier = ext.Tier
 	remoteMetadata.Tools = ext.Tools
 	remoteMetadata.Tags = ext.Tags
+	remoteMetadata.Overview = ext.Overview
+	remoteMetadata.ToolDefinitions = ext.ToolDefinitions
 	remoteMetadata.Metadata = ext.Metadata
 	remoteMetadata.CustomMetadata = ext.CustomMetadata
 	remoteMetadata.OAuthConfig = ext.OAuthConfig

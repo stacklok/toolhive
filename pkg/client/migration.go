@@ -6,10 +6,10 @@ package client
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // migrationOnce ensures the migration only runs once
@@ -37,12 +37,12 @@ func performAutoDiscoveryMigration() {
 	// Get current client statuses to determine what to register
 	manager, err := NewClientManager()
 	if err != nil {
-		logger.Errorf("Error creating client manager during migration: %v", err)
+		slog.Error("error creating client manager during migration", "error", err)
 		return
 	}
 	clientStatuses, err := manager.GetClientStatus(context.Background())
 	if err != nil {
-		logger.Errorf("Error discovering clients during migration: %v", err)
+		slog.Error("error discovering clients during migration", "error", err)
 		return
 	}
 
@@ -52,7 +52,7 @@ func performAutoDiscoveryMigration() {
 	for _, status := range clientStatuses {
 		if status.Installed && !status.Registered {
 			clientsToRegister = append(clientsToRegister, string(status.ClientType))
-			logger.Debugf("Registering client %s", string(status.ClientType))
+			slog.Debug("registering client", "client", string(status.ClientType))
 		}
 	}
 
@@ -78,7 +78,7 @@ func performAutoDiscoveryMigration() {
 	})
 
 	if err != nil {
-		logger.Errorf("Error updating config during migration: %v", err)
+		slog.Error("error updating config during migration", "error", err)
 		return
 	}
 

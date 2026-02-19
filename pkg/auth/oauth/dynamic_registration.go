@@ -9,12 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -84,7 +84,7 @@ func (s ScopeList) MarshalJSON() ([]byte, error) {
 	scopeString := strings.Join(s, " ")
 	result, err := json.Marshal(scopeString)
 	if err == nil {
-		logger.Debugf("RFC 7591: Marshaled ScopeList %v -> %q (space-delimited string)", []string(s), scopeString)
+		slog.Debug("RFC 7591: Marshaled ScopeList", "scopes", []string(s), "result", scopeString)
 	}
 	return result, err
 }
@@ -135,7 +135,7 @@ func (s *ScopeList) UnmarshalJSON(data []byte) error {
 type DynamicClientRegistrationResponse struct {
 	// Required fields
 	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// Optional fields that may be returned
 	ClientIDIssuedAt        int64  `json:"client_id_issued_at,omitempty"`
@@ -255,7 +255,7 @@ func getHTTPClient(client networking.HTTPClient) networking.HTTPClient {
 func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse, error) {
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -344,6 +344,8 @@ func registerClientDynamicallyWithClient(
 		return nil, err
 	}
 
-	logger.Debugf("Successfully registered OAuth client dynamically - client_id: %s", response.ClientID)
+	//nolint:gosec // G706: client_id is public metadata from DCR response
+	slog.Debug("Successfully registered OAuth client dynamically",
+		"client_id", response.ClientID)
 	return response, nil
 }

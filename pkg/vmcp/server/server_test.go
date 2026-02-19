@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -485,6 +486,126 @@ func TestServerStopClosesOptimizerStore(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
 		require.FailNow(t, "server start/stop did not complete")
+	}
+}
+
+func TestHandler_ReturnsNonNilHandler(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	// Allow discovery middleware calls
+	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+	srv, err := server.New(
+		t.Context(),
+		&server.Config{Host: "127.0.0.1", Port: 0},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	handler, err := srv.Handler(t.Context())
+	require.NoError(t, err)
+	require.NotNil(t, handler)
+
+	// Verify handler responds to health endpoint
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"status":"ok"`)
+}
+
+func TestHandler_ReturnsErrorOnInvalidAuditConfig(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	// AuditConfig with negative MaxDataSize fails validation inside Handler()
+	srv, err := server.New(
+		t.Context(),
+		&server.Config{
+			Host: "127.0.0.1",
+			Port: 0,
+			AuditConfig: &audit.Config{
+				Component:   "vmcp-server",
+				MaxDataSize: -1,
+			},
+		},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	// New() also validates AuditConfig, so this may fail at New() level
+	// If it passes New(), Handler() should catch it
+	if err != nil {
+		require.Contains(t, err.Error(), "maxDataSize cannot be negative")
+		return
+	}
+
+	_, err = srv.Handler(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid audit configuration")
+}
+
+func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+	srv, err := server.New(
+		t.Context(),
+		&server.Config{Host: "127.0.0.1", Port: 0},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	h1, err := srv.Handler(t.Context())
+	require.NoError(t, err)
+	require.NotNil(t, h1)
+
+	h2, err := srv.Handler(t.Context())
+	require.NoError(t, err)
+	require.NotNil(t, h2)
+
+	// Both handlers should work independently
+	for _, h := range []http.Handler{h1, h2} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
 	}
 }
 

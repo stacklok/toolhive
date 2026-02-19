@@ -13,14 +13,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize logger for all tests
-	logger.Initialize()
-}
 
 func TestLockRegistry_RegisterLock(t *testing.T) {
 	t.Parallel()

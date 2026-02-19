@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -115,13 +115,13 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 	client := &http.Client{
 		Timeout: defaultTimeout,
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is constructed from hardcoded update API base URL
 	if err != nil {
 		return "", fmt.Errorf("failed to send request to update API: %w", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("Failed to close response body", "error", err)
 		}
 	}()
 

@@ -60,8 +60,6 @@ Do NOT invoke for:
 - Handles proxy functionality for MCP server communication
 - Enables networked access to MCP servers
 
-**Registry Utility (`cmd/regup/`)** - Registry management tool
-
 **Help Generator (`cmd/help/`)** - CLI documentation generator
 
 ### Core Packages (`pkg/`)

@@ -11,9 +11,11 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -22,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -118,7 +119,7 @@ func NewBackendWatcher(
 	// Use sync.Once to avoid race conditions in tests where multiple
 	// BackendWatcher instances are created concurrently
 	setLoggerOnce.Do(func() {
-		ctrl.SetLogger(logger.NewLogr())
+		ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 	})
 
 	// Create runtime scheme and register ToolHive CRDs + core Kubernetes types
@@ -173,7 +174,7 @@ func NewBackendWatcher(
 //
 //	go func() {
 //	    if err := watcher.Start(ctx); err != nil {
-//	        logger.Errorf("BackendWatcher stopped with error: %v", err)
+//	        slog.Error("backendWatcher stopped with error", "error", err)
 //	    }
 //	}()
 func (w *BackendWatcher) Start(ctx context.Context) error {
@@ -185,8 +186,8 @@ func (w *BackendWatcher) Start(ctx context.Context) error {
 	w.started = true
 	w.mu.Unlock()
 
-	logger.Info("Starting Kubernetes backend watcher for vMCP dynamic mode")
-	logger.Infof("Watching namespace: %s, group: %s", w.namespace, w.groupRef)
+	slog.Info("starting Kubernetes backend watcher for vMCP dynamic mode")
+	slog.Info("watching backend resources", "namespace", w.namespace, "group", w.groupRef)
 
 	// Register backend watch controller to reconcile MCPServer/MCPRemoteProxy changes
 	err := w.addBackendWatchController()
@@ -199,7 +200,7 @@ func (w *BackendWatcher) Start(ctx context.Context) error {
 		return fmt.Errorf("watcher failed: %w", err)
 	}
 
-	logger.Info("Kubernetes backend watcher stopped")
+	slog.Info("kubernetes backend watcher stopped")
 	return nil
 }
 
@@ -239,7 +240,7 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 	w.mu.Unlock()
 
 	if !started {
-		logger.Warn("WaitForCacheSync called but watcher not started")
+		slog.Warn("waitForCacheSync called but watcher not started")
 		return false
 	}
 
@@ -254,16 +255,16 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 		defer cancel()
 	}
 
-	logger.Info("Waiting for Kubernetes cache sync...")
+	slog.Info("waiting for Kubernetes cache sync")
 
 	// Wait for cache to sync
 	synced := informerCache.WaitForCacheSync(ctx)
 	if !synced {
-		logger.Warn("Cache sync timed out or failed")
+		slog.Warn("cache sync timed out or failed")
 		return false
 	}
 
-	logger.Info("Kubernetes cache synced successfully")
+	slog.Info("kubernetes cache synced successfully")
 	return true
 }
 
@@ -307,6 +308,6 @@ func (w *BackendWatcher) addBackendWatchController() error {
 		return fmt.Errorf("failed to setup backend reconciler: %w", err)
 	}
 
-	logger.Info("Backend watch controller registered successfully")
+	slog.Info("backend watch controller registered successfully")
 	return nil
 }

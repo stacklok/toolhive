@@ -26,16 +26,32 @@ type DummyOptimizer struct {
 
 	// tools contains all available tools indexed by name.
 	tools map[string]server.ServerTool
+
+	// tokenCounts holds precomputed per-tool token estimates, indexed by tool name.
+	// Immutable after construction: token counts are computed once in NewDummyOptimizer
+	// and never modified. The tools are fixed per session (one optimizer per session),
+	// and the TokenCounter is set at configuration time, so counts cannot change at runtime.
+	tokenCounts map[string]int
+
+	// baselineTokens is the precomputed sum of all per-tool token counts.
+	// Immutable after construction; used as the denominator for savings metrics.
+	baselineTokens int
 }
 
 // NewDummyOptimizer creates a new DummyOptimizer backed by the given ToolStore.
 //
 // The tools slice should contain all backend tools (as ServerTool with handlers).
 // Tools are upserted into the shared store and scoped for this optimizer instance.
-func NewDummyOptimizer(ctx context.Context, store ToolStore, tools []server.ServerTool) (Optimizer, error) {
+// Token counts are precomputed using the provided counter for metrics calculation.
+func NewDummyOptimizer(ctx context.Context, store ToolStore, counter TokenCounter, tools []server.ServerTool) (Optimizer, error) {
 	toolMap := make(map[string]server.ServerTool, len(tools))
+	tokenCounts := make(map[string]int, len(tools))
+	var baselineTokens int
 	for _, tool := range tools {
 		toolMap[tool.Tool.Name] = tool
+		tc := counter.CountTokens(tool.Tool)
+		tokenCounts[tool.Tool.Name] = tc
+		baselineTokens += tc
 	}
 
 	if err := store.UpsertTools(ctx, tools); err != nil {
@@ -43,15 +59,18 @@ func NewDummyOptimizer(ctx context.Context, store ToolStore, tools []server.Serv
 	}
 
 	return &DummyOptimizer{
-		store: store,
-		tools: toolMap,
+		store:          store,
+		tools:          toolMap,
+		tokenCounts:    tokenCounts,
+		baselineTokens: baselineTokens,
 	}, nil
 }
 
 // FindTool searches for tools using the shared ToolStore, scoped to this instance's tools.
 //
 // Returns all matching tools with a score of 1.0 (exact match semantics).
-// TokenMetrics are returned as zero values (not implemented in dummy).
+// TokenMetrics quantify the token savings from returning only matching tools
+// instead of the full set of available tools.
 func (d *DummyOptimizer) FindTool(ctx context.Context, input FindToolInput) (*FindToolOutput, error) {
 	if input.ToolDescription == "" {
 		return nil, fmt.Errorf("tool_description is required")
@@ -62,9 +81,11 @@ func (d *DummyOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fi
 		return nil, fmt.Errorf("tool search failed: %w", err)
 	}
 
+	metrics := computeTokenMetrics(d.baselineTokens, d.tokenCounts, matches)
+
 	return &FindToolOutput{
 		Tools:        matches,
-		TokenMetrics: TokenMetrics{}, // Zero values for dummy
+		TokenMetrics: metrics,
 	}, nil
 }
 
@@ -105,8 +126,30 @@ func (d *DummyOptimizer) toolNames() []string {
 // instances backed by a shared InMemoryToolStore. All optimizers created by the
 // returned factory share the same underlying storage, enabling cross-session search.
 func NewDummyOptimizerFactory() func(context.Context, []server.ServerTool) (Optimizer, error) {
+	counter := DefaultTokenCounter()
 	store := NewInMemoryToolStore()
-	return NewDummyOptimizerFactoryWithStore(store)
+	return NewDummyOptimizerFactoryWithStore(store, counter)
+}
+
+// computeTokenMetrics calculates token savings by comparing the precomputed
+// baseline (all tools) against only the matched tools.
+func computeTokenMetrics(baselineTokens int, tokenCounts map[string]int, matches []ToolMatch) TokenMetrics {
+	if baselineTokens == 0 {
+		return TokenMetrics{}
+	}
+
+	var returnedTokens int
+	for _, m := range matches {
+		returnedTokens += tokenCounts[m.Name]
+	}
+
+	savingsPercent := float64(baselineTokens-returnedTokens) / float64(baselineTokens) * 100
+
+	return TokenMetrics{
+		BaselineTokens: baselineTokens,
+		ReturnedTokens: returnedTokens,
+		SavingsPercent: savingsPercent,
+	}
 }
 
 // NewDummyOptimizerFactoryWithStore returns an OptimizerFactory that creates
@@ -115,8 +158,10 @@ func NewDummyOptimizerFactory() func(context.Context, []server.ServerTool) (Opti
 //
 // Use this when you need to provide a specific store implementation (e.g.,
 // SQLiteToolStore for FTS5-based search) instead of the default InMemoryToolStore.
-func NewDummyOptimizerFactoryWithStore(store ToolStore) func(context.Context, []server.ServerTool) (Optimizer, error) {
+func NewDummyOptimizerFactoryWithStore(
+	store ToolStore, counter TokenCounter,
+) func(context.Context, []server.ServerTool) (Optimizer, error) {
 	return func(ctx context.Context, tools []server.ServerTool) (Optimizer, error) {
-		return NewDummyOptimizer(ctx, store, tools)
+		return NewDummyOptimizer(ctx, store, counter, tools)
 	}
 }

@@ -123,6 +123,22 @@ type VirtualMCPCompositeToolDefinitionList struct {
 	Items           []VirtualMCPCompositeToolDefinition `json:"items"`
 }
 
+// Validate performs validation for VirtualMCPCompositeToolDefinition
+// This method is called by the controller during reconciliation
+// It delegates to the shared ValidateCompositeToolConfig in pkg/vmcp/config
+func (r *VirtualMCPCompositeToolDefinition) Validate() error {
+	return config.ValidateCompositeToolConfig("spec", &r.Spec.CompositeToolConfig)
+}
+
+// GetValidationErrors returns a list of validation errors
+// This is a helper method for the controller to populate status.validationErrors
+func (r *VirtualMCPCompositeToolDefinition) GetValidationErrors() []string {
+	if err := r.Validate(); err != nil {
+		return []string{err.Error()}
+	}
+	return nil
+}
+
 func init() {
 	SchemeBuilder.Register(&VirtualMCPCompositeToolDefinition{}, &VirtualMCPCompositeToolDefinitionList{})
 }

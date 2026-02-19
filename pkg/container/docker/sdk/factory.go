@@ -7,11 +7,11 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/docker/docker/client"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 /*
@@ -59,7 +59,8 @@ func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type,
 		// Try to find a container socket for the given runtime
 		socketPath, runtimeType, err := findContainerSocket(sp)
 		if err != nil {
-			logger.Debugf("Failed to find socket for %s: %v", sp, err)
+			//nolint:gosec // G706: runtime type from internal config
+			slog.Debug("failed to find socket", "runtime", sp, "error", err)
 			lastErr = err
 			continue
 		}
@@ -67,11 +68,13 @@ func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type,
 		c, err := newClientWithSocketPath(ctx, socketPath)
 		if err != nil {
 			lastErr = err
-			logger.Debugf("Failed to create client for %s: %v", sp, err)
+			//nolint:gosec // G706: runtime type from internal config
+			slog.Debug("failed to create client", "runtime", sp, "error", err)
 			continue
 		}
 
-		logger.Debugf("Successfully connected to %s runtime", runtimeType)
+		//nolint:gosec // G706: runtime type from internal detection
+		slog.Debug("successfully connected to runtime", "runtime", runtimeType)
 		return c, socketPath, runtimeType, nil
 	}
 

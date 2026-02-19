@@ -7,10 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func init() {
@@ -76,7 +76,7 @@ func NewAuthorizer(config ConfigOptions, serverName string) (*Authorizer, error)
 		return nil, err
 	}
 
-	logger.Debugf("creating new HTTP PDP authorizer: %v", config)
+	slog.Debug("creating new HTTP PDP authorizer", "config", config)
 	p, err := NewClient(config.HTTP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
@@ -115,17 +115,17 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	porc := a.porcBuilder.Build(feature, operation, resourceID, identity.Claims, arguments)
 
 	// Log the authorization request
-	logger.Debugf("HTTP PDP authorization check - Operation: %s, Resource: %s",
-		porc["operation"], porc["resource"])
+	slog.Debug("HTTP PDP authorization check",
+		"operation", porc["operation"], "resource", porc["resource"])
 
 	// Delegate to PDP (not in probe mode for actual authorization)
 	allowed, err := a.pdp.Authorize(ctx, porc, false)
 	if err != nil {
-		logger.Debugf("HTTP PDP authorization check - Failed to authorize: %v", err)
+		slog.Debug("HTTP PDP authorization check failed", "error", err)
 		return false, fmt.Errorf("authorization failed: %w", err)
 	}
 
-	logger.Debugf("HTTP PDP authorization result: %t", allowed)
+	slog.Debug("HTTP PDP authorization result", "allowed", allowed)
 
 	return allowed, nil
 }

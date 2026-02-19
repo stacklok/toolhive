@@ -411,6 +411,5 @@ func metadataEqual(a, b *types.Metadata) bool {
 		return false
 	}
 	return a.Stars == b.Stars &&
-		a.Pulls == b.Pulls &&
 		a.LastUpdated == b.LastUpdated
 }

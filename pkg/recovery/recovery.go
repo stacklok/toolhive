@@ -5,10 +5,11 @@
 package recovery
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -23,7 +24,7 @@ func Middleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				stack := debug.Stack()
-				logger.Errorf("Panic recovered: %v\nStack trace:\n%s", rec, stack)
+				slog.Error(fmt.Sprintf("Panic recovered: %v\nStack trace:\n%s", rec, stack))
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

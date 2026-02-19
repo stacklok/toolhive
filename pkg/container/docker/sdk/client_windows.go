@@ -8,6 +8,7 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -17,7 +18,6 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 var ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
@@ -62,7 +62,8 @@ func newPlatformClient(pipePath string) (*http.Client, []client.Opt) {
 func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables
 	if customPipePath := os.Getenv(PodmanSocketEnv); customPipePath != "" {
-		logger.Debugf("Using Podman pipe from env: %s", customPipePath)
+		//nolint:gosec // G706: pipe path from trusted environment variable
+		slog.Debug("using Podman pipe from env", "path", customPipePath)
 		// Validate the pipe path exists with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), pipeConnectionTimeout)
 		defer cancel()
@@ -75,7 +76,8 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 	}
 
 	if customPipePath := os.Getenv(DockerSocketEnv); customPipePath != "" {
-		logger.Debugf("Using Docker pipe from env: %s", customPipePath)
+		//nolint:gosec // G706: pipe path from trusted environment variable
+		slog.Debug("using Docker pipe from env", "path", customPipePath)
 		// Validate the pipe path exists with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), pipeConnectionTimeout)
 		defer cancel()
@@ -93,11 +95,11 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		defer cancel()
 		conn, err := winio.DialPipeContext(ctx, PodmanDesktopWindowsPipePath)
 		if err == nil {
-			logger.Debugf("Found Podman pipe at %s", PodmanDesktopWindowsPipePath)
+			slog.Debug("found Podman pipe", "path", PodmanDesktopWindowsPipePath)
 			conn.Close()
 			return PodmanDesktopWindowsPipePath, runtime.TypePodman, nil
 		}
-		logger.Debugf("Failed to connect to Podman pipe at %s: %v", PodmanDesktopWindowsPipePath, err)
+		slog.Debug("failed to connect to Podman pipe", "path", PodmanDesktopWindowsPipePath, "error", err)
 	}
 
 	if rt == runtime.TypeDocker {
@@ -106,11 +108,11 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		defer cancel()
 		conn, err := winio.DialPipeContext(ctx, DockerDesktopWindowsPipePath)
 		if err == nil {
-			logger.Debugf("Found Docker pipe at %s", DockerDesktopWindowsPipePath)
+			slog.Debug("found Docker pipe", "path", DockerDesktopWindowsPipePath)
 			conn.Close()
 			return DockerDesktopWindowsPipePath, runtime.TypeDocker, nil
 		}
-		logger.Debugf("Failed to connect to Docker pipe at %s: %v", DockerDesktopWindowsPipePath, err)
+		slog.Debug("failed to connect to Docker pipe", "path", DockerDesktopWindowsPipePath, "error", err)
 	}
 
 	return "", "", ErrRuntimeNotFound

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -20,7 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -144,7 +144,7 @@ func init() {
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
-		logger.Warnf("Error hiding flag: %v", err)
+		slog.Warn(fmt.Sprintf("Error hiding flag: %v", err))
 	}
 
 	// Add OIDC validation flags
@@ -160,10 +160,10 @@ func cleanupAndWait(workloadManager workloads.Manager, name string) {
 
 	complete, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
 	if err != nil {
-		logger.Warnf("Failed to delete workload %q: %v", name, err)
+		slog.Warn(fmt.Sprintf("Failed to delete workload %q: %v", name, err)) // #nosec G706 -- name is a workload name we control
 	} else if complete != nil {
 		if err := complete(); err != nil {
-			logger.Warnf("DeleteWorkloads error for %q: %v", name, err)
+			slog.Warn(fmt.Sprintf("DeleteWorkloads error for %q: %v", name, err)) // #nosec G706 -- name is a workload name we control
 		}
 	}
 }
@@ -201,7 +201,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	cmdArgs := parseCommandArguments(os.Args)
 
 	// Print the processed command arguments for debugging
-	logger.Debugf("Processed cmdArgs: %v", cmdArgs)
+	slog.Debug(fmt.Sprintf("Processed cmdArgs: %v", cmdArgs)) // #nosec G706 -- cmdArgs are CLI arguments we control
 
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
@@ -223,7 +223,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 
 	if runFlags.Name == "" {
 		runFlags.Name = getworkloadDefaultName(ctx, serverOrImage)
-		logger.Debugf("No workload name specified, using generated name: %s", runFlags.Name)
+		slog.Debug(fmt.Sprintf("No workload name specified, using generated name: %s", runFlags.Name))
 	}
 	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
 	if err != nil {
@@ -340,7 +340,8 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 	// Shutdown and cancellation logic is unnecessarily spread across two goroutines.
 	err := <-errCh
 	if !process.IsDetached() {
-		logger.Infof("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
+		// #nosec G706 -- BaseName is from our config
+		slog.Info(fmt.Sprintf("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName))
 		cleanupAndWait(workloadManager, runnerConfig.BaseName)
 	}
 	return err
@@ -532,7 +533,7 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 	// Show deprecation warning if --proxy-mode is explicitly set to SSE
 	proxyModeFlag := cmd.Flags().Lookup("proxy-mode")
 	if proxyModeFlag != nil && proxyModeFlag.Changed && proxyModeFlag.Value.String() == "sse" {
-		logger.Warn("The 'sse' proxy mode is deprecated and will be removed in a future release. " +
+		slog.Warn("The 'sse' proxy mode is deprecated and will be removed in a future release. " +
 			"Please migrate to 'streamable-http' (the new default).")
 	}
 

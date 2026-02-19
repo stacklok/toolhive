@@ -8,8 +8,6 @@ import "github.com/stacklok/toolhive/pkg/skills"
 // skillListResponse represents the response for listing skills.
 //
 //	@Description	Response containing a list of installed skills
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type skillListResponse struct {
 	// List of installed skills
 	Skills []skills.InstalledSkill `json:"skills"`
@@ -18,8 +16,6 @@ type skillListResponse struct {
 // installSkillRequest represents the request to install a skill.
 //
 //	@Description	Request to install a skill
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type installSkillRequest struct {
 	// Name or OCI reference of the skill to install
 	Name string `json:"name"`
@@ -27,13 +23,15 @@ type installSkillRequest struct {
 	Version string `json:"version,omitempty"`
 	// Scope for the installation
 	Scope skills.Scope `json:"scope,omitempty"`
+	// Client is the target client (e.g., "claude-code")
+	Client string `json:"client,omitempty"`
+	// Force allows overwriting unmanaged skill directories
+	Force bool `json:"force,omitempty"`
 }
 
 // installSkillResponse represents the response after installing a skill.
 //
 //	@Description	Response after successfully installing a skill
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type installSkillResponse struct {
 	// The installed skill
 	Skill skills.InstalledSkill `json:"skill"`
@@ -42,8 +40,6 @@ type installSkillResponse struct {
 // validateSkillRequest represents the request to validate a skill.
 //
 //	@Description	Request to validate a skill definition
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type validateSkillRequest struct {
 	// Path to the skill definition directory
 	Path string `json:"path"`
@@ -52,8 +48,6 @@ type validateSkillRequest struct {
 // buildSkillRequest represents the request to build a skill.
 //
 //	@Description	Request to build a skill from a local directory
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type buildSkillRequest struct {
 	// Path to the skill definition directory
 	Path string `json:"path"`
@@ -64,8 +58,6 @@ type buildSkillRequest struct {
 // pushSkillRequest represents the request to push a skill.
 //
 //	@Description	Request to push a built skill artifact
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`

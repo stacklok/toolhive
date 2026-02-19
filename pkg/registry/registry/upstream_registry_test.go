@@ -152,10 +152,10 @@ func TestRegistryMeta_TimeFormat(t *testing.T) {
 	assert.NotZero(t, parsedTime)
 }
 
-func TestRegistryData_EmptyGroups(t *testing.T) {
+func TestRegistryData_EmptyOptionalFields(t *testing.T) {
 	t.Parallel()
 
-	// Test that groups can be omitted (omitempty)
+	// Test that groups and skills can be omitted (omitempty)
 	data := UpstreamData{
 		Servers: []upstreamv0.ServerJSON{},
 	}
@@ -163,16 +163,61 @@ func TestRegistryData_EmptyGroups(t *testing.T) {
 	jsonData, err := json.Marshal(data)
 	require.NoError(t, err)
 
-	// Groups should not appear in JSON when nil (omitempty behavior)
+	// Groups and skills should not appear in JSON when nil (omitempty behavior)
 	assert.NotContains(t, string(jsonData), "groups")
+	assert.NotContains(t, string(jsonData), "skills")
 
-	// Test with empty slice - also omitted due to omitempty
+	// Test with empty slices - also omitted due to omitempty
 	data.Groups = []UpstreamGroup{}
+	data.Skills = []Skill{}
 	jsonData, err = json.Marshal(data)
 	require.NoError(t, err)
 
-	// Empty groups array is also omitted with omitempty
+	// Empty arrays are also omitted with omitempty
 	assert.NotContains(t, string(jsonData), "groups")
+	assert.NotContains(t, string(jsonData), "skills")
+}
+
+func TestUpstreamRegistry_WithSkills(t *testing.T) {
+	t.Parallel()
+	reg := &UpstreamRegistry{
+		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+		Version: "1.0.0",
+		Meta: UpstreamMeta{
+			LastUpdated: time.Now().Format(time.RFC3339),
+		},
+		Data: UpstreamData{
+			Servers: []upstreamv0.ServerJSON{},
+			Skills: []Skill{
+				{
+					Namespace:   "io.github.stacklok",
+					Name:        "pdf-processor",
+					Description: "Extract text and tables from PDF files",
+					Version:     "1.0.0",
+					Status:      "active",
+					Packages: []SkillPackage{
+						{
+							RegistryType: "oci",
+							Identifier:   "ghcr.io/stacklok/skills/pdf-processor:1.0.0",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(reg)
+	require.NoError(t, err)
+
+	var decoded UpstreamRegistry
+	err = json.Unmarshal(jsonData, &decoded)
+	require.NoError(t, err)
+	require.Len(t, decoded.Data.Skills, 1)
+	assert.Equal(t, "io.github.stacklok", decoded.Data.Skills[0].Namespace)
+	assert.Equal(t, "pdf-processor", decoded.Data.Skills[0].Name)
+	assert.Equal(t, "1.0.0", decoded.Data.Skills[0].Version)
+	require.Len(t, decoded.Data.Skills[0].Packages, 1)
+	assert.Equal(t, "oci", decoded.Data.Skills[0].Packages[0].RegistryType)
 }
 
 func TestRegistryGroup_Structure(t *testing.T) {

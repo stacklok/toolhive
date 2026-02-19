@@ -1,0 +1,280 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Test CEL validation for MCPExternalAuthConfig CRD
+# This tests that the API server rejects invalid manifests immediately
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpexternalauthconfig-cel-validation
+spec:
+  description: |
+    Test CEL validation rules for MCPExternalAuthConfig.
+    These validations happen at the API server level and reject invalid specs immediately.
+  steps:
+    # Test 1: tokenExchange type without tokenExchange config should be rejected
+    - name: reject-tokenexchange-missing-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-invalid-tokenexchange
+                namespace: default
+              spec:
+                type: tokenExchange
+                # Missing tokenExchange config - should fail CEL validation
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* tokenExchange configuration must be set if and only if type is 'tokenExchange' *"
+
+    # Test 2: unauthenticated type with tokenExchange config should be rejected
+    - name: reject-unauthenticated-with-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-invalid-unauthenticated
+                namespace: default
+              spec:
+                type: unauthenticated
+                # Should not have any config when type is unauthenticated
+                tokenExchange:
+                  tokenUrl: https://example.com/token
+                  audience: example-audience
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* no configuration must be set when type is 'unauthenticated' *"
+
+    # Test 3: Valid unauthenticated config should be accepted
+    - name: accept-valid-unauthenticated
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-unauthenticated
+                namespace: default
+              spec:
+                type: unauthenticated
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-unauthenticated
+              spec:
+                type: unauthenticated
+
+    # Test 4: Valid tokenExchange config should be accepted
+    - name: accept-valid-tokenexchange
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-tokenexchange
+                namespace: default
+              spec:
+                type: tokenExchange
+                tokenExchange:
+                  tokenUrl: https://example.com/token
+                  audience: example-audience
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-tokenexchange
+              spec:
+                type: tokenExchange
+
+    # Test 5: headerInjection type without headerInjection config should be rejected
+    - name: reject-headerinjection-missing-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-invalid-headerinjection
+                namespace: default
+              spec:
+                type: headerInjection
+                # Missing headerInjection config - should fail CEL validation
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* headerInjection configuration must be set if and only if type is 'headerInjection' *"
+
+    # Test 6: Valid headerInjection config should be accepted
+    - name: accept-valid-headerinjection
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-headerinjection
+                namespace: default
+              spec:
+                type: headerInjection
+                headerInjection:
+                  headerName: X-API-Key
+                  valueSecretRef:
+                    name: api-key-secret
+                    key: api-key
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-headerinjection
+              spec:
+                type: headerInjection
+
+    # Test 7: bearerToken type without bearerToken config should be rejected
+    - name: reject-bearertoken-missing-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-invalid-bearertoken
+                namespace: default
+              spec:
+                type: bearerToken
+                # Missing bearerToken config - should fail CEL validation
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* bearerToken configuration must be set if and only if type is 'bearerToken' *"
+
+    # Test 8: Valid bearerToken config should be accepted
+    - name: accept-valid-bearertoken
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-bearertoken
+                namespace: default
+              spec:
+                type: bearerToken
+                bearerToken:
+                  tokenSecretRef:
+                    name: bearer-token-secret
+                    key: token
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-bearertoken
+              spec:
+                type: bearerToken
+
+    # Test 9: embeddedAuthServer type without embeddedAuthServer config should be rejected
+    - name: reject-embeddedauthserver-missing-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-invalid-embeddedauthserver
+                namespace: default
+              spec:
+                type: embeddedAuthServer
+                # Missing embeddedAuthServer config - should fail CEL validation
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer' *"
+
+    # Test 10: Valid embeddedAuthServer config should be accepted
+    - name: accept-valid-embeddedauthserver
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-embeddedauthserver
+                namespace: default
+              spec:
+                type: embeddedAuthServer
+                embeddedAuthServer:
+                  issuer: https://auth.example.com
+                  signingKeySecretRefs:
+                    - name: signing-key-secret
+                      key: private-key
+                  hmacSecretRefs:
+                    - name: hmac-secret
+                      key: secret
+                  upstreamProviders:
+                    - name: okta
+                      type: oidc
+                      oidcConfig:
+                        issuerURL: https://okta.example.com
+                        clientID: client-id
+                        redirectURI: https://auth.example.com/callback
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-embeddedauthserver
+              spec:
+                type: embeddedAuthServer
+
+    # Test 11: awsSts type without awsSts config should be rejected
+    - name: reject-awssts-missing-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-invalid-awssts
+                namespace: default
+              spec:
+                type: awsSts
+                # Missing awsSts config - should fail CEL validation
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* awsSts configuration must be set if and only if type is 'awsSts' *"
+
+    # Test 12: Valid awsSts config should be accepted
+    - name: accept-valid-awssts
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-awssts
+                namespace: default
+              spec:
+                type: awsSts
+                awsSts:
+                  region: us-east-1
+                  fallbackRoleArn: arn:aws:iam::123456789012:role/TestRole
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPExternalAuthConfig
+              metadata:
+                name: test-valid-awssts
+              spec:
+                type: awsSts

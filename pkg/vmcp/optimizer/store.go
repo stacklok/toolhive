@@ -10,30 +10,15 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	sqlitestore "github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/sqlite_store"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
 // ToolStore defines the interface for storing and searching tools.
-// Implementations may use in-memory maps, SQLite FTS5, or other backends.
-//
-// A ToolStore is shared across multiple optimizer instances (one per session)
-// and is accessed concurrently. Implementations must be thread-safe.
-type ToolStore interface {
-	// UpsertTools adds or updates tools in the store.
-	// Tools are identified by name; duplicate names are overwritten.
-	UpsertTools(ctx context.Context, tools []server.ServerTool) error
-
-	// Search finds tools matching the query string.
-	// The allowedTools parameter limits results to only tools with names in the given set.
-	// If allowedTools is empty, no results are returned (empty = no access).
-	// Returns matches ranked by relevance.
-	Search(ctx context.Context, query string, allowedTools []string) ([]ToolMatch, error)
-
-	// Close releases any resources held by the store (e.g., database connections).
-	// For in-memory stores this is a no-op.
-	// It is safe to call Close multiple times.
-	Close() error
-}
+// It is defined in the internal/types package and aliased here so that
+// external consumers continue to use optimizer.ToolStore.
+type ToolStore = types.ToolStore
 
 // InMemoryToolStore implements ToolStore using an in-memory map with
 // case-insensitive substring matching. Thread-safe via sync.RWMutex.
@@ -108,8 +93,22 @@ func (s *InMemoryToolStore) Search(_ context.Context, query string, allowedTools
 	return matches, nil
 }
 
+// SQLiteStoreConfig configures the SQLite-backed ToolStore.
+// When nil is passed to NewSQLiteToolStore, only FTS5 search is used.
+type SQLiteStoreConfig struct {
+	// EmbeddingDimension enables semantic search with deterministic fake
+	// embeddings of the given dimensionality. Zero disables semantic search.
+	EmbeddingDimension int
+}
+
 // NewSQLiteToolStore creates a new ToolStore backed by SQLite for search.
 // The store uses an in-memory SQLite database with shared cache for concurrent access.
-func NewSQLiteToolStore() (ToolStore, error) {
-	return sqlitestore.NewSQLiteToolStore()
+// If cfg is nil or EmbeddingDimension is zero, only FTS5 search is used.
+// Otherwise, semantic search is enabled alongside FTS5 using the configured embedding dimension.
+func NewSQLiteToolStore(cfg *SQLiteStoreConfig) (ToolStore, error) {
+	var embClient types.EmbeddingClient
+	if cfg != nil && cfg.EmbeddingDimension > 0 {
+		embClient = similarity.NewFakeEmbeddingClient(cfg.EmbeddingDimension)
+	}
+	return sqlitestore.NewSQLiteToolStore(embClient)
 }

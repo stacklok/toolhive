@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
-//go:embed data/toolhive-legacy-registry.schema.json data/upstream-registry.schema.json data/publisher-provided.schema.json
+//go:embed data/toolhive-legacy-registry.schema.json data/upstream-registry.schema.json data/publisher-provided.schema.json data/skill.schema.json
 var embeddedSchemaFS embed.FS
 
 // ValidateRegistrySchema validates registry JSON data against the registry schema
@@ -107,6 +107,48 @@ func ValidatePublisherProvidedExtensions(extensionsData []byte) error {
 
 		// Format multiple errors
 		resultStr := fmt.Sprintf("publisher-provided extensions schema validation failed with %d errors:\n", len(errorMessages))
+		for i, msg := range errorMessages {
+			resultStr += fmt.Sprintf("  %d. %s\n", i+1, msg)
+		}
+		return fmt.Errorf("%s", strings.TrimSuffix(resultStr, "\n"))
+	}
+
+	return nil
+}
+
+// ValidateSkillSchema validates skill JSON data against the skill.schema.json.
+func ValidateSkillSchema(skillData []byte) error {
+	// Load the schema from the embedded filesystem
+	schemaData, err := embeddedSchemaFS.ReadFile("data/skill.schema.json")
+	if err != nil {
+		return fmt.Errorf("failed to read embedded skill schema: %w", err)
+	}
+
+	// Create schema loader from embedded data
+	schemaLoader := gojsonschema.NewBytesLoader(schemaData)
+
+	// Create document loader from skill data
+	documentLoader := gojsonschema.NewBytesLoader(skillData)
+
+	// Perform validation
+	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
+	if err != nil {
+		return fmt.Errorf("skill schema validation failed: %w", err)
+	}
+
+	// Check if validation passed
+	if !result.Valid() {
+		var errorMessages []string
+		for _, desc := range result.Errors() {
+			errorMessages = append(errorMessages, desc.String())
+		}
+
+		if len(errorMessages) == 1 {
+			return fmt.Errorf("skill schema validation failed: %s", errorMessages[0])
+		}
+
+		// Format multiple errors
+		resultStr := fmt.Sprintf("skill schema validation failed with %d errors:\n", len(errorMessages))
 		for i, msg := range errorMessages {
 			resultStr += fmt.Sprintf("  %d. %s\n", i+1, msg)
 		}

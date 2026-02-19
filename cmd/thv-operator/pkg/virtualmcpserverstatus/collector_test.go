@@ -1,16 +1,5 @@
-// Copyright 2025 Stacklok, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 package virtualmcpserverstatus
 
@@ -204,4 +193,63 @@ func TestStatusCollector_MultipleConditions(t *testing.T) {
 	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated])
 	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeAuthConfigured])
 	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeVirtualMCPServerReady])
+}
+
+func TestStatusCollector_RemoveConditionsWithPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Create a VirtualMCPServer with existing conditions
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		Status: mcpv1alpha1.VirtualMCPServerStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:   "DiscoveredAuthConfig-backend-1",
+					Status: metav1.ConditionTrue,
+					Reason: "ConversionSucceeded",
+				},
+				{
+					Type:   "DiscoveredAuthConfig-backend-2",
+					Status: metav1.ConditionTrue,
+					Reason: "ConversionSucceeded",
+				},
+				{
+					Type:   "DiscoveredAuthConfig-backend-3",
+					Status: metav1.ConditionFalse,
+					Reason: "ConversionFailed",
+				},
+				{
+					Type:   "Ready",
+					Status: metav1.ConditionTrue,
+					Reason: "DeploymentReady",
+				},
+			},
+		},
+	}
+	collector := NewStatusManager(vmcp)
+
+	// Remove all DiscoveredAuthConfig conditions except backend-1
+	collector.RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{"DiscoveredAuthConfig-backend-1"})
+
+	// Apply updates
+	status := &vmcp.Status
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Len(t, status.Conditions, 2, "Should have 2 conditions remaining: backend-1 and Ready")
+
+	// Verify backend-1 condition remains
+	var foundBackend1, foundReady bool
+	for _, cond := range status.Conditions {
+		if cond.Type == "DiscoveredAuthConfig-backend-1" {
+			foundBackend1 = true
+		}
+		if cond.Type == "Ready" {
+			foundReady = true
+		}
+		// backend-2 and backend-3 should be removed
+		assert.NotEqual(t, "DiscoveredAuthConfig-backend-2", cond.Type)
+		assert.NotEqual(t, "DiscoveredAuthConfig-backend-3", cond.Type)
+	}
+	assert.True(t, foundBackend1, "backend-1 condition should remain")
+	assert.True(t, foundReady, "Ready condition should remain")
 }

@@ -9,13 +9,12 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // sseRewriteConfig holds the configuration for rewriting SSE endpoint URLs.
@@ -96,7 +95,7 @@ func (s *SSEResponseProcessor) ProcessResponse(resp *http.Response) error {
 	go func() {
 		defer func() {
 			if err := pw.Close(); err != nil {
-				logger.Debugf("Failed to close pipe writer: %v", err)
+				slog.Debug("failed to close pipe writer", "error", err)
 			}
 		}()
 		s.processSSEStream(originalBody, pw, rewriteConfig)
@@ -230,7 +229,7 @@ func (s *sseLineProcessor) extractSessionID(line string) {
 		}
 		s.proxy.setServerInitialized()
 		if err := s.proxy.sessionManager.AddWithID(sid); err != nil {
-			logger.Errorf("Failed to create session from SSE line: %v", err)
+			slog.Error("failed to create session from SSE line", "error", err)
 		}
 		s.sessionFound = true
 	}
@@ -240,11 +239,15 @@ func (s *sseLineProcessor) extractSessionID(line string) {
 func (s *sseLineProcessor) rewriteDataLine(line, dataContent string) string {
 	rewrittenURL, err := rewriteEndpointURL(dataContent, s.rewriteConfig)
 	if err != nil {
-		logger.Warnf("Failed to rewrite endpoint URL %q: %v", dataContent, err)
+		//nolint:gosec // G706: logging endpoint URL from SSE stream
+		slog.Warn("failed to rewrite endpoint URL",
+			"url", dataContent, "error", err)
 		return line
 	}
 	if rewrittenURL != dataContent {
-		logger.Debugf("Rewrote SSE endpoint URL from %q to %q", dataContent, rewrittenURL)
+		//nolint:gosec // G706: logging endpoint URLs from SSE stream
+		slog.Debug("rewrote SSE endpoint URL",
+			"from", dataContent, "to", rewrittenURL)
 		return "data: " + rewrittenURL
 	}
 	return line
@@ -272,12 +275,12 @@ func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.P
 	}
 
 	if err := scanner.Err(); err != nil {
-		logger.Errorf("Failed to scan response body: %v", err)
+		slog.Error("failed to scan response body", "error", err)
 	}
 
 	if readCloser, ok := originalBody.(io.ReadCloser); ok {
 		if _, err := io.Copy(pw, readCloser); err != nil && err != io.EOF {
-			logger.Errorf("Failed to copy response body: %v", err)
+			slog.Error("failed to copy response body", "error", err)
 		}
 	}
 }

@@ -6,11 +6,11 @@ package remote
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -51,14 +51,14 @@ func (h *Handler) SetClientCredentialsPersister(persister ClientCredentialsPersi
 func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 	// Priority 1: Bearer token authentication (if configured)
 	if h.config.BearerToken != "" {
-		logger.Debug("Using bearer token authentication")
+		slog.Debug("Using bearer token authentication")
 		return NewBearerTokenSource(h.config.BearerToken), nil
 	}
 
 	// Detect authentication requirements once (used by both cached token restore and fresh OAuth)
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
 	if err != nil {
-		logger.Debugf("Could not detect authentication from server: %v", err)
+		slog.Debug("Could not detect authentication from server", "error", err)
 		return nil, nil // Not an error, just no auth detected
 	}
 
@@ -66,8 +66,8 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		return nil, nil // No authentication required
 	}
 
-	logger.Debugf("Detected authentication requirement from server - type: %s, realm: %s, resource_metadata: %s",
-		authInfo.Type, authInfo.Realm, authInfo.ResourceMetadata)
+	slog.Debug("Detected authentication requirement from server",
+		"type", authInfo.Type, "realm", authInfo.Realm, "resource_metadata", authInfo.ResourceMetadata)
 
 	// Check if we need to handle Bearer token requirement
 	if err := h.validateBearerRequirement(authInfo); err != nil {
@@ -76,7 +76,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 
 	// Only proceed with OAuth if the auth type supports it
 	if authInfo.Type != "OAuth" && authInfo.Type != "Bearer" {
-		logger.Errorf("Unsupported authentication type: %s", authInfo.Type)
+		slog.Error("Unsupported authentication type", "type", authInfo.Type)
 		return nil, nil
 	}
 
@@ -90,11 +90,11 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 	if h.config.HasValidCachedTokens() {
 		tokenSource, err := h.tryRestoreFromCachedTokens(ctx, issuer, scopes, authServerInfo)
 		if err != nil {
-			logger.Warnf("Failed to restore from cached tokens, will perform fresh OAuth flow: %v", err)
+			slog.Warn("Failed to restore from cached tokens, will perform fresh OAuth flow", "error", err)
 			// Clear invalid cached tokens
 			h.config.ClearCachedTokens()
 		} else if tokenSource != nil {
-			logger.Debugf("Successfully restored OAuth session from cached tokens")
+			slog.Debug("Successfully restored OAuth session from cached tokens")
 			return tokenSource, nil
 		}
 	}
@@ -112,8 +112,8 @@ func (*Handler) validateBearerRequirement(authInfo *discovery.AuthInfo) error {
 	// For backward compatibility, fall back to OAuth flow if realm or resource_metadata is present
 	// Many servers use Bearer header but support OAuth flow
 	if authInfo.Realm != "" || authInfo.ResourceMetadata != "" {
-		logger.Warnf("Server returned Bearer header but no bearer token configured. " +
-			"Attempting OAuth flow for backward compatibility (realm or resource_metadata present)")
+		slog.Warn("Bearer header without token, attempting OAuth flow for backward compatibility",
+			"realm_present", authInfo.Realm != "", "resource_metadata_present", authInfo.ResourceMetadata != "")
 		return nil
 	}
 
@@ -129,7 +129,7 @@ func (h *Handler) performOAuthFlow(
 	scopes []string,
 	authServerInfo *discovery.AuthServerInfo,
 ) (oauth2.TokenSource, error) {
-	logger.Debugf("Starting OAuth authentication flow with issuer: %s", issuer)
+	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
 	// Create OAuth flow config
 	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
@@ -164,8 +164,10 @@ func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discover
 		flowConfig.AuthorizeURL = authServerInfo.AuthorizationURL
 		flowConfig.TokenURL = authServerInfo.TokenURL
 		flowConfig.RegistrationEndpoint = authServerInfo.RegistrationEndpoint
-		logger.Debugf("Using discovered OAuth endpoints - authorize: %s, token: %s, registration: %s",
-			authServerInfo.AuthorizationURL, authServerInfo.TokenURL, authServerInfo.RegistrationEndpoint)
+		slog.Debug("Using discovered OAuth endpoints",
+			"authorize", authServerInfo.AuthorizationURL,
+			"token", authServerInfo.TokenURL,
+			"registration", authServerInfo.RegistrationEndpoint)
 	}
 
 	return flowConfig
@@ -176,9 +178,9 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 	// Persist the refresh token for future restarts
 	if h.tokenPersister != nil && result.RefreshToken != "" {
 		if err := h.tokenPersister(result.RefreshToken, result.Expiry); err != nil {
-			logger.Warnf("Failed to persist OAuth tokens: %v", err)
+			slog.Warn("Failed to persist OAuth tokens", "error", err)
 		} else {
-			logger.Debugf("Successfully persisted OAuth tokens for future restarts")
+			slog.Debug("Successfully persisted OAuth tokens for future restarts")
 		}
 	}
 
@@ -186,9 +188,9 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 	// Only persist if client_id exists - client_secret may be empty for PKCE flows
 	if h.clientCredentialsPersister != nil && result.ClientID != "" {
 		if err := h.clientCredentialsPersister(result.ClientID, result.ClientSecret); err != nil {
-			logger.Warnf("Failed to persist DCR client credentials: %v", err)
+			slog.Warn("Failed to persist DCR client credentials", "error", err)
 		} else {
-			logger.Debugf("Successfully persisted DCR client credentials for future restarts")
+			slog.Debug("Successfully persisted DCR client credentials for future restarts")
 		}
 	}
 
@@ -212,13 +214,13 @@ func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clien
 	if h.config.HasCachedClientCredentials() {
 		// ClientID is stored as plain text (it's public information)
 		clientID = h.config.CachedClientID
-		logger.Debugf("Using cached DCR client credentials (client_id: %s)", clientID)
+		slog.Debug("Using cached DCR client credentials", "client_id", clientID)
 
 		// Client secret is stored securely and may be empty for PKCE flows
 		if h.config.CachedClientSecretRef != "" && h.secretProvider != nil {
 			cachedClientSecret, err := h.secretProvider.GetSecret(ctx, h.config.CachedClientSecretRef)
 			if err != nil {
-				logger.Warnf("Failed to retrieve cached client secret: %v", err)
+				slog.Warn("Failed to retrieve cached client secret", "error", err)
 			} else {
 				clientSecret = cachedClientSecret
 			}
@@ -283,7 +285,7 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		return nil, fmt.Errorf("cached tokens are invalid or expired: %w", err)
 	}
 
-	logger.Debugf("Restored OAuth session from cached tokens (issuer: %s)", issuer)
+	slog.Debug("Restored OAuth session from cached tokens", "issuer", issuer)
 
 	// Wrap with persisting token source to save refreshed tokens
 	if h.tokenPersister != nil {
@@ -303,7 +305,7 @@ func (h *Handler) discoverIssuerAndScopes(
 ) (string, []string, *discovery.AuthServerInfo, error) {
 	// Priority 1: Use configured issuer if available
 	if h.config.Issuer != "" {
-		logger.Debugf("Using configured issuer: %s", h.config.Issuer)
+		slog.Debug("Using configured issuer", "issuer", h.config.Issuer)
 		return h.config.Issuer, h.config.Scopes, nil, nil
 	}
 
@@ -311,7 +313,7 @@ func (h *Handler) discoverIssuerAndScopes(
 	if authInfo.Realm != "" {
 		derivedIssuer := discovery.DeriveIssuerFromRealm(authInfo.Realm)
 		if derivedIssuer != "" {
-			logger.Debugf("Derived issuer from realm: %s", derivedIssuer)
+			slog.Debug("Derived issuer from realm", "issuer", derivedIssuer)
 			return derivedIssuer, h.config.Scopes, nil, nil
 		}
 	}
@@ -327,12 +329,12 @@ func (h *Handler) discoverIssuerAndScopes(
 	if err == nil {
 		return issuer, scopes, authServerInfo, nil
 	}
-	logger.Debugf("Could not discover from well-known endpoint: %v", err)
+	slog.Debug("Could not discover from well-known endpoint", "error", err)
 
 	// Priority 5: Last resort - derive issuer from URL without discovery
 	derivedIssuer := discovery.DeriveIssuerFromURL(remoteURL)
 	if derivedIssuer != "" {
-		logger.Debugf("Using derived issuer from URL: %s", derivedIssuer)
+		slog.Debug("Using derived issuer from URL", "issuer", derivedIssuer)
 		return derivedIssuer, h.config.Scopes, nil, nil
 	}
 
@@ -346,11 +348,11 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 	ctx context.Context,
 	resourceMetadataURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {
-	logger.Debugf("Fetching resource metadata from: %s", resourceMetadataURL)
+	slog.Debug("Fetching resource metadata", "url", resourceMetadataURL)
 
 	metadata, err := discovery.FetchResourceMetadata(ctx, resourceMetadataURL)
 	if err != nil {
-		logger.Debugf("Failed to fetch resource metadata: %v", err)
+		slog.Debug("Failed to fetch resource metadata", "error", err)
 		return "", nil, nil, fmt.Errorf("could not determine OAuth issuer")
 	}
 
@@ -362,7 +364,7 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 	authServerInfo, issuer := h.findValidAuthServer(ctx, metadata.AuthorizationServers)
 	if authServerInfo == nil {
 		if len(metadata.AuthorizationServers) > 0 {
-			logger.Warnf("Resource metadata contained authorization_servers, " +
+			slog.Warn("Resource metadata contained authorization_servers, " +
 				"but none could be validated as actual OAuth authorization servers")
 		}
 		return "", nil, nil, fmt.Errorf("could not determine OAuth issuer")
@@ -372,7 +374,7 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 	scopes := h.config.Scopes
 	if len(scopes) == 0 && len(metadata.ScopesSupported) > 0 {
 		scopes = metadata.ScopesSupported
-		logger.Debugf("Using scopes from resource metadata: %v", scopes)
+		slog.Debug("Using scopes from resource metadata", "scopes", scopes)
 	}
 
 	return issuer, scopes, authServerInfo, nil
@@ -384,17 +386,17 @@ func (*Handler) findValidAuthServer(
 	authServers []string,
 ) (*discovery.AuthServerInfo, string) {
 	for _, authServer := range authServers {
-		logger.Debugf("Validating authorization server: %s", authServer)
+		slog.Debug("Validating authorization server", "server", authServer)
 
 		authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, authServer)
 		if err != nil {
-			logger.Debugf("Authorization server validation failed for %s: %v", authServer, err)
+			slog.Debug("Authorization server validation failed", "server", authServer, "error", err)
 			continue
 		}
 
 		// Found a valid authorization server
-		logger.Debugf("Using validated authorization server: %s (actual issuer: %s)",
-			authServer, authServerInfo.Issuer)
+		slog.Debug("Using validated authorization server",
+			"server", authServer, "issuer", authServerInfo.Issuer)
 		return authServerInfo, authServerInfo.Issuer
 	}
 
@@ -423,8 +425,8 @@ func (h *Handler) tryDiscoverFromWellKnown(
 
 	// Successfully discovered the actual issuer
 	if authServerInfo.Issuer != derivedURL {
-		logger.Debugf("Discovered actual issuer: %s (differs from server URL: %s)",
-			authServerInfo.Issuer, derivedURL)
+		slog.Debug("Discovered actual issuer",
+			"issuer", authServerInfo.Issuer, "server_url", derivedURL)
 	}
 
 	// Determine scopes - use configured or fall back to defaults
@@ -432,7 +434,7 @@ func (h *Handler) tryDiscoverFromWellKnown(
 	if len(scopes) == 0 {
 		// Use some reasonable defaults if no scopes configured
 		scopes = []string{"openid", "profile"}
-		logger.Debugf("No scopes configured, using defaults: %v", scopes)
+		slog.Debug("No scopes configured, using defaults", "scopes", scopes)
 	}
 
 	return authServerInfo.Issuer, scopes, authServerInfo, nil

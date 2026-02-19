@@ -58,3 +58,18 @@ type EmbeddingClient interface {
 	// Close releases any resources held by the client.
 	Close() error
 }
+
+// OptimizerConfig defines configuration options for the Optimizer.
+type OptimizerConfig struct {
+	// EmbeddingService is the URL of the embedding service for semantic search.
+	EmbeddingService string `json:"embedding_service"`
+
+	// MaxToolsToReturn limits the number of tools returned by FindTool.
+	MaxToolsToReturn *int `json:"max_tools_to_return"`
+
+	// HybridSemanticRatio controls the balance between semantic and exact search in hybrid mode.
+	HybridSemanticRatio *float64 `json:"hybrid_semantic_ratio"`
+
+	// SemanticDistanceThreshold sets the maximum cosine distance for semantic search results (0.0 = identical, 2.0 = opposite).
+	SemanticDistanceThreshold *float64 `json:"semantic_distance_threshold"`
+}

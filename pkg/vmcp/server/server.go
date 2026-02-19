@@ -31,7 +31,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -141,10 +140,11 @@ type Config struct {
 	// If not set, the optimizer is disabled.
 	OptimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
 
-	// OptimizerConfig holds the optimizer configuration from the vMCP config.
-	// When non-nil, Start() creates the appropriate store and embedding client,
-	// wires the OptimizerFactory, and registers cleanup in shutdownFuncs.
-	OptimizerConfig *vmcpconfig.OptimizerConfig
+	// OptimizerConfig holds the optimizer search parameters.
+	// When non-nil, Start() creates the FTS5 store, wires the OptimizerFactory,
+	// and registers the store cleanup in shutdownFuncs.
+	// A nil value disables the optimizer.
+	OptimizerConfig *optimizer.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)

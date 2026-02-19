@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -462,6 +464,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create status reporter: %w", err)
 	}
 
+	optCfg, err := getOptimizerConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to get optimizer config: %w", err)
+	}
+
 	serverCfg := &vmcpserver.Config{
 		Name:                    cfg.Name,
 		Version:                 getVersion(),
@@ -476,10 +483,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		StatusReportingInterval: getStatusReportingInterval(cfg),
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
-	}
-
-	if cfg.Optimizer != nil {
-		serverCfg.OptimizerConfig = cfg.Optimizer
+		OptimizerConfig:         optCfg,
 	}
 
 	// Convert composite tool configurations to workflow definitions
@@ -500,6 +504,59 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Start server (blocks until shutdown signal)
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
+}
+
+func getOptimizerConfig(cfg *config.Config) (*optimizer.Config, error) {
+	if cfg.Optimizer == nil {
+		return nil, nil
+	}
+
+	var maxTools *int
+	if cfg.Optimizer.MaxToolsToReturn != 0 {
+		if cfg.Optimizer.MaxToolsToReturn < 1 || cfg.Optimizer.MaxToolsToReturn > 50 {
+			return nil, fmt.Errorf("optimizer.maxToolsToReturn must be between 1 and 50, got %d", cfg.Optimizer.MaxToolsToReturn)
+		}
+		maxTools = &cfg.Optimizer.MaxToolsToReturn
+	}
+
+	var hybridSemanticRatio *float64
+	if cfg.Optimizer.HybridSearchSemanticRatio != "" {
+		ratio, err := strconv.ParseFloat(cfg.Optimizer.HybridSearchSemanticRatio, 64)
+		if err != nil {
+			return nil, fmt.Errorf("optimizer.hybridSearchSemanticRatio must be a valid number: %w", err)
+		}
+		if ratio < 0 || ratio > 1 {
+			return nil, fmt.Errorf(
+				"optimizer.hybridSearchSemanticRatio must be between 0.0 and 1.0, got %s",
+				cfg.Optimizer.HybridSearchSemanticRatio,
+			)
+		}
+		hybridSemanticRatio = &ratio
+	}
+
+	var semanticThreshold *float64
+	if cfg.Optimizer.SemanticDistanceThreshold != "" {
+		threshold, err := strconv.ParseFloat(cfg.Optimizer.SemanticDistanceThreshold, 64)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"optimizer.semanticDistanceThreshold must be a valid number: %w", err)
+		}
+		if threshold < 0 || threshold > 2 {
+			return nil, fmt.Errorf(
+				"optimizer.semanticDistanceThreshold must be between 0.0 and 2.0, got %s",
+				cfg.Optimizer.SemanticDistanceThreshold,
+			)
+		}
+		semanticThreshold = &threshold
+	}
+
+	// Return default optimizer config if not set in configuration
+	return &optimizer.Config{
+		EmbeddingService:          cfg.Optimizer.EmbeddingService,
+		MaxToolsToReturn:          maxTools,
+		HybridSemanticRatio:       hybridSemanticRatio,
+		SemanticDistanceThreshold: semanticThreshold,
+	}, nil
 }
 
 // aggregateCapabilities aggregates capabilities from backends or creates empty capabilities.

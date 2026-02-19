@@ -398,8 +398,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `embeddingService` _string_ | EmbeddingService is the full base URL of the embedding service endpoint<br />(e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic<br />tool discovery. Auto-populated by the operator from the EmbeddingServer<br />Status.URL. Do not set manually. |  | Optional: \{\} <br /> |
+| `embeddingService` _string_ | EmbeddingService is the full base URL of the embedding service endpoint<br />(e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic<br />tool discovery. Auto-populated by the operator from the EmbeddingServer<br />Status.URL (inline or referenced). Do not set manually. |  | Optional: \{\} <br /> |
 | `embeddingServiceTimeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.<br />Defaults to 30s if not specified. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
+| `maxToolsToReturn` _integer_ | MaxToolsToReturn is the maximum number of tool results returned by a search query.<br />Defaults to 8 if not specified or zero. |  | Maximum: 50 <br />Minimum: 1 <br />Optional: \{\} <br /> |
+| `hybridSearchSemanticRatio` _string_ | HybridSearchSemanticRatio controls the proportion of semantic vs FTS5 results<br />in hybrid search mode. 0.0 = all FTS5, 1.0 = all semantic.<br />Defaults to "0.5" if not specified or empty.<br />Serialized as a string because CRDs do not support float types portably. |  | Pattern: `^([0-9]*[.])?[0-9]+$` <br />Optional: \{\} <br /> |
+| `semanticDistanceThreshold` _string_ | SemanticDistanceThreshold is the maximum cosine distance for semantic search results.<br />Results with distance > threshold are filtered out in semantic search only.<br />This does not apply to FTS5: BM25 ranks are normalized scores, not true distances.<br />Cosine distance: 0 = identical, 2 = opposite.<br />Defaults to "1.0" if not specified or empty.<br />Serialized as a string because CRDs do not support float types portably. |  | Pattern: `^([0-9]*[.])?[0-9]+$` <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.OutgoingAuthConfig

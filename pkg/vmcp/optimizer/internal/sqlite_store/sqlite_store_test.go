@@ -20,10 +20,14 @@ import (
 // testDBCounter ensures each test gets a unique in-memory database.
 var testDBCounter atomic.Int64
 
-func newTestStore(t *testing.T, embeddingClient types.EmbeddingClient) sqliteToolStore {
+func newTestStore(t *testing.T, embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig) sqliteToolStore {
 	t.Helper()
 	id := testDBCounter.Add(1)
-	store, err := newSQLiteToolStore(fmt.Sprintf("file:testdb_%d?mode=memory&cache=shared", id), embeddingClient)
+	var optCfg *types.OptimizerConfig
+	if cfg != nil {
+		optCfg = cfg
+	}
+	store, err := newSQLiteToolStore(fmt.Sprintf("file:testdb_%d?mode=memory&cache=shared", id), embeddingClient, optCfg)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -52,7 +56,7 @@ func TestNewSQLiteToolStore(t *testing.T) {
 
 	t.Run("without embedding client", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil)
+		store, err := NewSQLiteToolStore(nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, store)
 		concrete, ok := store.(sqliteToolStore)
@@ -65,7 +69,7 @@ func TestNewSQLiteToolStore(t *testing.T) {
 	t.Run("with embedding client", func(t *testing.T) {
 		t.Parallel()
 		client := newFakeEmbeddingClient(384)
-		store, err := NewSQLiteToolStore(client)
+		store, err := NewSQLiteToolStore(client, nil)
 		require.NoError(t, err)
 		require.NotNil(t, store)
 		concrete, ok := store.(sqliteToolStore)
@@ -115,7 +119,7 @@ func TestSQLiteToolStore_UpsertTools(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			store := newTestStore(t, nil)
+			store := newTestStore(t, nil, nil)
 			ctx := context.Background()
 
 			if tc.initial != nil {
@@ -136,7 +140,7 @@ func TestSQLiteToolStore_UpsertTools(t *testing.T) {
 func TestSQLiteToolStore_UpsertTools_WithEmbeddings(t *testing.T) {
 	t.Parallel()
 	client := newFakeEmbeddingClient(384)
-	store := newTestStore(t, client)
+	store := newTestStore(t, client, nil)
 	ctx := context.Background()
 
 	tools := makeTools(
@@ -258,7 +262,7 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			store := newTestStore(t, nil)
+			store := newTestStore(t, nil, nil)
 			ctx := context.Background()
 
 			require.NoError(t, store.UpsertTools(ctx, tc.tools))
@@ -288,7 +292,7 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 
 func TestSQLiteToolStore_Search_ResultsCapped(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, nil)
+	store := newTestStore(t, nil, nil)
 	ctx := context.Background()
 
 	// Create more tools than defaultSearchLimit that all match "file"
@@ -304,8 +308,8 @@ func TestSQLiteToolStore_Search_ResultsCapped(t *testing.T) {
 
 	results, err := store.Search(ctx, "file", toolNames(tools))
 	require.NoError(t, err)
-	require.LessOrEqual(t, len(results), maxToolsToReturn,
-		"results should be capped at %d", maxToolsToReturn)
+	require.LessOrEqual(t, len(results), DefaultMaxToolsToReturn,
+		"results should be capped at %d", DefaultMaxToolsToReturn)
 }
 
 func TestSQLiteToolStore_Close(t *testing.T) {
@@ -313,7 +317,7 @@ func TestSQLiteToolStore_Close(t *testing.T) {
 
 	t.Run("close without embedding client", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil)
+		store, err := NewSQLiteToolStore(nil, nil)
 		require.NoError(t, err)
 		require.NoError(t, store.Close())
 	})
@@ -321,14 +325,14 @@ func TestSQLiteToolStore_Close(t *testing.T) {
 	t.Run("close with embedding client", func(t *testing.T) {
 		t.Parallel()
 		client := newFakeEmbeddingClient(384)
-		store, err := NewSQLiteToolStore(client)
+		store, err := NewSQLiteToolStore(client, nil)
 		require.NoError(t, err)
 		require.NoError(t, store.Close())
 	})
 
 	t.Run("double close is safe", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil)
+		store, err := NewSQLiteToolStore(nil, nil)
 		require.NoError(t, err)
 		require.NoError(t, store.Close())
 		// sql.DB.Close() returns nil on repeated calls
@@ -338,7 +342,7 @@ func TestSQLiteToolStore_Close(t *testing.T) {
 
 func TestSQLiteToolStore_Concurrent(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, nil)
+	store := newTestStore(t, nil, nil)
 	ctx := context.Background()
 
 	initial := makeTools(
@@ -381,7 +385,7 @@ func TestSQLiteToolStore_Concurrent(t *testing.T) {
 func TestSQLiteToolStore_SemanticSearch(t *testing.T) {
 	t.Parallel()
 	client := newFakeEmbeddingClient(384)
-	store := newTestStore(t, client)
+	store := newTestStore(t, client, nil)
 	ctx := context.Background()
 
 	tools := makeTools(
@@ -392,7 +396,7 @@ func TestSQLiteToolStore_SemanticSearch(t *testing.T) {
 	)
 	require.NoError(t, store.UpsertTools(ctx, tools))
 
-	results, err := store.searchSemantic(ctx, "read a file from disk", toolNames(tools), maxToolsToReturn)
+	results, err := store.searchSemantic(ctx, "read a file from disk", toolNames(tools), DefaultMaxToolsToReturn)
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 
@@ -406,7 +410,7 @@ func TestSQLiteToolStore_SemanticSearch(t *testing.T) {
 func TestSQLiteToolStore_HybridSearch(t *testing.T) {
 	t.Parallel()
 	client := newFakeEmbeddingClient(384)
-	store := newTestStore(t, client)
+	store := newTestStore(t, client, nil)
 	ctx := context.Background()
 
 	tools := makeTools(
@@ -420,13 +424,13 @@ func TestSQLiteToolStore_HybridSearch(t *testing.T) {
 	results, err := store.Search(ctx, "file", toolNames(tools))
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
-	require.LessOrEqual(t, len(results), maxToolsToReturn)
+	require.LessOrEqual(t, len(results), DefaultMaxToolsToReturn)
 }
 
 func TestSQLiteToolStore_ConcurrentSemantic(t *testing.T) {
 	t.Parallel()
 	client := newFakeEmbeddingClient(384)
-	store := newTestStore(t, client)
+	store := newTestStore(t, client, nil)
 	ctx := context.Background()
 
 	tools := makeTools(
@@ -684,6 +688,102 @@ func TestMergeResults(t *testing.T) {
 			require.Equal(t, tc.wantNames, gotNames)
 			require.Equal(t, tc.wantScores, gotScores)
 		})
+	}
+}
+
+func TestSQLiteToolStore_ConfigDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil config uses defaults", func(t *testing.T) {
+		t.Parallel()
+		store := newTestStore(t, nil, nil)
+		require.Equal(t, DefaultMaxToolsToReturn, store.maxToolsToReturn)
+		require.InDelta(t, DefaultHybridSemanticToolsRatio, store.hybridSemanticRatio, 0.001)
+		require.InDelta(t, DefaultSemanticDistanceThreshold, store.semanticDistanceThreshold, 0.001)
+	})
+
+	t.Run("zero values use defaults", func(t *testing.T) {
+		t.Parallel()
+		cfg := &types.OptimizerConfig{
+			EmbeddingService: "http://example.com:8080",
+		}
+		store := newTestStore(t, nil, cfg)
+		require.Equal(t, DefaultMaxToolsToReturn, store.maxToolsToReturn)
+		require.InDelta(t, DefaultHybridSemanticToolsRatio, store.hybridSemanticRatio, 0.001)
+		require.InDelta(t, DefaultSemanticDistanceThreshold, store.semanticDistanceThreshold, 0.001)
+	})
+
+	t.Run("explicit values override defaults", func(t *testing.T) {
+		t.Parallel()
+		maxTools := 3
+		hybridRatio := 0.8
+		semanticThreshold := 0.5
+		cfg := &types.OptimizerConfig{
+			EmbeddingService:          "http://example.com:8080",
+			MaxToolsToReturn:          &maxTools,
+			HybridSemanticRatio:       &hybridRatio,
+			SemanticDistanceThreshold: &semanticThreshold,
+		}
+		store := newTestStore(t, nil, cfg)
+		require.Equal(t, 3, store.maxToolsToReturn)
+		require.InDelta(t, 0.8, store.hybridSemanticRatio, 0.001)
+		require.InDelta(t, 0.5, store.semanticDistanceThreshold, 0.001)
+	})
+}
+
+func TestSQLiteToolStore_CustomMaxTools(t *testing.T) {
+	t.Parallel()
+	maxTools := 3
+	cfg := &types.OptimizerConfig{
+		EmbeddingService: "http://example.com:8080",
+		MaxToolsToReturn: &maxTools,
+	}
+	store := newTestStore(t, nil, cfg)
+	ctx := context.Background()
+
+	tools := makeTools(
+		mcp.NewTool("file_read", mcp.WithDescription("Read files")),
+		mcp.NewTool("file_write", mcp.WithDescription("Write files")),
+		mcp.NewTool("file_delete", mcp.WithDescription("Delete files")),
+		mcp.NewTool("file_copy", mcp.WithDescription("Copy files")),
+		mcp.NewTool("file_move", mcp.WithDescription("Move files")),
+		mcp.NewTool("file_list", mcp.WithDescription("List files")),
+	)
+	require.NoError(t, store.UpsertTools(ctx, tools))
+
+	results, err := store.Search(ctx, "file", toolNames(tools))
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(results), 3,
+		"results should be capped at custom maxToolsToReturn=3")
+}
+
+func TestSQLiteToolStore_SemanticDistanceThreshold(t *testing.T) {
+	t.Parallel()
+	client := newFakeEmbeddingClient(384)
+
+	threshold := 0.001
+	// Use a very tight threshold that should filter most results
+	cfg := &types.OptimizerConfig{
+		EmbeddingService:          "http://example.com:8080",
+		SemanticDistanceThreshold: &threshold,
+	}
+	store := newTestStore(t, client, cfg)
+	ctx := context.Background()
+
+	tools := makeTools(
+		mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")),
+		mcp.NewTool("send_email", mcp.WithDescription("Send an email message")),
+		mcp.NewTool("list_repos", mcp.WithDescription("List GitHub repositories")),
+	)
+	require.NoError(t, store.UpsertTools(ctx, tools))
+
+	// With a threshold of 0.001, most results should be filtered out in semantic search
+	results, err := store.searchSemantic(ctx, "some random query", toolNames(tools), DefaultMaxToolsToReturn)
+	require.NoError(t, err)
+	// All results should have distance <= 0.001
+	for _, r := range results {
+		require.LessOrEqual(t, r.Score, 0.001,
+			"semantic result %s should have distance <= threshold", r.Name)
 	}
 }
 

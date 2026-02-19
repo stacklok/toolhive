@@ -754,6 +754,30 @@ type OptimizerConfig struct {
 	// +kubebuilder:default="30s"
 	// +optional
 	EmbeddingServiceTimeout Duration `json:"embeddingServiceTimeout,omitempty" yaml:"embeddingServiceTimeout,omitempty"`
+	// MaxToolsToReturn is the maximum number of tool results returned by a search query.
+	// Defaults to 8 if not specified or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=50
+	// +optional
+	MaxToolsToReturn int `json:"maxToolsToReturn,omitempty" yaml:"maxToolsToReturn,omitempty"`
+
+	// HybridSearchSemanticRatio controls the proportion of semantic vs FTS5 results
+	// in hybrid search mode. 0.0 = all FTS5, 1.0 = all semantic.
+	// Defaults to "0.5" if not specified or empty.
+	// Serialized as a string because CRDs do not support float types portably.
+	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
+	// +optional
+	HybridSearchSemanticRatio string `json:"hybridSearchSemanticRatio,omitempty" yaml:"hybridSearchSemanticRatio,omitempty"`
+
+	// SemanticDistanceThreshold is the maximum cosine distance for semantic search results.
+	// Results with distance > threshold are filtered out in semantic search only.
+	// This does not apply to FTS5: BM25 ranks are normalized scores, not true distances.
+	// Cosine distance: 0 = identical, 2 = opposite.
+	// Defaults to "1.0" if not specified or empty.
+	// Serialized as a string because CRDs do not support float types portably.
+	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
+	// +optional
+	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
 }
 
 // Validator validates configuration.

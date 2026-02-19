@@ -116,6 +116,8 @@ spec:
         prefixFormat: "{workload}_"
 
     # No optimizer config needed — auto-configured from embeddingServerRef below.
+    optimizer:
+      maxToolsToReturn: 5
 
     # Operational settings
     operational:

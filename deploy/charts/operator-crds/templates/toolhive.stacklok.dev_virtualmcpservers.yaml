@@ -733,6 +733,31 @@ spec:
                           Defaults to 30s if not specified.
                         pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                         type: string
+                      hybridSearchSemanticRatio:
+                        description: |-
+                          HybridSearchSemanticRatio controls the proportion of semantic vs FTS5 results
+                          in hybrid search mode. 0.0 = all FTS5, 1.0 = all semantic.
+                          Defaults to "0.5" if not specified or empty.
+                          Serialized as a string because CRDs do not support float types portably.
+                        pattern: ^([0-9]*[.])?[0-9]+$
+                        type: string
+                      maxToolsToReturn:
+                        description: |-
+                          MaxToolsToReturn is the maximum number of tool results returned by a search query.
+                          Defaults to 8 if not specified or zero.
+                        maximum: 50
+                        minimum: 1
+                        type: integer
+                      semanticDistanceThreshold:
+                        description: |-
+                          SemanticDistanceThreshold is the maximum cosine distance for semantic search results.
+                          Results with distance > threshold are filtered out in semantic search only.
+                          This does not apply to FTS5: BM25 ranks are normalized scores, not true distances.
+                          Cosine distance: 0 = identical, 2 = opposite.
+                          Defaults to "1.0" if not specified or empty.
+                          Serialized as a string because CRDs do not support float types portably.
+                        pattern: ^([0-9]*[.])?[0-9]+$
+                        type: string
                     type: object
                   outgoingAuth:
                     description: |-

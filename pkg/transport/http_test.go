@@ -13,7 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/container/docker"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -34,7 +34,7 @@ func TestHTTPTransport_ShouldRestart(t *testing.T) {
 		},
 		{
 			name:           "container removed - should not restart",
-			exitError:      docker.NewContainerError(docker.ErrContainerRemoved, "test", "Container removed"),
+			exitError:      rt.NewContainerError(rt.ErrContainerRemoved, "test", "Container removed"),
 			expectedResult: false,
 		},
 		{

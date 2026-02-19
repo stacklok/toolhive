@@ -12,6 +12,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -50,6 +51,7 @@ func Setup(
 	host string,
 	targetPort int,
 	targetHost string,
+	publishedPorts []string,
 ) (*SetupResult, error) {
 	// Add transport-specific environment variables
 	env, ok := transportEnvMap[transportType]
@@ -74,6 +76,26 @@ func Setup(
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 	containerOptions.IgnoreConfig = ignoreConfig
 
+	// Process published ports
+	for _, portSpec := range publishedPorts {
+		hostPort, containerPort, err := networking.ParsePortSpec(portSpec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse published port '%s': %w", portSpec, err)
+		}
+
+		// Add to exposed ports
+		containerPortStr := fmt.Sprintf("%d/tcp", containerPort)
+		containerOptions.ExposedPorts[containerPortStr] = struct{}{}
+
+		// Add to port bindings
+		// Check if we already have bindings for this port
+		bindings := containerOptions.PortBindings[containerPortStr]
+		bindings = append(bindings, rt.PortBinding{
+			HostPort: hostPort,
+		})
+		containerOptions.PortBindings[containerPortStr] = bindings
+	}
+
 	if transportType == types.TransportTypeStdio {
 		containerOptions.AttachStdio = true
 	} else {
@@ -90,7 +112,13 @@ func Setup(
 		}
 
 		// Set the port bindings
-		containerOptions.PortBindings[containerPortStr] = portBindings
+		// Note: if the user explicitly publishes the target port using --publish,
+		// we append the default transport binding to the list of bindings for that port.
+		if _, ok := containerOptions.PortBindings[containerPortStr]; ok {
+			containerOptions.PortBindings[containerPortStr] = append(containerOptions.PortBindings[containerPortStr], portBindings...)
+		} else {
+			containerOptions.PortBindings[containerPortStr] = portBindings
+		}
 	}
 
 	// Create the container

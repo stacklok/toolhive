@@ -1804,3 +1804,150 @@ func TestStaticModeTransportConstants(t *testing.T) {
 	// 3. Run: task operator-generate && task operator-manifests
 	// 4. This test will verify the constants match the expected values
 }
+
+// TestOptimizerEmbeddingServiceURL tests that the optimizer's EmbeddingService
+// field is populated with the full base URL (scheme + host + port) from the EmbeddingServer
+// Status.URL. This ensures the optimizer can use it directly as an HTTP client endpoint.
+func TestOptimizerEmbeddingServiceURL(t *testing.T) {
+	t.Parallel()
+
+	const (
+		testNamespace       = "default"
+		testGroup           = "test-group"
+		customPort    int32 = 9090
+	)
+
+	tests := []struct {
+		name        string
+		vmcp        *mcpv1alpha1.VirtualMCPServer
+		esName      string
+		esPort      int32
+		expectedURL string
+	}{
+		{
+			name: "referenced embedding server populates full URL",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-vmcp",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{
+						Group:     testGroup,
+						Optimizer: &vmcpconfig.OptimizerConfig{},
+					},
+					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+						Name: "shared-embedding",
+					},
+				},
+			},
+			esName:      "shared-embedding",
+			esPort:      customPort,
+			expectedURL: "http://shared-embedding.default.svc.cluster.local:9090",
+		},
+		{
+			name: "ref without optimizer auto-populates optimizer with defaults",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-vmcp",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{
+						Group: testGroup,
+						// No Optimizer — validation auto-populates it when ref is set
+					},
+					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+						Name: "shared-embedding",
+					},
+				},
+			},
+			esName:      "shared-embedding",
+			esPort:      customPort,
+			expectedURL: "http://shared-embedding.default.svc.cluster.local:9090",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			testScheme := createRunConfigTestScheme()
+
+			mcpGroup := &mcpv1alpha1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testGroup,
+					Namespace: testNamespace,
+				},
+				Spec:   mcpv1alpha1.MCPGroupSpec{},
+				Status: mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+			}
+
+			objects := []runtime.Object{tt.vmcp, mcpGroup}
+
+			// Create the EmbeddingServer with Status.URL if one is expected
+			if tt.esName != "" {
+				es := &mcpv1alpha1.EmbeddingServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tt.esName,
+						Namespace: testNamespace,
+					},
+					Spec: mcpv1alpha1.EmbeddingServerSpec{
+						Image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5",
+						Model: "BAAI/bge-small-en-v1.5",
+						Port:  tt.esPort,
+					},
+					Status: mcpv1alpha1.EmbeddingServerStatus{
+						Phase:         mcpv1alpha1.EmbeddingServerPhaseRunning,
+						ReadyReplicas: 1,
+						URL: fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
+							tt.esName, testNamespace, tt.esPort),
+					},
+				}
+				objects = append(objects, es)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithRuntimeObjects(objects...).
+				Build()
+
+			reconciler := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: testScheme,
+			}
+
+			workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testNamespace)
+			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testGroup)
+			require.NoError(t, err)
+
+			// Run validation (mirrors controller flow: validateSpec → ensureVmcpConfigConfigMap).
+			// Validate() may auto-populate optimizer defaults when embeddingServerRef is set.
+			err = tt.vmcp.Validate()
+			require.NoError(t, err)
+
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err = reconciler.ensureVmcpConfigConfigMap(ctx, tt.vmcp, workloadNames, statusManager)
+			require.NoError(t, err)
+
+			// Read back the ConfigMap and parse the config
+			configMap := &corev1.ConfigMap{}
+			err = fakeClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpConfigMapName(tt.vmcp.Name),
+				Namespace: testNamespace,
+			}, configMap)
+			require.NoError(t, err)
+
+			var config vmcpconfig.Config
+			err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+			require.NoError(t, err)
+
+			if tt.expectedURL != "" {
+				require.NotNil(t, config.Optimizer, "Optimizer config should be present")
+				assert.Equal(t, tt.expectedURL, config.Optimizer.EmbeddingService,
+					"EmbeddingService should contain the full base URL from EmbeddingServer Status.URL")
+			}
+		})
+	}
+}

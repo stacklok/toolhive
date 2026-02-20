@@ -124,7 +124,7 @@ func (*runtimeStatusManager) SetWorkloadStatus(
 	contextMsg string,
 ) error {
 	// TODO: This will need to handle concurrent updates.
-	slog.Debug("Workload status set", "workload", workloadName, "status", status, "context", contextMsg)
+	slog.Debug("workload status set", "workload", workloadName, "status", status, "context", contextMsg)
 	return nil
 }
 
@@ -136,18 +136,18 @@ func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) e
 
 func (*runtimeStatusManager) SetWorkloadPID(_ context.Context, workloadName string, pid int) error {
 	// Noop for runtime status manager
-	slog.Debug("Workload PID set (noop for runtime status manager)", "workload", workloadName, "pid", pid)
+	slog.Debug("workload PID set (noop for runtime status manager)", "workload", workloadName, "pid", pid)
 	return nil
 }
 
 func (*runtimeStatusManager) ResetWorkloadPID(_ context.Context, workloadName string) error {
 	// Noop for runtime status manager
-	slog.Debug("Workload PID reset (noop for runtime status manager)", "workload", workloadName)
+	slog.Debug("workload PID reset (noop for runtime status manager)", "workload", workloadName)
 	return nil
 }
 
 func (*runtimeStatusManager) GetWorkloadPID(_ context.Context, workloadName string) (int, error) {
 	// Noop for runtime status manager - always return 0
-	slog.Debug("Workload PID requested (noop for runtime status manager, returning 0)", "workload", workloadName)
+	slog.Debug("workload PID requested (noop for runtime status manager, returning 0)", "workload", workloadName)
 	return 0, nil
 }

@@ -9,7 +9,6 @@ package client
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +22,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -169,7 +169,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 			target.WorkloadID, err)
 	}
 
-	slog.Debug("Applied authentication strategy to backend", "strategy", authStrategy.Name(), "backend", target.WorkloadID)
+	slog.Debug("applied authentication strategy to backend", "strategy", authStrategy.Name(), "backend", target.WorkloadID)
 
 	// Add authentication layer with pre-resolved strategy
 	baseTransport = &authRoundTripper{
@@ -187,37 +187,35 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		identity: identity,
 	}
 
-	// Add size limit layer for DoS protection
-	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		resp, err := baseTransport.RoundTrip(req)
-		if err != nil {
-			return nil, err
-		}
-		// Wrap response body with size limit
-		resp.Body = struct {
-			io.Reader
-			io.Closer
-		}{
-			Reader: io.LimitReader(resp.Body, maxResponseSize),
-			Closer: resp.Body,
-		}
-		return resp, nil
-	})
-
-	// Create HTTP client with configured transport chain
-	// Set timeouts to prevent long-lived connections that require continuous listening
-	httpClient := &http.Client{
-		Transport: sizeLimitedTransport,
-		Timeout:   30 * time.Second, // Prevent hanging on connections
-	}
-
 	var c *client.Client
 
 	switch target.TransportType {
 	case "streamable-http", "streamable":
+		// "streamable" is a legacy alias for "streamable-http".
+		//
+		// For streamable-HTTP each MCP call is a single bounded HTTP
+		// request/response pair, so a per-response body size limit is safe.
+		sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			resp, err := baseTransport.RoundTrip(req)
+			if err != nil {
+				return nil, err
+			}
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.LimitReader(resp.Body, maxResponseSize),
+				Closer: resp.Body,
+			}
+			return resp, nil
+		})
+		httpClient := &http.Client{
+			Transport: sizeLimitedTransport,
+			Timeout:   30 * time.Second,
+		}
 		c, err = client.NewStreamableHttpClient(
 			target.BaseURL,
-			transport.WithHTTPTimeout(30*time.Second), // Set timeout instead of 0
+			transport.WithHTTPTimeout(30*time.Second),
 			transport.WithHTTPBasicClient(httpClient),
 		)
 		if err != nil {
@@ -225,6 +223,11 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		}
 
 	case "sse":
+		// For SSE the entire session is one long-lived HTTP response body.
+		// Applying io.LimitReader would silently terminate the stream after
+		// maxResponseSize cumulative bytes — not per-event — which is wrong.
+		// http.Client.Timeout is also omitted: it would kill the stream.
+		httpClient := &http.Client{Transport: baseTransport}
 		c, err = client.NewSSEMCPClient(
 			target.BaseURL,
 			transport.WithHTTPClient(httpClient),
@@ -325,7 +328,7 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo: mcp.Implementation{
 				Name:    "toolhive-vmcp",
-				Version: "0.1.0",
+				Version: versions.Version,
 			},
 			Capabilities: mcp.ClientCapabilities{
 				// Virtual MCP acts as a client to backends
@@ -352,7 +355,7 @@ func queryTools(ctx context.Context, c *client.Client, supported bool, backendID
 		}
 		return result, nil
 	}
-	slog.Debug("Backend does not advertise tools capability, skipping tools query", "backend", backendID)
+	slog.Debug("backend does not advertise tools capability, skipping tools query", "backend", backendID)
 	return &mcp.ListToolsResult{Tools: []mcp.Tool{}}, nil
 }
 
@@ -365,7 +368,7 @@ func queryResources(ctx context.Context, c *client.Client, supported bool, backe
 		}
 		return result, nil
 	}
-	slog.Debug("Backend does not advertise resources capability, skipping resources query", "backend", backendID)
+	slog.Debug("backend does not advertise resources capability, skipping resources query", "backend", backendID)
 	return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
 }
 
@@ -378,45 +381,15 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 		}
 		return result, nil
 	}
-	slog.Debug("Backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
+	slog.Debug("backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
-}
-
-// convertContent converts mcp.Content to vmcp.Content.
-// This preserves the full content structure from backend responses.
-func convertContent(content mcp.Content) vmcp.Content {
-	if textContent, ok := mcp.AsTextContent(content); ok {
-		return vmcp.Content{
-			Type: "text",
-			Text: textContent.Text,
-		}
-	}
-	if imageContent, ok := mcp.AsImageContent(content); ok {
-		return vmcp.Content{
-			Type:     "image",
-			Data:     imageContent.Data,
-			MimeType: imageContent.MIMEType,
-		}
-	}
-	if audioContent, ok := mcp.AsAudioContent(content); ok {
-		return vmcp.Content{
-			Type:     "audio",
-			Data:     audioContent.Data,
-			MimeType: audioContent.MIMEType,
-		}
-	}
-	// Handle embedded resources if needed
-	// Unknown content types are marked as "unknown" type with no data
-	slog.Warn("Encountered unknown content type, marking as unknown content",
-		"type", fmt.Sprintf("%T", content))
-	return vmcp.Content{Type: "unknown"}
 }
 
 // ListCapabilities queries a backend for its MCP capabilities.
 // Returns tools, resources, and prompts exposed by the backend.
 // Only queries capabilities that the server advertises during initialization.
 func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
-	slog.Debug("Querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
+	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
 
 	// Create a client for this backend (not yet initialized)
 	c, err := h.clientFactory(ctx, target)
@@ -425,7 +398,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			slog.Debug("Failed to close client", "error", err)
+			slog.Debug("failed to close client", "error", err)
 		}
 	}()
 
@@ -435,7 +408,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
-	slog.Debug("Backend capabilities",
+	slog.Debug("backend capabilities",
 		"backend", target.WorkloadID,
 		"tools", serverCaps.Tools != nil,
 		"resources", serverCaps.Resources != nil,
@@ -467,25 +440,10 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 
 	// Convert tools
 	for i, tool := range toolsResp.Tools {
-		// Convert ToolInputSchema to map[string]any
-		// The ToolInputSchema is a struct with Type, Properties, Required fields
-		inputSchema := map[string]any{
-			"type": tool.InputSchema.Type,
-		}
-		if tool.InputSchema.Properties != nil {
-			inputSchema["properties"] = tool.InputSchema.Properties
-		}
-		if len(tool.InputSchema.Required) > 0 {
-			inputSchema["required"] = tool.InputSchema.Required
-		}
-		if tool.InputSchema.Defs != nil {
-			inputSchema["$defs"] = tool.InputSchema.Defs
-		}
-
 		capabilities.Tools[i] = vmcp.Tool{
 			Name:        tool.Name,
 			Description: tool.Description,
-			InputSchema: inputSchema,
+			InputSchema: conversion.ConvertToolInputSchema(tool.InputSchema),
 			BackendID:   target.WorkloadID,
 		}
 	}
@@ -523,7 +481,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	// TODO: Query server capabilities to detect logging/sampling support
 	// This requires additional MCP protocol support for capabilities introspection
 
-	slog.Debug("Backend capabilities queried",
+	slog.Debug("backend capabilities queried",
 		"backend", target.WorkloadName,
 		"tools", len(capabilities.Tools),
 		"resources", len(capabilities.Resources),
@@ -543,7 +501,7 @@ func (h *httpBackendClient) CallTool(
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	slog.Debug("Calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
+	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -552,7 +510,7 @@ func (h *httpBackendClient) CallTool(
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			slog.Debug("Failed to close client", "error", err)
+			slog.Debug("failed to close client", "error", err)
 		}
 	}()
 
@@ -566,7 +524,7 @@ func (h *httpBackendClient) CallTool(
 	// we must use the original backend name when forwarding requests.
 	backendToolName := target.GetBackendCapabilityName(toolName)
 	if backendToolName != toolName {
-		slog.Debug("Translating tool name", "client_name", toolName, "backend_name", backendToolName)
+		slog.Debug("translating tool name", "client_name", toolName, "backend_name", backendToolName)
 	}
 
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
@@ -599,20 +557,17 @@ func (h *httpBackendClient) CallTool(
 
 		// Log with metadata for distributed tracing
 		if responseMeta != nil {
-			slog.Warn("Tool returned IsError=true",
+			slog.Warn("tool returned IsError=true",
 				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg, "meta", responseMeta)
 		} else {
-			slog.Warn("Tool returned IsError=true",
+			slog.Warn("tool returned IsError=true",
 				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg)
 		}
 		// Continue processing - we return the result with IsError flag and metadata preserved
 	}
 
-	// Convert MCP content to vmcp.Content array
-	contentArray := make([]vmcp.Content, len(result.Content))
-	for i, content := range result.Content {
-		contentArray[i] = convertContent(content)
-	}
+	// Convert MCP content to vmcp.Content array.
+	contentArray := conversion.ConvertMCPContents(result.Content)
 
 	// Check for structured content first (preferred for composite tool step chaining).
 	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
@@ -620,11 +575,11 @@ func (h *httpBackendClient) CallTool(
 	var structuredContent map[string]any
 	if result.StructuredContent != nil {
 		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
-			slog.Debug("Using structured content from tool", "tool", toolName, "backend", target.WorkloadID)
+			slog.Debug("using structured content from tool", "tool", toolName, "backend", target.WorkloadID)
 			structuredContent = structuredMap
 		} else {
 			// StructuredContent is not an object - fall through to Content processing
-			slog.Debug("StructuredContent is not an object, falling back to Content",
+			slog.Debug("structuredContent is not an object, falling back to Content",
 				"tool", toolName, "backend", target.WorkloadID)
 		}
 	}
@@ -649,7 +604,7 @@ func (h *httpBackendClient) CallTool(
 func (h *httpBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (*vmcp.ResourceReadResult, error) {
-	slog.Debug("Reading resource from backend", "resource", uri, "backend", target.WorkloadName)
+	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -658,7 +613,7 @@ func (h *httpBackendClient) ReadResource(
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			slog.Debug("Failed to close client", "error", err)
+			slog.Debug("failed to close client", "error", err)
 		}
 	}()
 
@@ -671,7 +626,7 @@ func (h *httpBackendClient) ReadResource(
 	// When conflict resolution renames resources, we must use the original backend URI.
 	backendURI := target.GetBackendCapabilityName(uri)
 	if backendURI != uri {
-		slog.Debug("Translating resource URI", "client_uri", uri, "backend_uri", backendURI)
+		slog.Debug("translating resource URI", "client_uri", uri, "backend_uri", backendURI)
 	}
 
 	result, err := c.ReadResource(ctx, mcp.ReadResourceRequest{
@@ -683,33 +638,8 @@ func (h *httpBackendClient) ReadResource(
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all resource contents
-	// MCP resources can have multiple contents (text or blob)
-	var data []byte
-	var mimeType string
-	for i, content := range result.Contents {
-		// Try to convert to TextResourceContents
-		if textContent, ok := mcp.AsTextResourceContents(content); ok {
-			data = append(data, []byte(textContent.Text)...)
-			if i == 0 && textContent.MIMEType != "" {
-				mimeType = textContent.MIMEType
-			}
-		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
-			// Blob is base64-encoded per MCP spec, decode it to bytes
-			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
-			if err != nil {
-				slog.Warn("Failed to decode base64 blob from resource",
-					"resource", uri, "backend", target.WorkloadID, "error", err)
-				// Append raw blob as fallback
-				data = append(data, []byte(blobContent.Blob)...)
-			} else {
-				data = append(data, decoded...)
-			}
-			if i == 0 && blobContent.MIMEType != "" {
-				mimeType = blobContent.MIMEType
-			}
-		}
-	}
+	// Concatenate all resource content items into a single byte slice.
+	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
 
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
@@ -731,7 +661,7 @@ func (h *httpBackendClient) GetPrompt(
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	slog.Debug("Getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
+	slog.Debug("getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -740,7 +670,7 @@ func (h *httpBackendClient) GetPrompt(
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
-			slog.Debug("Failed to close client", "error", err)
+			slog.Debug("failed to close client", "error", err)
 		}
 	}()
 
@@ -753,14 +683,10 @@ func (h *httpBackendClient) GetPrompt(
 	// When conflict resolution renames prompts, we must use the original backend name.
 	backendPromptName := target.GetBackendCapabilityName(name)
 	if backendPromptName != name {
-		slog.Debug("Translating prompt name", "client_name", name, "backend_name", backendPromptName)
+		slog.Debug("translating prompt name", "client_name", name, "backend_name", backendPromptName)
 	}
 
-	// Convert map[string]any to map[string]string
-	stringArgs := make(map[string]string)
-	for k, v := range arguments {
-		stringArgs[k] = fmt.Sprintf("%v", v)
-	}
+	stringArgs := conversion.ConvertPromptArguments(arguments)
 
 	result, err := c.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
@@ -772,26 +698,9 @@ func (h *httpBackendClient) GetPrompt(
 		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all prompt messages into a single string
-	// MCP prompts return messages with role and content (Content interface)
-	var prompt string
-	for _, msg := range result.Messages {
-		if msg.Role != "" {
-			prompt += fmt.Sprintf("[%s] ", msg.Role)
-		}
-		// Try to convert content to TextContent
-		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
-			prompt += textContent.Text + "\n"
-		}
-		// TODO: Handle other content types (image, audio, resource)
-	}
-
-	// Extract _meta field from backend response
-	meta := conversion.FromMCPMeta(result.Meta)
-
 	return &vmcp.PromptGetResult{
-		Messages:    prompt,
+		Messages:    conversion.ConvertPromptMessages(result.Messages),
 		Description: result.Description,
-		Meta:        meta,
+		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil
 }

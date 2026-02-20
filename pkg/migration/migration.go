@@ -20,7 +20,7 @@ var migrationOnce sync.Once
 func CheckAndPerformDefaultGroupMigration() {
 	migrationOnce.Do(func() {
 		if err := performDefaultGroupMigration(); err != nil {
-			slog.Error("Failed to perform default group migration", "error", err)
+			slog.Error("failed to perform default group migration", "error", err)
 			return
 		}
 	})

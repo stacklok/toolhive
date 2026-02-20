@@ -398,7 +398,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides the embedding service<br />for semantic tool discovery. The service must implement the optimizer embedding API. |  | Required: \{\} <br /> |
+| `embeddingService` _string_ | EmbeddingService is the full base URL of the embedding service endpoint<br />(e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic<br />tool discovery. Auto-populated by the operator from the EmbeddingServer<br />Status.URL. Do not set manually. |  | Optional: \{\} <br /> |
+| `embeddingServiceTimeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.<br />Defaults to 30s if not specified. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.OutgoingAuthConfig
@@ -1024,6 +1025,23 @@ _Appears in:_
 | `Terminating` | EmbeddingServerPhaseTerminating means the EmbeddingServer is being deleted<br /> |
 
 
+#### api.v1alpha1.EmbeddingServerRef
+
+
+
+EmbeddingServerRef references an existing EmbeddingServer resource by name.
+This follows the same pattern as ExternalAuthConfigRef and ToolConfigRef.
+
+
+
+_Appears in:_
+- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the EmbeddingServer resource |  | Required: \{\} <br /> |
+
+
 #### api.v1alpha1.EmbeddingServerSpec
 
 
@@ -1037,9 +1055,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `model` _string_ | Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2") |  | Required: \{\} <br /> |
+| `model` _string_ | Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2") | BAAI/bge-small-en-v1.5 | Optional: \{\} <br /> |
 | `hfTokenSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.<br />If provided, the secret value will be provided to the embedding server for authentication with huggingface. |  | Optional: \{\} <br /> |
-| `image` _string_ | Image is the container image for huggingface-embedding-inference | ghcr.io/huggingface/text-embeddings-inference:latest | Required: \{\} <br /> |
+| `image` _string_ | Image is the container image for huggingface-embedding-inference | ghcr.io/huggingface/text-embeddings-inference:cpu-latest | Optional: \{\} <br /> |
 | `imagePullPolicy` _string_ | ImagePullPolicy defines the pull policy for the container image | IfNotPresent | Enum: [Always Never IfNotPresent] <br />Optional: \{\} <br /> |
 | `port` _integer_ | Port is the port to expose the embedding service on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `args` _string array_ | Args are additional arguments to pass to the embedding inference server |  | Optional: \{\} <br /> |
@@ -3048,6 +3066,7 @@ _Appears in:_
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br />Optional: \{\} <br /> |
+| `embeddingServerRef` _[api.v1alpha1.EmbeddingServerRef](#apiv1alpha1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />When the optimizer is enabled, this field is required to point to a ready EmbeddingServer<br />that provides embedding capabilities.<br />The referenced EmbeddingServer must exist in the same namespace and be ready. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.VirtualMCPServerStatus

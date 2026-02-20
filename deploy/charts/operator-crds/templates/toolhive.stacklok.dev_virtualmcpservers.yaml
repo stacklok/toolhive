@@ -721,11 +721,18 @@ spec:
                     properties:
                       embeddingService:
                         description: |-
-                          EmbeddingService is the name of a Kubernetes Service that provides the embedding service
-                          for semantic tool discovery. The service must implement the optimizer embedding API.
+                          EmbeddingService is the full base URL of the embedding service endpoint
+                          (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
+                          tool discovery. Auto-populated by the operator from the EmbeddingServer
+                          Status.URL. Do not set manually.
                         type: string
-                    required:
-                    - embeddingService
+                      embeddingServiceTimeout:
+                        default: 30s
+                        description: |-
+                          EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.
+                          Defaults to 30s if not specified.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
                     type: object
                   outgoingAuth:
                     description: |-
@@ -982,6 +989,19 @@ spec:
                 - groupRef
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              embeddingServerRef:
+                description: |-
+                  EmbeddingServerRef references an existing EmbeddingServer resource by name.
+                  When the optimizer is enabled, this field is required to point to a ready EmbeddingServer
+                  that provides embedding capabilities.
+                  The referenced EmbeddingServer must exist in the same namespace and be ready.
+                properties:
+                  name:
+                    description: Name is the name of the EmbeddingServer resource
+                    type: string
+                required:
+                - name
+                type: object
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server.

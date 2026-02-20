@@ -114,6 +114,18 @@ func (mr *MockStatusManagerMockRecorder) SetDiscoveredBackends(backends any) *go
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetDiscoveredBackends", reflect.TypeOf((*MockStatusManager)(nil).SetDiscoveredBackends), backends)
 }
 
+// SetEmbeddingServerReadyCondition mocks base method.
+func (m *MockStatusManager) SetEmbeddingServerReadyCondition(reason, message string, status v1.ConditionStatus) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetEmbeddingServerReadyCondition", reason, message, status)
+}
+
+// SetEmbeddingServerReadyCondition indicates an expected call of SetEmbeddingServerReadyCondition.
+func (mr *MockStatusManagerMockRecorder) SetEmbeddingServerReadyCondition(reason, message, status any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetEmbeddingServerReadyCondition", reflect.TypeOf((*MockStatusManager)(nil).SetEmbeddingServerReadyCondition), reason, message, status)
+}
+
 // SetGroupRefValidatedCondition mocks base method.
 func (m *MockStatusManager) SetGroupRefValidatedCondition(reason, message string, status v1.ConditionStatus) {
 	m.ctrl.T.Helper()

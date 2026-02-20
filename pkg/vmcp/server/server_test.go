@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	routerMocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
@@ -453,7 +454,7 @@ func TestServerStopClosesOptimizerStore(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerEnabled: true},
+		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerConfig: &vmcpconfig.OptimizerConfig{}},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,

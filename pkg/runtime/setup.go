@@ -94,7 +94,7 @@ func Setup(
 	}
 
 	// Create the container
-	slog.Debug("Deploying workload", "container", containerName, "image", image)
+	slog.Debug("deploying workload", "container", containerName, "image", image)
 	exposedPort, err := runtime.DeployWorkload(
 		ctx,
 		image,
@@ -110,7 +110,7 @@ func Setup(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
-	slog.Debug("Container created", "container", containerName)
+	slog.Debug("container created", "container", containerName)
 
 	result := &SetupResult{
 		ContainerName: containerName,

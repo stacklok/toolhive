@@ -159,7 +159,7 @@ func findPodmanSocket() (string, error) {
 			slog.Debug("no Podman machine API sockets found", "dir", podmanTmpDir)
 		} else {
 			//nolint:gosec // G706: directory path from TMPDIR env var
-			slog.Debug("Podman temp directory not found", "dir", podmanTmpDir, "error", err)
+			slog.Debug("podman temp directory not found", "dir", podmanTmpDir, "error", err)
 		}
 	}
 

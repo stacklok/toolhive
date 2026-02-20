@@ -78,7 +78,7 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 		defer cancel()
 	}
 
-	slog.Debug("Performing health check for backend", "backend", target.WorkloadName, "url", target.BaseURL)
+	slog.Debug("performing health check for backend", "backend", target.WorkloadName, "url", target.BaseURL)
 
 	// Track response time for degraded detection
 	startTime := time.Now()
@@ -94,7 +94,7 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 	if err != nil {
 		// Categorize the error to determine health status
 		status := categorizeError(err)
-		slog.Debug("Health check failed for backend",
+		slog.Debug("health check failed for backend",
 			"backend", target.WorkloadName,
 			"error", err,
 			"status", status,
@@ -104,14 +104,14 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 
 	// Check if response time indicates degraded performance
 	if h.degradedThreshold > 0 && responseDuration > h.degradedThreshold {
-		slog.Warn("Health check succeeded but response was slow - marking as degraded",
+		slog.Warn("health check succeeded but response was slow - marking as degraded",
 			"backend", target.WorkloadName,
 			"duration", responseDuration,
 			"threshold", h.degradedThreshold)
 		return vmcp.BackendDegraded, nil
 	}
 
-	slog.Debug("Health check succeeded for backend", "backend", target.WorkloadName, "duration", responseDuration)
+	slog.Debug("health check succeeded for backend", "backend", target.WorkloadName, "duration", responseDuration)
 	return vmcp.BackendHealthy, nil
 }
 

@@ -4,6 +4,7 @@
 package app
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -51,7 +52,7 @@ func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 	t.Parallel()
 	// Initialize logger to prevent nil pointer dereference
-	logger.Initialize()
+	slog.SetDefault(logging.New(logging.WithOutput(os.Stdout), logging.WithLevel(slog.LevelDebug), logging.WithFormat(logging.FormatText)))
 
 	tests := []struct {
 		name                                string
@@ -268,7 +269,7 @@ func TestTelemetryMiddlewareParameterComputation(t *testing.T) {
 	// before calling WithMiddlewareFromFlags
 	t.Parallel()
 
-	logger.Initialize()
+	slog.SetDefault(logging.New(logging.WithOutput(os.Stdout), logging.WithLevel(slog.LevelDebug), logging.WithFormat(logging.FormatText)))
 
 	tests := []struct {
 		name              string
@@ -357,7 +358,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	t.Parallel()
 	// This is a more complete integration test that tests telemetry processing
 	// within the full BuildRunnerConfig function context
-	logger.Initialize()
+	slog.SetDefault(logging.New(logging.WithOutput(os.Stdout), logging.WithLevel(slog.LevelDebug), logging.WithFormat(logging.FormatText)))
 	cmd := &cobra.Command{}
 	runFlags := &RunFlags{
 		Transport:         "sse",

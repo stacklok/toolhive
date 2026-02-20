@@ -72,12 +72,12 @@ func (d *dagExecutor) executeDAG(
 
 	// Log execution plan statistics for observability
 	stats := d.getExecutionStats(levels)
-	slog.Info("Workflow execution plan",
+	slog.Info("workflow execution plan",
 		"levels", stats["total_levels"], "steps", stats["total_steps"], "max_parallelism", stats["max_parallelism"])
 
 	// Execute each level
 	for levelIdx, level := range levels {
-		slog.Debug("Executing level", "level", levelIdx, "steps", len(level.steps))
+		slog.Debug("executing level", "level", levelIdx, "steps", len(level.steps))
 
 		// Execute all steps in this level in parallel
 		if err := d.executeLevel(ctx, level, execFunc, failureMode); err != nil {
@@ -118,7 +118,7 @@ func (d *dagExecutor) executeLevel(
 			// Execute the step
 			err := execFunc(groupCtx, step)
 			if err != nil {
-				slog.Error("Step failed", "step", step.ID, "error", err)
+				slog.Error("step failed", "step", step.ID, "error", err)
 
 				// Check if we should continue despite the error
 				shouldContinue := d.shouldContinueOnError(step, failureMode)
@@ -132,7 +132,7 @@ func (d *dagExecutor) executeLevel(
 				return err
 			}
 
-			slog.Debug("Step completed successfully", "step", step.ID)
+			slog.Debug("step completed successfully", "step", step.ID)
 			return nil
 		})
 	}
@@ -144,7 +144,7 @@ func (d *dagExecutor) executeLevel(
 
 	// Log continued errors if any
 	if len(continuedErrors) > 0 {
-		slog.Warn("Level completed with continued errors", "count", len(continuedErrors), "mode", failureMode)
+		slog.Warn("level completed with continued errors", "count", len(continuedErrors), "mode", failureMode)
 	}
 
 	return nil

@@ -209,7 +209,7 @@ func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
 
 	// Add --debug flag if log level is set to debug
 	// Note: vmcp binary currently only supports --debug flag, not other log levels
-	// The flag must be passed at startup because logger.Initialize() runs before config is loaded
+	// The flag must be passed at startup because logging is initialized early in the process
 	if vmcp.Spec.Config.Operational != nil && vmcp.Spec.Config.Operational.LogLevel == logLevelDebug {
 		args = append(args, "--debug")
 	}

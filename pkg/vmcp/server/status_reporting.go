@@ -39,18 +39,18 @@ func DefaultStatusReportingConfig() StatusReportingConfig {
 // The goroutine runs until the context is cancelled.
 func (s *Server) periodicStatusReporting(ctx context.Context, config StatusReportingConfig) {
 	if config.Reporter == nil {
-		slog.Debug("Status reporting disabled (no reporter configured)")
+		slog.Debug("status reporting disabled (no reporter configured)")
 		return
 	}
 
 	// Validate interval to prevent panic from time.NewTicker
 	interval := config.Interval
 	if interval <= 0 {
-		slog.Warn("Invalid status reporting interval, defaulting to 30s", "interval", interval)
+		slog.Warn("invalid status reporting interval, defaulting to 30s", "interval", interval)
 		interval = 30 * time.Second
 	}
 
-	slog.Info("Starting periodic status reporting", "interval", interval)
+	slog.Info("starting periodic status reporting", "interval", interval)
 
 	// Wait for initial health checks to complete before first status report
 	// This ensures that the first status report has accurate health information
@@ -59,9 +59,9 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 	healthMon := s.healthMonitor
 	s.healthMonitorMu.RUnlock()
 	if healthMon != nil {
-		slog.Debug("Waiting for initial health checks to complete before first status report")
+		slog.Debug("waiting for initial health checks to complete before first status report")
 		healthMon.WaitForInitialHealthChecks()
-		slog.Debug("Initial health checks complete, proceeding with status reporting")
+		slog.Debug("initial health checks complete, proceeding with status reporting")
 	}
 
 	ticker := time.NewTicker(interval)
@@ -73,7 +73,7 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Debug("Status reporting stopped (context cancelled)")
+			slog.Debug("status reporting stopped (context cancelled)")
 			return
 
 		case <-ticker.C:
@@ -87,7 +87,7 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 	// Update health monitor with current backends from registry (for dynamic discovery)
 	if dynamicReg, ok := s.backendRegistry.(vmcp.DynamicRegistry); ok {
 		currentBackends := dynamicReg.List(ctx)
-		slog.Debug("Refreshing backends from registry", "backends", len(currentBackends))
+		slog.Debug("refreshing backends from registry", "backends", len(currentBackends))
 		s.healthMonitorMu.RLock()
 		healthMon := s.healthMonitor
 		s.healthMonitorMu.RUnlock()
@@ -113,13 +113,13 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 	s.healthMonitorMu.RUnlock()
 
 	// Log status at debug level
-	slog.Debug("Reporting status",
+	slog.Debug("reporting status",
 		"phase", status.Phase,
 		"backend_count", status.BackendCount,
 		"discovered_backends", len(status.DiscoveredBackends))
 
 	// Report status
 	if err := reporter.ReportStatus(ctx, status); err != nil {
-		slog.Error("Failed to report status", "error", err)
+		slog.Error("failed to report status", "error", err)
 	}
 }

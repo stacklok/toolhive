@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
@@ -47,6 +48,11 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 
 	// Process outgoing auth configuration for both inline and discovered modes
 	if err := r.processOutgoingAuth(ctx, vmcp, config, typedWorkloads, statusManager); err != nil {
+		return err
+	}
+
+	// Auto-populate optimizer config from EmbeddingServerRef or emit warnings.
+	if err := r.populateOptimizerEmbeddingService(ctx, vmcp, config); err != nil {
 		return err
 	}
 
@@ -89,6 +95,86 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to upsert vmcp Config ConfigMap: %w", err)
 	}
 
+	return nil
+}
+
+// populateOptimizerEmbeddingService wires the EmbeddingServer URL into the optimizer
+// config and emits warnings for non-recommended configurations.
+//
+// Decision matrix (ref = EmbeddingServerRef, svc = config.optimizer.embeddingService):
+//
+//	ref set + optimizer set + svc set → ref overrides svc (warning)
+//	ref set + optimizer set + svc empty → ref populates svc (auto-configured event if defaulted by validation)
+//	ref nil + optimizer set + svc set → warning: prefer embeddingServerRef
+//	ref nil + optimizer set + svc empty → rejected earlier by Validate()
+//
+// Note: Validate() auto-populates optimizer with defaults when ref is set but optimizer is nil,
+// so the "ref set + optimizer nil" case no longer reaches this function.
+func (r *VirtualMCPServerReconciler) populateOptimizerEmbeddingService(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	config *vmcpconfig.Config,
+) error {
+	ctxLogger := log.FromContext(ctx)
+	hasRef := vmcp.Spec.EmbeddingServerRef != nil
+
+	if hasRef && config.Optimizer != nil {
+		// When the optimizer has no embeddingService set, it was auto-populated by
+		// validation with default values. Emit an event so the user is aware.
+		if config.Optimizer.EmbeddingService == "" {
+			ctxLogger.Info("optimizer auto-configured with default values because embeddingServerRef is set",
+				"embeddingServerRef", vmcp.Spec.EmbeddingServerRef.Name)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "OptimizerAutoConfigured",
+					"embeddingServerRef %q is set without spec.config.optimizer; "+
+						"optimizer has been auto-configured with default values",
+					vmcp.Spec.EmbeddingServerRef.Name)
+			}
+		}
+		return r.populateOptimizerFromRef(ctx, vmcp, config)
+	}
+
+	// No ref — warn if the user manually set the embedding service.
+	if config.Optimizer != nil && config.Optimizer.EmbeddingService != "" {
+		ctxLogger.Info("config.optimizer.embeddingService is set without embeddingServerRef; "+
+			"consider using embeddingServerRef for managed lifecycle",
+			"embeddingService", config.Optimizer.EmbeddingService)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "EmbeddingServiceManual",
+				"config.optimizer.embeddingService is set without embeddingServerRef; "+
+					"specifying an embeddingServerRef is the recommended configuration")
+		}
+	}
+	return nil
+}
+
+// populateOptimizerFromRef resolves the EmbeddingServer URL and writes it into
+// config.Optimizer.EmbeddingService, warning if it overrides a manually-set value.
+func (r *VirtualMCPServerReconciler) populateOptimizerFromRef(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	config *vmcpconfig.Config,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	esURL, err := r.resolveEmbeddingServiceURL(ctx, vmcp)
+	if err != nil {
+		return fmt.Errorf("failed to resolve embedding service URL: %w", err)
+	}
+	if config.Optimizer.EmbeddingService != "" && esURL != "" {
+		ctxLogger.Info("EmbeddingServerRef overrides config.optimizer.embeddingService",
+			"ref", vmcp.Spec.EmbeddingServerRef.Name,
+			"overridden", config.Optimizer.EmbeddingService,
+			"new", esURL)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "EmbeddingServiceOverridden",
+				"config.optimizer.embeddingService will be replaced by EmbeddingServerRef %q URL",
+				vmcp.Spec.EmbeddingServerRef.Name)
+		}
+	}
+	if esURL != "" {
+		config.Optimizer.EmbeddingService = esURL
+	}
 	return nil
 }
 

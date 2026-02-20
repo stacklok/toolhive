@@ -742,10 +742,18 @@ type OutputProperty struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type OptimizerConfig struct {
-	// EmbeddingService is the name of a Kubernetes Service that provides the embedding service
-	// for semantic tool discovery. The service must implement the optimizer embedding API.
-	// +kubebuilder:validation:Required
-	EmbeddingService string `json:"embeddingService" yaml:"embeddingService"`
+	// EmbeddingService is the full base URL of the embedding service endpoint
+	// (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
+	// tool discovery. Auto-populated by the operator from the EmbeddingServer
+	// Status.URL. Do not set manually.
+	// +optional
+	EmbeddingService string `json:"embeddingService,omitempty" yaml:"embeddingService,omitempty"`
+
+	// EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.
+	// Defaults to 30s if not specified.
+	// +kubebuilder:default="30s"
+	// +optional
+	EmbeddingServiceTimeout Duration `json:"embeddingServiceTimeout,omitempty" yaml:"embeddingServiceTimeout,omitempty"`
 }
 
 // Validator validates configuration.

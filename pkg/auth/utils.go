@@ -64,7 +64,7 @@ func ExtractBearerToken(r *http.Request) (string, error) {
 func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcConfig != nil {
-		slog.Debug("OIDC validation enabled")
+		slog.Debug("oidc validation enabled")
 
 		// Create JWT validator
 		jwtValidator, err := NewTokenValidator(ctx, *oidcConfig)
@@ -76,16 +76,16 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 		return jwtValidator.Middleware, authInfoHandler, nil
 	}
 
-	slog.Debug("OIDC validation disabled, using local user authentication")
+	slog.Debug("oidc validation disabled, using local user authentication")
 
 	// Get current OS user
 	currentUser, err := user.Current()
 	if err != nil {
-		slog.Warn("Failed to get current user, using 'local' as default", "error", err)
+		slog.Warn("failed to get current user, using 'local' as default", "error", err)
 		return LocalUserMiddleware("local"), nil, nil
 	}
 
-	slog.Debug("Using local user authentication", "user", currentUser.Username)
+	slog.Debug("using local user authentication", "user", currentUser.Username)
 	return LocalUserMiddleware(currentUser.Username), nil, nil
 }
 

@@ -174,7 +174,7 @@ func NewBackendWatcher(
 //
 //	go func() {
 //	    if err := watcher.Start(ctx); err != nil {
-//	        slog.Error("BackendWatcher stopped with error", "error", err)
+//	        slog.Error("backendWatcher stopped with error", "error", err)
 //	    }
 //	}()
 func (w *BackendWatcher) Start(ctx context.Context) error {
@@ -186,8 +186,8 @@ func (w *BackendWatcher) Start(ctx context.Context) error {
 	w.started = true
 	w.mu.Unlock()
 
-	slog.Info("Starting Kubernetes backend watcher for vMCP dynamic mode")
-	slog.Info("Watching backend resources", "namespace", w.namespace, "group", w.groupRef)
+	slog.Info("starting Kubernetes backend watcher for vMCP dynamic mode")
+	slog.Info("watching backend resources", "namespace", w.namespace, "group", w.groupRef)
 
 	// Register backend watch controller to reconcile MCPServer/MCPRemoteProxy changes
 	err := w.addBackendWatchController()
@@ -200,7 +200,7 @@ func (w *BackendWatcher) Start(ctx context.Context) error {
 		return fmt.Errorf("watcher failed: %w", err)
 	}
 
-	slog.Info("Kubernetes backend watcher stopped")
+	slog.Info("kubernetes backend watcher stopped")
 	return nil
 }
 
@@ -240,7 +240,7 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 	w.mu.Unlock()
 
 	if !started {
-		slog.Warn("WaitForCacheSync called but watcher not started")
+		slog.Warn("waitForCacheSync called but watcher not started")
 		return false
 	}
 
@@ -255,16 +255,16 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 		defer cancel()
 	}
 
-	slog.Info("Waiting for Kubernetes cache sync...")
+	slog.Info("waiting for Kubernetes cache sync")
 
 	// Wait for cache to sync
 	synced := informerCache.WaitForCacheSync(ctx)
 	if !synced {
-		slog.Warn("Cache sync timed out or failed")
+		slog.Warn("cache sync timed out or failed")
 		return false
 	}
 
-	slog.Info("Kubernetes cache synced successfully")
+	slog.Info("kubernetes cache synced successfully")
 	return true
 }
 
@@ -308,6 +308,6 @@ func (w *BackendWatcher) addBackendWatchController() error {
 		return fmt.Errorf("failed to setup backend reconciler: %w", err)
 	}
 
-	slog.Info("Backend watch controller registered successfully")
+	slog.Info("backend watch controller registered successfully")
 	return nil
 }

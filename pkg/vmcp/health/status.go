@@ -65,7 +65,7 @@ type statusTracker struct {
 // Returns a new status tracker instance.
 func newStatusTracker(unhealthyThreshold int, circuitBreakerConfig *CircuitBreakerConfig) *statusTracker {
 	if unhealthyThreshold < 1 {
-		slog.Warn("Invalid unhealthyThreshold, adjusting to 1", "threshold", unhealthyThreshold)
+		slog.Warn("invalid unhealthyThreshold, adjusting to 1", "threshold", unhealthyThreshold)
 		unhealthyThreshold = 1
 	}
 
@@ -196,14 +196,14 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 
 	// Ignore removed backends to prevent race conditions with in-flight health checks
 	if t.isRemoved(backendID) {
-		slog.Debug("Ignoring health check result for removed backend", "backend", backendName)
+		slog.Debug("ignoring health check result for removed backend", "backend", backendName)
 		return
 	}
 
 	state, exists := t.getOrCreateState(backendID, backendName, status, 0, nil)
 	if !exists {
 		// Initialize new state - no failure history, so accept status as-is
-		slog.Debug("Backend initialized", "backend", backendName, "status", status)
+		slog.Debug("backend initialized", "backend", backendName, "status", status)
 		state.circuitBreaker.RecordSuccess()
 		return
 	}
@@ -216,7 +216,7 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 	// This takes precedence over the health check's status determination
 	if previousFailures > 0 {
 		state.status = vmcp.BackendDegraded
-		slog.Info("Backend recovering from failures",
+		slog.Info("backend recovering from failures",
 			"backend", backendName,
 			"previous_status", previousStatus,
 			"status", vmcp.BackendDegraded,
@@ -225,7 +225,7 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 		// No recent failures, use the status from health check (healthy or degraded from slow response)
 		state.status = status
 		if previousStatus != status {
-			slog.Info("Backend status changed", "backend", backendName, "previous_status", previousStatus, "status", status)
+			slog.Info("backend status changed", "backend", backendName, "previous_status", previousStatus, "status", status)
 		}
 	}
 
@@ -257,7 +257,7 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 
 	// Ignore removed backends to prevent race conditions with in-flight health checks
 	if t.isRemoved(backendID) {
-		slog.Debug("Ignoring health check result for removed backend", "backend", backendName)
+		slog.Debug("ignoring health check result for removed backend", "backend", backendName)
 		return
 	}
 
@@ -266,14 +266,14 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 		// Check if threshold is reached on initialization (e.g., threshold of 1)
 		if state.consecutiveFailures >= t.unhealthyThreshold {
 			state.status = status
-			slog.Warn("Backend initialized with failure and reached threshold",
+			slog.Warn("backend initialized with failure and reached threshold",
 				"backend", backendName,
 				"status", status,
 				"failures", state.consecutiveFailures,
 				"threshold", t.unhealthyThreshold,
 				"error", err)
 		} else {
-			slog.Warn("Backend initialized with failure",
+			slog.Warn("backend initialized with failure",
 				"backend", backendName,
 				"failures", 1,
 				"threshold", t.unhealthyThreshold,
@@ -299,7 +299,7 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 		// Transition to new unhealthy status
 		state.status = status
 		state.lastTransitionTime = time.Now()
-		slog.Warn("Backend health degraded",
+		slog.Warn("backend health degraded",
 			"backend", backendName,
 			"previous_status", previousStatus,
 			"status", status,
@@ -308,7 +308,7 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 			"error", err)
 	} else if thresholdReached {
 		// Already at threshold with same status - no transition needed
-		slog.Warn("Backend remains unhealthy",
+		slog.Warn("backend remains unhealthy",
 			"backend", backendName,
 			"status", state.status,
 			"consecutive_failures", state.consecutiveFailures,
@@ -316,7 +316,7 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 			"error", err)
 	} else {
 		// Below threshold - accumulating failures but not yet unhealthy
-		slog.Debug("Backend health check failed",
+		slog.Debug("backend health check failed",
 			"backend", backendName,
 			"consecutive_failures", state.consecutiveFailures,
 			"threshold", t.unhealthyThreshold,
@@ -462,19 +462,19 @@ func (t *statusTracker) ShouldAttemptHealthCheck(backendID, backendName string) 
 		cbState, _ := t.GetCircuitBreakerState(backendID)
 		switch cbState {
 		case CircuitOpen:
-			slog.Debug("Circuit breaker OPEN, skipping health check", "backend", backendName)
+			slog.Debug("circuit breaker OPEN, skipping health check", "backend", backendName)
 		case CircuitHalfOpen:
-			slog.Debug("Circuit breaker HALF-OPEN with test in progress, skipping health check", "backend", backendName)
+			slog.Debug("circuit breaker HALF-OPEN with test in progress, skipping health check", "backend", backendName)
 		case CircuitClosed:
 			// This should not happen - circuit is closed but CanAttemptHealthCheck returned false
-			slog.Debug("Circuit breaker state inconsistency, skipping health check", "backend", backendName)
+			slog.Debug("circuit breaker state inconsistency, skipping health check", "backend", backendName)
 		}
 		return false
 	}
 
 	// If we reach here with a half-open circuit, we're attempting the recovery test
 	if cbState, exists := t.GetCircuitBreakerState(backendID); exists && cbState == CircuitHalfOpen {
-		slog.Debug("Circuit breaker testing recovery", "backend", backendName)
+		slog.Debug("circuit breaker testing recovery", "backend", backendName)
 	}
 
 	return true

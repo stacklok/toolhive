@@ -85,10 +85,10 @@ func convertToMCPContent(content vmcp.Content) mcp.Content {
 	case "resource":
 		// Handle embedded resources if needed
 		// For now, convert to text
-		slog.Warn("Converting resource content to empty text - embedded resources not yet supported")
+		slog.Warn("converting resource content to empty text - embedded resources not yet supported")
 		return mcp.NewTextContent("")
 	default:
-		slog.Warn("Converting unknown content type to empty text - this may cause data loss", "type", content.Type)
+		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
 		return mcp.NewTextContent("")
 	}
 }
@@ -98,23 +98,23 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 	toolName string,
 ) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		slog.Debug("Handling tool call", "tool", toolName)
+		slog.Debug("handling tool call", "tool", toolName)
 
 		target, err := f.router.RouteTool(ctx, toolName)
 		if err != nil {
 			if errors.Is(err, router.ErrToolNotFound) {
 				wrappedErr := fmt.Errorf("%w: tool %s", vmcp.ErrNotFound, toolName)
-				slog.Warn("Routing failed", "error", wrappedErr)
+				slog.Warn("routing failed", "error", wrappedErr)
 				return mcp.NewToolResultError(wrappedErr.Error()), nil
 			}
-			slog.Warn("Failed to route tool", "tool", toolName, "error", err)
+			slog.Warn("failed to route tool", "tool", toolName, "error", err)
 			return mcp.NewToolResultError(fmt.Sprintf("Routing error: %v", err)), nil
 		}
 
 		args, ok := request.Params.Arguments.(map[string]any)
 		if !ok {
 			wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, request.Params.Arguments)
-			slog.Warn("Invalid arguments for tool", "tool", toolName, "error", wrappedErr)
+			slog.Warn("invalid arguments for tool", "tool", toolName, "error", wrappedErr)
 			return mcp.NewToolResultError(wrappedErr.Error()), nil
 		}
 
@@ -126,10 +126,10 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 		if err != nil {
 			// Only actual network/transport errors reach here now (IsError=true is handled in result)
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
-				slog.Warn("Backend unavailable for tool", "tool", toolName, "error", err)
+				slog.Warn("backend unavailable for tool", "tool", toolName, "error", err)
 				return mcp.NewToolResultError(fmt.Sprintf("Backend unavailable: %v", err)), nil
 			}
-			slog.Warn("Backend tool call failed", "tool", toolName, "error", err)
+			slog.Warn("backend tool call failed", "tool", toolName, "error", err)
 			return mcp.NewToolResultError(fmt.Sprintf("Tool call failed: %v", err)), nil
 		}
 
@@ -158,11 +158,11 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 	context.Context, mcp.ReadResourceRequest,
 ) ([]mcp.ResourceContents, error) {
 	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		slog.Debug("Handling resource read", "uri", uri)
+		slog.Debug("handling resource read", "uri", uri)
 
 		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
 		if !ok {
-			slog.Warn("Capabilities not discovered in context")
+			slog.Warn("capabilities not discovered in context")
 			return nil, fmt.Errorf("capabilities not discovered")
 		}
 
@@ -170,10 +170,10 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 		if err != nil {
 			if errors.Is(err, router.ErrResourceNotFound) {
 				wrappedErr := fmt.Errorf("%w: resource %s", vmcp.ErrNotFound, uri)
-				slog.Warn("Routing failed", "error", wrappedErr)
+				slog.Warn("routing failed", "error", wrappedErr)
 				return nil, wrappedErr
 			}
-			slog.Warn("Failed to route resource", "uri", uri, "error", err)
+			slog.Warn("failed to route resource", "uri", uri, "error", err)
 			return nil, fmt.Errorf("routing error: %w", err)
 		}
 
@@ -182,10 +182,10 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 		result, err := f.backendClient.ReadResource(ctx, target, backendURI)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
-				slog.Warn("Backend unavailable for resource", "uri", uri, "error", err)
+				slog.Warn("backend unavailable for resource", "uri", uri, "error", err)
 				return nil, fmt.Errorf("backend unavailable: %w", err)
 			}
-			slog.Warn("Backend resource read failed", "uri", uri, "error", err)
+			slog.Warn("backend resource read failed", "uri", uri, "error", err)
 			return nil, fmt.Errorf("resource read failed: %w", err)
 		}
 
@@ -222,17 +222,17 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 	context.Context, mcp.GetPromptRequest,
 ) (*mcp.GetPromptResult, error) {
 	return func(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		slog.Debug("Handling prompt request", "prompt", promptName)
+		slog.Debug("handling prompt request", "prompt", promptName)
 
 		// Route to backend
 		target, err := f.router.RoutePrompt(ctx, promptName)
 		if err != nil {
 			if errors.Is(err, router.ErrPromptNotFound) {
 				wrappedErr := fmt.Errorf("%w: prompt %s", vmcp.ErrNotFound, promptName)
-				slog.Warn("Routing failed", "error", wrappedErr)
+				slog.Warn("routing failed", "error", wrappedErr)
 				return nil, wrappedErr
 			}
-			slog.Warn("Failed to route prompt", "prompt", promptName, "error", err)
+			slog.Warn("failed to route prompt", "prompt", promptName, "error", err)
 			return nil, fmt.Errorf("routing error: %w", err)
 		}
 
@@ -248,10 +248,10 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 		result, err := f.backendClient.GetPrompt(ctx, target, backendPromptName, args)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
-				slog.Warn("Backend unavailable for prompt", "prompt", promptName, "error", err)
+				slog.Warn("backend unavailable for prompt", "prompt", promptName, "error", err)
 				return nil, fmt.Errorf("backend unavailable: %w", err)
 			}
-			slog.Warn("Backend prompt request failed", "prompt", promptName, "error", err)
+			slog.Warn("backend prompt request failed", "prompt", promptName, "error", err)
 			return nil, fmt.Errorf("prompt request failed: %w", err)
 		}
 
@@ -299,13 +299,13 @@ func (*DefaultHandlerFactory) CreateCompositeToolHandler(
 	workflow WorkflowExecutor,
 ) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		slog.Debug("Handling composite tool call", "tool", toolName)
+		slog.Debug("handling composite tool call", "tool", toolName)
 
 		// Extract parameters from MCP request
 		params, ok := request.Params.Arguments.(map[string]any)
 		if !ok {
 			wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, request.Params.Arguments)
-			slog.Warn("Invalid arguments for composite tool", "tool", toolName, "error", wrappedErr)
+			slog.Warn("invalid arguments for composite tool", "tool", toolName, "error", wrappedErr)
 			return mcp.NewToolResultError(wrappedErr.Error()), nil
 		}
 
@@ -316,22 +316,22 @@ func (*DefaultHandlerFactory) CreateCompositeToolHandler(
 		if err != nil {
 			// Check for timeout errors and provide user-friendly message
 			if errors.Is(err, context.DeadlineExceeded) {
-				slog.Warn("Workflow execution timeout", "tool", toolName, "error", err)
+				slog.Warn("workflow execution timeout", "tool", toolName, "error", err)
 				return mcp.NewToolResultError("Workflow execution timeout exceeded"), nil
 			}
-			slog.Error("Workflow execution failed", "tool", toolName, "error", err)
+			slog.Error("workflow execution failed", "tool", toolName, "error", err)
 			return mcp.NewToolResultError(fmt.Sprintf("Workflow execution failed: %v", err)), nil
 		}
 
 		// Check if workflow result contains an error
 		if result.Error != nil {
-			slog.Error("Workflow completed with error", "tool", toolName, "error", result.Error)
+			slog.Error("workflow completed with error", "tool", toolName, "error", result.Error)
 			return mcp.NewToolResultError(fmt.Sprintf("Workflow error: %v", result.Error)), nil
 		}
 
 		// Convert workflow output to MCP tool result
 		// The output is typically the result of the last workflow step
-		slog.Debug("Composite tool completed successfully", "tool", toolName)
+		slog.Debug("composite tool completed successfully", "tool", toolName)
 		return mcp.NewToolResultStructuredOnly(result.Output), nil
 	}
 }

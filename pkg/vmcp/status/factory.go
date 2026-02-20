@@ -44,7 +44,7 @@ func newReporterFromEnv(vmcpName, vmcpNamespace string) (Reporter, error) {
 	// Check if we're in Kubernetes mode
 	if vmcpName != "" && vmcpNamespace != "" {
 		//nolint:gosec // G706: vmcpName and vmcpNamespace are from trusted env vars
-		slog.Debug("Kubernetes mode detected, creating K8sReporter", "vmcp_name", vmcpName, "vmcp_namespace", vmcpNamespace)
+		slog.Debug("kubernetes mode detected, creating K8sReporter", "vmcp_name", vmcpName, "vmcp_namespace", vmcpNamespace)
 
 		// Get in-cluster REST config
 		restConfig, err := rest.InClusterConfig()
@@ -59,11 +59,11 @@ func newReporterFromEnv(vmcpName, vmcpNamespace string) (Reporter, error) {
 		}
 
 		//nolint:gosec // G706: vmcpName and vmcpNamespace are from trusted env vars
-		slog.Debug("K8sReporter created", "namespace", vmcpNamespace, "name", vmcpName)
+		slog.Debug("k8sReporter created", "namespace", vmcpNamespace, "name", vmcpName)
 		return k8sReporter, nil
 	}
 
 	// CLI mode - use LoggingReporter
-	slog.Debug("CLI mode detected, creating LoggingReporter")
+	slog.Debug("cLI mode detected, creating LoggingReporter")
 	return NewLoggingReporter(), nil
 }

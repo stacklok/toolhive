@@ -64,7 +64,7 @@ func (m *crdManager) Create(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to create MCPGroup: %w", err)
 	}
 
-	slog.Info("Created MCPGroup", "name", name, "namespace", m.namespace)
+	slog.Info("created mcpgroup", "name", name, "namespace", m.namespace)
 	return nil
 }
 
@@ -121,7 +121,7 @@ func (m *crdManager) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to delete MCPGroup: %w", err)
 	}
 
-	slog.Info("Deleted MCPGroup", "name", name, "namespace", m.namespace)
+	slog.Info("deleted mcpgroup", "name", name, "namespace", m.namespace)
 	return nil
 }
 

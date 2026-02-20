@@ -88,7 +88,7 @@ func (a *statusManagerAdapter) SetWorkloadStatus(
 	status rt.WorkloadStatus,
 	reason string,
 ) error {
-	slog.Debug("Setting workload status", "workload", workloadName, "status", status, "reason", reason)
+	slog.Debug("setting workload status", "workload", workloadName, "status", status, "reason", reason)
 	return a.sm.SetWorkloadStatus(ctx, workloadName, status, reason)
 }
 
@@ -182,7 +182,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		(r.Config.RemoteAuthConfig.ClientSecret != "" || r.Config.RemoteAuthConfig.BearerToken != "")
 	hasHeaderForwardSecrets := r.Config.HeaderForward != nil && len(r.Config.HeaderForward.AddHeadersFromSecret) > 0
 
-	slog.Debug("Secret processing check",
+	slog.Debug("secret processing check",
 		"has_regular_secrets", hasRegularSecrets,
 		"has_remote_auth_secret", hasRemoteAuthSecret,
 		"has_header_forward_secrets", hasHeaderForwardSecrets)
@@ -196,7 +196,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	if hasRegularSecrets || hasRemoteAuthSecret || hasHeaderForwardSecrets {
-		slog.Debug("Calling WithSecrets to process secrets")
+		slog.Debug("calling WithSecrets to process secrets")
 		cfgprovider := config.NewDefaultProvider()
 		cfg := cfgprovider.GetConfig()
 
@@ -261,7 +261,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
-		slog.Debug("Embedded authorization server initialized")
+		slog.Debug("embedded authorization server initialized")
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
@@ -275,7 +275,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Set up the transport
-	slog.Debug("Setting up transport...", "transport", r.Config.Transport)
+	slog.Debug("setting up transport", "transport", r.Config.Transport)
 
 	// Prepare transport options based on workload type
 	var transportOpts []transport.Option
@@ -344,7 +344,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Set the health check failure callback for remote servers
 		transportHandler.SetOnHealthCheckFailed(func() {
-			slog.Warn("Health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
+			slog.Warn("health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
 			// Use Background context for status update callback - this is triggered by health check
 			// failure and is independent of any request context. The callback is fired asynchronously
 			// and needs its own lifecycle separate from the transport's parent context.
@@ -354,14 +354,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				rt.WorkloadStatusUnhealthy,
 				"Health check failed",
 			); err != nil {
-				slog.Error("Failed to update workload status", "error", err)
+				slog.Error("failed to update workload status", "error", err)
 			}
 		})
 
 		// Set the unauthorized response callback for bearer token authentication
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
 		transportHandler.SetOnUnauthorizedResponse(func() {
-			slog.Warn("Received 401 Unauthorized response for remote server, marking as unauthenticated", "server", r.Config.BaseName)
+			slog.Warn("received 401 Unauthorized response for remote server, marking as unauthenticated", "server", r.Config.BaseName)
 			// Use Background context for status update callback - this is triggered by 401 response
 			// and is independent of any request context. The callback is fired asynchronously
 			// and needs its own lifecycle separate from the transport's parent context.
@@ -371,18 +371,18 @@ func (r *Runner) Run(ctx context.Context) error {
 				rt.WorkloadStatusUnauthenticated,
 				errorMsg,
 			); err != nil {
-				slog.Error("Failed to update workload status", "error", err)
+				slog.Error("failed to update workload status", "error", err)
 			}
 		})
 	}
 
 	// Start the transport (which also starts the container and monitoring)
-	slog.Debug("Starting transport...", "transport", r.Config.Transport, "container", r.Config.ContainerName)
+	slog.Debug("starting transport", "transport", r.Config.Transport, "container", r.Config.ContainerName)
 	if err := transportHandler.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start transport: %w", err)
 	}
 
-	slog.Debug("MCP server started successfully", "container", r.Config.ContainerName)
+	slog.Debug("mcp server started successfully", "container", r.Config.ContainerName)
 
 	// Wait for the MCP server to accept initialize requests before updating client configurations.
 	// This prevents timing issues where clients try to connect before the server is fully ready.
@@ -409,7 +409,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Continue anyway to maintain backward compatibility, but log a warning
 		}
 	} else {
-		slog.Debug("Skipping initialize check for STDIO transport")
+		slog.Debug("skipping initialize check for STDIO transport")
 	}
 
 	// Update client configurations with the MCP server URL.
@@ -432,10 +432,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		// operations complete successfully regardless of the parent context state.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 1*time.Minute)
 		defer cleanupCancel()
-		slog.Debug("Stopping MCP server", "reason", reason)
+		slog.Debug("stopping MCP server", "reason", reason)
 
 		// Stop the transport (which also stops the container, monitoring, and handles removal)
-		slog.Debug("Stopping transport...", "transport", r.Config.Transport)
+		slog.Debug("stopping transport", "transport", r.Config.Transport)
 		if err := transportHandler.Stop(cleanupCtx); err != nil {
 			slog.Warn("failed to stop transport", "error", err)
 		}
@@ -450,7 +450,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			slog.Warn("failed to reset workload PID", "container", r.Config.ContainerName, "error", err)
 		}
 
-		slog.Debug("MCP server stopped", "container", r.Config.ContainerName)
+		slog.Debug("mcp server stopped", "container", r.Config.ContainerName)
 	}
 
 	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.BaseName, os.Getpid()); err != nil {
@@ -460,7 +460,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if process.IsDetached() {
 		// We're a detached process running in foreground mode
 		// Write the PID to a file so the stop command can kill the process
-		slog.Info("Running as detached process", "pid", os.Getpid())
+		slog.Info("running as detached process", "pid", os.Getpid())
 	} else {
 		// Notify that user that the workload has started successfully when using --foreground
 		fmt.Println("Workload started successfully. Press Ctrl+C to stop.")
@@ -474,7 +474,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		for {
 			// Safely check if transportHandler is nil
 			if transportHandler == nil {
-				slog.Debug("Transport handler is nil, exiting monitoring routine")
+				slog.Debug("transport handler is nil, exiting monitoring routine")
 				close(doneCh)
 				return
 			}
@@ -482,14 +482,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Check if the transport is still running
 			running, err := transportHandler.IsRunning()
 			if err != nil {
-				slog.Error("Error checking transport status", "error", err)
+				slog.Error("error checking transport status", "error", err)
 				// Don't exit immediately on error, try again after pause
 				time.Sleep(1 * time.Second)
 				continue
 			}
 			if !running {
 				// Transport is no longer running (container exited or was stopped)
-				slog.Warn("Transport is no longer running, attempting automatic restart")
+				slog.Warn("transport is no longer running, attempting automatic restart")
 				close(doneCh)
 				return
 			}
@@ -504,13 +504,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	// (e.g., if bearer token authentication failed during initialization)
 	currentWorkload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
 	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
-		slog.Warn("Failed to get current workload status", "error", err)
+		slog.Warn("failed to get current workload status", "error", err)
 	}
 
 	// Only set status to running if it's not already unauthenticated
 	// This preserves the unauthenticated state when bearer token authentication fails
 	if err == nil && currentWorkload.Status == rt.WorkloadStatusUnauthenticated {
-		slog.Debug("Preserving unauthenticated status for workload", "workload", r.Config.BaseName)
+		slog.Debug("preserving unauthenticated status for workload", "workload", r.Config.BaseName)
 	} else {
 		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
 			// If we can't set the status to `running` - treat it as a fatal error.

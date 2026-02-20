@@ -5,6 +5,7 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -26,7 +26,7 @@ const (
 func readSecretFromFile(filePath string) (string, error) {
 	// Clean the file path to prevent path traversal
 	cleanPath := filepath.Clean(filePath)
-	logger.Debugf("Reading secret from file: %s", cleanPath)
+	slog.Debug(fmt.Sprintf("Reading secret from file: %s", cleanPath))
 	// #nosec G304 - file path is cleaned above
 	secretBytes, err := os.ReadFile(cleanPath)
 	if err != nil {
@@ -45,7 +45,7 @@ func readSecretFromFile(filePath string) (string, error) {
 func resolveSecret(flagValue, filePath, envVarName string) (string, error) {
 	// 1. Check if provided directly via flag
 	if flagValue != "" {
-		logger.Debug("Using secret from command-line flag")
+		slog.Debug("using secret from command-line flag")
 		return flagValue, nil
 	}
 
@@ -56,12 +56,12 @@ func resolveSecret(flagValue, filePath, envVarName string) (string, error) {
 
 	// 3. Check environment variable
 	if secret := os.Getenv(envVarName); secret != "" {
-		logger.Debugf("Using secret from %s environment variable", envVarName)
+		slog.Debug(fmt.Sprintf("Using secret from %s environment variable", envVarName))
 		return secret, nil
 	}
 
 	// No secret found - this is acceptable for PKCE flows
-	logger.Debug("No secret provided - using public client mode")
+	slog.Debug("no secret provided - using public client mode")
 	return "", nil
 }
 

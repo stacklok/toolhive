@@ -101,7 +101,7 @@ func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.Ser
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -196,7 +196,7 @@ func (c *mcpRegistryClient) fetchServersPage(
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -241,7 +241,7 @@ func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -281,7 +281,7 @@ func (c *mcpRegistryClient) ValidateEndpoint(ctx context.Context) error {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Debug("Failed to close response body", "error", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 

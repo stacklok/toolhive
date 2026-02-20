@@ -21,6 +21,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// Redis ACL credential environment variable names.
+// These are set by the operator when Redis storage is configured.
+const (
+	// RedisUsernameEnvVar is the environment variable for the Redis ACL username.
+	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+	RedisUsernameEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_USERNAME"
+
+	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
+	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
+)
+
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
@@ -79,8 +91,11 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		AllowedAudiences:     cfg.AllowedAudiences,
 	}
 
-	// 6. Create storage (in-memory for single-instance deployments)
-	stor := storage.NewMemoryStorage()
+	// 6. Create storage backend based on configuration
+	stor, err := createStorage(ctx, cfg.Storage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage: %w", err)
+	}
 
 	// 7. Create the auth server
 	server, err := authserver.New(ctx, resolvedCfg, stor)
@@ -371,4 +386,95 @@ func convertFieldMapping(rc *authserver.UserInfoFieldMappingRunConfig) *upstream
 		NameFields:    rc.NameFields,
 		EmailFields:   rc.EmailFields,
 	}
+}
+
+// createStorage creates the appropriate storage backend based on configuration.
+func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage, error) {
+	if cfg == nil || cfg.Type == "" || cfg.Type == string(storage.TypeMemory) {
+		return storage.NewMemoryStorage(), nil
+	}
+	if cfg.Type == string(storage.TypeRedis) {
+		redisCfg, err := convertRedisRunConfig(cfg.RedisConfig)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Redis config: %w", err)
+		}
+		return storage.NewRedisStorage(ctx, *redisCfg)
+	}
+	return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
+}
+
+// convertRedisRunConfig converts a serializable RedisRunConfig to the runtime RedisConfig.
+// It resolves credentials from environment variables and parses duration strings.
+func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, error) {
+	if rc == nil {
+		return nil, fmt.Errorf("redis config is required when storage type is redis")
+	}
+
+	cfg := &storage.RedisConfig{
+		KeyPrefix: rc.KeyPrefix,
+	}
+
+	// Convert Sentinel config
+	if rc.SentinelConfig == nil {
+		return nil, fmt.Errorf("sentinel config is required")
+	}
+	cfg.SentinelConfig = &storage.SentinelConfig{
+		MasterName:    rc.SentinelConfig.MasterName,
+		SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
+		DB:            rc.SentinelConfig.DB,
+	}
+
+	// Resolve ACL credentials from environment variables
+	if rc.ACLUserConfig == nil {
+		return nil, fmt.Errorf("ACL user config is required")
+	}
+	username, err := resolveEnvVar(rc.ACLUserConfig.UsernameEnvVar)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+	}
+	password, err := resolveEnvVar(rc.ACLUserConfig.PasswordEnvVar)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve Redis password: %w", err)
+	}
+	cfg.ACLUserConfig = &storage.ACLUserConfig{
+		Username: username,
+		Password: password,
+	}
+
+	// Parse optional timeouts
+	if rc.DialTimeout != "" {
+		d, err := time.ParseDuration(rc.DialTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid dial timeout: %w", err)
+		}
+		cfg.DialTimeout = d
+	}
+	if rc.ReadTimeout != "" {
+		d, err := time.ParseDuration(rc.ReadTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid read timeout: %w", err)
+		}
+		cfg.ReadTimeout = d
+	}
+	if rc.WriteTimeout != "" {
+		d, err := time.ParseDuration(rc.WriteTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid write timeout: %w", err)
+		}
+		cfg.WriteTimeout = d
+	}
+
+	return cfg, nil
+}
+
+// resolveEnvVar reads a value from the named environment variable.
+func resolveEnvVar(envVar string) (string, error) {
+	if envVar == "" {
+		return "", fmt.Errorf("environment variable name is empty")
+	}
+	value := os.Getenv(envVar)
+	if value == "" {
+		return "", fmt.Errorf("environment variable %q is not set", envVar)
+	}
+	return value, nil
 }

@@ -37,12 +37,12 @@ func performAutoDiscoveryMigration() {
 	// Get current client statuses to determine what to register
 	manager, err := NewClientManager()
 	if err != nil {
-		slog.Error("Error creating client manager during migration", "error", err)
+		slog.Error("error creating client manager during migration", "error", err)
 		return
 	}
 	clientStatuses, err := manager.GetClientStatus(context.Background())
 	if err != nil {
-		slog.Error("Error discovering clients during migration", "error", err)
+		slog.Error("error discovering clients during migration", "error", err)
 		return
 	}
 
@@ -52,7 +52,7 @@ func performAutoDiscoveryMigration() {
 	for _, status := range clientStatuses {
 		if status.Installed && !status.Registered {
 			clientsToRegister = append(clientsToRegister, string(status.ClientType))
-			slog.Debug("Registering client", "client", string(status.ClientType))
+			slog.Debug("registering client", "client", string(status.ClientType))
 		}
 	}
 
@@ -78,7 +78,7 @@ func performAutoDiscoveryMigration() {
 	})
 
 	if err != nil {
-		slog.Error("Error updating config during migration", "error", err)
+		slog.Error("error updating config during migration", "error", err)
 		return
 	}
 

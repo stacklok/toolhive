@@ -10,12 +10,21 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
+
+// ociTagRegexp matches valid OCI tag strings per the distribution spec.
+// Reference: https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#pulling-manifests
+var ociTagRegexp = regexp.MustCompile(`^[\w][\w.-]{0,127}$`)
 
 // Option configures the skill service.
 type Option func(*service)
@@ -34,16 +43,70 @@ func WithInstaller(inst skills.Installer) Option {
 	}
 }
 
+// WithOCIStore sets the local OCI store for skill artifacts.
+func WithOCIStore(store *ociskills.Store) Option {
+	return func(s *service) {
+		s.ociStore = store
+	}
+}
+
+// WithPackager sets the skill packager for building OCI artifacts.
+func WithPackager(p ociskills.SkillPackager) Option {
+	return func(s *service) {
+		s.packager = p
+	}
+}
+
+// WithRegistryClient sets the registry client for push/pull operations.
+func WithRegistryClient(rc ociskills.RegistryClient) Option {
+	return func(s *service) {
+		s.registry = rc
+	}
+}
+
+// skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
+// Entries are never evicted. This is acceptable because the number of distinct
+// skills on a single machine is expected to remain small (< 1000).
+type skillLock struct {
+	mu sync.Mutex
+	// locks holds per-key mutexes. INVARIANT: entries must never be deleted
+	// from this map. The two-phase lock() method depends on pointers remaining
+	// valid after the global mutex is released. See lock() for details.
+	locks map[string]*sync.Mutex
+}
+
+// lock acquires a per-skill mutex and returns a function that releases it.
+func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) func() {
+	sl.mu.Lock()
+	key := string(scope) + "/" + name + "/" + projectRoot
+	m, ok := sl.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		sl.locks[key] = m
+	}
+	sl.mu.Unlock()
+
+	m.Lock()
+	return m.Unlock
+}
+
 // service is the default implementation of skills.SkillService.
 type service struct {
+	locks        skillLock
 	store        storage.SkillStore
 	pathResolver skills.PathResolver
 	installer    skills.Installer
+	ociStore     *ociskills.Store
+	packager     ociskills.SkillPackager
+	registry     ociskills.RegistryClient
 }
 
 // New creates a new SkillService backed by the given store.
 func New(store storage.SkillStore, opts ...Option) skills.SkillService {
-	s := &service{store: store}
+	s := &service{
+		store: store,
+		locks: skillLock{locks: make(map[string]*sync.Mutex)},
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -71,6 +134,16 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 
 	scope := defaultScope(opts.Scope)
 
+	// Canonicalize the project root so that equivalent paths
+	// (e.g. trailing slash, ".." segments) produce the same lock key
+	// and DB record.
+	if opts.ProjectRoot != "" {
+		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	}
+
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
+
 	// Without layer data, fall back to creating a pending record.
 	if len(opts.LayerData) == 0 {
 		return s.installPending(ctx, opts, scope)
@@ -86,6 +159,13 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	}
 
 	scope := defaultScope(opts.Scope)
+
+	if opts.ProjectRoot != "" {
+		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	}
+
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
 
 	// Look up the existing record to find which clients have files.
 	existing, err := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
@@ -135,17 +215,92 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 
 // Validate checks whether a skill definition is valid.
 func (*service) Validate(_ context.Context, path string) (*skills.ValidationResult, error) {
+	if err := validateLocalPath(path); err != nil {
+		return nil, err
+	}
 	return skills.ValidateSkillDir(path)
 }
 
-// Build is not yet implemented.
-func (*service) Build(_ context.Context, _ skills.BuildOptions) (*skills.BuildResult, error) {
-	return nil, httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
+// Build packages a skill directory into a local OCI artifact.
+func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.BuildResult, error) {
+	if s.packager == nil || s.ociStore == nil {
+		return nil, httperr.WithCode(
+			errors.New("OCI packaging is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	if err := validateLocalPath(opts.Path); err != nil {
+		return nil, err
+	}
+	if opts.Tag != "" {
+		if err := validateOCITag(opts.Tag); err != nil {
+			return nil, err
+		}
+	}
+
+	result, err := s.packager.Package(ctx, opts.Path, ociskills.DefaultPackageOptions())
+	if err != nil {
+		return nil, fmt.Errorf("packaging skill: %w", err)
+	}
+
+	// Tag resolution precedence:
+	// 1. Explicit tag from BuildOptions.Tag
+	// 2. Skill name from the parsed config (SKILL.md frontmatter)
+	// 3. No tag — use raw digest as the reference
+	tag := func() string {
+		if opts.Tag != "" {
+			return opts.Tag
+		}
+		if result.Config != nil && result.Config.Name != "" {
+			return result.Config.Name
+		}
+		return ""
+	}()
+
+	if tag != "" {
+		if tagErr := s.ociStore.Tag(ctx, result.IndexDigest, tag); tagErr != nil {
+			return nil, fmt.Errorf("tagging artifact: %w", tagErr)
+		}
+	}
+
+	ref := func() string {
+		if tag != "" {
+			return tag
+		}
+		return result.IndexDigest.String()
+	}()
+
+	return &skills.BuildResult{Reference: ref}, nil
 }
 
-// Push is not yet implemented.
-func (*service) Push(_ context.Context, _ skills.PushOptions) error {
-	return httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
+// Push pushes a locally built skill artifact to a remote OCI registry.
+func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
+	if s.registry == nil || s.ociStore == nil {
+		return httperr.WithCode(
+			errors.New("OCI registry is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	if opts.Reference == "" {
+		return httperr.WithCode(
+			errors.New("reference is required"),
+			http.StatusBadRequest,
+		)
+	}
+
+	d, err := s.ociStore.Resolve(ctx, opts.Reference)
+	if err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("reference %q not found in local store", opts.Reference),
+			http.StatusNotFound,
+		)
+	}
+
+	if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
+		return fmt.Errorf("pushing to registry: %w", err)
+	}
+
+	return nil
 }
 
 // installPending creates a pending skill record (no extraction).
@@ -311,6 +466,43 @@ func buildInstalledSkill(
 		InstalledAt: time.Now().UTC(),
 		Clients:     clients,
 	}
+}
+
+// validateLocalPath checks that a path is non-empty, absolute, and does not
+// contain ".." path traversal segments. This prevents API clients from
+// accessing arbitrary directories on the host filesystem via traversal.
+func validateLocalPath(path string) error {
+	if path == "" {
+		return httperr.WithCode(errors.New("path is required"), http.StatusBadRequest)
+	}
+	if strings.ContainsRune(path, 0) {
+		return httperr.WithCode(errors.New("path contains null bytes"), http.StatusBadRequest)
+	}
+	if !filepath.IsAbs(path) {
+		return httperr.WithCode(
+			fmt.Errorf("path must be absolute, got %q", path),
+			http.StatusBadRequest,
+		)
+	}
+	// Check the raw path for ".." segments before cleaning resolves them.
+	// This catches traversal attempts like /safe/dir/../../../etc.
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == ".." {
+			return httperr.WithCode(errors.New("path must not contain '..' traversal segments"), http.StatusBadRequest)
+		}
+	}
+	return nil
+}
+
+// validateOCITag checks that a tag conforms to the OCI distribution spec format.
+func validateOCITag(tag string) error {
+	if !ociTagRegexp.MatchString(tag) {
+		return httperr.WithCode(
+			fmt.Errorf("invalid OCI tag %q: must match %s", tag, ociTagRegexp.String()),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
 }
 
 // defaultScope returns ScopeUser when s is empty, otherwise returns s unchanged.

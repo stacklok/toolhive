@@ -4,6 +4,8 @@
 // Package types defines shared types used across optimizer sub-packages.
 package types
 
+//go:generate mockgen -destination=mocks/mock_types.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types ToolStore,EmbeddingClient
+
 import (
 	"context"
 	"time"

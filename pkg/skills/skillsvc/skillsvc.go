@@ -144,16 +144,15 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
 	}
 
-	// Structural check: skill names never contain '/', ':', or '@'.
-	// OCI references always require at least one of these.
-	if strings.ContainsAny(opts.Name, "/:@") {
-		if _, err := nameref.ParseReference(opts.Name); err != nil {
-			return nil, httperr.WithCode(
-				fmt.Errorf("invalid OCI reference %q: %w", opts.Name, err),
-				http.StatusBadRequest,
-			)
-		}
-		return s.installFromOCI(ctx, opts, scope)
+	ref, isOCI, err := parseOCIReference(opts.Name)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("invalid OCI reference %q: %w", opts.Name, err),
+			http.StatusBadRequest,
+		)
+	}
+	if isOCI {
+		return s.installFromOCI(ctx, opts, scope, ref)
 	}
 
 	// Plain skill name — validate and proceed with existing flow.
@@ -331,10 +330,27 @@ const ociPullTimeout = 5 * time.Minute
 // malicious artifact from causing OOM before the decompression limits kick in.
 const maxCompressedLayerSize int64 = 50 * 1024 * 1024 // 50 MB
 
+func parseOCIReference(name string) (nameref.Reference, bool, error) {
+	// Structural check: skill names never contain '/', ':', or '@'.
+	// OCI references always require at least one of these.
+	if !strings.ContainsAny(name, "/:@") {
+		return nil, false, nil
+	}
+
+	ref, err := nameref.ParseReference(name)
+	if err != nil {
+		return nil, true, err
+	}
+	return ref, true, nil
+}
+
 // installFromOCI pulls a skill artifact from a remote registry, extracts
 // metadata and layer data, then delegates to the standard extraction flow.
 func (s *service) installFromOCI(
-	ctx context.Context, opts skills.InstallOptions, scope skills.Scope,
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	ref nameref.Reference,
 ) (*skills.InstallResult, error) {
 	if s.registry == nil || s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -356,7 +372,10 @@ func (s *service) installFromOCI(
 
 	pulledDigest, err := s.registry.Pull(pullCtx, s.ociStore, ociRef)
 	if err != nil {
-		return nil, fmt.Errorf("pulling OCI artifact %q: %w", ociRef, err)
+		return nil, httperr.WithCode(
+			fmt.Errorf("pulling OCI artifact %q: %w", ociRef, err),
+			http.StatusBadGateway,
+		)
 	}
 
 	layerData, skillConfig, err := s.extractOCIContent(ctx, pulledDigest)
@@ -377,20 +396,18 @@ func (s *service) installFromOCI(
 	// match the repository name in the OCI reference. A mismatch could
 	// indicate a supply chain attack (e.g., a trusted reference pointing to
 	// an artifact that overwrites a different skill).
-	if ref, parseErr := nameref.ParseReference(ociRef); parseErr == nil {
-		repo := ref.Context().RepositoryStr()
-		if idx := strings.LastIndex(repo, "/"); idx >= 0 {
-			repo = repo[idx+1:]
-		}
-		if repo != skillConfig.Name {
-			return nil, httperr.WithCode(
-				fmt.Errorf(
-					"skill name %q in artifact does not match OCI reference repository %q",
-					skillConfig.Name, repo,
-				),
-				http.StatusUnprocessableEntity,
-			)
-		}
+	repo := ref.Context().RepositoryStr()
+	if idx := strings.LastIndex(repo, "/"); idx >= 0 {
+		repo = repo[idx+1:]
+	}
+	if repo != skillConfig.Name {
+		return nil, httperr.WithCode(
+			fmt.Errorf(
+				"skill name %q in artifact does not match OCI reference repository %q",
+				skillConfig.Name, repo,
+			),
+			http.StatusUnprocessableEntity,
+		)
 	}
 
 	// Hydrate install options from the pulled artifact.
@@ -401,6 +418,7 @@ func (s *service) installFromOCI(
 	if opts.Version == "" && skillConfig.Version != "" {
 		opts.Version = skillConfig.Version
 	}
+	// Note: version is optional; if both are empty, install without a version.
 
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
@@ -450,6 +468,8 @@ func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byt
 		)
 	}
 
+	// Skills use a single-layer format (one tar.gz). Validate the first
+	// (and only expected) layer.
 	if manifest.Layers[0].MediaType != ocispec.MediaTypeImageLayerGzip {
 		return nil, nil, httperr.WithCode(
 			fmt.Errorf("unexpected layer media type %q, expected %q",

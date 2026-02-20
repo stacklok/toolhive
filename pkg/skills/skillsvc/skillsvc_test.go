@@ -5,6 +5,7 @@ package skillsvc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	godigest "github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -442,6 +445,52 @@ func buildTestArtifact(t *testing.T, store *ociskills.Store, skillName, version 
 	return result.IndexDigest
 }
 
+func buildManifestWithLayerSize(t *testing.T, store *ociskills.Store, skillName string, layerSize int64) godigest.Digest {
+	t.Helper()
+
+	imgConfig := ocispec.Image{
+		Config: ocispec.ImageConfig{
+			Labels: map[string]string{
+				ociskills.LabelSkillName:        skillName,
+				ociskills.LabelSkillDescription: "test",
+				ociskills.LabelSkillVersion:     "1.0.0",
+			},
+		},
+	}
+	configBytes, err := json.Marshal(imgConfig)
+	require.NoError(t, err)
+	configDigest, err := store.PutBlob(t.Context(), configBytes)
+	require.NoError(t, err)
+
+	layerBytes := []byte("layer")
+	layerDigest, err := store.PutBlob(t.Context(), layerBytes)
+	require.NoError(t, err)
+
+	manifest := ocispec.Manifest{
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		MediaType:    ocispec.MediaTypeImageManifest,
+		ArtifactType: ociskills.ArtifactTypeSkill,
+		Config: ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    configDigest,
+			Size:      int64(len(configBytes)),
+		},
+		Layers: []ocispec.Descriptor{
+			{
+				MediaType: ocispec.MediaTypeImageLayerGzip,
+				Digest:    layerDigest,
+				Size:      layerSize,
+			},
+		},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	manifestDigest, err := store.PutManifest(t.Context(), manifestBytes)
+	require.NoError(t, err)
+
+	return manifestDigest
+}
+
 func TestInstallFromOCI(t *testing.T) {
 	t.Parallel()
 
@@ -527,6 +576,24 @@ func TestInstallFromOCI(t *testing.T) {
 				return reg, ociStore, storemocks.NewMockSkillStore(ctrl), pr
 			},
 			wantCode: http.StatusUnprocessableEntity,
+		},
+		{
+			name: "oversized layer returns 422",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/oversize-skill:v1"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				manifestDigest := buildManifestWithLayerSize(t, ociStore, "oversize-skill", maxCompressedLayerSize+1)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/oversize-skill:v1").
+					Return(manifestDigest, nil)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return reg, ociStore, storemocks.NewMockSkillStore(ctrl), pr
+			},
+			wantCode: http.StatusUnprocessableEntity,
+			wantErr:  "compressed layer size",
 		},
 		{
 			name: "successful pull and install",

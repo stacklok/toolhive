@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/stacklok/toolhive-core/permissions"
+	"github.com/stacklok/toolhive-core/registry/types"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
@@ -60,7 +60,7 @@ type updateRequest struct {
 	// OIDC configuration options
 	OIDC oidcOptions `json:"oidc"`
 	// Permission profile to apply
-	PermissionProfile *permissions.Profile `json:"permission_profile"`
+	PermissionProfile *permissions.Profile `json:"permission_profile" swaggerignore:"true"`
 	// Proxy mode to use
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
@@ -77,7 +77,7 @@ type updateRequest struct {
 	// Remote server specific fields
 	URL         string             `json:"url,omitempty"`
 	OAuthConfig remoteOAuthConfig  `json:"oauth_config,omitempty"`
-	Headers     []*registry.Header `json:"headers,omitempty"`
+	Headers     []*registry.Header `json:"headers,omitempty" swaggerignore:"true"`
 
 	// HeaderForward configures headers to inject into requests to remote MCP servers.
 	// Use this to add custom headers like X-Tenant-ID or correlation IDs.

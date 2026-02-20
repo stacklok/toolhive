@@ -15,8 +15,8 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
+	"github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container/images"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (

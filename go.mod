@@ -44,7 +44,7 @@ require (
 	github.com/sigstore/protobuf-specs v0.5.0
 	github.com/sigstore/sigstore-go v1.1.4
 	github.com/spf13/viper v1.21.0
-	github.com/stacklok/toolhive-core v0.0.5
+	github.com/stacklok/toolhive-core v0.0.6
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a

@@ -14,8 +14,8 @@ import (
 	io "io"
 	reflect "reflect"
 
+	permissions "github.com/stacklok/toolhive-core/permissions"
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
-	permissions "github.com/stacklok/toolhive/pkg/permissions"
 	gomock "go.uber.org/mock/gomock"
 )
 

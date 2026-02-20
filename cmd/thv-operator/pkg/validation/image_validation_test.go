@@ -15,8 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 func TestAlwaysAllowValidator(t *testing.T) {

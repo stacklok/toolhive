@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -24,7 +25,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/telemetry"

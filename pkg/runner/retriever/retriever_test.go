@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 func TestGetMCPServer_WithGroup(t *testing.T) {

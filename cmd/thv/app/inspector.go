@@ -17,12 +17,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/cmd/thv/app/inspector"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )

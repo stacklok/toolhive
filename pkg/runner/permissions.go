@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive-core/permissions"
 )
 
 // This was moved from the CLI to allow it to be shared with the lifecycle manager.

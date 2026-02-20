@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -27,7 +28,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -87,7 +87,7 @@ type RunConfig struct {
 	PermissionProfileNameOrPath string `json:"permission_profile_name_or_path,omitempty" yaml:"permission_profile_name_or_path,omitempty"` //nolint:lll
 
 	// PermissionProfile is the permission profile to use
-	PermissionProfile *permissions.Profile `json:"permission_profile" yaml:"permission_profile"`
+	PermissionProfile *permissions.Profile `json:"permission_profile" yaml:"permission_profile" swaggerignore:"true"`
 
 	// EnvVars are the parsed environment variables as key-value pairs
 	EnvVars map[string]string `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`

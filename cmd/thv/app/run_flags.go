@@ -45,6 +45,7 @@ type RunFlags struct {
 	ProxyPort  int
 	TargetPort int
 	TargetHost string
+	Publish    []string
 
 	// Server configuration
 	Name              string
@@ -154,6 +155,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"target-host",
 		transport.LocalhostIPv4,
 		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
+	cmd.Flags().StringArrayVarP(&config.Publish, "publish", "p", []string{},
+		"Publish a container's port(s) to the host (format: hostPort:containerPort)")
 	cmd.Flags().StringVar(
 		&config.PermissionProfile,
 		"permission-profile",
@@ -578,6 +581,7 @@ func buildRunnerConfig(
 			LoadGlobal:    runFlags.IgnoreGlobally,
 			PrintOverlays: runFlags.PrintOverlays,
 		}),
+		runner.WithPublish(runFlags.Publish),
 	}
 
 	// Load tools override configuration

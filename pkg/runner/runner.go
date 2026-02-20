@@ -299,6 +299,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.Host,
 			r.Config.TargetPort,
 			r.Config.TargetHost,
+			r.Config.Publish,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to set up workload: %w", err)

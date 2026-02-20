@@ -162,6 +162,14 @@ func WithTargetHost(targetHost string) RunConfigBuilderOption {
 	}
 }
 
+// WithPublish sets the published ports
+func WithPublish(publish []string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.Publish = publish
+		return nil
+	}
+}
+
 // WithDebug sets debug mode
 func WithDebug(debug bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

@@ -1619,7 +1619,7 @@ func generatePortBindings(labels map[string]string,
 	portBindings map[string][]runtime.PortBinding) (map[string][]runtime.PortBinding, int, error) {
 	var hostPort int
 	// check if we need to map to a random port of not
-	if _, ok := labels["toolhive-auxiliary"]; ok && labels["toolhive-auxiliary"] == "true" {
+	if _, ok := labels[ToolhiveAuxiliaryWorkloadLabel]; ok && labels[ToolhiveAuxiliaryWorkloadLabel] == LabelValueTrue {
 		// find first port
 		var err error
 		for _, bindings := range portBindings {
@@ -1633,17 +1633,25 @@ func generatePortBindings(labels map[string]string,
 			}
 		}
 	} else {
-		// bind to a random host port
-		hostPort = networking.FindAvailable()
-		if hostPort == 0 {
-			return nil, 0, fmt.Errorf("could not find an available port")
-		}
-
 		// first port binding needs to map to the host port
+		// For consistency, we only use FindAvailable for the primary port if it's not already set
 		for key, bindings := range portBindings {
 			if len(bindings) > 0 {
-				bindings[0].HostPort = fmt.Sprintf("%d", hostPort)
-				portBindings[key] = bindings
+				hostPortStr := bindings[0].HostPort
+				if hostPortStr == "" || hostPortStr == "0" {
+					hostPort = networking.FindAvailable()
+					if hostPort == 0 {
+						return nil, 0, fmt.Errorf("could not find an available port")
+					}
+					bindings[0].HostPort = fmt.Sprintf("%d", hostPort)
+					portBindings[key] = bindings
+				} else {
+					var err error
+					hostPort, err = strconv.Atoi(hostPortStr)
+					if err != nil {
+						return nil, 0, fmt.Errorf("failed to convert host port %s to int: %w", hostPortStr, err)
+					}
+				}
 				break
 			}
 		}

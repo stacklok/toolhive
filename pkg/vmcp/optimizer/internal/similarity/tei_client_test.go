@@ -12,60 +12,47 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-func TestNewEmbeddingClient(t *testing.T) {
+func Test_newTEIClient(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		cfg     *vmcpconfig.OptimizerConfig
-		wantNil bool
+		baseURL string
+		timeout time.Duration
 		wantErr string
 	}{
 		{
-			name:    "nil config returns nil",
-			cfg:     nil,
-			wantNil: true,
+			name:    "empty URL returns error",
+			baseURL: "",
+			wantErr: "TEI BaseURL is required",
 		},
 		{
-			name:    "empty embedding service returns nil",
-			cfg:     &vmcpconfig.OptimizerConfig{},
-			wantNil: true,
+			name:    "valid URL creates client",
+			baseURL: "http://my-embedding:8080",
 		},
 		{
-			name: "valid URL creates client",
-			cfg:  &vmcpconfig.OptimizerConfig{EmbeddingService: "http://my-embedding:8080"},
+			name:    "URL with namespace",
+			baseURL: "http://my-embedding.ml.svc.cluster.local:8080",
 		},
 		{
-			name: "URL with namespace",
-			cfg:  &vmcpconfig.OptimizerConfig{EmbeddingService: "http://my-embedding.ml.svc.cluster.local:8080"},
-		},
-		{
-			name: "custom timeout",
-			cfg: &vmcpconfig.OptimizerConfig{
-				EmbeddingService:        "http://my-embedding:8080",
-				EmbeddingServiceTimeout: vmcpconfig.Duration(5 * time.Second),
-			},
+			name:    "custom timeout",
+			baseURL: "http://my-embedding:8080",
+			timeout: 5 * time.Second,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			client, err := NewEmbeddingClient(tt.cfg)
+			client, err := newTEIClient(tt.baseURL, tt.timeout)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				require.Nil(t, client)
 			} else {
 				require.NoError(t, err)
-				if tt.wantNil {
-					require.Nil(t, client)
-				} else {
-					require.NotNil(t, client)
-				}
+				require.NotNil(t, client)
 			}
 		})
 	}

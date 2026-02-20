@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -462,6 +463,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create status reporter: %w", err)
 	}
 
+	optCfg, err := optimizer.GetAndValidateConfig(cfg.Optimizer)
+	if err != nil {
+		return fmt.Errorf("failed to validate optimizer config: %w", err)
+	}
+
 	serverCfg := &vmcpserver.Config{
 		Name:                    cfg.Name,
 		Version:                 getVersion(),
@@ -476,10 +482,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		StatusReportingInterval: getStatusReportingInterval(cfg),
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
-	}
-
-	if cfg.Optimizer != nil {
-		serverCfg.OptimizerConfig = cfg.Optimizer
+		OptimizerConfig:         optCfg,
 	}
 
 	// Convert composite tool configurations to workflow definitions

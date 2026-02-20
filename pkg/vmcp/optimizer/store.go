@@ -10,8 +10,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	sqlitestore "github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/sqlite_store"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
@@ -20,18 +18,6 @@ import (
 // It is defined in the internal/types package and aliased here so that
 // external consumers continue to use optimizer.ToolStore.
 type ToolStore = types.ToolStore
-
-// EmbeddingClient generates vector embeddings from text.
-// It is defined in the internal/types package and aliased here so that
-// external consumers can reference the type.
-type EmbeddingClient = types.EmbeddingClient
-
-// NewEmbeddingClient creates an EmbeddingClient from the given optimizer
-// configuration. Returns (nil, nil) if cfg is nil or no embedding service
-// is configured, meaning only FTS5 full-text search will be used.
-func NewEmbeddingClient(cfg *vmcpconfig.OptimizerConfig) (EmbeddingClient, error) {
-	return similarity.NewEmbeddingClient(cfg)
-}
 
 // InMemoryToolStore implements ToolStore using an in-memory map with
 // case-insensitive substring matching. Thread-safe via sync.RWMutex.
@@ -108,7 +94,8 @@ func (s *InMemoryToolStore) Search(_ context.Context, query string, allowedTools
 
 // NewSQLiteToolStore creates a new ToolStore backed by SQLite for search.
 // The store uses an in-memory SQLite database with shared cache for concurrent access.
-// If embeddingClient is nil, only FTS5 full-text search is used.
-func NewSQLiteToolStore(embeddingClient EmbeddingClient) (ToolStore, error) {
-	return sqlitestore.NewSQLiteToolStore(embeddingClient)
+// If embeddingClient is nil, only keyword full-text search is used.
+// If optCfg is non-nil, its search parameters override the defaults; nil values use defaults.
+func NewSQLiteToolStore(embeddingClient EmbeddingClient, optCfg *Config) (ToolStore, error) {
+	return sqlitestore.NewSQLiteToolStore(embeddingClient, optCfg)
 }

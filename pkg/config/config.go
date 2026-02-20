@@ -45,6 +45,31 @@ type Config struct {
 	BuildEnvFromShell            []string                            `yaml:"build_env_from_shell,omitempty"`
 	BuildAuthFiles               map[string]string                   `yaml:"build_auth_files,omitempty"`
 	RuntimeConfigs               map[string]*templates.RuntimeConfig `yaml:"runtime_configs,omitempty"`
+	RegistryAuth                 RegistryAuth                        `yaml:"registry_auth,omitempty"`
+}
+
+// RegistryAuth holds authentication configuration for remote registries.
+type RegistryAuth struct {
+	// Type is the authentication type: "oauth" or "" (none).
+	Type string `yaml:"type,omitempty"`
+
+	// OAuth holds OAuth/OIDC authentication configuration.
+	OAuth *RegistryOAuthConfig `yaml:"oauth,omitempty"`
+}
+
+// RegistryOAuthConfig holds OAuth/OIDC configuration for registry authentication.
+type RegistryOAuthConfig struct {
+	Issuer       string   `yaml:"issuer"`
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret,omitempty"`
+	Scopes       []string `yaml:"scopes,omitempty"`
+	Audience     string   `yaml:"audience,omitempty"`
+	UsePKCE      bool     `yaml:"use_pkce"`
+	CallbackPort int      `yaml:"callback_port,omitempty"`
+
+	// Cached token references for session restoration across CLI invocations.
+	CachedRefreshTokenRef string    `yaml:"cached_refresh_token_ref,omitempty"`
+	CachedTokenExpiry     time.Time `yaml:"cached_token_expiry,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.

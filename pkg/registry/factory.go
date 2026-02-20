@@ -8,9 +8,12 @@ package registry
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var (
@@ -33,8 +36,11 @@ func NewRegistryProvider(cfg *config.Config) (Provider, error) {
 	// 3. Local file path (if configured) - for local JSON file
 	// 4. Default - embedded registry data
 
+	// Create token source if registry auth is configured
+	tokenSource := resolveTokenSource(cfg)
+
 	if cfg != nil && len(cfg.RegistryApiUrl) > 0 {
-		provider, err := NewCachedAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true)
+		provider, err := NewCachedAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true, tokenSource)
 		if err != nil {
 			return nil, fmt.Errorf("custom registry API at %s is not reachable: %w", cfg.RegistryApiUrl, err)
 		}
@@ -87,4 +93,30 @@ func ResetDefaultProvider() {
 	defaultProviderOnce = sync.Once{}
 	defaultProvider = nil
 	defaultProviderErr = nil
+}
+
+// resolveTokenSource creates a TokenSource from the config if registry auth is configured.
+// Returns nil if no auth is configured or if token source creation fails (logs warning).
+func resolveTokenSource(cfg *config.Config) auth.TokenSource {
+	if cfg == nil || cfg.RegistryAuth.Type != "oauth" || cfg.RegistryAuth.OAuth == nil {
+		return nil
+	}
+
+	// Try to create secrets provider for token persistence
+	var secretsProvider secrets.Provider
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err == nil {
+		secretsProvider, err = secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			slog.Debug("Failed to create secrets provider for registry auth, tokens will not be persisted", "error", err)
+		}
+	}
+
+	tokenSource, err := auth.NewTokenSource(cfg.RegistryAuth.OAuth, secretsProvider)
+	if err != nil {
+		slog.Warn("Failed to create registry auth token source", "error", err)
+		return nil
+	}
+
+	return tokenSource
 }

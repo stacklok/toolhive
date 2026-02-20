@@ -213,30 +213,6 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		propagator: otel.GetTextMapPropagator(),
 	}
 
-	// Add size limit layer for DoS protection
-	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		resp, err := baseTransport.RoundTrip(req)
-		if err != nil {
-			return nil, err
-		}
-		// Wrap response body with size limit
-		resp.Body = struct {
-			io.Reader
-			io.Closer
-		}{
-			Reader: io.LimitReader(resp.Body, maxResponseSize),
-			Closer: resp.Body,
-		}
-		return resp, nil
-	})
-
-	// Create HTTP client with configured transport chain
-	// Set timeouts to prevent long-lived connections that require continuous listening
-	httpClient := &http.Client{
-		Transport: sizeLimitedTransport,
-		Timeout:   30 * time.Second, // Prevent hanging on connections
-	}
-  
 	var c *client.Client
 
 	switch target.TransportType {

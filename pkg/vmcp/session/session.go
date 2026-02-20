@@ -4,10 +4,9 @@
 package session
 
 import (
-	"context"
-
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // MultiSession is the vMCP domain session interface. It extends the
@@ -41,6 +40,7 @@ import (
 // storage path is introduced.
 type MultiSession interface {
 	transportsession.Session
+	sessiontypes.Caller
 
 	// Tools returns the resolved tools available in this session.
 	// The list is built once at session creation and is read-only thereafter.
@@ -57,39 +57,4 @@ type MultiSession interface {
 	// backend MCP server and is used to correlate vMCP sessions with backend
 	// sessions for debugging and auditing.
 	BackendSessions() map[string]string
-
-	// CallTool invokes toolName on the appropriate backend for this session.
-	// The routing table is consulted to identify the backend; the
-	// session-scoped client for that backend is then used, avoiding
-	// per-request connection overhead.
-	//
-	// arguments contains the tool input parameters.
-	// meta contains protocol-level metadata (_meta) forwarded from the client.
-	CallTool(
-		ctx context.Context,
-		toolName string,
-		arguments map[string]any,
-		meta map[string]any,
-	) (*vmcp.ToolCallResult, error)
-
-	// ReadResource retrieves the resource identified by uri from the
-	// appropriate backend for this session.
-	ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
-
-	// GetPrompt retrieves the named prompt from the appropriate backend for
-	// this session.
-	//
-	// arguments contains the prompt input parameters.
-	GetPrompt(
-		ctx context.Context,
-		name string,
-		arguments map[string]any,
-	) (*vmcp.PromptGetResult, error)
-
-	// Close releases all resources held by this session, including all
-	// backend client connections. It waits for any in-flight operations to
-	// complete before tearing down clients.
-	//
-	// Close is idempotent: calling it multiple times returns nil.
-	Close() error
 }

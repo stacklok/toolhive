@@ -104,6 +104,7 @@ func buildTestSession(
 		resources:       resources,
 		prompts:         prompts,
 		backendSessions: map[string]string{backendID: "backend-session-abc"},
+		queue:           newAdmissionQueue(),
 	}
 }
 
@@ -451,6 +452,7 @@ func TestDefaultSession_ErrNoBackendClient(t *testing.T) {
 		resources:       []vmcp.Resource{{URI: "file://readme", BackendID: "b1"}},
 		prompts:         []vmcp.Prompt{{Name: "greet", BackendID: "b1"}},
 		backendSessions: map[string]string{},
+		queue:           newAdmissionQueue(),
 	}
 	defer func() { _ = sess.Close() }()
 
@@ -484,6 +486,7 @@ func TestDefaultSession_Close_AllBackendsAttemptedOnError(t *testing.T) {
 			Prompts:   map[string]*vmcp.BackendTarget{},
 		},
 		backendSessions: map[string]string{},
+		queue:           newAdmissionQueue(),
 	}
 
 	err := sess.Close()

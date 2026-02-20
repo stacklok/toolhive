@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -49,6 +50,17 @@ type MultiSessionFactory interface {
 	// rather than an error, allowing clients to connect even when all backends
 	// are temporarily unavailable.
 	MakeSession(ctx context.Context, identity *auth.Identity, backends []*vmcp.Backend) (MultiSession, error)
+
+	// MakeSessionWithID creates a new MultiSession with a specific session ID.
+	// This is used by SessionManager to create sessions using the SDK-assigned ID
+	// rather than generating a new UUID internally.
+	//
+	// The id parameter must be non-empty and should be a valid MCP session ID
+	// (visible ASCII characters, 0x21 to 0x7E per the MCP specification).
+	//
+	// All other behaviour (partial initialisation, bounded concurrency, etc.)
+	// is identical to MakeSession.
+	MakeSessionWithID(ctx context.Context, id string, identity *auth.Identity, backends []*vmcp.Backend) (MultiSession, error)
 }
 
 // backendConnector creates a connected, initialised backend Session for use
@@ -210,6 +222,46 @@ func (f *defaultMultiSessionFactory) MakeSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
+	return f.makeSession(ctx, uuid.New().String(), identity, backends)
+}
+
+// MakeSessionWithID implements MultiSessionFactory.
+func (f *defaultMultiSessionFactory) MakeSessionWithID(
+	ctx context.Context,
+	id string,
+	identity *auth.Identity,
+	backends []*vmcp.Backend,
+) (MultiSession, error) {
+	if err := validateSessionID(id); err != nil {
+		return nil, err
+	}
+	return f.makeSession(ctx, id, identity, backends)
+}
+
+// validateSessionID checks that id is non-empty and contains only visible
+// ASCII characters (0x21–0x7E) as required by the MCP specification.
+func validateSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("session ID must not be empty")
+	}
+	for i := range len(id) {
+		c := id[i]
+		if c < 0x21 || c > 0x7E {
+			return fmt.Errorf("session ID contains invalid character at index %d (0x%02X): must be visible ASCII (0x21–0x7E)", i, c)
+		}
+	}
+	return nil
+}
+
+// makeSession is the shared implementation for MakeSession and MakeSessionWithID.
+// It initialises backends in parallel, builds the routing table, and returns
+// a fully-formed MultiSession using the provided sessID.
+func (f *defaultMultiSessionFactory) makeSession(
+	ctx context.Context,
+	sessID string,
+	identity *auth.Identity,
+	backends []*vmcp.Backend,
+) (MultiSession, error) {
 	// Filter nil entries upfront so that every downstream dereference of a
 	// *vmcp.Backend is safe. Nil entries are logged and skipped, consistent
 	// with the partial-initialisation approach used for failed backends.
@@ -265,7 +317,6 @@ func (f *defaultMultiSessionFactory) MakeSession(
 	// Build the routing table; first-writer (alphabetically) wins on conflicts.
 	routingTable, allTools, allResources, allPrompts := buildRoutingTable(results)
 
-	sessID := uuid.New().String()
 	transportSess := transportsession.NewStreamableSession(sessID)
 
 	// Populate serialisable metadata so that the embedded transport session

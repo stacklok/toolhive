@@ -694,6 +694,13 @@ spec:
                         enum:
                         - debug
                         type: string
+                      sessionManagementV2:
+                        description: |-
+                          SessionManagementV2 enables session-scoped backend client lifecycle.
+                          When true, vMCP creates real backend connections per session via MultiSessionFactory
+                          and routes tool calls directly through the session rather than the global router.
+                          Defaults to false; existing behaviour is completely unchanged when disabled.
+                        type: boolean
                       timeouts:
                         description: Timeouts configures timeout settings.
                         properties:

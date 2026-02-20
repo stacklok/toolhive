@@ -17,17 +17,24 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+const (
+	contentTypeText     = "text"
+	contentTypeImage    = "image"
+	contentTypeAudio    = "audio"
+	contentTypeResource = "resource"
+)
+
 // ConvertMCPContent converts a single mcp.Content item to vmcp.Content.
 // Unknown content types are returned as vmcp.Content{Type: "unknown"}.
 func ConvertMCPContent(content mcp.Content) vmcp.Content {
 	if text, ok := mcp.AsTextContent(content); ok {
-		return vmcp.Content{Type: "text", Text: text.Text}
+		return vmcp.Content{Type: contentTypeText, Text: text.Text}
 	}
 	if img, ok := mcp.AsImageContent(content); ok {
-		return vmcp.Content{Type: "image", Data: img.Data, MimeType: img.MIMEType}
+		return vmcp.Content{Type: contentTypeImage, Data: img.Data, MimeType: img.MIMEType}
 	}
 	if audio, ok := mcp.AsAudioContent(content); ok {
-		return vmcp.Content{Type: "audio", Data: audio.Data, MimeType: audio.MIMEType}
+		return vmcp.Content{Type: contentTypeAudio, Data: audio.Data, MimeType: audio.MIMEType}
 	}
 	slog.Debug("Encountered unknown MCP content type", "type", fmt.Sprintf("%T", content))
 	return vmcp.Content{Type: "unknown"}
@@ -39,6 +46,34 @@ func ConvertMCPContents(contents []mcp.Content) []vmcp.Content {
 	result := make([]vmcp.Content, 0, len(contents))
 	for _, c := range contents {
 		result = append(result, ConvertMCPContent(c))
+	}
+	return result
+}
+
+// ToMCPContent converts a single vmcp.Content item to mcp.Content.
+// Unknown and resource content types are converted to empty text with a warning.
+func ToMCPContent(content vmcp.Content) mcp.Content {
+	switch content.Type {
+	case contentTypeText:
+		return mcp.NewTextContent(content.Text)
+	case contentTypeImage:
+		return mcp.NewImageContent(content.Data, content.MimeType)
+	case contentTypeAudio:
+		return mcp.NewAudioContent(content.Data, content.MimeType)
+	case contentTypeResource:
+		slog.Warn("converting resource content to empty text - embedded resources not yet supported")
+		return mcp.NewTextContent("")
+	default:
+		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
+		return mcp.NewTextContent("")
+	}
+}
+
+// ToMCPContents converts a slice of vmcp.Content to []mcp.Content.
+func ToMCPContents(contents []vmcp.Content) []mcp.Content {
+	result := make([]mcp.Content, 0, len(contents))
+	for _, c := range contents {
+		result = append(result, ToMCPContent(c))
 	}
 	return result
 }
@@ -143,15 +178,15 @@ func ContentArrayToMap(content []vmcp.Content) map[string]any {
 
 	for _, item := range content {
 		switch item.Type {
-		case "text":
-			key := "text"
+		case contentTypeText:
+			key := contentTypeText
 			if textIndex > 0 {
 				key = fmt.Sprintf("text_%d", textIndex)
 			}
 			result[key] = item.Text
 			textIndex++
 
-		case "image":
+		case contentTypeImage:
 			key := fmt.Sprintf("image_%d", imageIndex)
 			result[key] = item.Data
 			imageIndex++

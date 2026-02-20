@@ -381,6 +381,7 @@ _Appears in:_
 | `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />The only valid value is "debug" to enable debug logging.<br />When omitted or empty, the server uses info level logging. |  | Enum: [debug] <br />Optional: \{\} <br /> |
 | `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures timeout settings. |  | Optional: \{\} <br /> |
 | `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling behavior. |  | Optional: \{\} <br /> |
+| `sessionManagementV2` _boolean_ | SessionManagementV2 enables session-scoped backend client lifecycle.<br />When true, vMCP creates real backend connections per session via MultiSessionFactory<br />and routes tool calls directly through the session rather than the global router.<br />Defaults to false; existing behaviour is completely unchanged when disabled. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OptimizerConfig

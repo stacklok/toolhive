@@ -15,6 +15,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -66,6 +67,10 @@ type RunConfig struct {
 	// Per RFC 8707, the "resource" parameter in authorization and token requests is
 	// validated against this list. Required for MCP compliance.
 	AllowedAudiences []string `json:"allowed_audiences" yaml:"allowed_audiences"`
+
+	// Storage configures the storage backend for the auth server.
+	// If nil, defaults to in-memory storage.
+	Storage *storage.RunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.

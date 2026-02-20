@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 func TestCreateKeyProvider(t *testing.T) {
@@ -875,5 +876,215 @@ func TestBuildOIDCConfig(t *testing.T) {
 		// OIDCConfig has no UserInfo field - verify the config is otherwise valid
 		assert.Equal(t, "https://example.com", cfg.Issuer)
 		assert.Equal(t, "test-client-id", cfg.ClientID)
+	})
+}
+
+func TestCreateStorage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("nil config returns memory storage", func(t *testing.T) {
+		t.Parallel()
+
+		stor, err := createStorage(ctx, nil)
+		require.NoError(t, err)
+		require.NotNil(t, stor)
+		_, ok := stor.(*storage.MemoryStorage)
+		assert.True(t, ok, "expected MemoryStorage")
+	})
+
+	t.Run("empty type returns memory storage", func(t *testing.T) {
+		t.Parallel()
+
+		stor, err := createStorage(ctx, &storage.RunConfig{})
+		require.NoError(t, err)
+		require.NotNil(t, stor)
+		_, ok := stor.(*storage.MemoryStorage)
+		assert.True(t, ok, "expected MemoryStorage")
+	})
+
+	t.Run("explicit memory type returns memory storage", func(t *testing.T) {
+		t.Parallel()
+
+		stor, err := createStorage(ctx, &storage.RunConfig{
+			Type: string(storage.TypeMemory),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, stor)
+		_, ok := stor.(*storage.MemoryStorage)
+		assert.True(t, ok, "expected MemoryStorage")
+	})
+
+	t.Run("unsupported type returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := createStorage(ctx, &storage.RunConfig{
+			Type: "dynamodb",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported storage type")
+	})
+
+	t.Run("redis type with nil RedisConfig returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := createStorage(ctx, &storage.RunConfig{
+			Type: string(storage.TypeRedis),
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "redis config is required")
+	})
+
+	t.Run("redis type with missing sentinel config returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := createStorage(ctx, &storage.RunConfig{
+			Type: string(storage.TypeRedis),
+			RedisConfig: &storage.RedisRunConfig{
+				KeyPrefix: "test:",
+				ACLUserConfig: &storage.ACLUserRunConfig{
+					UsernameEnvVar: "REDIS_USER",
+					PasswordEnvVar: "REDIS_PASS",
+				},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sentinel config is required")
+	})
+}
+
+func TestConvertRedisRunConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil config returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := convertRedisRunConfig(nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "redis config is required")
+	})
+
+	t.Run("missing sentinel config returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "test:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "USER",
+				PasswordEnvVar: "PASS",
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sentinel config is required")
+	})
+
+	t.Run("missing ACL user config returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "test:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"localhost:26379"},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ACL user config is required")
+	})
+
+	t.Run("unset username env var returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "test:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"localhost:26379"},
+			},
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "NONEXISTENT_REDIS_USER_VAR_12345",
+				PasswordEnvVar: "NONEXISTENT_REDIS_PASS_VAR_12345",
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to resolve Redis username")
+	})
+}
+
+// TestConvertRedisRunConfig_WithEnvVars tests convertRedisRunConfig with environment variables.
+// These subtests use t.Setenv which is incompatible with t.Parallel.
+func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
+	t.Run("valid config with env vars resolves correctly", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_USER_CONV", "myuser")
+		t.Setenv("TEST_REDIS_PASS_CONV", "mypass")
+
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "thv:auth:ns:name:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"10.0.0.1:26379", "10.0.0.2:26379"},
+				DB:            3,
+			},
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "TEST_REDIS_USER_CONV",
+				PasswordEnvVar: "TEST_REDIS_PASS_CONV",
+			},
+			DialTimeout:  "10s",
+			ReadTimeout:  "5s",
+			WriteTimeout: "3s",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.Equal(t, "thv:auth:ns:name:", cfg.KeyPrefix)
+		require.NotNil(t, cfg.SentinelConfig)
+		assert.Equal(t, "mymaster", cfg.SentinelConfig.MasterName)
+		assert.Equal(t, []string{"10.0.0.1:26379", "10.0.0.2:26379"}, cfg.SentinelConfig.SentinelAddrs)
+		assert.Equal(t, 3, cfg.SentinelConfig.DB)
+		require.NotNil(t, cfg.ACLUserConfig)
+		assert.Equal(t, "myuser", cfg.ACLUserConfig.Username)
+		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
+		assert.Equal(t, 10*time.Second, cfg.DialTimeout)
+		assert.Equal(t, 5*time.Second, cfg.ReadTimeout)
+		assert.Equal(t, 3*time.Second, cfg.WriteTimeout)
+	})
+
+	t.Run("invalid timeout duration returns error", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_USER_TO", "myuser")
+		t.Setenv("TEST_REDIS_PASS_TO", "mypass")
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "test:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"localhost:26379"},
+			},
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "TEST_REDIS_USER_TO",
+				PasswordEnvVar: "TEST_REDIS_PASS_TO",
+			},
+			DialTimeout: "not-a-duration",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid dial timeout")
+	})
+
+	t.Run("zero timeouts use defaults from RedisConfig", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_USER_ZT", "myuser")
+		t.Setenv("TEST_REDIS_PASS_ZT", "mypass")
+
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "test:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"localhost:26379"},
+			},
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "TEST_REDIS_USER_ZT",
+				PasswordEnvVar: "TEST_REDIS_PASS_ZT",
+			},
+			// No timeouts set — should remain zero, defaults applied by NewRedisStorage
+		})
+		require.NoError(t, err)
+		assert.Zero(t, cfg.DialTimeout)
+		assert.Zero(t, cfg.ReadTimeout)
+		assert.Zero(t, cfg.WriteTimeout)
 	})
 }

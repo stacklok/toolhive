@@ -721,7 +721,14 @@ spec:
                           EmbeddingService is the full base URL of the embedding service endpoint
                           (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
                           tool discovery. Auto-populated by the operator from the EmbeddingServer
-                          Status.URL (inline or referenced). Do not set manually.
+                          Status.URL. Do not set manually.
+                        type: string
+                      embeddingServiceTimeout:
+                        default: 30s
+                        description: |-
+                          EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.
+                          Defaults to 30s if not specified.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                         type: string
                     type: object
                   outgoingAuth:

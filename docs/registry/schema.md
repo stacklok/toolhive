@@ -7,7 +7,7 @@ ToolHive MCP server registry and how to use it for validation and development.
 >
 > The ToolHive registry has been migrated to a separate repository for better management and maintenance.
 >
-> **To contribute MCP servers, please visit: https://github.com/stacklok/toolhive-registry**
+> **To contribute MCP servers, please visit: https://github.com/stacklok/toolhive-catalog**
 >
 > The registry data in this repository is now automatically synchronized from the external registry.
 

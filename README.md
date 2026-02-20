@@ -186,7 +186,7 @@ Contribute to the UI, registry, and docs:
 - 💻 [Desktop UI repository](https://github.com/stacklok/toolhive-studio)
 - ☁️ [Cloud UI repository](https://github.com/stacklok/toolhive-cloud-ui)
 - 📦 [ToolHive registry server repository](https://github.com/stacklok/toolhive-registry-server)
-- 🛠️ [ToolHive's built-in registry](https://github.com/stacklok/toolhive-registry)
+- 🛠️ [ToolHive's built-in registry](https://github.com/stacklok/toolhive-catalog)
 - 📚 [Documentation repository](https://github.com/stacklok/docs-website)
 
 </td>

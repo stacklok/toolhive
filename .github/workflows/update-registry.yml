@@ -23,7 +23,7 @@ jobs:
         id: get-release
         run: |
           # Get the latest release info using gh CLI
-          RELEASE_INFO=$(gh release view --repo stacklok/toolhive-registry --json tagName,assets)
+          RELEASE_INFO=$(gh release view --repo stacklok/toolhive-catalog --json tagName,assets)
           RELEASE_TAG=$(echo "$RELEASE_INFO" | jq -r '.tagName')
           
           # Check if registry.json asset exists
@@ -48,7 +48,7 @@ jobs:
         run: |
           # Download the registry.json using gh CLI
           gh release download "${{ steps.get-release.outputs.release_tag }}" \
-            --repo stacklok/toolhive-registry \
+            --repo stacklok/toolhive-catalog \
             --pattern "registry.json*" \
             --dir /tmp
           
@@ -101,10 +101,10 @@ jobs:
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "Update registry from toolhive-registry release ${{ steps.get-release.outputs.release_tag }}"
-          title: "Update registry from toolhive-registry release ${{ steps.get-release.outputs.release_tag }}"
+          commit-message: "Update registry from toolhive-catalog release ${{ steps.get-release.outputs.release_tag }}"
+          title: "Update registry from toolhive-catalog release ${{ steps.get-release.outputs.release_tag }}"
           body: |
-            This PR updates the registry.json file from the latest release of the [toolhive-registry](https://github.com/stacklok/toolhive-registry) repository.
+            This PR updates the registry.json file from the latest release of the [toolhive-catalog](https://github.com/stacklok/toolhive-catalog) repository.
             
             **Release**: ${{ steps.get-release.outputs.release_tag }}
             **Servers**: ${{ steps.update.outputs.server_count }}

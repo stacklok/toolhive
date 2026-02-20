@@ -51,7 +51,7 @@ graph TB
 
 ## Built-in Registry
 
-ToolHive ships with a curated registry from [toolhive-registry](https://github.com/stacklok/toolhive-registry).
+ToolHive ships with a curated registry from [toolhive-catalog](https://github.com/stacklok/toolhive-catalog).
 
 **Features:**
 - Maintained by Stacklok
@@ -895,5 +895,5 @@ kubectl get configmap company-registry-storage -o jsonpath='{.data.registry\.jso
 
 ### Related Repositories
 - [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) - Registry server component
-- [toolhive-registry](https://github.com/stacklok/toolhive-registry) - Curated server catalog
+- [toolhive-catalog](https://github.com/stacklok/toolhive-catalog) - Curated server catalog
 - [MCP Registry](https://github.com/modelcontextprotocol/registry) - Upstream MCP registry specification

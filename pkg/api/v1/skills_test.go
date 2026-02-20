@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +26,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
+func makeProjectRoot(t *testing.T) string {
+	t.Helper()
+	projectRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, ".git"), 0o755))
+	return projectRoot
+}
+
 func TestSkillsRouter(t *testing.T) {
 	t.Parallel()
 
@@ -31,7 +41,7 @@ func TestSkillsRouter(t *testing.T) {
 		method         string
 		path           string
 		body           string
-		setupMock      func(*skillsmocks.MockSkillService)
+		setupMock      func(*skillsmocks.MockSkillService, string)
 		expectedStatus int
 		expectedBody   string
 	}{
@@ -40,7 +50,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills success empty",
 			method: "GET",
 			path:   "/",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().List(gomock.Any(), skills.ListOptions{}).
 					Return([]skills.InstalledSkill{}, nil)
 			},
@@ -51,7 +61,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills success with results",
 			method: "GET",
 			path:   "/",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().List(gomock.Any(), skills.ListOptions{}).
 					Return([]skills.InstalledSkill{
 						{
@@ -66,11 +76,32 @@ func TestSkillsRouter(t *testing.T) {
 			expectedBody:   `"my-skill"`,
 		},
 		{
-			name:   "list skills with scope filter",
+			name:           "list skills project scope missing project root",
+			method:         "GET",
+			path:           "/?scope=project",
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "project_root is required",
+		},
+		{
+			name:   "list skills with project root filter",
 			method: "GET",
-			path:   "/?scope=project",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
-				svc.EXPECT().List(gomock.Any(), skills.ListOptions{Scope: skills.ScopeProject}).
+			path:   "/?scope=project&project_root={{project_root}}",
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+				svc.EXPECT().List(gomock.Any(), skills.ListOptions{
+					Scope:       skills.ScopeProject,
+					ProjectRoot: projectRoot,
+				}).Return([]skills.InstalledSkill{}, nil)
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `{"skills":[]}`,
+		},
+		{
+			name:   "list skills with client filter",
+			method: "GET",
+			path:   "/?client=claude-code",
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().List(gomock.Any(), skills.ListOptions{ClientApp: "claude-code"}).
 					Return([]skills.InstalledSkill{}, nil)
 			},
 			expectedStatus: http.StatusOK,
@@ -80,7 +111,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills error",
 			method: "GET",
 			path:   "/",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().List(gomock.Any(), gomock.Any()).
 					Return(nil, fmt.Errorf("database error"))
 			},
@@ -93,7 +124,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: "my-skill"}).
 					Return(&skills.InstallResult{
 						Skill: skills.InstalledSkill{
@@ -112,7 +143,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":""}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: ""}).
 					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name: must not be empty"), http.StatusBadRequest))
 			},
@@ -124,7 +155,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: ""}).
 					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name: must not be empty"), http.StatusBadRequest))
 			},
@@ -136,7 +167,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -145,7 +176,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), gomock.Any()).
 					Return(nil, storage.ErrAlreadyExists)
 			},
@@ -157,7 +188,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"A"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), gomock.Any()).
 					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name"), http.StatusBadRequest))
 			},
@@ -169,7 +200,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "uninstall skill success",
 			method: "DELETE",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{Name: "my-skill"}).
 					Return(nil)
 			},
@@ -179,7 +210,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:           "uninstall skill invalid name",
 			method:         "DELETE",
 			path:           "/A",
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid skill name",
 		},
@@ -187,7 +218,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:           "uninstall skill invalid scope",
 			method:         "DELETE",
 			path:           "/my-skill?scope=invalid",
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid scope",
 		},
@@ -195,7 +226,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "uninstall skill not found",
 			method: "DELETE",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Uninstall(gomock.Any(), gomock.Any()).
 					Return(storage.ErrNotFound)
 			},
@@ -207,7 +238,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "get skill info found",
 			method: "GET",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
 					Return(&skills.SkillInfo{
 						Metadata: skills.SkillMetadata{Name: "my-skill"},
@@ -225,7 +256,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "get skill info not found",
 			method: "GET",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
 					Return(nil, storage.ErrNotFound)
 			},
@@ -236,7 +267,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:           "get skill info invalid name",
 			method:         "GET",
 			path:           "/A",
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid skill name",
 		},
@@ -245,7 +276,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "get skill info service error",
 			method: "GET",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
 					Return(nil, fmt.Errorf("database error"))
 			},
@@ -257,12 +288,13 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "install skill with version and scope",
 			method: "POST",
 			path:   "/",
-			body:   `{"name":"my-skill","version":"1.2.0","scope":"project"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			body:   `{"name":"my-skill","version":"1.2.0","scope":"project","project_root":"{{project_root}}"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
-					Name:    "my-skill",
-					Version: "1.2.0",
-					Scope:   skills.ScopeProject,
+					Name:        "my-skill",
+					Version:     "1.2.0",
+					Scope:       skills.ScopeProject,
+					ProjectRoot: projectRoot,
 				}).Return(&skills.InstallResult{
 					Skill: skills.InstalledSkill{
 						Metadata: skills.SkillMetadata{Name: "my-skill", Version: "1.2.0"},
@@ -274,18 +306,45 @@ func TestSkillsRouter(t *testing.T) {
 			expectedStatus: http.StatusCreated,
 			expectedBody:   `"my-skill"`,
 		},
+		{
+			name:           "install skill project scope missing project root",
+			method:         "POST",
+			path:           "/",
+			body:           `{"name":"my-skill","scope":"project"}`,
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "project_root is required",
+		},
+		{
+			name:           "install skill project root not git repo",
+			method:         "POST",
+			path:           "/",
+			body:           `{"name":"my-skill","scope":"project","project_root":"{{non_git_project_root}}"}`,
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "project_root must be a git repository",
+		},
 		// uninstall with scope
 		{
 			name:   "uninstall skill with scope",
 			method: "DELETE",
-			path:   "/my-skill?scope=project",
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			path:   "/my-skill?scope=project&project_root={{project_root}}",
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{
-					Name:  "my-skill",
-					Scope: skills.ScopeProject,
+					Name:        "my-skill",
+					Scope:       skills.ScopeProject,
+					ProjectRoot: projectRoot,
 				}).Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
+		},
+		{
+			name:           "uninstall skill project scope missing project root",
+			method:         "DELETE",
+			path:           "/my-skill?scope=project",
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "project_root is required",
 		},
 		// validateSkill
 		{
@@ -293,7 +352,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/validate",
 			body:   `{"path":"/tmp/skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Validate(gomock.Any(), "/tmp/skill").
 					Return(&skills.ValidationResult{Valid: true}, nil)
 			},
@@ -305,7 +364,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/validate",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -314,7 +373,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/validate",
 			body:   `{"path":"/tmp/skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Validate(gomock.Any(), "/tmp/skill").
 					Return(nil, fmt.Errorf("validation failed"))
 			},
@@ -327,7 +386,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/build",
 			body:   `{"path":"/tmp/skill","tag":"v1.0.0"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Build(gomock.Any(), skills.BuildOptions{Path: "/tmp/skill", Tag: "v1.0.0"}).
 					Return(&skills.BuildResult{Reference: "v1.0.0"}, nil)
 			},
@@ -339,7 +398,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/build",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -348,7 +407,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/build",
 			body:   `{"path":"/tmp/skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Build(gomock.Any(), skills.BuildOptions{Path: "/tmp/skill"}).
 					Return(nil, httperr.WithCode(fmt.Errorf("path is required"), http.StatusBadRequest))
 			},
@@ -361,7 +420,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/push",
 			body:   `{"reference":"ghcr.io/test/skill:v1"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Push(gomock.Any(), skills.PushOptions{Reference: "ghcr.io/test/skill:v1"}).
 					Return(nil)
 			},
@@ -372,7 +431,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/push",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -381,7 +440,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/push",
 			body:   `{"reference":"ghcr.io/test/skill:v1"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
 				svc.EXPECT().Push(gomock.Any(), skills.PushOptions{Reference: "ghcr.io/test/skill:v1"}).
 					Return(fmt.Errorf("push failed"))
 			},
@@ -394,14 +453,28 @@ func TestSkillsRouter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			path := tt.path
+			body := tt.body
+			projectRoot := ""
+			if strings.Contains(path, "{{project_root}}") || strings.Contains(body, "{{project_root}}") {
+				projectRoot = makeProjectRoot(t)
+				path = strings.ReplaceAll(path, "{{project_root}}", url.QueryEscape(projectRoot))
+				body = strings.ReplaceAll(body, "{{project_root}}", projectRoot)
+			}
+			if strings.Contains(path, "{{non_git_project_root}}") || strings.Contains(body, "{{non_git_project_root}}") {
+				projectRoot = t.TempDir()
+				path = strings.ReplaceAll(path, "{{non_git_project_root}}", url.QueryEscape(projectRoot))
+				body = strings.ReplaceAll(body, "{{non_git_project_root}}", projectRoot)
+			}
+
 			ctrl := gomock.NewController(t)
 			mockSvc := skillsmocks.NewMockSkillService(ctrl)
-			tt.setupMock(mockSvc)
+			tt.setupMock(mockSvc, projectRoot)
 
 			router := chi.NewRouter()
 			router.Mount("/", SkillsRouter(mockSvc))
 
-			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			req := httptest.NewRequest(tt.method, path, strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 

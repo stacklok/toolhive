@@ -1823,6 +1823,10 @@ const docTemplate = `{
                         "description": "Name or OCI reference of the skill to install",
                         "type": "string"
                     },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path for project-scoped installs",
+                        "type": "string"
+                    },
                     "scope": {
                         "$ref": "#/components/schemas/skills.Scope"
                     },
@@ -3523,6 +3527,22 @@ const docTemplate = `{
                             ],
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "Filter by client app",
+                        "in": "query",
+                        "name": "client",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by project root path",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -3847,6 +3867,14 @@ const docTemplate = `{
                             ],
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "Project root path for project-scoped skills",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -3917,6 +3945,14 @@ const docTemplate = `{
                                 "user",
                                 "project"
                             ],
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Project root path for project-scoped skills",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
                             "type": "string"
                         }
                     }

@@ -72,42 +72,6 @@ func NewDefaultHandlerFactory(rt router.Router, backendClient vmcp.BackendClient
 	}
 }
 
-// convertToMCPContent converts vmcp.Content to mcp.Content.
-// This reconstructs MCP content from the vmcp wrapper type.
-func convertToMCPContent(content vmcp.Content) mcp.Content {
-	switch content.Type {
-	case "text":
-		return mcp.NewTextContent(content.Text)
-	case "image":
-		return mcp.NewImageContent(content.Data, content.MimeType)
-	case "audio":
-		return mcp.NewAudioContent(content.Data, content.MimeType)
-	case "resource":
-		if content.Text != "" {
-			return mcp.NewEmbeddedResource(mcp.TextResourceContents{
-				URI:      content.URI,
-				MIMEType: content.MimeType,
-				Text:     content.Text,
-			})
-		}
-		if content.Data != "" {
-			return mcp.NewEmbeddedResource(mcp.BlobResourceContents{
-				URI:      content.URI,
-				MIMEType: content.MimeType,
-				Blob:     content.Data,
-			})
-		}
-		slog.Warn("embedded resource content has no text or blob data", "uri", content.URI)
-		return mcp.NewEmbeddedResource(mcp.TextResourceContents{
-			URI:      content.URI,
-			MIMEType: content.MimeType,
-		})
-	default:
-		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
-		return mcp.NewTextContent("")
-	}
-}
-
 // CreateToolHandler creates a tool handler that routes to the appropriate backend.
 func (f *DefaultHandlerFactory) CreateToolHandler(
 	toolName string,
@@ -149,10 +113,7 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 		}
 
 		// Convert vmcp.Content array to MCP content array
-		mcpContent := make([]mcp.Content, len(result.Content))
-		for i, content := range result.Content {
-			mcpContent[i] = convertToMCPContent(content)
-		}
+		mcpContent := conversion.ToMCPContents(result.Content)
 
 		// Create MCP tool result with _meta field preserved
 		mcpResult := &mcp.CallToolResult{

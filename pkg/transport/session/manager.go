@@ -179,6 +179,21 @@ func (m *Manager) Get(id string) (Session, bool) {
 	return sess, true
 }
 
+// ReplaceSession upserts a session into storage, replacing any existing session
+// with the same ID. Used by SessionManager to replace placeholder sessions
+// with fully-formed MultiSession objects after phase-2 construction.
+func (m *Manager) ReplaceSession(session Session) error {
+	if session == nil {
+		return fmt.Errorf("session cannot be nil")
+	}
+	if session.ID() == "" {
+		return fmt.Errorf("session ID cannot be empty")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return m.storage.Store(ctx, session)
+}
+
 // Delete removes a session by ID.
 // Returns an error if the deletion fails.
 func (m *Manager) Delete(id string) error {

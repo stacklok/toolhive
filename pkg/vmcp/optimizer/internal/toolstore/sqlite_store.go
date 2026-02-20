@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package sqlitestore implements a SQLite-based ToolStore for search over
+// Package toolstore implements a SQLite-based ToolStore for search over
 // MCP tool metadata. It uses FTS5 for full-text search and optional
 // embedding-based semantic search for hybrid retrieval.
-package sqlitestore
+package toolstore
 
 import (
 	"context"
@@ -46,7 +46,7 @@ var schemaSQL string
 
 // sqliteToolStore implements a tool store using SQLite with FTS5 for full-text search
 // and optional vector embedding-based semantic search.
-// It satisfies the optimizer.ToolStore interface.
+// It satisfies the types.ToolStore interface.
 type sqliteToolStore struct {
 	db                        *sql.DB
 	embeddingClient           types.EmbeddingClient // nil = FTS5-only

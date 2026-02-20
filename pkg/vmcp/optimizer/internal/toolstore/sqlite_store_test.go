@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package sqlitestore
+package toolstore
 
 import (
 	"context"
@@ -52,26 +52,16 @@ func TestNewSQLiteToolStore(t *testing.T) {
 
 	t.Run("without embedding client", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil, nil)
-		require.NoError(t, err)
-		require.NotNil(t, store)
-		concrete, ok := store.(sqliteToolStore)
-		require.True(t, ok)
-		require.NotNil(t, concrete.db)
-		require.Nil(t, concrete.embeddingClient)
-		require.NoError(t, store.Close())
+		store := newTestStore(t, nil, nil)
+		require.NotNil(t, store.db)
+		require.Nil(t, store.embeddingClient)
 	})
 
 	t.Run("with embedding client", func(t *testing.T) {
 		t.Parallel()
 		client := newFakeEmbeddingClient(384)
-		store, err := NewSQLiteToolStore(client, nil)
-		require.NoError(t, err)
-		require.NotNil(t, store)
-		concrete, ok := store.(sqliteToolStore)
-		require.True(t, ok)
-		require.NotNil(t, concrete.embeddingClient)
-		require.NoError(t, store.Close())
+		store := newTestStore(t, client, nil)
+		require.NotNil(t, store.embeddingClient)
 	})
 }
 
@@ -338,23 +328,20 @@ func TestSQLiteToolStore_Close(t *testing.T) {
 
 	t.Run("close without embedding client", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil, nil)
-		require.NoError(t, err)
+		store := newTestStore(t, nil, nil)
 		require.NoError(t, store.Close())
 	})
 
 	t.Run("close with embedding client", func(t *testing.T) {
 		t.Parallel()
 		client := newFakeEmbeddingClient(384)
-		store, err := NewSQLiteToolStore(client, nil)
-		require.NoError(t, err)
+		store := newTestStore(t, client, nil)
 		require.NoError(t, store.Close())
 	})
 
 	t.Run("double close is safe", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil, nil)
-		require.NoError(t, err)
+		store := newTestStore(t, nil, nil)
 		require.NoError(t, store.Close())
 		// sql.DB.Close() returns nil on repeated calls
 		require.NoError(t, store.Close())

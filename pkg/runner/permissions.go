@@ -6,12 +6,12 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive-core/permissions"
 )
 
 // This was moved from the CLI to allow it to be shared with the lifecycle manager.
@@ -26,7 +26,7 @@ func CreatePermissionProfileFile(serverName string, permProfile *permissions.Pro
 	defer func() {
 		if err := tempFile.Close(); err != nil {
 			// Non-fatal: temp file cleanup failure
-			logger.Warnf("Failed to close temp file: %v", err)
+			slog.Warn("Failed to close temp file", "error", err)
 		}
 	}()
 
@@ -44,7 +44,8 @@ func CreatePermissionProfileFile(serverName string, permProfile *permissions.Pro
 		return "", fmt.Errorf("failed to write permission profile to file: %w", err)
 	}
 
-	logger.Debugf("Wrote permission profile to temporary file: %s", permProfilePath)
+	//nolint:gosec // G706: path is a temp file created by us
+	slog.Debug("Wrote permission profile to temporary file", "path", permProfilePath)
 
 	return permProfilePath, nil
 }
@@ -57,22 +58,27 @@ func CleanupTempPermissionProfile(permissionProfilePath string) error {
 
 	// Check if this is a temporary file created by toolhive
 	if !isTempPermissionProfile(permissionProfilePath) {
-		logger.Debugf("Permission profile %s is not a temporary file, skipping cleanup", permissionProfilePath)
+		//nolint:gosec // G706: path is user-provided file, not secret
+		slog.Debug("Permission profile is not a temporary file, skipping cleanup", "path", permissionProfilePath)
 		return nil
 	}
 
 	// Check if the file exists
+	// #nosec G703 -- permissionProfilePath is validated by isTempPermissionProfile above
 	if _, err := os.Stat(permissionProfilePath); os.IsNotExist(err) {
-		logger.Debugf("Temporary permission profile file %s does not exist, skipping cleanup", permissionProfilePath)
+		//nolint:gosec // G706: path is validated by isTempPermissionProfile
+		slog.Debug("Temporary permission profile file does not exist, skipping cleanup", "path", permissionProfilePath)
 		return nil
 	}
 
 	// Remove the temporary file
+	// #nosec G703 -- permissionProfilePath is validated by isTempPermissionProfile above
 	if err := os.Remove(permissionProfilePath); err != nil {
 		return fmt.Errorf("failed to remove temporary permission profile file %s: %w", permissionProfilePath, err)
 	}
 
-	logger.Debugf("Removed temporary permission profile file: %s", permissionProfilePath)
+	//nolint:gosec // G706: path is validated by isTempPermissionProfile
+	slog.Debug("Removed temporary permission profile file", "path", permissionProfilePath)
 	return nil
 }
 

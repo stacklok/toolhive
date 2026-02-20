@@ -56,6 +56,104 @@ spec:
               MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
               MCPServer resources in the same namespace.
             properties:
+              awsSts:
+                description: |-
+                  AWSSts configures AWS STS authentication with SigV4 request signing
+                  Only used when Type is "awsSts"
+                properties:
+                  fallbackRoleArn:
+                    description: |-
+                      FallbackRoleArn is the IAM role ARN to assume when no role mappings match
+                      Used as the default role when RoleMappings is empty or no mapping matches
+                      At least one of FallbackRoleArn or RoleMappings must be configured (enforced by webhook)
+                    pattern: ^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role/[\w+=,.@\-_/]+$
+                    type: string
+                  region:
+                    description: Region is the AWS region for the STS endpoint and
+                      service (e.g., "us-east-1", "eu-west-1")
+                    minLength: 1
+                    pattern: ^[a-z]{2}(-[a-z]+)+-\d+$
+                    type: string
+                  roleClaim:
+                    default: groups
+                    description: |-
+                      RoleClaim is the JWT claim to use for role mapping evaluation
+                      Defaults to "groups" to match common OIDC group claims
+                    type: string
+                  roleMappings:
+                    description: |-
+                      RoleMappings defines claim-based role selection rules
+                      Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
+                      Lower priority values are evaluated first (higher priority)
+                    items:
+                      description: |-
+                        RoleMapping defines a rule for mapping JWT claims to IAM roles.
+                        Mappings are evaluated in priority order (lower number = higher priority), and the first
+                        matching rule determines which IAM role to assume.
+                        Exactly one of Claim or Matcher must be specified.
+                      properties:
+                        claim:
+                          description: |-
+                            Claim is a simple claim value to match against
+                            The claim type is specified by AWSStsConfig.RoleClaim
+                            For example, if RoleClaim is "groups", this would be a group name
+                            Internally compiled to a CEL expression: "<claim_value>" in claims["<role_claim>"]
+                            Mutually exclusive with Matcher
+                          minLength: 1
+                          type: string
+                        matcher:
+                          description: |-
+                            Matcher is a CEL expression for complex matching against JWT claims
+                            The expression has access to a "claims" variable containing all JWT claims as map[string]any
+                            Examples:
+                              - "admins" in claims["groups"]
+                              - claims["sub"] == "user123" && !("act" in claims)
+                            Mutually exclusive with Claim
+                          minLength: 1
+                          type: string
+                        priority:
+                          description: |-
+                            Priority determines evaluation order (lower values = higher priority)
+                            Allows fine-grained control over role selection precedence
+                            When omitted, this mapping has the lowest possible priority and
+                            configuration order acts as tie-breaker via stable sort
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        roleArn:
+                          description: RoleArn is the IAM role ARN to assume when
+                            this mapping matches
+                          pattern: ^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role/[\w+=,.@\-_/]+$
+                          type: string
+                      required:
+                      - roleArn
+                      type: object
+                    type: array
+                  service:
+                    default: aws-mcp
+                    description: |-
+                      Service is the AWS service name for SigV4 signing
+                      Defaults to "aws-mcp" for AWS MCP Server endpoints
+                    type: string
+                  sessionDuration:
+                    default: 3600
+                    description: |-
+                      SessionDuration is the duration in seconds for the STS session
+                      Must be between 900 (15 minutes) and 43200 (12 hours)
+                      Defaults to 3600 (1 hour) if not specified
+                    format: int32
+                    maximum: 43200
+                    minimum: 900
+                    type: integer
+                  sessionNameClaim:
+                    default: sub
+                    description: |-
+                      SessionNameClaim is the JWT claim to use for role session name
+                      Defaults to "sub" to use the subject claim
+                    type: string
+                required:
+                - region
+                type: object
               bearerToken:
                 description: |-
                   BearerToken configures bearer token authentication
@@ -133,6 +231,128 @@ spec:
                       type: object
                     maxItems: 5
                     type: array
+                  storage:
+                    description: |-
+                      Storage configures the storage backend for the embedded auth server.
+                      If not specified, defaults to in-memory storage.
+                    properties:
+                      redis:
+                        description: |-
+                          Redis configures the Redis storage backend.
+                          Required when type is "redis".
+                        properties:
+                          aclUserConfig:
+                            description: ACLUserConfig configures Redis ACL user authentication.
+                            properties:
+                              passwordSecretRef:
+                                description: PasswordSecretRef references a Secret
+                                  containing the Redis ACL password.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              usernameSecretRef:
+                                description: UsernameSecretRef references a Secret
+                                  containing the Redis ACL username.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                            required:
+                            - passwordSecretRef
+                            - usernameSecretRef
+                            type: object
+                          dialTimeout:
+                            default: 5s
+                            description: |-
+                              DialTimeout is the timeout for establishing connections.
+                              Format: Go duration string (e.g., "5s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          readTimeout:
+                            default: 3s
+                            description: |-
+                              ReadTimeout is the timeout for socket reads.
+                              Format: Go duration string (e.g., "3s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          sentinelConfig:
+                            description: SentinelConfig holds Redis Sentinel configuration.
+                            properties:
+                              db:
+                                default: 0
+                                description: DB is the Redis database number.
+                                format: int32
+                                type: integer
+                              masterName:
+                                description: MasterName is the name of the Redis master
+                                  monitored by Sentinel.
+                                type: string
+                              sentinelAddrs:
+                                description: |-
+                                  SentinelAddrs is a list of Sentinel host:port addresses.
+                                  Mutually exclusive with SentinelService.
+                                items:
+                                  type: string
+                                type: array
+                              sentinelService:
+                                description: |-
+                                  SentinelService enables automatic discovery from a Kubernetes Service.
+                                  Mutually exclusive with SentinelAddrs.
+                                properties:
+                                  name:
+                                    description: Name of the Sentinel Service.
+                                    type: string
+                                  namespace:
+                                    description: Namespace of the Sentinel Service
+                                      (defaults to same namespace).
+                                    type: string
+                                  port:
+                                    default: 26379
+                                    description: Port of the Sentinel service.
+                                    format: int32
+                                    type: integer
+                                required:
+                                - name
+                                type: object
+                            required:
+                            - masterName
+                            type: object
+                          writeTimeout:
+                            default: 3s
+                            description: |-
+                              WriteTimeout is the timeout for socket writes.
+                              Format: Go duration string (e.g., "3s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                        required:
+                        - aclUserConfig
+                        - sentinelConfig
+                        type: object
+                      type:
+                        default: memory
+                        description: |-
+                          Type specifies the storage backend type.
+                          Valid values: "memory" (default), "redis".
+                        enum:
+                        - memory
+                        - redis
+                        type: string
+                    type: object
                   tokenLifespans:
                     description: |-
                       TokenLifespans configures the duration that various tokens are valid.
@@ -503,14 +723,94 @@ spec:
                 - bearerToken
                 - unauthenticated
                 - embeddedAuthServer
+                - awsSts
                 type: string
             required:
             - type
             type: object
+            x-kubernetes-validations:
+            - message: tokenExchange configuration must be set if and only if type
+                is 'tokenExchange'
+              rule: 'self.type == ''tokenExchange'' ? has(self.tokenExchange) : !has(self.tokenExchange)'
+            - message: headerInjection configuration must be set if and only if type
+                is 'headerInjection'
+              rule: 'self.type == ''headerInjection'' ? has(self.headerInjection)
+                : !has(self.headerInjection)'
+            - message: bearerToken configuration must be set if and only if type is
+                'bearerToken'
+              rule: 'self.type == ''bearerToken'' ? has(self.bearerToken) : !has(self.bearerToken)'
+            - message: embeddedAuthServer configuration must be set if and only if
+                type is 'embeddedAuthServer'
+              rule: 'self.type == ''embeddedAuthServer'' ? has(self.embeddedAuthServer)
+                : !has(self.embeddedAuthServer)'
+            - message: awsSts configuration must be set if and only if type is 'awsSts'
+              rule: 'self.type == ''awsSts'' ? has(self.awsSts) : !has(self.awsSts)'
+            - message: no configuration must be set when type is 'unauthenticated'
+              rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
+                && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
+                && !has(self.awsSts)) : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig
             properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the MCPExternalAuthConfig's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
               configHash:
                 description: ConfigHash is a hash of the current configuration for
                   change detection

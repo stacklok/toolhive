@@ -209,7 +209,7 @@ func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
 
 	// Add --debug flag if log level is set to debug
 	// Note: vmcp binary currently only supports --debug flag, not other log levels
-	// The flag must be passed at startup because logger.Initialize() runs before config is loaded
+	// The flag must be passed at startup because logging is initialized early in the process
 	if vmcp.Spec.Config.Operational != nil && vmcp.Spec.Config.Operational.LogLevel == logLevelDebug {
 		args = append(args, "--debug")
 	}
@@ -506,6 +506,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
 		// Embedded auth server secrets are handled separately (via volume mounts, not env vars)
 		// Controller integration will be in a future task
+		return nil, nil
+
+	case mcpv1alpha1.ExternalAuthTypeAWSSts:
+		// AWS STS authentication doesn't require secret mounting via env vars
+		// It uses the incoming OIDC token for AssumeRoleWithWebIdentity
 		return nil, nil
 
 	default:

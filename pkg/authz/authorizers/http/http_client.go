@@ -10,11 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	nethttp "net/http"
 	"net/url"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -38,7 +37,7 @@ type Client struct {
 
 // NewClient creates a new HTTP client for PDP communication.
 func NewClient(config *ConnectionConfig) (*Client, error) {
-	logger.Debugf("creating new HTTP client: %v", config)
+	slog.Debug("creating new HTTP client", "config", config)
 
 	if config == nil {
 		return nil, fmt.Errorf("HTTP configuration is required")
@@ -116,8 +115,10 @@ func (c *Client) Authorize(ctx context.Context, porc PORC, probe bool) (bool, er
 			logSubject = sub
 		}
 	}
-	logger.Debugf("HTTP PDP authorization - URL: %s, Subject: %s, Operation: %v, Resource: %v",
-		decisionURL, logSubject, porc["operation"], porc["resource"])
+	//nolint:gosec // G706: authorization metadata is safe for debug logging
+	slog.Debug("HTTP PDP authorization",
+		"url", decisionURL, "subject", logSubject,
+		"operation", porc["operation"], "resource", porc["resource"])
 
 	// Marshal PORC to JSON
 	body, err := json.Marshal(porc)
@@ -135,7 +136,7 @@ func (c *Client) Authorize(ctx context.Context, porc PORC, probe bool) (bool, er
 	req.Header.Set("Accept", "application/json")
 
 	// Send request
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: URL is from server configuration, not user input
 	if err != nil {
 		return false, fmt.Errorf("HTTP request failed: %w", err)
 	}

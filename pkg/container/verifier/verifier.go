@@ -6,6 +6,7 @@ package verifier
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
@@ -14,9 +15,8 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
+	"github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container/images"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (
@@ -95,7 +95,8 @@ func (s *Sigstore) GetVerificationResults(
 		// We got some other unexpected error prior to querying for the signature/attestation
 		return nil, err
 	}
-	logger.Debugf("Number of sigstore bundles we managed to construct is %d", len(bundles))
+	//nolint:gosec // G706: bundle count derived from external registry data
+	slog.Debug("sigstore bundles constructed", "count", len(bundles))
 
 	// If we didn't manage to construct any valid bundles, it probably means that the image is not signed.
 	if len(bundles) == 0 || errors.Is(err, ErrProvenanceNotFoundOrIncomplete) {
@@ -122,7 +123,7 @@ func getVerifiedResults(
 			verify.WithoutIdentitiesUnsafe(),
 		))
 		if err != nil {
-			logger.Infof("bundle verification failed: %v", err)
+			slog.Info("bundle verification failed", "error", err)
 			continue
 		}
 		// We've successfully verified and extracted the artifact provenance information
@@ -182,7 +183,7 @@ func compareBaseProperties(r *verify.VerificationResult, p *registry.Provenance)
 	// Extract the signer identity from the certificate
 	siIdentity, err := signerIdentityFromCertificate(r.Signature.Certificate)
 	if err != nil {
-		logger.Error("error parsing signer identity")
+		slog.Error("error parsing signer identity")
 	}
 	// Compare repository name and reference, signer identity, runner environment, and cert issuer
 	if p.RepositoryURI != "" {

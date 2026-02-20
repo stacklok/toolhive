@@ -201,6 +201,10 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		TokenURL:                       cfg.Issuer + "/oauth/token",
 		EnforcePKCE:                    true,
 		EnablePKCEPlainChallengeMethod: false, // Only allow S256 per MCP specification
+		// ScopeStrategy validates requested scopes against client's registered scopes.
+		// ExactScopeStrategy requires exact matches (no wildcards) for security.
+		// This prevents clients from requesting scopes beyond what they registered with.
+		ScopeStrategy: fosite.ExactScopeStrategy,
 	}
 
 	return &AuthorizationServerConfig{

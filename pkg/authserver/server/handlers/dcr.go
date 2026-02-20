@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // maxDCRBodySize is the maximum allowed size for DCR request bodies (64KB).
@@ -56,22 +56,28 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
+	// Validate requested scopes against server's supported scopes
+	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scope, h.config.ScopesSupported)
+	if dcrErr != nil {
+		writeDCRError(w, http.StatusBadRequest, dcrErr)
+		return
+	}
+
 	// Generate client ID
 	clientID := uuid.NewString()
 
 	// Create fosite client using factory.
-	// Use the server's advertised scopes so DCR clients can request any scope
-	// listed in scopes_supported. This keeps discovery and DCR consistent.
 	fositeClient, err := registration.New(registration.Config{
 		ID:            clientID,
 		RedirectURIs:  validated.RedirectURIs,
 		Public:        true,
 		GrantTypes:    validated.GrantTypes,
 		ResponseTypes: validated.ResponseTypes,
-		Scopes:        h.config.ScopesSupported,
+		Scopes:        scopes,
+		Audience:      h.config.AllowedAudiences,
 	})
 	if err != nil {
-		logger.Errorw("failed to create client", "error", err)
+		slog.Error("failed to create client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
 			Error:            "server_error",
 			ErrorDescription: "failed to create client",
@@ -81,7 +87,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Register client
 	if err := h.storage.RegisterClient(ctx, fositeClient); err != nil {
-		logger.Errorw("failed to register client", "error", err)
+		slog.Error("failed to register client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
 			Error:            "server_error",
 			ErrorDescription: "failed to register client",
@@ -89,12 +95,15 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	logger.Debugw("registered new DCR client",
+	slog.Debug("registered new DCR client",
 		"client_id", clientID,
 		"client_name", validated.ClientName,
 	)
 
-	// Build response
+	// Build response per RFC 7591 Section 3.2.1.
+	// Scope reflects the scopes actually granted to this client (from
+	// ValidateScopes above), not all server-supported scopes. This lets
+	// the client know exactly which scopes it can request.
 	response := registration.DCRResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),
@@ -103,6 +112,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
+		Scope:                   registration.FormatScopes(scopes),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -110,7 +120,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorw("failed to encode DCR response", "error", err)
+		slog.Error("failed to encode DCR response", "error", err)
 	}
 }
 
@@ -120,6 +130,6 @@ func writeDCRError(w http.ResponseWriter, statusCode int, dcrErr *registration.D
 	w.WriteHeader(statusCode)
 	// Encoding errors are not recoverable (headers already written), log for diagnostics
 	if err := json.NewEncoder(w).Encode(dcrErr); err != nil {
-		logger.Debugw("failed to encode DCR error response", "error", err)
+		slog.Debug("failed to encode DCR error response", "error", err)
 	}
 }

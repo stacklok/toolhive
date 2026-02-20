@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,8 +18,6 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -159,12 +158,12 @@ func (r exchangeRequest) String() string {
 
 // response is used to decode the remote server response during an OAuth 2.0 token exchange.
 type response struct {
-	AccessToken     string `json:"access_token"`
+	AccessToken     string `json:"access_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 	IssuedTokenType string `json:"issued_token_type"`
 	TokenType       string `json:"token_type"`
 	ExpiresIn       int    `json:"expires_in"`
 	Scope           string `json:"scope"`
-	RefreshToken    string `json:"refresh_token"`
+	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
 // String implements fmt.Stringer for response, redacting sensitive tokens.
@@ -186,7 +185,7 @@ func (r response) String() string {
 // clientAuthentication represents OAuth client credentials for token exchange.
 type clientAuthentication struct {
 	ClientID     string
-	ClientSecret string
+	ClientSecret string //nolint:gosec // G117
 }
 
 // String implements fmt.Stringer for clientAuthentication, redacting the client secret.
@@ -209,7 +208,7 @@ type ExchangeConfig struct {
 	ClientID string
 
 	// ClientSecret is the OAuth 2.0 client secret
-	ClientSecret string
+	ClientSecret string //nolint:gosec // G117
 
 	// Audience is the target audience for the exchanged token (optional per RFC 8693)
 	Audience string
@@ -470,14 +469,14 @@ func createTokenExchangeRequest(
 
 // executeTokenExchangeRequest sends the HTTP request and returns the response body.
 func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte, error) {
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is the configured token exchange endpoint
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			// Non-fatal: response body cleanup failure
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -501,11 +500,13 @@ func validateResponseStatus(statusCode int, body []byte) error {
 
 	// Try to parse as OAuth error first
 	if oauthErr := parseOAuthError(statusCode, body); oauthErr != nil {
-		logger.Debugf("Token exchange OAuth error: %s (description: %s)", oauthErr.Error, oauthErr.ErrorDescription)
+		//nolint:gosec // G706: OAuth error codes are standard protocol values, not user input
+		slog.Debug("Token exchange OAuth error", "oauth_error_code", oauthErr.Error, "description", oauthErr.ErrorDescription)
 		return errors.New(oauthErr.String())
 	}
 
-	logger.Debugf("Token exchange failed with status %d: %s", statusCode, string(body))
+	//nolint:gosec // G706: status code and body length are safe diagnostic values
+	slog.Debug("Token exchange failed", "status", statusCode, "body_length", len(body))
 	return fmt.Errorf("token exchange failed with status %d", statusCode)
 }
 
@@ -513,7 +514,7 @@ func validateResponseStatus(statusCode int, body []byte) error {
 func parseTokenExchangeResponse(body []byte) (*response, error) {
 	var tokenResp response
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		logger.Debugf("Failed to parse token exchange response: %v", err)
+		slog.Debug("Failed to parse token exchange response", "error", err)
 		return nil, errors.New("failed to parse token exchange response")
 	}
 

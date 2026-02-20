@@ -81,10 +81,9 @@ func (c *LoopbackClient) GetMatchingRedirectURI(requestedURI string) string {
 	return ""
 }
 
-// DefaultScopes are the default OIDC scopes for registered clients.
-// Also used as the default for ScopesSupported in config.go when no
-// scopes are explicitly configured.
-var DefaultScopes = []string{"openid", "profile", "email"}
+// DefaultScopes are the default OAuth 2.0 scopes for registered clients.
+// Includes offline_access to enable refresh token issuance.
+var DefaultScopes = []string{"openid", "profile", "email", "offline_access"}
 
 // Config holds configuration for creating a new OAuth client.
 type Config struct {
@@ -93,7 +92,7 @@ type Config struct {
 
 	// Secret is the client secret for confidential clients.
 	// Empty for public clients.
-	Secret string
+	Secret string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// RedirectURIs is the list of allowed redirect URIs.
 	RedirectURIs []string
@@ -112,6 +111,11 @@ type Config struct {
 	// Scopes overrides the default scopes.
 	// If nil or empty, DefaultScopes is used.
 	Scopes []string
+
+	// Audience is the list of allowed audience values for this client.
+	// Per RFC 8707, the "resource" parameter in token requests is validated
+	// against this list. If nil, audience validation will reject all values.
+	Audience []string
 }
 
 // New creates a fosite.Client from the given configuration.
@@ -143,6 +147,7 @@ func New(cfg Config) (fosite.Client, error) {
 		ResponseTypes: responseTypes,
 		GrantTypes:    grantTypes,
 		Scopes:        scopes,
+		Audience:      cfg.Audience,
 		Public:        cfg.Public,
 	}
 

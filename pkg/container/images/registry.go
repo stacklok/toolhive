@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,8 +22,6 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // RegistryImageManager implements the ImageManager interface using go-containerregistry
@@ -71,7 +70,8 @@ func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) 
 
 // PullImage pulls an image from a registry and saves it to the local daemon
 func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) error {
-	logger.Infof("Pulling image: %s", imageName)
+	//nolint:gosec // G706: image name from user/config input
+	slog.Info("pulling image", "image", imageName)
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageName)
@@ -113,9 +113,10 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 
 	// Display success message
 	if _, err := fmt.Fprintf(os.Stdout, "Successfully pulled %s\n", imageName); err != nil {
-		logger.Debugf("Failed to write success message: %v", err)
+		slog.Debug("failed to write success message", "error", err)
 	}
-	logger.Debugf("Pull complete for image: %s, response: %s", imageName, response)
+	//nolint:gosec // G706: image name and response from registry pull
+	slog.Debug("pull complete", "image", imageName, "response", response)
 
 	return nil
 }
@@ -139,7 +140,8 @@ func (r *RegistryImageManager) WithPlatform(platform *v1.Platform) *RegistryImag
 
 // buildDockerImage builds a Docker image using the Docker client API
 func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextDir, imageName string) error {
-	logger.Debugf("Building image %s from context directory %s", imageName, contextDir)
+	//nolint:gosec // G706: image name and context dir from config
+	slog.Debug("building image", "image", imageName, "context_dir", contextDir)
 
 	// Create a tar archive of the context directory
 	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")
@@ -147,9 +149,11 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 		return fmt.Errorf("failed to create temporary tar file: %w", err)
 	}
 	defer func() {
+		// #nosec G703 -- tarFile.Name() is from os.CreateTemp, not user input
 		if err := os.Remove(tarFile.Name()); err != nil {
 			// Non-fatal: temp file cleanup failure
-			logger.Debugf("Failed to remove temporary file %s: %v", tarFile.Name(), err)
+			//nolint:gosec // G706: temp file path from os.CreateTemp
+			slog.Debug("failed to remove temporary file", "path", tarFile.Name(), "error", err)
 		}
 	}()
 	defer func() {
@@ -157,7 +161,7 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 			// Docker client closes the reader on success, so ignore "already closed" errors
 			if !errors.Is(err, os.ErrClosed) {
 				// Non-fatal: file cleanup failure
-				logger.Debugf("Failed to close tar file: %v", err)
+				slog.Debug("failed to close tar file", "error", err)
 			}
 		}
 	}()
@@ -186,7 +190,7 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 	defer func() {
 		if err := response.Body.Close(); err != nil {
 			// Non-fatal: response body cleanup failure
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -205,7 +209,7 @@ func createTarFromDir(srcDir string, writer io.Writer) error {
 	defer func() {
 		if err := tw.Close(); err != nil {
 			// Non-fatal: tar writer cleanup failure
-			logger.Debugf("Failed to close tar writer: %v", err)
+			slog.Debug("failed to close tar writer", "error", err)
 		}
 	}()
 
@@ -250,7 +254,7 @@ func createTarFromDir(srcDir string, writer io.Writer) error {
 			defer func() {
 				if err := file.Close(); err != nil {
 					// Non-fatal: file cleanup failure
-					logger.Debugf("Failed to close file: %v", err)
+					slog.Debug("failed to close file", "error", err)
 				}
 			}()
 
@@ -287,7 +291,7 @@ func parseBuildOutput(reader io.Reader, writer io.Writer) error {
 		// Print the stream output
 		if buildOutput.Stream != "" {
 			if _, err := fmt.Fprint(writer, buildOutput.Stream); err != nil {
-				logger.Debugf("Failed to write build output: %v", err)
+				slog.Debug("failed to write build output", "error", err)
 			}
 		}
 	}

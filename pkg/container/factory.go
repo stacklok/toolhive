@@ -9,81 +9,42 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
-	"github.com/stacklok/toolhive/pkg/container/docker"
-	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
-
-// RuntimeInitializer is a function that creates a new runtime instance
-type RuntimeInitializer func(ctx context.Context) (runtime.Runtime, error)
-
-// RuntimeInfo contains metadata about a runtime
-type RuntimeInfo struct {
-	// Name is the runtime name (e.g., "docker", "kubernetes")
-	Name string
-	// Initializer is the function to create the runtime instance
-	Initializer RuntimeInitializer
-	// AutoDetector is an optional function to detect if this runtime is available
-	// If nil, the runtime is always considered available
-	AutoDetector func() bool
-}
 
 // Factory creates container runtimes with pluggable runtime support
 type Factory struct {
 	mu       sync.RWMutex
-	runtimes map[string]*RuntimeInfo
+	runtimes map[string]*runtime.Info
 }
 
-// NewFactory creates a new container factory with default runtimes registered
+// NewFactory creates a new container factory seeded from the DefaultRegistry.
+// Runtimes register themselves via init() in their respective packages;
+// the container/runtimes.go collector file ensures all built-in runtimes are imported.
 func NewFactory() *Factory {
+	return NewFactoryFromRegistry(runtime.DefaultRegistry)
+}
+
+// NewFactoryFromRegistry creates a new container factory seeded from the given registry.
+// This is useful for testing with isolated registry instances.
+func NewFactoryFromRegistry(reg *runtime.Registry) *Factory {
 	f := &Factory{
-		runtimes: make(map[string]*RuntimeInfo),
+		runtimes: make(map[string]*runtime.Info),
 	}
 
-	// Register default runtimes
-	f.registerDefaultRuntimes()
+	for _, info := range reg.All() {
+		f.runtimes[info.Name] = info
+	}
 
 	return f
 }
 
-// registerDefaultRuntimes registers the built-in docker and kubernetes runtimes
-func (f *Factory) registerDefaultRuntimes() {
-	// Register Docker runtime
-	if err := f.Register(&RuntimeInfo{
-		Name: docker.RuntimeName,
-		Initializer: func(ctx context.Context) (runtime.Runtime, error) {
-			return docker.NewClient(ctx)
-		},
-		AutoDetector: func() bool {
-			// Check if Docker daemon is actually available
-			return docker.IsAvailable()
-		},
-	}); err != nil {
-		// This should never happen for built-in runtimes
-		panic(fmt.Sprintf("failed to register built-in runtime: %v", err))
-	}
-
-	// Register Kubernetes runtime
-	if err := f.Register(&RuntimeInfo{
-		Name: kubernetes.RuntimeName,
-		Initializer: func(ctx context.Context) (runtime.Runtime, error) {
-			return kubernetes.NewClient(ctx)
-		},
-		AutoDetector: func() bool {
-			// Kubernetes is available if we're in a Kubernetes environment
-			return runtime.IsKubernetesRuntime()
-		},
-	}); err != nil {
-		// This should never happen for built-in runtimes
-		panic(fmt.Sprintf("failed to register built-in runtime: %v", err))
-	}
-}
-
 // Register registers a new runtime with the factory
-func (f *Factory) Register(info *RuntimeInfo) error {
+func (f *Factory) Register(info *runtime.Info) error {
 	if info == nil {
 		return fmt.Errorf("runtime info cannot be nil")
 	}
@@ -109,7 +70,7 @@ func (f *Factory) Unregister(name string) {
 }
 
 // GetRuntime retrieves a runtime info by name
-func (f *Factory) GetRuntime(name string) (*RuntimeInfo, bool) {
+func (f *Factory) GetRuntime(name string) (*runtime.Info, bool) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	info, exists := f.runtimes[name]
@@ -117,11 +78,11 @@ func (f *Factory) GetRuntime(name string) (*RuntimeInfo, bool) {
 }
 
 // ListRuntimes returns all registered runtimes
-func (f *Factory) ListRuntimes() map[string]*RuntimeInfo {
+func (f *Factory) ListRuntimes() map[string]*runtime.Info {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	result := make(map[string]*RuntimeInfo, len(f.runtimes))
+	result := make(map[string]*runtime.Info, len(f.runtimes))
 	for name, info := range f.runtimes {
 		result[name] = info
 	}
@@ -129,54 +90,17 @@ func (f *Factory) ListRuntimes() map[string]*RuntimeInfo {
 }
 
 // ListAvailableRuntimes returns all runtimes that are currently available
-func (f *Factory) ListAvailableRuntimes() map[string]*RuntimeInfo {
+func (f *Factory) ListAvailableRuntimes() map[string]*runtime.Info {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	result := make(map[string]*RuntimeInfo)
+	result := make(map[string]*runtime.Info)
 	for name, info := range f.runtimes {
 		if info.AutoDetector == nil || info.AutoDetector() {
 			result[name] = info
 		}
 	}
 	return result
-}
-
-// autoDetectRuntime returns the first available runtime based on auto-detection
-// This checks runtimes in a predictable order: Docker first, then Kubernetes
-func (f *Factory) autoDetectRuntime() (string, *RuntimeInfo) {
-	available := f.ListAvailableRuntimes()
-
-	// Define the preferred order of runtime detection
-	preferredOrder := []string{
-		docker.RuntimeName,     // "docker"
-		kubernetes.RuntimeName, // "kubernetes"
-	}
-
-	// Check runtimes in the preferred order
-	for _, runtimeName := range preferredOrder {
-		if info, exists := available[runtimeName]; exists {
-			return runtimeName, info
-		}
-	}
-
-	// Fallback: if none of the preferred runtimes are available,
-	// return any other available runtime (for extensibility)
-	for name, info := range available {
-		return name, info
-	}
-
-	return "", nil
-}
-
-// Clear removes all registered runtimes
-// This is useful for testing or when you want to start with a clean slate
-func (f *Factory) Clear() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	// Clear all runtimes
-	f.runtimes = make(map[string]*RuntimeInfo)
 }
 
 // Create creates a container runtime
@@ -189,7 +113,7 @@ func (f *Factory) Create(ctx context.Context) (runtime.Runtime, error) {
 // CreateWithRuntimeName creates a container runtime with a specific runtime name
 // If runtimeName is empty, it falls back to auto-detection
 func (f *Factory) CreateWithRuntimeName(ctx context.Context, runtimeName string) (runtime.Runtime, error) {
-	var runtimeInfo *RuntimeInfo
+	var runtimeInfo *runtime.Info
 	var selectedRuntimeName string
 
 	if runtimeName != "" {
@@ -230,15 +154,9 @@ func (f *Factory) CreateWithRuntimeName(ctx context.Context, runtimeName string)
 	return rt, nil
 }
 
-// getRuntimeFromEnv gets the runtime name from the TOOLHIVE_RUNTIME environment variable
-// This is separated for easier testing
-func (*Factory) getRuntimeFromEnv() string {
-	return strings.TrimSpace(os.Getenv("TOOLHIVE_RUNTIME"))
-}
-
 // NewMonitor creates a new container monitor
 func NewMonitor(rt runtime.Runtime, containerName string) runtime.Monitor {
-	return docker.NewMonitor(rt, containerName)
+	return runtime.NewMonitor(rt, containerName)
 }
 
 // CheckRuntimeAvailable checks if any container runtime is available
@@ -248,9 +166,57 @@ func CheckRuntimeAvailable() error {
 	available := factory.ListAvailableRuntimes()
 
 	if len(available) == 0 {
-		return fmt.Errorf("no container runtime available. ToolHive requires Docker, Podman, Colima, " +
-			"or a Kubernetes environment to run MCP servers")
+		registered := runtime.RegisteredRuntimesByPriority()
+		names := make([]string, 0, len(registered))
+		for _, r := range registered {
+			names = append(names, r.Name)
+		}
+		return fmt.Errorf("no container runtime available. ToolHive requires a Docker-compatible container runtime "+
+			"(Docker, Podman, or Colima) or Kubernetes to run MCP servers. Registered runtimes: [%s]",
+			strings.Join(names, ", "))
 	}
 
 	return nil
+}
+
+// autoDetectRuntime returns the first available runtime based on auto-detection.
+// Runtimes are tried in priority order (lowest first); the first one whose
+// AutoDetector is nil or returns true is selected.
+func (f *Factory) autoDetectRuntime() (string, *runtime.Info) {
+	f.mu.RLock()
+	ordered := make([]*runtime.Info, 0, len(f.runtimes))
+	for _, info := range f.runtimes {
+		ordered = append(ordered, info)
+	}
+	f.mu.RUnlock()
+
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Priority != ordered[j].Priority {
+			return ordered[i].Priority < ordered[j].Priority
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+
+	for _, info := range ordered {
+		if info.AutoDetector == nil || info.AutoDetector() {
+			return info.Name, info
+		}
+	}
+
+	return "", nil
+}
+
+// Clear removes all registered runtimes
+// This is useful for testing or when you want to start with a clean slate
+func (f *Factory) Clear() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.runtimes = make(map[string]*runtime.Info)
+}
+
+// getRuntimeFromEnv gets the runtime name from the TOOLHIVE_RUNTIME environment variable
+// This is separated for easier testing
+func (*Factory) getRuntimeFromEnv() string {
+	return strings.TrimSpace(os.Getenv("TOOLHIVE_RUNTIME"))
 }

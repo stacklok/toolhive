@@ -5,12 +5,114 @@ package optimizer
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 )
+
+// mockToolStore implements ToolStore for testing optimizer logic against a
+// controllable store without any database dependency.
+type mockToolStore struct {
+	upsertFunc func(ctx context.Context, tools []server.ServerTool) error
+	searchFunc func(ctx context.Context, query string, allowedTools []string) ([]ToolMatch, error)
+}
+
+func (m *mockToolStore) UpsertTools(ctx context.Context, tools []server.ServerTool) error {
+	if m.upsertFunc != nil {
+		return m.upsertFunc(ctx, tools)
+	}
+	panic("mockToolStore.UpsertTools called but not configured")
+}
+
+func (m *mockToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]ToolMatch, error) {
+	if m.searchFunc != nil {
+		return m.searchFunc(ctx, query, allowedTools)
+	}
+	panic("mockToolStore.Search called but not configured")
+}
+
+func (*mockToolStore) Close() error {
+	return nil
+}
+
+// TestDummyOptimizer_SearchDelegation verifies that FindTool delegates to the
+// store with the correct query and allowedTools, and computes token metrics.
+func TestDummyOptimizer_SearchDelegation(t *testing.T) {
+	t.Parallel()
+
+	tools := []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+		{Tool: mcp.Tool{Name: "tool_b", Description: "Tool B"}},
+	}
+
+	store := &mockToolStore{
+		upsertFunc: func(_ context.Context, _ []server.ServerTool) error { return nil },
+		searchFunc: func(_ context.Context, query string, allowedTools []string) ([]ToolMatch, error) {
+			require.Equal(t, "query", query)
+			require.ElementsMatch(t, []string{"tool_a", "tool_b"}, allowedTools)
+			return []ToolMatch{
+				{Name: "tool_a", Description: "Tool A", Score: 0.9},
+			}, nil
+		},
+	}
+
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tools)
+	require.NoError(t, err)
+
+	result, err := opt.FindTool(context.Background(), FindToolInput{ToolDescription: "query"})
+	require.NoError(t, err)
+
+	var names []string
+	for _, m := range result.Tools {
+		names = append(names, m.Name)
+	}
+	require.ElementsMatch(t, []string{"tool_a"}, names)
+
+	require.Greater(t, result.TokenMetrics.BaselineTokens, 0)
+	require.Greater(t, result.TokenMetrics.ReturnedTokens, 0)
+	require.Greater(t, result.TokenMetrics.SavingsPercent, 0.0)
+}
+
+// TestDummyOptimizer_SearchError verifies that store search errors are propagated.
+func TestDummyOptimizer_SearchError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockToolStore{
+		upsertFunc: func(_ context.Context, _ []server.ServerTool) error { return nil },
+		searchFunc: func(context.Context, string, []string) ([]ToolMatch, error) {
+			return nil, fmt.Errorf("store unavailable")
+		},
+	}
+
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+	})
+	require.NoError(t, err)
+
+	_, err = opt.FindTool(context.Background(), FindToolInput{ToolDescription: "query"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool search failed")
+}
+
+// TestDummyOptimizer_UpsertError verifies that store upsert errors during creation are propagated.
+func TestDummyOptimizer_UpsertError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockToolStore{
+		upsertFunc: func(context.Context, []server.ServerTool) error {
+			return fmt.Errorf("upsert failed")
+		},
+	}
+
+	_, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to upsert tools into store")
+}
 
 func TestDummyOptimizer_FindTool(t *testing.T) {
 	t.Parallel()
@@ -37,7 +139,7 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt, err := NewDummyOptimizer(context.Background(), store, tools)
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tools)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -105,6 +207,12 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 			}
 
 			require.ElementsMatch(t, tc.expectedNames, names)
+
+			// TokenMetrics baseline should always be positive (3 tools in store)
+			require.Greater(t, result.TokenMetrics.BaselineTokens, 0)
+			if len(tc.expectedNames) > 0 {
+				require.Greater(t, result.TokenMetrics.ReturnedTokens, 0)
+			}
 		})
 	}
 }
@@ -139,7 +247,7 @@ func TestDummyOptimizerFactory_SharedStorage(t *testing.T) {
 	require.Len(t, result2.Tools, 1)
 	require.Equal(t, "tool_b", result2.Tools[0].Name)
 
-	// Both tools exist in the shared store — verify by creating an optimizer with both in scope
+	// Both tools exist in the shared store — verify by creating an optimizer with both in allowedTools
 	opt3, err := factory(ctx, []server.ServerTool{
 		{Tool: mcp.Tool{Name: "tool_a", Description: "Alpha tool"}},
 		{Tool: mcp.Tool{Name: "tool_b", Description: "Beta tool"}},
@@ -152,6 +260,80 @@ func TestDummyOptimizerFactory_SharedStorage(t *testing.T) {
 
 	names := []string{result3.Tools[0].Name, result3.Tools[1].Name}
 	require.ElementsMatch(t, []string{"tool_a", "tool_b"}, names)
+}
+
+func TestNewDummyOptimizerFactoryWithStore(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		sessionATools  []server.ServerTool
+		sessionBTools  []server.ServerTool
+		searchQuery    string
+		sessionAExpect []string
+		sessionBExpect []string
+	}{
+		{
+			name: "separate sessions see only their own tools",
+			sessionATools: []server.ServerTool{
+				{Tool: mcp.Tool{Name: "tool_alpha", Description: "Alpha tool"}},
+			},
+			sessionBTools: []server.ServerTool{
+				{Tool: mcp.Tool{Name: "tool_beta", Description: "Beta tool"}},
+			},
+			searchQuery:    "tool",
+			sessionAExpect: []string{"tool_alpha"},
+			sessionBExpect: []string{"tool_beta"},
+		},
+		{
+			name: "overlapping tools are shared",
+			sessionATools: []server.ServerTool{
+				{Tool: mcp.Tool{Name: "shared_tool", Description: "Shared tool"}},
+				{Tool: mcp.Tool{Name: "tool_a_only", Description: "A only"}},
+			},
+			sessionBTools: []server.ServerTool{
+				{Tool: mcp.Tool{Name: "shared_tool", Description: "Shared tool"}},
+				{Tool: mcp.Tool{Name: "tool_b_only", Description: "B only"}},
+			},
+			searchQuery:    "tool",
+			sessionAExpect: []string{"shared_tool", "tool_a_only"},
+			sessionBExpect: []string{"shared_tool", "tool_b_only"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := NewInMemoryToolStore()
+			factory := NewDummyOptimizerFactoryWithStore(store, DefaultTokenCounter())
+			ctx := context.Background()
+
+			optA, err := factory(ctx, tc.sessionATools)
+			require.NoError(t, err)
+
+			optB, err := factory(ctx, tc.sessionBTools)
+			require.NoError(t, err)
+
+			resultA, err := optA.FindTool(ctx, FindToolInput{ToolDescription: tc.searchQuery})
+			require.NoError(t, err)
+
+			var namesA []string
+			for _, m := range resultA.Tools {
+				namesA = append(namesA, m.Name)
+			}
+			require.ElementsMatch(t, tc.sessionAExpect, namesA)
+
+			resultB, err := optB.FindTool(ctx, FindToolInput{ToolDescription: tc.searchQuery})
+			require.NoError(t, err)
+
+			var namesB []string
+			for _, m := range resultB.Tools {
+				namesB = append(namesB, m.Name)
+			}
+			require.ElementsMatch(t, tc.sessionBExpect, namesB)
+		})
+	}
 }
 
 func TestDummyOptimizer_CallTool(t *testing.T) {
@@ -172,7 +354,7 @@ func TestDummyOptimizer_CallTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt, err := NewDummyOptimizer(context.Background(), store, tools)
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tools)
 	require.NoError(t, err)
 
 	tests := []struct {

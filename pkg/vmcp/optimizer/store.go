@@ -5,31 +5,19 @@ package optimizer
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"sync"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	sqlitestore "github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/sqlite_store"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
 // ToolStore defines the interface for storing and searching tools.
-// Implementations may use in-memory maps, SQLite FTS5, or other backends.
-//
-// A ToolStore is shared across multiple optimizer instances (one per session)
-// and is accessed concurrently. Implementations must be thread-safe.
-type ToolStore interface {
-	// UpsertTools adds or updates tools in the store.
-	// Tools are identified by name; duplicate names are overwritten.
-	UpsertTools(ctx context.Context, tools []server.ServerTool) error
-
-	// Search finds tools matching the query string.
-	// The scope parameter limits results to only tools with names in the given set.
-	// If scope is empty, all tools are searched.
-	// Returns matches ranked by relevance.
-	Search(ctx context.Context, query string, scope []string) ([]ToolMatch, error)
-}
+// It is defined in the internal/types package and aliased here so that
+// external consumers continue to use optimizer.ToolStore.
+type ToolStore = types.ToolStore
 
 // InMemoryToolStore implements ToolStore using an in-memory map with
 // case-insensitive substring matching. Thread-safe via sync.RWMutex.
@@ -57,43 +45,45 @@ func (s *InMemoryToolStore) UpsertTools(_ context.Context, tools []server.Server
 	return nil
 }
 
+// Close is a no-op for InMemoryToolStore since there are no external resources to release.
+// It is safe to call Close multiple times.
+func (*InMemoryToolStore) Close() error {
+	return nil
+}
+
 // Search finds tools matching the query string using case-insensitive substring
 // matching on tool name and description.
-// The scope parameter limits results to only tools with names in the given set.
-// If scope is empty, all tools are searched.
-func (s *InMemoryToolStore) Search(_ context.Context, query string, scope []string) ([]ToolMatch, error) {
+// The allowedTools parameter limits results to only tools with names in the given set.
+// If allowedTools is empty, no results are returned (empty = no access).
+func (s *InMemoryToolStore) Search(_ context.Context, query string, allowedTools []string) ([]ToolMatch, error) {
+	if len(allowedTools) == 0 {
+		return nil, nil
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	searchTerm := strings.ToLower(query)
 
-	// Build scope set for fast lookup
-	scopeSet := make(map[string]struct{}, len(scope))
-	for _, name := range scope {
-		scopeSet[name] = struct{}{}
+	// Build allowed set for fast lookup
+	allowedSet := make(map[string]struct{}, len(allowedTools))
+	for _, name := range allowedTools {
+		allowedSet[name] = struct{}{}
 	}
 
 	var matches []ToolMatch
 	for _, tool := range s.tools {
-		// If scope is specified, skip tools not in scope
-		if len(scopeSet) > 0 {
-			if _, ok := scopeSet[tool.Tool.Name]; !ok {
-				continue
-			}
+		if _, ok := allowedSet[tool.Tool.Name]; !ok {
+			continue
 		}
 
 		nameLower := strings.ToLower(tool.Tool.Name)
 		descLower := strings.ToLower(tool.Tool.Description)
 
 		if strings.Contains(nameLower, searchTerm) || strings.Contains(descLower, searchTerm) {
-			schema, err := getToolSchema(tool.Tool)
-			if err != nil {
-				return nil, err
-			}
 			matches = append(matches, ToolMatch{
 				Name:        tool.Tool.Name,
 				Description: tool.Tool.Description,
-				InputSchema: schema,
 				Score:       1.0, // Exact match semantics for substring matching
 			})
 		}
@@ -102,17 +92,10 @@ func (s *InMemoryToolStore) Search(_ context.Context, query string, scope []stri
 	return matches, nil
 }
 
-// getToolSchema returns the input schema for a tool.
-// Prefers RawInputSchema if set, otherwise marshals InputSchema.
-func getToolSchema(tool mcp.Tool) (json.RawMessage, error) {
-	if len(tool.RawInputSchema) > 0 {
-		return tool.RawInputSchema, nil
-	}
-
-	// Fall back to InputSchema
-	data, err := json.Marshal(tool.InputSchema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
-	}
-	return data, nil
+// NewSQLiteToolStore creates a new ToolStore backed by SQLite for search.
+// The store uses an in-memory SQLite database with shared cache for concurrent access.
+// If embeddingClient is nil, only keyword full-text search is used.
+// If optCfg is non-nil, its search parameters override the defaults; nil values use defaults.
+func NewSQLiteToolStore(embeddingClient EmbeddingClient, optCfg *Config) (ToolStore, error) {
+	return sqlitestore.NewSQLiteToolStore(embeddingClient, optCfg)
 }

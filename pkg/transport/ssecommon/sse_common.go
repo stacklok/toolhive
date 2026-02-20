@@ -50,11 +50,11 @@ func (m *SSEMessage) ToSSEString() string {
 	var sb strings.Builder
 
 	// Add event type
-	sb.WriteString(fmt.Sprintf("event: %s\n", m.EventType))
+	fmt.Fprintf(&sb, "event: %s\n", m.EventType)
 
 	// Add data (split by newlines to ensure proper formatting)
 	for _, line := range strings.Split(m.Data, "\n") {
-		sb.WriteString(fmt.Sprintf("data: %s\n", line))
+		fmt.Fprintf(&sb, "data: %s\n", line)
 	}
 
 	// End the message with a blank line

@@ -316,6 +316,40 @@ func TestValidateSkillName(t *testing.T) {
 	}
 }
 
+func TestValidateScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		input      Scope
+		wantErr    bool
+		errContain string
+	}{
+		{name: "empty is valid", input: "", wantErr: false},
+		{name: "user is valid", input: ScopeUser, wantErr: false},
+		{name: "project is valid", input: ScopeProject, wantErr: false},
+		{name: "unknown scope is invalid", input: "global", wantErr: true, errContain: "global"},
+		{name: "uppercase user is invalid", input: "User", wantErr: true, errContain: "User"},
+		{name: "uppercase PROJECT is invalid", input: "PROJECT", wantErr: true, errContain: "PROJECT"},
+		{name: "whitespace only is invalid", input: " ", wantErr: true, errContain: "invalid scope"},
+		{name: "trailing space is invalid", input: "user ", wantErr: true, errContain: "user "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateScope(tt.input)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContain)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 // containsSubstring checks if any string in the slice contains the given substring.
 func containsSubstring(strs []string, substr string) bool {
 	for _, s := range strs {

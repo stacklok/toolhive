@@ -6,6 +6,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -13,10 +14,9 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	lb "github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 const defaultSquidImage = "ghcr.io/stacklok/toolhive/egress-proxy:latest"
@@ -99,7 +99,8 @@ func createSquidContainer(
 	squidConfPath string,
 ) (string, error) {
 
-	logger.Debugf("Setting up squid container for %s with image %s...", squidContainerName, getSquidImage())
+	//nolint:gosec // G706: squid container name and image from config
+	slog.Debug("setting up squid container", "name", squidContainerName, "image", getSquidImage())
 	squidLabels := map[string]string{}
 	lb.AddStandardLabels(squidLabels, squidContainerName, squidContainerName, "stdio", 80)
 	squidLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
@@ -112,7 +113,8 @@ func createSquidContainer(
 		// Check if the squid image exists locally before failing
 		_, inspectErr := c.imageManager.ImageExists(ctx, squidImage)
 		if inspectErr == nil {
-			logger.Debugf("Squid image %s exists locally, continuing despite pull failure", squidImage)
+			//nolint:gosec // G706: squid image name from config
+			slog.Debug("squid image exists locally, continuing despite pull failure", "image", squidImage)
 		} else {
 			return "", fmt.Errorf("failed to pull squid image: %w", err)
 		}
@@ -195,7 +197,7 @@ func createTempEgressSquidConf(
 	defer func() {
 		if err := tmpFile.Close(); err != nil {
 			// Non-fatal: temp file cleanup failure
-			logger.Warnf("Failed to close temp file: %v", err)
+			slog.Warn("failed to close temp file", "error", err)
 		}
 	}()
 
@@ -295,7 +297,7 @@ func createTempIngressSquidConf(
 	defer func() {
 		if err := tmpFile.Close(); err != nil {
 			// Non-fatal: temp file cleanup failure
-			logger.Warnf("Failed to close temp file: %v", err)
+			slog.Warn("failed to close temp file", "error", err)
 		}
 	}()
 

@@ -5,9 +5,8 @@ package secrets
 
 import (
 	"context"
+	"log/slog"
 	"strings"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // FallbackProvider wraps a primary provider with environment variable fallback
@@ -43,7 +42,8 @@ func (f *FallbackProvider) GetSecret(ctx context.Context, name string) (string, 
 	// Try environment variable fallback
 	envValue, envErr := f.envProvider.GetSecret(ctx, name)
 	if envErr == nil {
-		logger.Debugf("Secret '%s' retrieved from environment variable fallback", name)
+		//nolint:gosec // G706: secret name is user-provided input used for diagnostics
+		slog.Debug("Secret retrieved from environment variable fallback", "name", name)
 		return envValue, nil
 	}
 

@@ -5,10 +5,10 @@ package authserver
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Server is the OAuth authorization server.
@@ -40,6 +40,6 @@ type Server interface {
 // Use storage.NewMemoryStorage() for single-instance deployments or provide
 // a distributed storage backend for production deployments.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
-	logger.Debugw("creating new OAuth authorization server", "issuer", cfg.Issuer)
+	slog.Debug("creating new OAuth authorization server", "issuer", cfg.Issuer)
 	return newServer(ctx, cfg, stor)
 }

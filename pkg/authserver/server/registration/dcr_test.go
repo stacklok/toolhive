@@ -456,6 +456,91 @@ func TestValidateDCRRequest(t *testing.T) {
 	}
 }
 
+func TestValidateScopes(t *testing.T) {
+	t.Parallel()
+
+	allowedScopes := []string{"openid", "profile", "email", "offline_access"}
+
+	tests := []struct {
+		name           string
+		requestedScope string
+		allowedScopes  []string
+		expectError    bool
+		errorCode      string
+		expectedScopes []string
+	}{
+		{
+			name:           "valid subset of allowed scopes",
+			requestedScope: "openid profile",
+			allowedScopes:  allowedScopes,
+			expectedScopes: []string{"openid", "profile"},
+		},
+		{
+			name:           "full set of allowed scopes accepted",
+			requestedScope: "openid profile email offline_access",
+			allowedScopes:  allowedScopes,
+			expectedScopes: []string{"openid", "profile", "email", "offline_access"},
+		},
+		{
+			name:           "unknown scope rejected",
+			requestedScope: "openid sneaky_admin",
+			allowedScopes:  allowedScopes,
+			expectError:    true,
+			errorCode:      DCRErrorInvalidClientMetadata,
+		},
+		{
+			name:           "prefix of valid scope rejected",
+			requestedScope: "openid.evil",
+			allowedScopes:  allowedScopes,
+			expectError:    true,
+			errorCode:      DCRErrorInvalidClientMetadata,
+		},
+		{
+			name:           "substring of valid scope rejected",
+			requestedScope: "open",
+			allowedScopes:  allowedScopes,
+			expectError:    true,
+			errorCode:      DCRErrorInvalidClientMetadata,
+		},
+		{
+			name:           "empty input returns default scopes",
+			requestedScope: "",
+			allowedScopes:  allowedScopes,
+			expectedScopes: DefaultScopes,
+		},
+		{
+			name:           "duplicate scopes are deduplicated",
+			requestedScope: "openid openid profile",
+			allowedScopes:  allowedScopes,
+			expectedScopes: []string{"openid", "profile"},
+		},
+		{
+			name:           "empty input rejected when defaults not in allowed set",
+			requestedScope: "",
+			allowedScopes:  []string{"custom_scope"},
+			expectError:    true,
+			errorCode:      DCRErrorInvalidClientMetadata,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scopes, dcrErr := ValidateScopes(tt.requestedScope, tt.allowedScopes)
+
+			if tt.expectError {
+				require.NotNil(t, dcrErr, "expected error")
+				assert.Equal(t, tt.errorCode, dcrErr.Error)
+				assert.Nil(t, scopes)
+			} else {
+				require.Nil(t, dcrErr, "unexpected error: %v", dcrErr)
+				assert.Equal(t, tt.expectedScopes, scopes)
+			}
+		})
+	}
+}
+
 func TestDCRErrorConstants(t *testing.T) {
 	t.Parallel()
 

@@ -8,8 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-
-	"github.com/stacklok/toolhive/pkg/logger"
+	"log/slog"
 )
 
 // ValidateCACertificate validates that the provided data contains a valid PEM-encoded certificate
@@ -34,7 +33,7 @@ func ValidateCACertificate(certData []byte) error {
 	// Basic validation - check if it's a CA certificate
 	if !cert.IsCA {
 		// Log a warning but don't fail - some corporate proxies use non-CA certificates
-		logger.Warnf("Certificate is not marked as a CA certificate, but proceeding anyway")
+		slog.Warn("Certificate is not marked as a CA certificate, but proceeding anyway")
 	}
 
 	return nil

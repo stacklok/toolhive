@@ -29,7 +29,7 @@ func TestInMemoryToolStore_UpsertTools(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify tools are searchable
-		matches, err := store.Search(context.Background(), "tool", nil)
+		matches, err := store.Search(context.Background(), "tool", []string{"tool_a", "tool_b"})
 		require.NoError(t, err)
 		require.Len(t, matches, 2)
 	})
@@ -52,13 +52,13 @@ func TestInMemoryToolStore_UpsertTools(t *testing.T) {
 		require.NoError(t, err)
 
 		// Search by new description
-		matches, err := store.Search(context.Background(), "Updated", nil)
+		matches, err := store.Search(context.Background(), "Updated", []string{"tool_a"})
 		require.NoError(t, err)
 		require.Len(t, matches, 1)
 		require.Equal(t, "Updated description", matches[0].Description)
 
 		// Old description should not match
-		matches, err = store.Search(context.Background(), "Original", nil)
+		matches, err = store.Search(context.Background(), "Original", []string{"tool_a"})
 		require.NoError(t, err)
 		require.Empty(t, matches)
 	})
@@ -77,10 +77,12 @@ func TestInMemoryToolStore_Search(t *testing.T) {
 	err := store.UpsertTools(context.Background(), tools)
 	require.NoError(t, err)
 
+	allTools := []string{"fetch_url", "read_file", "write_file", "list_dir"}
+
 	t.Run("finds by name substring", func(t *testing.T) {
 		t.Parallel()
 
-		matches, err := store.Search(context.Background(), "fetch", nil)
+		matches, err := store.Search(context.Background(), "fetch", allTools)
 		require.NoError(t, err)
 		require.Len(t, matches, 1)
 		require.Equal(t, "fetch_url", matches[0].Name)
@@ -89,7 +91,7 @@ func TestInMemoryToolStore_Search(t *testing.T) {
 	t.Run("finds by description substring", func(t *testing.T) {
 		t.Parallel()
 
-		matches, err := store.Search(context.Background(), "filesystem", nil)
+		matches, err := store.Search(context.Background(), "filesystem", allTools)
 		require.NoError(t, err)
 		require.Len(t, matches, 1)
 		require.Equal(t, "read_file", matches[0].Name)
@@ -98,41 +100,35 @@ func TestInMemoryToolStore_Search(t *testing.T) {
 	t.Run("case insensitive", func(t *testing.T) {
 		t.Parallel()
 
-		matches, err := store.Search(context.Background(), "FETCH", nil)
+		matches, err := store.Search(context.Background(), "FETCH", allTools)
 		require.NoError(t, err)
 		require.Len(t, matches, 1)
 		require.Equal(t, "fetch_url", matches[0].Name)
 	})
 
-	t.Run("respects scope parameter", func(t *testing.T) {
+	t.Run("respects allowedTools parameter", func(t *testing.T) {
 		t.Parallel()
 
 		// "file" matches both read_file and write_file by name/description,
-		// but scope limits to only read_file
+		// but allowedTools limits to only read_file
 		matches, err := store.Search(context.Background(), "file", []string{"read_file"})
 		require.NoError(t, err)
 		require.Len(t, matches, 1)
 		require.Equal(t, "read_file", matches[0].Name)
 	})
 
-	t.Run("empty scope returns all matches", func(t *testing.T) {
+	t.Run("empty allowedTools returns no results", func(t *testing.T) {
 		t.Parallel()
 
 		matches, err := store.Search(context.Background(), "file", nil)
 		require.NoError(t, err)
-		require.Len(t, matches, 2)
-
-		var names []string
-		for _, m := range matches {
-			names = append(names, m.Name)
-		}
-		require.ElementsMatch(t, []string{"read_file", "write_file"}, names)
+		require.Empty(t, matches)
 	})
 
 	t.Run("no matches returns empty slice", func(t *testing.T) {
 		t.Parallel()
 
-		matches, err := store.Search(context.Background(), "nonexistent", nil)
+		matches, err := store.Search(context.Background(), "nonexistent", allTools)
 		require.NoError(t, err)
 		require.Empty(t, matches)
 	})
@@ -140,12 +136,42 @@ func TestInMemoryToolStore_Search(t *testing.T) {
 	t.Run("score is 1.0 for all matches", func(t *testing.T) {
 		t.Parallel()
 
-		matches, err := store.Search(context.Background(), "file", nil)
+		matches, err := store.Search(context.Background(), "file", allTools)
 		require.NoError(t, err)
 		for _, m := range matches {
 			require.Equal(t, 1.0, m.Score)
 		}
 	})
+}
+
+func TestInMemoryToolStore_Close(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		closeCnt int
+	}{
+		{
+			name:     "single close returns nil",
+			closeCnt: 1,
+		},
+		{
+			name:     "double close is idempotent",
+			closeCnt: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := NewInMemoryToolStore()
+			for range tc.closeCnt {
+				err := store.Close()
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestInMemoryToolStore_ConcurrentAccess(t *testing.T) {
@@ -184,7 +210,7 @@ func TestInMemoryToolStore_ConcurrentAccess(t *testing.T) {
 	for range goroutines {
 		go func() {
 			defer wg.Done()
-			_, searchErr := store.Search(ctx, "tool", nil)
+			_, searchErr := store.Search(ctx, "tool", []string{"initial_tool", "concurrent_tool"})
 			require.NoError(t, searchErr)
 		}()
 	}

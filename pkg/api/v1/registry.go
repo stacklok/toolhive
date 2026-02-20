@@ -8,15 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (
@@ -99,7 +99,7 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider)
 	if err != nil {
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
-		logger.Errorf("Failed to get registry provider: %v", err)
+		slog.Error("failed to get registry provider", "error", err)
 		return nil, false
 	}
 	return provider, true
@@ -247,7 +247,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -318,7 +318,7 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -340,7 +340,7 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 	if req.URL == nil && req.APIURL == nil && req.LocalPath == nil {
 		err := rr.configService.UnsetRegistry()
 		if err != nil {
-			logger.Errorf("Failed to unset registry: %v", err)
+			slog.Error("failed to unset registry", "error", err)
 			return "", fmt.Errorf("failed to reset registry configuration")
 		}
 		return "default", nil
@@ -366,7 +366,7 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 	// Use the service to set the registry
 	registryType, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
 	if err != nil {
-		logger.Errorf("Failed to set registry: %v", err)
+		slog.Error("failed to set registry", "error", err)
 		// Check if error is connectivity/timeout related
 		if isConnectivityError(err) {
 			return "", &connectivityError{
@@ -430,7 +430,7 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	// Get the full registry to access both container and remote servers
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		logger.Errorf("Failed to get registry: %v", err)
+		slog.Error("failed to get registry", "error", err)
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -453,7 +453,7 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -496,7 +496,8 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	// Try to get the server (could be container or remote)
 	server, err := provider.GetServer(decodedServerName)
 	if err != nil {
-		logger.Errorf("Failed to get server '%s': %v", decodedServerName, err)
+		//nolint:gosec // G706: server name from URL parameter for diagnostics
+		slog.Error("failed to get server", "server", decodedServerName, "error", err)
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}
@@ -521,7 +522,7 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -572,7 +573,7 @@ type getRegistryResponse struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// Full registry data
-	Registry *registry.Registry `json:"registry"`
+	Registry *registry.Registry `json:"registry" swaggerignore:"true"`
 }
 
 // listServersResponse represents the response for listing servers in a registry
@@ -580,9 +581,9 @@ type getRegistryResponse struct {
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
 	// List of container servers in the registry
-	Servers []*registry.ImageMetadata `json:"servers"`
+	Servers []*registry.ImageMetadata `json:"servers" swaggerignore:"true"`
 	// List of remote servers in the registry (if any)
-	RemoteServers []*registry.RemoteServerMetadata `json:"remote_servers,omitempty"`
+	RemoteServers []*registry.RemoteServerMetadata `json:"remote_servers,omitempty" swaggerignore:"true"`
 }
 
 // getServerResponse represents the response for getting a server from a registry
@@ -590,9 +591,9 @@ type listServersResponse struct {
 //	@Description	Response containing server details
 type getServerResponse struct {
 	// Container server details (if it's a container server)
-	Server *registry.ImageMetadata `json:"server,omitempty"`
+	Server *registry.ImageMetadata `json:"server,omitempty" swaggerignore:"true"`
 	// Remote server details (if it's a remote server)
-	RemoteServer *registry.RemoteServerMetadata `json:"remote_server,omitempty"`
+	RemoteServer *registry.RemoteServerMetadata `json:"remote_server,omitempty" swaggerignore:"true"`
 	// Indicates if this is a remote server
 	IsRemote bool `json:"is_remote"`
 }

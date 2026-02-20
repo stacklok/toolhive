@@ -81,7 +81,10 @@ func TestRegisterClientHandler(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			stor := mocks.NewMockStorage(ctrl)
 			stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).Return(tc.storageErr).AnyTimes()
-			handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{}}
+			cfg := &server.AuthorizationServerConfig{
+				ScopesSupported: registration.DefaultScopes,
+			}
+			handler := &Handler{storage: stor, config: cfg}
 
 			var body []byte
 			if s, ok := tc.requestBody.(string); ok {
@@ -118,6 +121,38 @@ func TestRegisterClientHandler(t *testing.T) {
 	}
 }
 
+func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	stor := mocks.NewMockStorage(ctrl)
+	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).Return(nil)
+
+	handler := &Handler{
+		storage: stor,
+		config: &server.AuthorizationServerConfig{
+			ScopesSupported: registration.DefaultScopes,
+		},
+	}
+
+	reqBody, err := json.Marshal(registration.DCRRequest{
+		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.RegisterClientHandler(w, req)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp registration.DCRResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, registration.FormatScopes(registration.DefaultScopes), resp.Scope,
+		"DCR response should include granted scopes per RFC 7591 Section 3.2.1")
+}
+
 func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	t.Parallel()
 
@@ -130,7 +165,12 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 			return nil
 		})
 
-	handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{}}
+	allowedAudiences := []string{"https://mcp.example.com"}
+	cfg := &server.AuthorizationServerConfig{
+		ScopesSupported:  registration.DefaultScopes,
+		AllowedAudiences: allowedAudiences,
+	}
+	handler := &Handler{storage: stor, config: cfg}
 
 	reqBody, err := json.Marshal(registration.DCRRequest{
 		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
@@ -155,4 +195,6 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	assert.Equal(t, resp.ClientID, loopbackClient.GetID())
 	assert.True(t, loopbackClient.IsPublic())
 	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, loopbackClient.GetRedirectURIs())
+	assert.Equal(t, fosite.Arguments(allowedAudiences), loopbackClient.GetAudience(),
+		"DCR client must inherit server's AllowedAudiences so refresh token requests with resource= succeed")
 }

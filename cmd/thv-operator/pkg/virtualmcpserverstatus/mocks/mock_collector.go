@@ -42,6 +42,30 @@ func (m *MockStatusManager) EXPECT() *MockStatusManagerMockRecorder {
 	return m.recorder
 }
 
+// RemoveConditionsWithPrefix mocks base method.
+func (m *MockStatusManager) RemoveConditionsWithPrefix(prefix string, exclude []string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RemoveConditionsWithPrefix", prefix, exclude)
+}
+
+// RemoveConditionsWithPrefix indicates an expected call of RemoveConditionsWithPrefix.
+func (mr *MockStatusManagerMockRecorder) RemoveConditionsWithPrefix(prefix, exclude any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveConditionsWithPrefix", reflect.TypeOf((*MockStatusManager)(nil).RemoveConditionsWithPrefix), prefix, exclude)
+}
+
+// SetAuthConfigCondition mocks base method.
+func (m *MockStatusManager) SetAuthConfigCondition(conditionType, reason, message string, status v1.ConditionStatus) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetAuthConfigCondition", conditionType, reason, message, status)
+}
+
+// SetAuthConfigCondition indicates an expected call of SetAuthConfigCondition.
+func (mr *MockStatusManagerMockRecorder) SetAuthConfigCondition(conditionType, reason, message, status any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAuthConfigCondition", reflect.TypeOf((*MockStatusManager)(nil).SetAuthConfigCondition), conditionType, reason, message, status)
+}
+
 // SetAuthConfiguredCondition mocks base method.
 func (m *MockStatusManager) SetAuthConfiguredCondition(reason, message string, status v1.ConditionStatus) {
 	m.ctrl.T.Helper()
@@ -88,6 +112,18 @@ func (m *MockStatusManager) SetDiscoveredBackends(backends []v1alpha1.Discovered
 func (mr *MockStatusManagerMockRecorder) SetDiscoveredBackends(backends any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetDiscoveredBackends", reflect.TypeOf((*MockStatusManager)(nil).SetDiscoveredBackends), backends)
+}
+
+// SetEmbeddingServerReadyCondition mocks base method.
+func (m *MockStatusManager) SetEmbeddingServerReadyCondition(reason, message string, status v1.ConditionStatus) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetEmbeddingServerReadyCondition", reason, message, status)
+}
+
+// SetEmbeddingServerReadyCondition indicates an expected call of SetEmbeddingServerReadyCondition.
+func (mr *MockStatusManagerMockRecorder) SetEmbeddingServerReadyCondition(reason, message, status any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetEmbeddingServerReadyCondition", reflect.TypeOf((*MockStatusManager)(nil).SetEmbeddingServerReadyCondition), reason, message, status)
 }
 
 // SetGroupRefValidatedCondition mocks base method.

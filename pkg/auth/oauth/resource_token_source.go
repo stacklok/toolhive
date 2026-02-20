@@ -6,12 +6,11 @@ package oauth
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"golang.org/x/oauth2"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // resourceTokenSource wraps an oauth2.TokenSource and adds the resource parameter
@@ -89,7 +88,7 @@ func (r *resourceTokenSource) refreshWithResource(ctx context.Context) (*oauth2.
 		token.RefreshToken = refreshToken
 	}
 
-	logger.Debugw("token refreshed with resource parameter",
+	slog.Debug("Token refreshed with resource parameter",
 		"resource", r.resource,
 	)
 

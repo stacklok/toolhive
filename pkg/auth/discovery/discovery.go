@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -27,7 +28,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -120,16 +120,16 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 
 	// NEW: Well-known URI fallback per MCP specification
 	// When no WWW-Authenticate header found, try well-known URIs
-	logger.Debugf("No WWW-Authenticate header found, attempting well-known URI discovery")
+	slog.Debug("No WWW-Authenticate header found, attempting well-known URI discovery")
 
 	wellKnownAuthInfo, err := tryWellKnownDiscovery(detectCtx, client, targetURI)
 	if err != nil {
-		logger.Debugf("Well-known URI discovery failed: %v", err)
+		slog.Debug("Well-known URI discovery failed", "error", err)
 		return nil, nil // Not an error, just no auth detected
 	}
 
 	if wellKnownAuthInfo != nil {
-		logger.Debugf("Discovered authentication via well-known URI")
+		slog.Debug("Discovered authentication via well-known URI")
 		return wellKnownAuthInfo, nil
 	}
 
@@ -160,13 +160,13 @@ func detectAuthWithRequest(
 		}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- targetURI is the MCP server endpoint URL from internal config
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -207,15 +207,17 @@ func buildWellKnownURI(parsedURL *url.URL, endpointSpecific bool) string {
 func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		logger.Debugf("Failed to create GET request for %s: %v", uri, err)
+		//nolint:gosec // G706: uri is from server endpoint discovery
+		slog.Debug("Failed to create GET request", "uri", uri, "error", err)
 		return false
 	}
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- uri is built from the MCP server endpoint for auth discovery
 	if err != nil {
-		logger.Debugf("Failed to check %s: %v", uri, err)
+		//nolint:gosec // G706: uri is from server endpoint discovery
+		slog.Debug("Failed to check well-known URI", "uri", uri, "error", err)
 		return false
 	}
 	defer func() {
@@ -233,7 +235,9 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 	// RFC 9728 requires Content-Type to be application/json
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	if !strings.Contains(contentType, "application/json") {
-		logger.Debugf("Well-known URI %s returned unexpected content type: %s", uri, contentType)
+		//nolint:gosec // G706: content type from server response is safe to log
+		slog.Debug("Well-known URI returned unexpected content type",
+			"uri", uri, "content_type", contentType)
 		return false
 	}
 
@@ -259,17 +263,20 @@ func tryWellKnownDiscovery(ctx context.Context, client *http.Client, targetURI s
 
 	// Try each well-known URI in order
 	for _, wellKnownURI := range wellKnownURIs {
-		logger.Debugf("Trying well-known URI: %s", wellKnownURI)
+		//nolint:gosec // G706: well-known URIs are built from server endpoint
+		slog.Debug("Trying well-known URI", "uri", wellKnownURI)
 
 		// Check if the URI exists before attempting to fetch
 		if !checkWellKnownURIExists(ctx, client, wellKnownURI) {
-			logger.Debugf("Well-known URI not found: %s", wellKnownURI)
+			//nolint:gosec // G706: well-known URIs are built from server endpoint
+			slog.Debug("Well-known URI not found", "uri", wellKnownURI)
 			continue
 		}
 
 		// URI exists - return AuthInfo with ResourceMetadata set
 		// Downstream handler will use FetchResourceMetadata to get the actual metadata
-		logger.Debugf("Found well-known URI: %s", wellKnownURI)
+		//nolint:gosec // G706: well-known URIs are built from server endpoint
+		slog.Debug("Found well-known URI", "uri", wellKnownURI)
 		return &AuthInfo{
 			Type:             "OAuth",
 			ResourceMetadata: wellKnownURI,
@@ -349,7 +356,8 @@ func ParseWWWAuthenticate(header string) (*AuthInfo, error) {
 	// Currently only OAuth-based authentication is supported
 	// Basic and Digest authentication are not implemented
 	if strings.HasPrefix(header, "Basic") || strings.HasPrefix(header, "Digest") {
-		logger.Debugf("Unsupported authentication scheme: %s", header)
+		//nolint:gosec // G706: auth scheme name (Basic/Digest) is safe to log
+		slog.Debug("Unsupported authentication scheme", "header", header)
 		return nil, fmt.Errorf("unsupported authentication scheme: %s", strings.Split(header, " ")[0])
 	}
 
@@ -361,7 +369,7 @@ func DeriveIssuerFromURL(remoteURL string) string {
 	// Parse the URL to extract the domain
 	parsedURL, err := url.Parse(remoteURL)
 	if err != nil {
-		logger.Debugf("Failed to parse remote URL: %v", err)
+		slog.Debug("Failed to parse remote URL", "error", err)
 		return ""
 	}
 
@@ -387,7 +395,8 @@ func DeriveIssuerFromURL(remoteURL string) string {
 	// This works for most OAuth providers that use their domain as the issuer
 	issuer := fmt.Sprintf("%s://%s", scheme, host)
 
-	logger.Debugf("Derived issuer from URL - remoteURL: %s, issuer: %s", remoteURL, issuer)
+	//nolint:gosec // G706: derived issuer URL is from server configuration
+	slog.Debug("Derived issuer from URL", "remote_url", remoteURL, "issuer", issuer)
 	return issuer
 }
 
@@ -452,14 +461,14 @@ func DeriveIssuerFromRealm(realm string) string {
 	// Check if realm is already a valid HTTPS URL
 	parsedURL, err := url.Parse(realm)
 	if err != nil {
-		logger.Debugf("Realm is not a valid URL: %v", err)
+		slog.Debug("Realm is not a valid URL", "error", err)
 		return ""
 	}
 
 	// RFC 8414: The issuer identifier MUST be a URL using the "https" scheme
 	// with no query or fragment components
 	if parsedURL.Scheme != "https" && !networking.IsLocalhost(parsedURL.Host) {
-		logger.Debugf("Realm is not using HTTPS scheme: %s", realm)
+		slog.Debug("Realm is not using HTTPS scheme", "realm", realm)
 		return ""
 	}
 
@@ -475,21 +484,22 @@ func DeriveIssuerFromRealm(realm string) string {
 	}
 
 	if parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
-		logger.Debugf("Realm contains query or fragment components: %s", realm)
+		slog.Debug("Realm contains query or fragment components", "realm", realm)
 		// Remove query and fragment to make it a valid issuer
 		parsedURL.RawQuery = ""
 		parsedURL.Fragment = ""
 	}
 
 	issuer := parsedURL.String()
-	logger.Debugf("Derived issuer from realm - realm: %s, issuer: %s", realm, issuer)
+	//nolint:gosec // G706: realm is from WWW-Authenticate header of configured remote
+	slog.Debug("Derived issuer from realm", "realm", realm, "issuer", issuer)
 	return issuer
 }
 
 // OAuthFlowConfig contains configuration for performing OAuth flows
 type OAuthFlowConfig struct {
 	ClientID             string
-	ClientSecret         string
+	ClientSecret         string //nolint:gosec // G117: field legitimately holds sensitive data
 	AuthorizeURL         string // Manual OAuth endpoint (optional)
 	TokenURL             string // Manual OAuth endpoint (optional)
 	RegistrationEndpoint string // Manual registration endpoint (optional)
@@ -507,13 +517,13 @@ type OAuthFlowResult struct {
 	Config      *oauth.Config
 
 	// Token details for persistence across restarts
-	AccessToken  string
-	RefreshToken string
+	AccessToken  string //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	Expiry       time.Time
 
 	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
 	ClientID     string
-	ClientSecret string
+	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -522,7 +532,7 @@ func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
 
 // PerformOAuthFlow performs an OAuth authentication flow with the given configuration
 func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfig) (*OAuthFlowResult, error) {
-	logger.Debugf("Starting OAuth authentication flow for issuer: %s", issuer)
+	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
 	if config == nil {
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
@@ -540,7 +550,7 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		}
 
 		if port != config.CallbackPort {
-			logger.Warnf("Specified auth callback port %d is unavailable, using port %d instead", config.CallbackPort, port)
+			slog.Warn("Specified auth callback port is unavailable", "requested_port", config.CallbackPort, "actual_port", port)
 		}
 		config.CallbackPort = port
 	} else {
@@ -603,7 +613,7 @@ func getDiscoveryDocument(
 ) (*oauthproto.OIDCDiscoveryDocument, error) {
 	// If we already have the registration endpoint from earlier discovery, use it
 	if config.RegistrationEndpoint != "" && config.AuthorizeURL != "" && config.TokenURL != "" {
-		logger.Debugf("Using pre-discovered OAuth endpoints for dynamic registration")
+		slog.Debug("Using pre-discovered OAuth endpoints for dynamic registration")
 		return &oauthproto.OIDCDiscoveryDocument{
 			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
 				Issuer:                issuer,
@@ -622,8 +632,8 @@ func getDiscoveryDocument(
 func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConfig) (*oauth.Config, error) {
 	// Check if we have OAuth endpoints configured
 	if config.AuthorizeURL != "" && config.TokenURL != "" {
-		logger.Debugf("Using OAuth endpoints - authorize_url: %s, token_url: %s",
-			config.AuthorizeURL, config.TokenURL)
+		slog.Debug("Using OAuth endpoints",
+			"authorize_url", config.AuthorizeURL, "token_url", config.TokenURL)
 
 		return oauth.CreateOAuthConfigManual(
 			config.ClientID,
@@ -639,7 +649,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 	}
 
 	// Fall back to OIDC discovery
-	logger.Debug("Using OIDC discovery")
+	slog.Debug("Using OIDC discovery")
 	return oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		issuer,
@@ -676,15 +686,15 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)
 	}
 
-	logger.Debug("OAuth authentication successful")
+	slog.Debug("OAuth authentication successful")
 
 	// Log token info (without exposing the actual token)
 	if tokenResult.Claims != nil {
 		if sub, ok := tokenResult.Claims["sub"].(string); ok {
-			logger.Debugf("Authenticated as subject: %s", sub)
+			slog.Debug("Authenticated as subject", "sub", sub)
 		}
 		if email, ok := tokenResult.Claims["email"].(string); ok {
-			logger.Debugf("Authenticated email: %s", email)
+			slog.Debug("Authenticated with email", "email", email)
 		}
 	}
 
@@ -758,13 +768,13 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is the OIDC well-known metadata endpoint
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -805,9 +815,9 @@ func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) 
 	if err == nil && doc != nil && doc.Issuer != "" {
 		// Found valid authorization server metadata, return the actual issuer and endpoints
 		if doc.Issuer != potentialIssuer {
-			logger.Debugf("Discovered actual issuer: %s (from metadata URL: %s)", doc.Issuer, potentialIssuer)
+			slog.Debug("Discovered actual issuer", "issuer", doc.Issuer, "metadata_url", potentialIssuer)
 		} else {
-			logger.Debugf("Validated authorization server: %s", potentialIssuer)
+			slog.Debug("Validated authorization server", "issuer", potentialIssuer)
 		}
 
 		return &AuthServerInfo{

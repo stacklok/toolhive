@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"slices"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Default timeouts for Redis operations.
@@ -42,7 +42,7 @@ const nullMarker = "null"
 // KeyTypeUserUpstream, KeyTypeUserProviders) to prevent unbounded growth.
 func warnOnCleanupErr(err error, operation, key string) {
 	if err != nil {
-		logger.Warnw("best-effort index cleanup failed",
+		slog.Warn("best-effort index cleanup failed",
 			"operation", operation, "key", key, "error", err)
 	}
 }
@@ -74,7 +74,7 @@ type SentinelConfig struct {
 // ACLUserConfig contains Redis ACL user authentication configuration.
 type ACLUserConfig struct {
 	Username string
-	Password string
+	Password string //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
 // RedisStorage implements the Storage interface with Redis Sentinel backend.
@@ -200,7 +200,7 @@ func (s *RedisStorage) Close() error {
 // storedClient is a serializable wrapper for OAuth clients.
 type storedClient struct {
 	ID            string   `json:"id"`
-	Secret        []byte   `json:"secret,omitempty"`
+	Secret        []byte   `json:"secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 	RedirectURIs  []string `json:"redirect_uris"`
 	GrantTypes    []string `json:"grant_types"`
 	ResponseTypes []string `json:"response_types"`
@@ -296,7 +296,7 @@ func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, ex
 
 	ttl := time.Until(exp)
 	if ttl <= 0 {
-		logger.Debugw("skipping storage of already-expired client assertion JWT",
+		slog.Debug("skipping storage of already-expired client assertion JWT",
 			"jti", jti, "exp", exp)
 		return nil
 	}
@@ -554,7 +554,7 @@ func (s *RedisStorage) RotateRefreshToken(ctx context.Context, requestID string,
 		warnOnCleanupErr(err, "Del", refreshKey)
 	}
 	if deleted == 0 {
-		logger.Debugw("refresh token not found during rotation, treating as no-op",
+		slog.Debug("refresh token not found during rotation, treating as no-op",
 			"request_id", requestID, "signature", refreshTokenSignature)
 	}
 
@@ -685,8 +685,8 @@ func (s *RedisStorage) DeletePKCERequestSession(ctx context.Context, signature s
 // storedUpstreamTokens is a serializable wrapper for UpstreamTokens.
 type storedUpstreamTokens struct {
 	ProviderID      string `json:"provider_id"`
-	AccessToken     string `json:"access_token"`
-	RefreshToken    string `json:"refresh_token"`
+	AccessToken     string `json:"access_token"`  //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 	IDToken         string `json:"id_token"`
 	ExpiresAt       int64  `json:"expires_at"`
 	UserID          string `json:"user_id"`

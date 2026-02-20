@@ -7,13 +7,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"time"
 
 	"github.com/stacklok/toolhive-core/env"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -42,7 +42,8 @@ func NewClient(endpoint string) *Client {
 	// Get anonymous ID once at client creation and cache for process duration
 	anonymousID, err := updates.TryGetAnonymousID()
 	if err != nil {
-		logger.Debugf("Failed to get anonymous ID during client creation: %v", err)
+		slog.Debug("failed to get anonymous ID during client creation",
+			"error", err)
 	}
 
 	return &Client{
@@ -85,13 +86,13 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	req.Header.Set(anonymousIDHeader, anonymousID) // User anonymous ID (or default for operator)
 	req.Header.Set(userAgentHeader, generateUserAgent())
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) // #nosec G704 -- URL is the hardcoded usage metrics endpoint
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 

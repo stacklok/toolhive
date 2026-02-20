@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
@@ -23,8 +24,6 @@ import (
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	protorekor "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 type sigstoreBundle struct {
@@ -53,14 +52,14 @@ func bundleFromSigstoreSignedImage(imageRef string, keychain authn.Keychain) ([]
 		// Build the verification material for the bundle
 		verificationMaterial, err := getBundleVerificationMaterial(layer)
 		if err != nil {
-			logger.Error("error getting bundle verification material")
+			slog.Error("error getting bundle verification material")
 			continue
 		}
 
 		// Build the message signature for the bundle
 		msgSignature, err := getBundleMsgSignature(layer)
 		if err != nil {
-			logger.Error("error getting bundle message signature")
+			slog.Error("error getting bundle message signature")
 			continue
 		}
 
@@ -72,14 +71,14 @@ func bundleFromSigstoreSignedImage(imageRef string, keychain authn.Keychain) ([]
 		}
 		bun, err := bundle.NewBundle(&pbb)
 		if err != nil {
-			logger.Error("error creating protobuf bundle")
+			slog.Error("error creating protobuf bundle")
 			continue
 		}
 
 		// Collect the digest of the simple signing layer (this is what is signed)
 		digestBytes, err := hex.DecodeString(layer.Digest.Hex)
 		if err != nil {
-			logger.Error("error decoding the simplesigning layer digest")
+			slog.Error("error decoding the simplesigning layer digest")
 			continue
 		}
 

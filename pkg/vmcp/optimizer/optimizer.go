@@ -14,10 +14,85 @@ package optimizer
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
+
+// Config defines configuration options for the Optimizer.
+// It is defined in the internal/types package and aliased here so that
+// external consumers continue to use optimizer.Config.
+type Config = types.OptimizerConfig
+
+// EmbeddingClient generates vector embeddings from text.
+// It is defined in the internal/types package and aliased here so that
+// external consumers can reference the type.
+type EmbeddingClient = types.EmbeddingClient
+
+// NewEmbeddingClient creates an EmbeddingClient from the given optimizer
+// configuration. Returns (nil, nil) if cfg is nil or no embedding service
+// is configured, meaning only keyword full-text search will be used.
+func NewEmbeddingClient(cfg *Config) (EmbeddingClient, error) {
+	return similarity.NewEmbeddingClient(cfg)
+}
+
+// GetAndValidateConfig validates the CRD-compatible OptimizerConfig and converts it
+// to the internal optimizer.Config with parsed, typed values.
+// Returns (nil, nil) if cfg is nil.
+func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+
+	optCfg := &Config{
+		EmbeddingService:        cfg.EmbeddingService,
+		EmbeddingServiceTimeout: time.Duration(cfg.EmbeddingServiceTimeout),
+	}
+
+	if cfg.MaxToolsToReturn != 0 {
+		if cfg.MaxToolsToReturn < 1 || cfg.MaxToolsToReturn > 50 {
+			return nil, fmt.Errorf("optimizer.maxToolsToReturn must be between 1 and 50, got %d", cfg.MaxToolsToReturn)
+		}
+		optCfg.MaxToolsToReturn = &cfg.MaxToolsToReturn
+	}
+
+	if cfg.HybridSearchSemanticRatio != "" {
+		ratio, err := strconv.ParseFloat(cfg.HybridSearchSemanticRatio, 64)
+		if err != nil {
+			return nil, fmt.Errorf("optimizer.hybridSearchSemanticRatio must be a valid number: %w", err)
+		}
+		if ratio < 0 || ratio > 1 {
+			return nil, fmt.Errorf(
+				"optimizer.hybridSearchSemanticRatio must be between 0.0 and 1.0, got %s",
+				cfg.HybridSearchSemanticRatio,
+			)
+		}
+		optCfg.HybridSemanticRatio = &ratio
+	}
+
+	if cfg.SemanticDistanceThreshold != "" {
+		threshold, err := strconv.ParseFloat(cfg.SemanticDistanceThreshold, 64)
+		if err != nil {
+			return nil, fmt.Errorf("optimizer.semanticDistanceThreshold must be a valid number: %w", err)
+		}
+		if threshold < 0 || threshold > 2 {
+			return nil, fmt.Errorf(
+				"optimizer.semanticDistanceThreshold must be between 0.0 and 2.0, got %s",
+				cfg.SemanticDistanceThreshold,
+			)
+		}
+		optCfg.SemanticDistanceThreshold = &threshold
+	}
+
+	return optCfg, nil
+}
 
 // Optimizer defines the interface for intelligent tool discovery and invocation.
 //
@@ -54,20 +129,9 @@ type FindToolOutput struct {
 }
 
 // ToolMatch represents a tool that matched the search criteria.
-type ToolMatch struct {
-	// Name is the unique identifier of the tool.
-	Name string `json:"name"`
-
-	// Description is the human-readable description of the tool.
-	Description string `json:"description"`
-
-	// InputSchema is the JSON schema for the tool's input parameters.
-	// Uses json.RawMessage to preserve the original schema format.
-	InputSchema json.RawMessage `json:"input_schema"`
-
-	// Score indicates how well this tool matches the search criteria (0.0-1.0).
-	Score float64 `json:"score"`
-}
+// It is defined in the internal/types package and aliased here so that
+// external consumers continue to use optimizer.ToolMatch.
+type ToolMatch = types.ToolMatch
 
 // TokenMetrics provides information about token usage optimization.
 type TokenMetrics struct {
@@ -88,4 +152,31 @@ type CallToolInput struct {
 
 	// Parameters are the arguments to pass to the tool.
 	Parameters map[string]any `json:"parameters" description:"Parameters to pass to the tool"`
+}
+
+// NewOptimizerFactory creates the embedding client and SQLite tool store from
+// the given OptimizerConfig, then returns an OptimizerFactory and a cleanup
+// function that closes the store. The caller must invoke the cleanup function
+// during shutdown to release resources.
+func NewOptimizerFactory(cfg *Config) (
+	func(context.Context, []server.ServerTool) (Optimizer, error),
+	func(context.Context) error,
+	error,
+) {
+	embClient, err := NewEmbeddingClient(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create embedding client: %w", err)
+	}
+
+	store, err := NewSQLiteToolStore(embClient, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create optimizer store: %w", err)
+	}
+
+	factory := NewDummyOptimizerFactoryWithStore(store, DefaultTokenCounter())
+	cleanup := func(_ context.Context) error {
+		return store.Close()
+	}
+
+	return factory, cleanup, nil
 }

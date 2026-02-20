@@ -4,6 +4,8 @@
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -56,9 +58,28 @@ type VirtualMCPServerSpec struct {
 	// The telemetry and audit config from here are also supported, but not required.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
+
+	// EmbeddingServerRef references an existing EmbeddingServer resource by name.
+	// When the optimizer is enabled, this field is required to point to a ready EmbeddingServer
+	// that provides embedding capabilities.
+	// The referenced EmbeddingServer must exist in the same namespace and be ready.
+	// +optional
+	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
+}
+
+// EmbeddingServerRef references an existing EmbeddingServer resource by name.
+// This follows the same pattern as ExternalAuthConfigRef and ToolConfigRef.
+type EmbeddingServerRef struct {
+	// Name is the name of the EmbeddingServer resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
 }
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfig) : true",message="spec.incomingAuth.oidcConfig is required when type is oidc"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
 type IncomingAuthConfig struct {
 	// Type defines the authentication type: anonymous or oidc
 	// When no authentication is required, explicitly set this to "anonymous"
@@ -193,6 +214,9 @@ const (
 
 	// ConditionTypeVirtualMCPServerBackendsDiscovered indicates whether backends have been discovered
 	ConditionTypeVirtualMCPServerBackendsDiscovered = "BackendsDiscovered"
+
+	// ConditionTypeEmbeddingServerReady indicates whether the EmbeddingServer is ready
+	ConditionTypeEmbeddingServerReady = "EmbeddingServerReady"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -241,6 +265,15 @@ const (
 
 	// ConditionReasonVirtualMCPServerDeploymentNotReady indicates the deployment is not ready
 	ConditionReasonVirtualMCPServerDeploymentNotReady = "DeploymentNotReady"
+
+	// ConditionReasonEmbeddingServerReady indicates the EmbeddingServer is ready
+	ConditionReasonEmbeddingServerReady = "EmbeddingServerReady"
+
+	// ConditionReasonEmbeddingServerNotFound indicates the referenced EmbeddingServer was not found
+	ConditionReasonEmbeddingServerNotFound = "EmbeddingServerNotFound"
+
+	// ConditionReasonEmbeddingServerNotReady indicates the referenced EmbeddingServer is not ready
+	ConditionReasonEmbeddingServerNotReady = "EmbeddingServerNotReady"
 )
 
 // Backend authentication types
@@ -316,6 +349,186 @@ func (v *VirtualMCPServer) GetOIDCConfig() *OIDCConfigRef {
 // vMCP uses port 4483 by default.
 func (*VirtualMCPServer) GetProxyPort() int32 {
 	return 4483
+}
+
+// Validate performs validation for VirtualMCPServer
+// This method is called by the controller during reconciliation
+func (r *VirtualMCPServer) Validate() error {
+	// Validate Group is set (required field)
+	// Note: CEL cannot validate embedded types from other packages
+	if r.Spec.Config.Group == "" {
+		return fmt.Errorf("spec.config.groupRef is required")
+	}
+
+	// Note: IncomingAuth validation is handled by kubebuilder markers and CEL rules
+
+	// Validate OutgoingAuth backend configurations
+	if r.Spec.OutgoingAuth != nil {
+		for backendName, backendAuth := range r.Spec.OutgoingAuth.Backends {
+			if err := r.validateBackendAuth(backendName, backendAuth); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Validate Aggregation configuration
+	if r.Spec.Config.Aggregation != nil {
+		if err := r.validateAggregation(); err != nil {
+			return err
+		}
+	}
+
+	// Validate CompositeTools
+	if len(r.Spec.Config.CompositeTools) > 0 {
+		if err := r.validateCompositeTools(); err != nil {
+			return err
+		}
+	}
+
+	// Validate EmbeddingServer / EmbeddingServerRef
+	return r.validateEmbeddingServer()
+}
+
+// validateEmbeddingServer validates EmbeddingServerRef and Optimizer configuration.
+// Rules:
+// - embeddingServerRef.name must be non-empty when ref is provided
+// - optimizer requires either embeddingServerRef or a manually set embeddingService
+// - if embeddingServerRef is set without optimizer, auto-populate optimizer with defaults
+//
+// The controller handles the remaining cases at runtime (event emission, URL population).
+func (r *VirtualMCPServer) validateEmbeddingServer() error {
+	// Validate ref name is non-empty
+	if r.Spec.EmbeddingServerRef != nil && r.Spec.EmbeddingServerRef.Name == "" {
+		return fmt.Errorf("spec.embeddingServerRef.name is required")
+	}
+
+	hasOptimizer := r.Spec.Config.Optimizer != nil
+	hasRef := r.Spec.EmbeddingServerRef != nil
+	hasManualService := hasOptimizer && r.Spec.Config.Optimizer.EmbeddingService != ""
+
+	// Optimizer configured without any embedding source is an error.
+	// The user must either set embeddingServerRef or manually set optimizer.embeddingService.
+	if hasOptimizer && !hasRef && !hasManualService {
+		return fmt.Errorf(
+			"spec.config.optimizer requires an embedding service: " +
+				"set spec.embeddingServerRef (recommended) or spec.config.optimizer.embeddingService")
+	}
+
+	// EmbeddingServerRef is set but optimizer is not configured: auto-populate
+	// optimizer with default values so the embedding server is actually used.
+	// The controller emits a Kubernetes event for this case.
+	if hasRef && !hasOptimizer {
+		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
+	}
+
+	return nil
+}
+
+// validateBackendAuth validates a single backend auth configuration
+func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAuthConfig) error {
+	// Validate type is set
+	if auth.Type == "" {
+		return fmt.Errorf("spec.outgoingAuth.backends[%s].type is required", backendName)
+	}
+
+	// Validate type-specific configurations
+	switch auth.Type {
+	case BackendAuthTypeExternalAuthConfigRef:
+		if auth.ExternalAuthConfigRef == nil {
+			return fmt.Errorf(
+				"spec.outgoingAuth.backends[%s].externalAuthConfigRef is required when type is external_auth_config_ref",
+				backendName)
+		}
+		if auth.ExternalAuthConfigRef.Name == "" {
+			return fmt.Errorf("spec.outgoingAuth.backends[%s].externalAuthConfigRef.name is required", backendName)
+		}
+
+	case BackendAuthTypeDiscovered:
+		// No additional validation needed
+
+	default:
+		return fmt.Errorf(
+			"spec.outgoingAuth.backends[%s].type must be one of: discovered, external_auth_config_ref",
+			backendName)
+	}
+
+	return nil
+}
+
+// validateAggregation validates Aggregation configuration
+func (r *VirtualMCPServer) validateAggregation() error {
+	agg := r.Spec.Config.Aggregation
+
+	// Validate conflict resolution strategy
+	if agg.ConflictResolution != "" {
+		validStrategies := map[vmcptypes.ConflictResolutionStrategy]bool{
+			vmcptypes.ConflictStrategyPrefix:   true,
+			vmcptypes.ConflictStrategyPriority: true,
+			vmcptypes.ConflictStrategyManual:   true,
+		}
+		if !validStrategies[agg.ConflictResolution] {
+			return fmt.Errorf("config.aggregation.conflictResolution must be one of: prefix, priority, manual")
+		}
+	}
+
+	// Validate conflict resolution config based on strategy
+	if agg.ConflictResolutionConfig != nil {
+		resConfig := agg.ConflictResolutionConfig
+
+		switch agg.ConflictResolution {
+		case vmcptypes.ConflictStrategyPrefix:
+			// Prefix strategy uses PrefixFormat if specified, otherwise defaults
+			// No additional validation required
+
+		case vmcptypes.ConflictStrategyPriority:
+			if len(resConfig.PriorityOrder) == 0 {
+				return fmt.Errorf("config.aggregation.conflictResolutionConfig.priorityOrder is required when conflictResolution is priority")
+			}
+
+		case vmcptypes.ConflictStrategyManual:
+			// For manual resolution, tools must define explicit overrides
+			// This will be validated at runtime when conflicts are detected
+		}
+	}
+
+	// Validate per-workload tool configurations
+	for i, toolConfig := range agg.Tools {
+		if toolConfig.Workload == "" {
+			return fmt.Errorf("config.aggregation.tools[%d].workload is required", i)
+		}
+
+		// If ToolConfigRef is specified, ensure it has a name
+		if toolConfig.ToolConfigRef != nil && toolConfig.ToolConfigRef.Name == "" {
+			return fmt.Errorf("config.aggregation.tools[%d].toolConfigRef.name is required when toolConfigRef is specified", i)
+		}
+	}
+
+	return nil
+}
+
+// validateCompositeTools validates composite tool definitions in spec.config.compositeTools.
+// Uses shared validation from pkg/vmcp/config/composite_validation.go.
+func (r *VirtualMCPServer) validateCompositeTools() error {
+	toolNames := make(map[string]bool)
+
+	for i := range r.Spec.Config.CompositeTools {
+		tool := &r.Spec.Config.CompositeTools[i]
+
+		// Check for duplicate tool names
+		if toolNames[tool.Name] {
+			return fmt.Errorf("spec.config.compositeTools[%d].name %q is duplicated", i, tool.Name)
+		}
+		toolNames[tool.Name] = true
+
+		// Use shared validation
+		if err := config.ValidateCompositeToolConfig(
+			fmt.Sprintf("spec.config.compositeTools[%d]", i), tool,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func init() {

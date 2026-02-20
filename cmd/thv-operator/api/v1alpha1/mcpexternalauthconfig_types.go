@@ -4,6 +4,8 @@
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -27,6 +29,9 @@ const (
 	// ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server
 	// This enables running an embedded auth server that delegates to upstream IDPs
 	ExternalAuthTypeEmbeddedAuthServer ExternalAuthType = "embeddedAuthServer"
+
+	// ExternalAuthTypeAWSSts is the type for AWS STS authentication
+	ExternalAuthTypeAWSSts ExternalAuthType = "awsSts"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -35,9 +40,18 @@ type ExternalAuthType string
 // MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
 // MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
 // MCPServer resources in the same namespace.
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'tokenExchange' ? has(self.tokenExchange) : !has(self.tokenExchange)",message="tokenExchange configuration must be set if and only if type is 'tokenExchange'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'headerInjection' ? has(self.headerInjection) : !has(self.headerInjection)",message="headerInjection configuration must be set if and only if type is 'headerInjection'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'bearerToken' ? has(self.bearerToken) : !has(self.bearerToken)",message="bearerToken configuration must be set if and only if type is 'bearerToken'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'embeddedAuthServer' ? has(self.embeddedAuthServer) : !has(self.embeddedAuthServer)",message="embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts)) : true",message="no configuration must be set when type is 'unauthenticated'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -60,6 +74,11 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "embeddedAuthServer"
 	// +optional
 	EmbeddedAuthServer *EmbeddedAuthServerConfig `json:"embeddedAuthServer,omitempty"`
+
+	// AWSSts configures AWS STS authentication with SigV4 request signing
+	// Only used when Type is "awsSts"
+	// +optional
+	AWSSts *AWSStsConfig `json:"awsSts,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -167,6 +186,11 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
+
+	// Storage configures the storage backend for the embedded auth server.
+	// If not specified, defaults to in-memory storage.
+	// +optional
+	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
 
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
@@ -366,6 +390,114 @@ type UserInfoFieldMapping struct {
 	EmailFields []string `json:"emailFields,omitempty"`
 }
 
+// Auth server storage types
+const (
+	// AuthServerStorageTypeMemory is the in-memory storage backend (default)
+	AuthServerStorageTypeMemory AuthServerStorageType = "memory"
+
+	// AuthServerStorageTypeRedis is the Redis storage backend
+	AuthServerStorageTypeRedis AuthServerStorageType = "redis"
+)
+
+// AuthServerStorageType represents the type of storage backend for the embedded auth server
+type AuthServerStorageType string
+
+// AuthServerStorageConfig configures the storage backend for the embedded auth server.
+type AuthServerStorageConfig struct {
+	// Type specifies the storage backend type.
+	// Valid values: "memory" (default), "redis".
+	// +kubebuilder:validation:Enum=memory;redis
+	// +kubebuilder:default=memory
+	Type AuthServerStorageType `json:"type,omitempty"`
+
+	// Redis configures the Redis storage backend.
+	// Required when type is "redis".
+	// +optional
+	Redis *RedisStorageConfig `json:"redis,omitempty"`
+}
+
+// RedisStorageConfig configures Redis connection for auth server storage.
+// Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+type RedisStorageConfig struct {
+	// SentinelConfig holds Redis Sentinel configuration.
+	// +kubebuilder:validation:Required
+	SentinelConfig *RedisSentinelConfig `json:"sentinelConfig"`
+
+	// ACLUserConfig configures Redis ACL user authentication.
+	// +kubebuilder:validation:Required
+	ACLUserConfig *RedisACLUserConfig `json:"aclUserConfig"`
+
+	// DialTimeout is the timeout for establishing connections.
+	// Format: Go duration string (e.g., "5s", "1m").
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:default="5s"
+	// +optional
+	DialTimeout string `json:"dialTimeout,omitempty"`
+
+	// ReadTimeout is the timeout for socket reads.
+	// Format: Go duration string (e.g., "3s", "1m").
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:default="3s"
+	// +optional
+	ReadTimeout string `json:"readTimeout,omitempty"`
+
+	// WriteTimeout is the timeout for socket writes.
+	// Format: Go duration string (e.g., "3s", "1m").
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:default="3s"
+	// +optional
+	WriteTimeout string `json:"writeTimeout,omitempty"`
+}
+
+// RedisSentinelConfig configures Redis Sentinel connection.
+type RedisSentinelConfig struct {
+	// MasterName is the name of the Redis master monitored by Sentinel.
+	// +kubebuilder:validation:Required
+	MasterName string `json:"masterName"`
+
+	// SentinelAddrs is a list of Sentinel host:port addresses.
+	// Mutually exclusive with SentinelService.
+	// +optional
+	SentinelAddrs []string `json:"sentinelAddrs,omitempty"`
+
+	// SentinelService enables automatic discovery from a Kubernetes Service.
+	// Mutually exclusive with SentinelAddrs.
+	// +optional
+	SentinelService *SentinelServiceRef `json:"sentinelService,omitempty"`
+
+	// DB is the Redis database number.
+	// +kubebuilder:default=0
+	// +optional
+	DB int32 `json:"db,omitempty"`
+}
+
+// SentinelServiceRef references a Kubernetes Service for Sentinel discovery.
+type SentinelServiceRef struct {
+	// Name of the Sentinel Service.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Namespace of the Sentinel Service (defaults to same namespace).
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Port of the Sentinel service.
+	// +kubebuilder:default=26379
+	// +optional
+	Port int32 `json:"port,omitempty"`
+}
+
+// RedisACLUserConfig configures Redis ACL user authentication.
+type RedisACLUserConfig struct {
+	// UsernameSecretRef references a Secret containing the Redis ACL username.
+	// +kubebuilder:validation:Required
+	UsernameSecretRef *SecretKeyRef `json:"usernameSecretRef"`
+
+	// PasswordSecretRef references a Secret containing the Redis ACL password.
+	// +kubebuilder:validation:Required
+	PasswordSecretRef *SecretKeyRef `json:"passwordSecretRef"`
+}
+
 // SecretKeyRef is a reference to a key within a Secret
 type SecretKeyRef struct {
 	// Name is the name of the secret
@@ -377,8 +509,101 @@ type SecretKeyRef struct {
 	Key string `json:"key"`
 }
 
+// AWSStsConfig holds configuration for AWS STS authentication with SigV4 request signing.
+// This configuration exchanges incoming authentication tokens (typically OIDC JWT) for AWS STS
+// temporary credentials, then signs requests to AWS services using SigV4.
+type AWSStsConfig struct {
+	// Region is the AWS region for the STS endpoint and service (e.g., "us-east-1", "eu-west-1")
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z]{2}(-[a-z]+)+-\d+$`
+	Region string `json:"region"`
+
+	// Service is the AWS service name for SigV4 signing
+	// Defaults to "aws-mcp" for AWS MCP Server endpoints
+	// +kubebuilder:default="aws-mcp"
+	// +optional
+	Service string `json:"service,omitempty"`
+
+	// FallbackRoleArn is the IAM role ARN to assume when no role mappings match
+	// Used as the default role when RoleMappings is empty or no mapping matches
+	// At least one of FallbackRoleArn or RoleMappings must be configured (enforced by webhook)
+	// +kubebuilder:validation:Pattern=`^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role/[\w+=,.@\-_/]+$`
+	// +optional
+	FallbackRoleArn string `json:"fallbackRoleArn,omitempty"`
+
+	// RoleMappings defines claim-based role selection rules
+	// Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
+	// Lower priority values are evaluated first (higher priority)
+	// +optional
+	RoleMappings []RoleMapping `json:"roleMappings,omitempty"`
+
+	// RoleClaim is the JWT claim to use for role mapping evaluation
+	// Defaults to "groups" to match common OIDC group claims
+	// +kubebuilder:default="groups"
+	// +optional
+	RoleClaim string `json:"roleClaim,omitempty"`
+
+	// SessionDuration is the duration in seconds for the STS session
+	// Must be between 900 (15 minutes) and 43200 (12 hours)
+	// Defaults to 3600 (1 hour) if not specified
+	// +kubebuilder:validation:Minimum=900
+	// +kubebuilder:validation:Maximum=43200
+	// +kubebuilder:default=3600
+	// +optional
+	SessionDuration *int32 `json:"sessionDuration,omitempty"`
+
+	// SessionNameClaim is the JWT claim to use for role session name
+	// Defaults to "sub" to use the subject claim
+	// +kubebuilder:default="sub"
+	// +optional
+	SessionNameClaim string `json:"sessionNameClaim,omitempty"`
+}
+
+// RoleMapping defines a rule for mapping JWT claims to IAM roles.
+// Mappings are evaluated in priority order (lower number = higher priority), and the first
+// matching rule determines which IAM role to assume.
+// Exactly one of Claim or Matcher must be specified.
+type RoleMapping struct {
+	// Claim is a simple claim value to match against
+	// The claim type is specified by AWSStsConfig.RoleClaim
+	// For example, if RoleClaim is "groups", this would be a group name
+	// Internally compiled to a CEL expression: "<claim_value>" in claims["<role_claim>"]
+	// Mutually exclusive with Matcher
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Claim string `json:"claim,omitempty"`
+
+	// Matcher is a CEL expression for complex matching against JWT claims
+	// The expression has access to a "claims" variable containing all JWT claims as map[string]any
+	// Examples:
+	//   - "admins" in claims["groups"]
+	//   - claims["sub"] == "user123" && !("act" in claims)
+	// Mutually exclusive with Claim
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Matcher string `json:"matcher,omitempty"`
+
+	// RoleArn is the IAM role ARN to assume when this mapping matches
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role/[\w+=,.@\-_/]+$`
+	RoleArn string `json:"roleArn"`
+
+	// Priority determines evaluation order (lower values = higher priority)
+	// Allows fine-grained control over role selection precedence
+	// When omitted, this mapping has the lowest possible priority and
+	// configuration order acts as tie-breaker via stable sort
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Priority *int32 `json:"priority,omitempty"`
+}
+
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
+	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
 	// ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.
 	// It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
 	// +optional
@@ -419,6 +644,168 @@ type MCPExternalAuthConfigList struct {
 	metav1.TypeMeta `json:",inline"` // nolint:revive
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MCPExternalAuthConfig `json:"items"`
+}
+
+// Validate performs validation on the MCPExternalAuthConfig spec.
+// This method is called by the controller during reconciliation.
+//
+// Note: These validations provide defense-in-depth alongside CEL validation rules (lines 44-49).
+// CEL catches issues at API admission time, but this method also validates stored objects
+// to catch any that bypassed CEL or were stored before CEL rules were added.
+func (r *MCPExternalAuthConfig) Validate() error {
+	// First, validate type/config consistency (defense-in-depth with CEL)
+	if err := r.validateTypeConfigConsistency(); err != nil {
+		return err
+	}
+
+	// Then perform type-specific complex validation
+	switch r.Spec.Type {
+	case ExternalAuthTypeEmbeddedAuthServer:
+		return r.validateEmbeddedAuthServer()
+	case ExternalAuthTypeAWSSts:
+		return r.validateAWSSts()
+	case ExternalAuthTypeTokenExchange,
+		ExternalAuthTypeHeaderInjection,
+		ExternalAuthTypeBearerToken,
+		ExternalAuthTypeUnauthenticated:
+		// No complex validation needed for these types
+		return nil
+	default:
+		// Unknown type - should be caught by enum validation, but handle defensively
+		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
+	}
+}
+
+// validateTypeConfigConsistency validates that the correct config is set for the selected type.
+// This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
+func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
+	// Check that each type has its corresponding config
+	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
+		return fmt.Errorf("tokenExchange configuration must be set if and only if type is 'tokenExchange'")
+	}
+	if (r.Spec.HeaderInjection == nil) == (r.Spec.Type == ExternalAuthTypeHeaderInjection) {
+		return fmt.Errorf("headerInjection configuration must be set if and only if type is 'headerInjection'")
+	}
+	if (r.Spec.BearerToken == nil) == (r.Spec.Type == ExternalAuthTypeBearerToken) {
+		return fmt.Errorf("bearerToken configuration must be set if and only if type is 'bearerToken'")
+	}
+	if (r.Spec.EmbeddedAuthServer == nil) == (r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer) {
+		return fmt.Errorf("embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'")
+	}
+	if (r.Spec.AWSSts == nil) == (r.Spec.Type == ExternalAuthTypeAWSSts) {
+		return fmt.Errorf("awsSts configuration must be set if and only if type is 'awsSts'")
+	}
+
+	// Check that unauthenticated has no config
+	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
+		if r.Spec.TokenExchange != nil ||
+			r.Spec.HeaderInjection != nil ||
+			r.Spec.BearerToken != nil ||
+			r.Spec.EmbeddedAuthServer != nil ||
+			r.Spec.AWSSts != nil {
+			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
+		}
+	}
+
+	return nil
+}
+
+// validateEmbeddedAuthServer validates embeddedAuthServer type configuration.
+// This performs complex business logic validation that CEL cannot express.
+func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
+	// Validate upstream providers
+	cfg := r.Spec.EmbeddedAuthServer
+	if cfg == nil {
+		return nil
+	}
+
+	// Note: MinItems=1 is enforced by kubebuilder markers,
+	// but we add runtime validation for clarity and future-proofing
+	if len(cfg.UpstreamProviders) == 0 {
+		return fmt.Errorf("at least one upstream provider is required")
+	}
+	// Note: we add runtime validation for 'max items = 1' here since multi-provider support is not yet implemented.
+	if len(cfg.UpstreamProviders) > 1 {
+		return fmt.Errorf("currently only one upstream provider is supported (found %d)", len(cfg.UpstreamProviders))
+	}
+
+	for i, provider := range cfg.UpstreamProviders {
+		if err := r.validateUpstreamProvider(i, &provider); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateUpstreamProvider validates a single upstream provider configuration
+func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *UpstreamProviderConfig) error {
+	prefix := fmt.Sprintf("upstreamProviders[%d]", index)
+
+	if (provider.OIDCConfig == nil) == (provider.Type == UpstreamProviderTypeOIDC) {
+		return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc' and must not be set otherwise", prefix)
+	}
+	if (provider.OAuth2Config == nil) == (provider.Type == UpstreamProviderTypeOAuth2) {
+		return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2' and must not be set otherwise", prefix)
+	}
+	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
+		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
+	}
+
+	return nil
+}
+
+// validateAWSSts validates awsSts type configuration.
+// This performs complex business logic validation that CEL cannot express.
+func (r *MCPExternalAuthConfig) validateAWSSts() error {
+	cfg := r.Spec.AWSSts
+	if cfg == nil {
+		return nil
+	}
+
+	// Region is required
+	if cfg.Region == "" {
+		return fmt.Errorf("awsSts.region is required")
+	}
+
+	// At least one of fallbackRoleArn or roleMappings must be configured
+	// Both can be set: fallbackRoleArn is used when no mapping matches
+	hasRoleArn := cfg.FallbackRoleArn != ""
+	hasRoleMappings := len(cfg.RoleMappings) > 0
+
+	if !hasRoleArn && !hasRoleMappings {
+		return fmt.Errorf("awsSts: at least one of fallbackRoleArn or roleMappings must be configured")
+	}
+
+	// Validate role mappings if present
+	for i, mapping := range cfg.RoleMappings {
+		if mapping.RoleArn == "" {
+			return fmt.Errorf("awsSts.roleMappings[%d].roleArn is required", i)
+		}
+		// Exactly one of claim or matcher must be set
+		if mapping.Claim == "" && mapping.Matcher == "" {
+			return fmt.Errorf("awsSts.roleMappings[%d]: exactly one of claim or matcher must be set", i)
+		}
+		if mapping.Claim != "" && mapping.Matcher != "" {
+			return fmt.Errorf("awsSts.roleMappings[%d]: claim and matcher are mutually exclusive", i)
+		}
+	}
+
+	// Validate session duration if set
+	// Bounds match AWS STS limits: 900s (15 min) to 43200s (12 hours)
+	if cfg.SessionDuration != nil {
+		duration := *cfg.SessionDuration
+		const (
+			minSessionDuration int32 = 900   // 15 minutes
+			maxSessionDuration int32 = 43200 // 12 hours
+		)
+		if duration < minSessionDuration || duration > maxSessionDuration {
+			return fmt.Errorf("awsSts.sessionDuration must be between %d and %d seconds",
+				minSessionDuration, maxSessionDuration)
+		}
+	}
+
+	return nil
 }
 
 func init() {

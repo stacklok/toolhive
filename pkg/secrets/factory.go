@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -19,7 +20,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets/keyring"
 )
@@ -332,7 +332,8 @@ func GetSecretsPassword(optionalPassword string) ([]byte, bool, error) {
 // (e.g., after successful decryption of the secrets file).
 func StoreSecretsPassword(password []byte) error {
 	provider := getKeyringProvider()
-	logger.Debugf("writing password to %s", provider.Name())
+	//nolint:gosec // G706: provider name is from internal keyring provider
+	slog.Debug("Writing password to keyring", "provider", provider.Name())
 	err := provider.Set(keyringService, keyringService, string(password))
 	if err != nil {
 		return fmt.Errorf("failed to store password in keyring: %w", err)
@@ -342,7 +343,7 @@ func StoreSecretsPassword(password []byte) error {
 
 func readPasswordStdin() ([]byte, error) {
 	printPasswordPrompt()
-	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	password, err := term.ReadPassword(int(os.Stdin.Fd())) //nolint:gosec // G115: stdin fd is always small
 	// Start new line after receiving password to ensure errors are printed correctly.
 	fmt.Println()
 	if err != nil {

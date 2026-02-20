@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,15 +31,17 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
+	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -65,6 +68,7 @@ type ServerBuilder struct {
 	workloadManager  workloads.Manager
 	groupManager     groups.Manager
 	skillManager     skills.SkillService
+	skillStoreCloser io.Closer
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -141,7 +145,9 @@ func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder 
 	return b
 }
 
-// WithSkillManager sets the skill service manager
+// WithSkillManager sets the skill service manager.
+// The caller is responsible for closing any underlying resources
+// when providing an external skill service.
 func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBuilder {
 	b.skillManager = manager
 	return b
@@ -226,6 +232,39 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		}
 	}
 
+	if b.skillManager == nil {
+		store, storeErr := sqlite.NewDefaultSkillStore()
+		if storeErr != nil {
+			return fmt.Errorf("failed to create skill store: %w", storeErr)
+		}
+		b.skillStoreCloser = store
+		cm, cmErr := client.NewClientManager()
+		if cmErr != nil {
+			_ = store.Close()
+			return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
+		}
+
+		ociStore, ociErr := ociskills.NewStore(ociskills.DefaultStoreRoot())
+		if ociErr != nil {
+			_ = store.Close()
+			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
+		}
+		registry, regErr := ociskills.NewRegistry()
+		if regErr != nil {
+			_ = store.Close()
+			// ociStore is directory-backed with no open handles; no cleanup needed.
+			return fmt.Errorf("failed to create OCI registry client: %w", regErr)
+		}
+		packager := ociskills.NewPackager(ociStore)
+
+		b.skillManager = skillsvc.New(store,
+			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
+			skillsvc.WithOCIStore(ociStore),
+			skillsvc.WithPackager(packager),
+			skillsvc.WithRegistryClient(registry),
+		)
+	}
+
 	return nil
 }
 
@@ -291,7 +330,7 @@ func setupUnixSocket(address string) (net.Listener, error) {
 
 func cleanupUnixSocket(address string) {
 	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
-		logger.Warnf("failed to remove socket file: %v", err)
+		slog.Warn("failed to remove socket file", "error", err)
 	}
 }
 
@@ -317,13 +356,15 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 
 				updateChecker, err := updates.NewUpdateChecker(versionClient)
 				if err != nil {
-					logger.Warnf("unable to create update client for %s: %s", component, err)
+					//nolint:gosec // G706: component is an internal string constant
+					slog.Warn("unable to create update client", "component", component, "error", err)
 					return
 				}
 
 				err = updateChecker.CheckLatestVersion()
 				if err != nil {
-					logger.Warnf("could not check for updates for %s: %s", component, err)
+					//nolint:gosec // G706: component is an internal string constant
+					slog.Warn("could not check for updates", "component", component, "error", err)
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -389,8 +430,8 @@ func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check Content-Length header first for early rejection
 			if r.ContentLength > maxSize {
-				logger.Warnf("Request body size %d exceeds limit %d for %s %s",
-					r.ContentLength, maxSize, r.Method, r.URL.Path)
+				slog.Warn("request body size exceeds limit", //nolint:gosec // G706: request metadata for diagnostics
+					"content_length", r.ContentLength, "limit", maxSize, "method", r.Method, "path", r.URL.Path)
 				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -444,6 +485,7 @@ type Server struct {
 	address      string
 	isUnixSocket bool
 	addrType     string
+	storeCloser  io.Closer
 }
 
 // NewServer creates a new Server instance from a pre-configured builder
@@ -471,12 +513,13 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		address:      builder.address,
 		isUnixSocket: builder.isUnixSocket,
 		addrType:     addrType,
+		storeCloser:  builder.skillStoreCloser,
 	}, nil
 }
 
 // Start starts the server and blocks until the context is cancelled
 func (s *Server) Start(ctx context.Context) error {
-	logger.Infof("starting %s server at %s", s.addrType, s.address)
+	slog.Info("starting server", "type", s.addrType, "address", s.address)
 
 	// Start server in a goroutine
 	serverErr := make(chan error, 1)
@@ -508,12 +551,17 @@ func (s *Server) shutdown() error {
 	}
 
 	s.cleanup()
-	logger.Debugf("%s server stopped", s.addrType)
+	slog.Debug("server stopped", "type", s.addrType)
 	return nil
 }
 
 // cleanup performs cleanup operations
 func (s *Server) cleanup() {
+	if s.storeCloser != nil {
+		if err := s.storeCloser.Close(); err != nil {
+			slog.Warn("failed to close skill store", "error", err)
+		}
+	}
 	if s.isUnixSocket {
 		cleanupUnixSocket(s.address)
 	}
@@ -538,6 +586,24 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 	}
 
 	return listener, addrType, nil
+}
+
+// clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.
+type clientPathAdapter struct {
+	cm *client.ClientManager
+}
+
+func (a *clientPathAdapter) GetSkillPath(clientType, skillName string, scope skills.Scope, projectRoot string) (string, error) {
+	return a.cm.GetSkillPath(client.ClientApp(clientType), skillName, scope, projectRoot)
+}
+
+func (a *clientPathAdapter) ListSkillSupportingClients() []string {
+	clients := a.cm.ListSkillSupportingClients()
+	result := make([]string, len(clients))
+	for i, c := range clients {
+		result[i] = string(c)
+	}
+	return result
 }
 
 // Serve starts the server on the given address and serves the API.

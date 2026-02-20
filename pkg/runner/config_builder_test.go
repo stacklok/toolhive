@@ -13,12 +13,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/permissions"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -26,9 +27,6 @@ const testPort = math.MaxInt16
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -243,9 +241,6 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to prevent nil pointer dereference when processing volume mounts
-	logger.Initialize()
-
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
@@ -379,9 +374,6 @@ func createTempProfileFile(t *testing.T, content string) (string, func()) {
 func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 	t.Parallel()
 
-	// Prevent nil pointer dereference in the logger.
-	logger.Initialize()
-
 	t.Run("token-exchange NOT added when config is nil", func(t *testing.T) {
 		t.Parallel()
 
@@ -443,9 +435,6 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 
 func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -555,9 +544,6 @@ func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
-
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
@@ -633,9 +619,6 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 
 func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -844,9 +827,6 @@ func TestWithEnvVarsOverwrite(t *testing.T) {
 func TestBuildForOperator(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to prevent nil pointer dereference
-	logger.Initialize()
-
 	testCases := []struct {
 		name           string
 		builderOptions []RunConfigBuilderOption
@@ -917,9 +897,6 @@ func TestBuildForOperator(t *testing.T) {
 func TestWithEnvFileDir(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
-
 	testCases := []struct {
 		name        string
 		envFileDir  string
@@ -966,7 +943,6 @@ func TestWithEnvFileDir(t *testing.T) {
 func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
 	mockValidator := &mockEnvVarValidator{}
 
 	tests := []struct {
@@ -1011,7 +987,6 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
 	mockValidator := &mockEnvVarValidator{}
 
 	tests := []struct {
@@ -1084,4 +1059,157 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEmbeddedAuthServerScopePropagation verifies that the builder propagates
+// EmbeddedAuthServerConfig.ScopesSupported to OIDCConfig.Scopes when no
+// explicit PRM scopes are configured, and that explicit scopes are preserved.
+func TestEmbeddedAuthServerScopePropagation(t *testing.T) {
+	t.Parallel()
+
+	mockValidator := &mockEnvVarValidator{}
+
+	t.Run("propagates AS scopes to empty OIDCConfig.Scopes", func(t *testing.T) {
+		t.Parallel()
+
+		asScopes := []string{"openid", "profile", "email", "offline_access"}
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				nil,                          // scopes (empty -> should be propagated)
+			),
+			WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+				ScopesSupported: asScopes,
+			}),
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, asScopes, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should be propagated from EmbeddedAuthServerConfig.ScopesSupported")
+	})
+
+	t.Run("does not overwrite explicit OIDCConfig.Scopes", func(t *testing.T) {
+		t.Parallel()
+
+		explicitScopes := []string{"openid", "custom-scope"}
+		asScopes := []string{"openid", "profile", "email", "offline_access"}
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				explicitScopes,               // scopes (explicit -> should NOT be overwritten)
+			),
+			WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+				ScopesSupported: asScopes,
+			}),
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, explicitScopes, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should NOT be overwritten when explicitly set")
+	})
+
+	t.Run("uses AS default scopes when EmbeddedAuthServerConfig has no ScopesSupported", func(t *testing.T) {
+		t.Parallel()
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				nil,                          // scopes (empty -> should get AS defaults)
+			),
+			WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+				// ScopesSupported intentionally empty — simulates the common case
+				// where the user doesn't explicitly configure scopes on the AS.
+			}),
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, registration.DefaultScopes, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should get AS default scopes when both are unconfigured")
+	})
+
+	t.Run("no propagation when EmbeddedAuthServerConfig is nil", func(t *testing.T) {
+		t.Parallel()
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				nil,                          // scopes
+			),
+			// No WithEmbeddedAuthServerConfig
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Empty(t, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should remain empty when no embedded AS is configured")
+	})
 }

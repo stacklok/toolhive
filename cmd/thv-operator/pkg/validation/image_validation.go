@@ -15,8 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // Sentinel errors for image validation.

@@ -18,11 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -131,7 +131,8 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 			healthy = append(healthy, *backend)
 		} else {
 			excluded++
-			logger.Debugw("excluding backend from capability aggregation due to health status",
+			//nolint:gosec // G706: backend fields are internal, not user-controlled
+			slog.Debug("excluding backend from capability aggregation due to health status",
 				"backend_name", backend.Name,
 				"backend_id", backend.ID,
 				"health_status", healthStatus,
@@ -145,7 +146,8 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 	}
 
 	if excluded > 0 {
-		logger.Debugw("filtered backends for capability aggregation",
+		//nolint:gosec // G706: values are internal counts, not user-controlled
+		slog.Debug("filtered backends for capability aggregation",
 			"total_backends", len(backends),
 			"healthy_backends", len(healthy),
 			"excluded_backends", excluded)
@@ -180,7 +182,8 @@ func handleInitializeRequest(
 	// Uses current health status from health monitor when available
 	backends := filterHealthyBackends(allBackends, healthStatusProvider)
 
-	logger.Debugw("starting capability discovery for initialize request",
+	//nolint:gosec // G706: request method/path are standard HTTP fields, not injection vectors
+	slog.Debug("starting capability discovery for initialize request",
 		"method", r.Method,
 		"path", r.URL.Path,
 		"total_backend_count", len(allBackends),
@@ -188,14 +191,16 @@ func handleInitializeRequest(
 
 	capabilities, err := manager.Discover(discoveryCtx, backends)
 	if err != nil {
-		logger.Errorw("capability discovery failed",
+		//nolint:gosec // G706: request method/path are standard HTTP fields, not injection vectors
+		slog.Error("capability discovery failed",
 			"error", err,
 			"method", r.Method,
 			"path", r.URL.Path)
 		return ctx, fmt.Errorf("discovery failed: %w", err)
 	}
 
-	logger.Debugw("capability discovery completed",
+	//nolint:gosec // G706: request method/path are standard HTTP fields, not injection vectors
+	slog.Debug("capability discovery completed",
 		"method", r.Method,
 		"path", r.URL.Path,
 		"tool_count", len(capabilities.Tools),
@@ -213,7 +218,8 @@ func handleSubsequentRequest(
 	sessionID string,
 	sessionManager *transportsession.Manager,
 ) (context.Context, error) {
-	logger.Debugw("retrieving capabilities from session for subsequent request",
+	//nolint:gosec // G706: session ID and request fields are not injection vectors
+	slog.Debug("retrieving capabilities from session for subsequent request",
 		"session_id", sessionID,
 		"method", r.Method,
 		"path", r.URL.Path)
@@ -221,7 +227,8 @@ func handleSubsequentRequest(
 	// Retrieve and validate session
 	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
 	if err != nil {
-		logger.Errorw("failed to get VMCPSession",
+		//nolint:gosec // G706: session ID and request fields are not injection vectors
+		slog.Error("failed to get VMCPSession",
 			"error", err,
 			"session_id", sessionID,
 			"method", r.Method,
@@ -232,7 +239,8 @@ func handleSubsequentRequest(
 	// Get routing table from session
 	routingTable := vmcpSess.GetRoutingTable()
 	if routingTable == nil {
-		logger.Errorw("routing table not initialized in VMCPSession",
+		//nolint:gosec // G706: session ID and request fields are not injection vectors
+		slog.Error("routing table not initialized in VMCPSession",
 			"session_id", sessionID,
 			"method", r.Method,
 			"path", r.URL.Path)
@@ -248,7 +256,8 @@ func handleSubsequentRequest(
 		Tools:        tools,
 	}
 
-	logger.Debugw("capabilities retrieved from session",
+	//nolint:gosec // G706: session ID is not an injection vector
+	slog.Debug("capabilities retrieved from session",
 		"session_id", sessionID,
 		"tool_count", len(routingTable.Tools),
 		"resource_count", len(routingTable.Resources),

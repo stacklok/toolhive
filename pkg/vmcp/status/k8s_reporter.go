@@ -7,6 +7,7 @@ package status
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,7 +18,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/logger"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -106,12 +106,11 @@ func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status
 	})
 
 	if err != nil {
-		logger.Errorf("Failed to update VirtualMCPServer status for %s/%s after retries: %v",
-			r.namespace, r.name, err)
+		slog.Error("failed to update VirtualMCPServer status after retries", "namespace", r.namespace, "name", r.name, "error", err)
 		return fmt.Errorf("failed to update status: %w", err)
 	}
 
-	logger.Debugw("updated VirtualMCPServer status",
+	slog.Debug("updated VirtualMCPServer status",
 		"namespace", r.namespace,
 		"name", r.name,
 		"phase", status.Phase)
@@ -175,7 +174,7 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, statu
 		if !newConditionTypes[condType] {
 			// Log warning for core conditions that should always be present
 			if condType == "Ready" || condType == "BackendsDiscovered" {
-				logger.Warnf("Core condition %s missing from new status - this may indicate a bug in status building", condType)
+				slog.Warn("core condition missing from new status - this may indicate a bug in status building", "condition", condType)
 			}
 			meta.RemoveStatusCondition(&vmcpServer.Status.Conditions, condType)
 		}

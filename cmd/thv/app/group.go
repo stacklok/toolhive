@@ -7,21 +7,21 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	types "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -134,7 +134,7 @@ func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 			continue
 		}
 		if _, err := fmt.Fprintf(w, "%s\n", group.Name); err != nil {
-			logger.Debugf("Failed to write group name: %v", err)
+			slog.Debug(fmt.Sprintf("Failed to write group name: %v", err))
 		}
 	}
 

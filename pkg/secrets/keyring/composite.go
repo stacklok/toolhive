@@ -8,10 +8,9 @@ package keyring
 
 import (
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const linuxOS = "linux"
@@ -91,7 +90,8 @@ func (*compositeProvider) logProviderSelection(providerName string) {
 		}
 	}()
 
-	logger.Debugf("Using keyring provider: %s", providerName)
+	//nolint:gosec // G706: provider name is from internal provider implementations
+	slog.Debug("Using keyring provider", "provider", providerName)
 }
 
 func (c *compositeProvider) Set(service, key, value string) error {

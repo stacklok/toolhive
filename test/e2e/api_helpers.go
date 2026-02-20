@@ -152,7 +152,7 @@ func (s *Server) WaitForReady() error {
 				continue
 			}
 
-			resp, err := s.httpClient.Do(req)
+			resp, err := s.httpClient.Do(req) // #nosec G704 -- baseURL is the local test server URL
 			if err != nil {
 				continue
 			}
@@ -186,7 +186,7 @@ func (s *Server) Get(path string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.httpClient.Do(req)
+	return s.httpClient.Do(req) // #nosec G704 -- baseURL is the local test server URL
 }
 
 // GetWithHeaders performs a GET request with custom headers.
@@ -200,7 +200,7 @@ func (s *Server) GetWithHeaders(path string, headers map[string]string) (*http.R
 		req.Header.Set(key, value)
 	}
 
-	return s.httpClient.Do(req)
+	return s.httpClient.Do(req) // #nosec G704 -- baseURL is the local test server URL
 }
 
 // BaseURL returns the base URL of the API server.

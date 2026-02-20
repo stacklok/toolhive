@@ -31,7 +31,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -69,11 +68,8 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.Parse()
 
-	// Initialize the structured logger
-	logger.Initialize()
-
-	// Set the controller-runtime logger to use our structured logger
-	ctrl.SetLogger(logger.NewLogr())
+	// Note: controller-runtime logger is initialized using the default logger
+	// The operator does not use debug mode from viper, so we use the default level
 
 	options := ctrl.Options{
 		Scheme:                 scheme,
@@ -309,21 +305,6 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
-	}
-
-	// Set up VirtualMCPServer webhook
-	if err := (&mcpv1alpha1.VirtualMCPServer{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook VirtualMCPServer: %w", err)
-	}
-
-	// Set up VirtualMCPCompositeToolDefinition webhook
-	if err := (&mcpv1alpha1.VirtualMCPCompositeToolDefinition{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook VirtualMCPCompositeToolDefinition: %w", err)
-	}
-
-	// Set up MCPExternalAuthConfig webhook
-	if err := (&mcpv1alpha1.MCPExternalAuthConfig{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook MCPExternalAuthConfig: %w", err)
 	}
 
 	return nil

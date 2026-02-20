@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	types "github.com/stacklok/toolhive-core/registry/types"
 )
 
 //go:embed data/registry.json
@@ -67,11 +67,6 @@ func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
 	for name, server := range registry.Servers {
 		server.Name = name
 	}
-	// Set name field on each remote server based on map key
-	for name, server := range registry.RemoteServers {
-		server.Name = name
-	}
-
 	// Set name field on each remote server based on map key
 	for name, server := range registry.RemoteServers {
 		server.Name = name

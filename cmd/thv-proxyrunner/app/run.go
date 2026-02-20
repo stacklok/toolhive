@@ -6,15 +6,15 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
@@ -64,7 +64,7 @@ func addRunFlags(runCmd *cobra.Command, runFlags *proxyRunFlags) {
 	)
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
-		logger.Warnf("Error hiding flag: %v", err)
+		slog.Warn(fmt.Sprintf("Error hiding flag: %v", err))
 	}
 }
 
@@ -101,10 +101,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Always try to load runconfig.json from filesystem first
 	fileBasedConfig, err := tryLoadConfigFromFile()
 	if err != nil {
-		logger.Debugf("No configuration file found or failed to load: %v", err)
+		slog.Debug(fmt.Sprintf("No configuration file found or failed to load: %v", err))
 		// Continue without configuration file - will use flags instead
 	}
-	logger.Infof("Auto-discovered and loaded configuration from runconfig.json file")
+	slog.Info("auto-discovered and loaded configuration from runconfig.json file")
 	// Use simplified approach: when config file exists, use it directly and only apply essential flags
 	return runWithFileBasedConfig(ctx, cmd, mcpServerImage, fileBasedConfig, rt, debugMode, envVarValidator, imageMetadata)
 }
@@ -131,7 +131,7 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 			continue // File doesn't exist, try next location
 		}
 
-		logger.Debugf("Found configuration file at %s", path)
+		slog.Debug(fmt.Sprintf("Found configuration file at %s", path))
 
 		// Security: Only read from predefined safe paths to avoid path traversal
 		file, err := os.Open(path) // #nosec G304 - path is from predefined safe list
@@ -141,7 +141,7 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 		defer func() {
 			if err := file.Close(); err != nil {
 				// Non-fatal: file cleanup failure after successful read
-				logger.Warnf("Failed to close config file: %v", err)
+				slog.Warn(fmt.Sprintf("Failed to close config file: %v", err))
 			}
 		}()
 
@@ -151,7 +151,7 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 			return nil, fmt.Errorf("found config file at %s but failed to parse JSON: %w", path, err)
 		}
 
-		logger.Infof("Successfully loaded configuration from %s", path)
+		slog.Info(fmt.Sprintf("Successfully loaded configuration from %s", path))
 		return runConfig, nil
 	}
 

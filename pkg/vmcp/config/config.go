@@ -742,10 +742,52 @@ type OutputProperty struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type OptimizerConfig struct {
-	// EmbeddingService is the name of a Kubernetes Service that provides the embedding service
-	// for semantic tool discovery. The service must implement the optimizer embedding API.
-	// +kubebuilder:validation:Required
-	EmbeddingService string `json:"embeddingService" yaml:"embeddingService"`
+	// EmbeddingService is the full base URL of the embedding service endpoint
+	// (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
+	// tool discovery.
+	//
+	// In a Kubernetes environment, it is more convenient to use the
+	// VirtualMCPServerSpec.EmbeddingServerRef field instead of setting this
+	// directly. EmbeddingServerRef references an EmbeddingServer CRD by name,
+	// and the operator automatically resolves the referenced resource's
+	// Status.URL to populate this field. This provides managed lifecycle
+	// (the operator watches the EmbeddingServer for readiness and URL changes)
+	// and avoids hardcoding service URLs in the config. If both
+	// EmbeddingServerRef and this field are set, EmbeddingServerRef takes
+	// precedence and this value is overridden with a warning.
+	// +optional
+	EmbeddingService string `json:"embeddingService,omitempty" yaml:"embeddingService,omitempty"`
+
+	// EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.
+	// Defaults to 30s if not specified.
+	// +kubebuilder:default="30s"
+	// +optional
+	EmbeddingServiceTimeout Duration `json:"embeddingServiceTimeout,omitempty" yaml:"embeddingServiceTimeout,omitempty"`
+
+	// MaxToolsToReturn is the maximum number of tool results returned by a search query.
+	// Defaults to 8 if not specified or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=50
+	// +optional
+	MaxToolsToReturn int `json:"maxToolsToReturn,omitempty" yaml:"maxToolsToReturn,omitempty"`
+
+	// HybridSearchSemanticRatio controls the balance between semantic (meaning-based)
+	// and keyword search results. 0.0 = all keyword, 1.0 = all semantic.
+	// Defaults to "0.5" if not specified or empty.
+	// Serialized as a string because CRDs do not support float types portably.
+	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
+	// +optional
+	HybridSearchSemanticRatio string `json:"hybridSearchSemanticRatio,omitempty" yaml:"hybridSearchSemanticRatio,omitempty"`
+
+	// SemanticDistanceThreshold is the maximum distance for semantic search results.
+	// Results exceeding this threshold are filtered out from semantic search.
+	// This threshold does not apply to keyword search.
+	// Range: 0 = identical, 2 = completely unrelated.
+	// Defaults to "1.0" if not specified or empty.
+	// Serialized as a string because CRDs do not support float types portably.
+	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
+	// +optional
+	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
 }
 
 // Validator validates configuration.

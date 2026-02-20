@@ -8,10 +8,9 @@ package networking
 import (
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -37,7 +36,7 @@ func IsAvailable(port int) bool {
 	}
 	if err := tcpListener.Close(); err != nil {
 		// Log the error but continue, as we're just checking if the port is available
-		logger.Warnf("Warning: Failed to close TCP listener: %v", err)
+		slog.Warn("Failed to close TCP listener", "error", err)
 	}
 
 	// Check UDP
@@ -52,7 +51,7 @@ func IsAvailable(port int) bool {
 	}
 	if err := udpConn.Close(); err != nil {
 		// Log the error but continue, as we're just checking if the port is available
-		logger.Warnf("Warning: Failed to close UDP connection: %v", err)
+		slog.Warn("Failed to close UDP connection", "error", err)
 	}
 
 	return true

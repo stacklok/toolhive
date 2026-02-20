@@ -6,11 +6,11 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -55,7 +55,7 @@ func (a *CapabilityAdapter) ToSDKTools(tools []vmcp.Tool) ([]server.ServerTool, 
 		// Marshal schema to JSON
 		schemaJSON, err := json.Marshal(tool.InputSchema)
 		if err != nil {
-			logger.Warnw("failed to marshal tool schema",
+			slog.Warn("failed to marshal tool schema",
 				"tool", tool.Name,
 				"error", err)
 			return nil, fmt.Errorf("failed to marshal schema for tool %s: %w", tool.Name, err)
@@ -178,7 +178,7 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 		// Get workflow executor for this tool
 		executor, exists := workflowExecutors[tool.Name]
 		if !exists {
-			logger.Warnw("workflow executor not found for composite tool",
+			slog.Warn("workflow executor not found for composite tool",
 				"tool", tool.Name)
 			return nil, fmt.Errorf("workflow executor not found for composite tool: %s", tool.Name)
 		}
@@ -186,7 +186,7 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 		// Marshal schema to JSON
 		schemaJSON, err := json.Marshal(tool.InputSchema)
 		if err != nil {
-			logger.Warnw("failed to marshal composite tool schema",
+			slog.Warn("failed to marshal composite tool schema",
 				"tool", tool.Name,
 				"error", err)
 			return nil, fmt.Errorf("failed to marshal schema for composite tool %s: %w", tool.Name, err)

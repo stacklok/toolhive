@@ -1102,7 +1102,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 	testCases := []struct {
 		name         string
 		issuer       string
-		jwksURL      string
 		resourceURL  string
 		scopes       []string
 		method       string
@@ -1114,7 +1113,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "successful GET request with all parameters",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{"read", "write"},
 			method:       "GET",
@@ -1126,9 +1124,8 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "successful GET request without origin",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
-			scopes:       nil, // Test default scopes
+			scopes:       nil, // Test default scopes (should default to ["openid"])
 			method:       "GET",
 			origin:       "",
 			expectStatus: http.StatusOK,
@@ -1138,7 +1135,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "OPTIONS preflight request",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{"openid", "profile"},
 			method:       "OPTIONS",
@@ -1150,7 +1146,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "missing resource URL returns 404",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "",
 			scopes:       []string{"openid"},
 			method:       "GET",
@@ -1160,11 +1155,10 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			expectCORS:   true,
 		},
 		{
-			name:         "empty issuer and jwksURL with resource URL",
+			name:         "empty issuer with resource URL",
 			issuer:       "",
-			jwksURL:      "",
 			resourceURL:  "https://api.example.com",
-			scopes:       []string{}, // Test empty scopes (should default to openid)
+			scopes:       []string{}, // Test empty scopes (should default to ["openid"])
 			method:       "GET",
 			origin:       "https://client.example.com",
 			expectStatus: http.StatusOK,
@@ -1178,7 +1172,7 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			t.Parallel()
 
 			// Create the handler
-			handler := NewAuthInfoHandler(tc.issuer, tc.jwksURL, tc.resourceURL, tc.scopes)
+			handler := NewAuthInfoHandler(tc.issuer, tc.resourceURL, tc.scopes)
 
 			// Create test request
 			req := httptest.NewRequest(tc.method, "/", nil)
@@ -1223,8 +1217,19 @@ func TestNewAuthInfoHandler(t *testing.T) {
 
 			// Check response body if expected
 			if tc.expectBody {
+				// Regression test: verify jwks_uri is absent from the JSON response.
+				// See https://github.com/stacklok/toolhive/issues/3852
+				bodyBytes := rec.Body.Bytes()
+				var rawMap map[string]any
+				if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
+					t.Fatalf("Failed to decode raw response body: %v", err)
+				}
+				if _, exists := rawMap["jwks_uri"]; exists {
+					t.Errorf("jwks_uri must not appear in the PRM response (RFC 9728 §3.2)")
+				}
+
 				var authInfo RFC9728AuthInfo
-				if err := json.NewDecoder(rec.Body).Decode(&authInfo); err != nil {
+				if err := json.Unmarshal(bodyBytes, &authInfo); err != nil {
 					t.Fatalf("Failed to decode response body: %v", err)
 				}
 
@@ -1241,10 +1246,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 					if len(authInfo.AuthorizationServers) != 1 || authInfo.AuthorizationServers[0] != "" {
 						t.Errorf("Expected authorization servers [''] but got %v", authInfo.AuthorizationServers)
 					}
-				}
-
-				if authInfo.JWKSURI != tc.jwksURL {
-					t.Errorf("Expected JWKS URI %s but got %s", tc.jwksURL, authInfo.JWKSURI)
 				}
 
 				expectedMethods := []string{"header"}
@@ -1708,6 +1709,88 @@ func TestBuildWWWAuthenticate_Format(t *testing.T) {
 	want := `Bearer realm="https://issuer.example.com", resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource", error="invalid_token", error_description="failed to parse \"token\", reason"`
 	if got != want {
 		t.Fatalf("format mismatch:\nwant: %s\n got: %s", want, got)
+	}
+}
+
+func TestBuildWWWAuthenticate_Scope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		scopes      []string
+		expectScope bool
+		expectValue string
+	}{
+		{
+			name:        "scopes set",
+			scopes:      []string{"openid", "profile", "email"},
+			expectScope: true,
+			expectValue: `scope="openid profile email"`,
+		},
+		{
+			name:        "single scope",
+			scopes:      []string{"openid"},
+			expectScope: true,
+			expectValue: `scope="openid"`,
+		},
+		{
+			name:        "nil scopes omits parameter",
+			scopes:      nil,
+			expectScope: false,
+		},
+		{
+			name:        "empty scopes omits parameter",
+			scopes:      []string{},
+			expectScope: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tv := &TokenValidator{
+				issuer: issuer,
+				scopes: tt.scopes,
+			}
+
+			got := tv.buildWWWAuthenticate(false, "")
+
+			if tt.expectScope {
+				if !strings.Contains(got, tt.expectValue) {
+					t.Errorf("Expected %s in: %s", tt.expectValue, got)
+				}
+			} else {
+				if strings.Contains(got, "scope=") {
+					t.Errorf("Expected no scope parameter in: %s", got)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildWWWAuthenticate_ScopeOrdering(t *testing.T) {
+	t.Parallel()
+
+	tv := &TokenValidator{
+		issuer:      issuer,
+		resourceURL: "https://resource.example.com",
+		scopes:      []string{"openid", "offline_access"},
+	}
+
+	got := tv.buildWWWAuthenticate(true, "token expired")
+
+	// Verify the order: realm, resource_metadata, scope, error, error_description
+	realmIdx := strings.Index(got, "realm=")
+	resourceIdx := strings.Index(got, "resource_metadata=")
+	scopeIdx := strings.Index(got, "scope=")
+	errorIdx := strings.Index(got, "error=")
+
+	if realmIdx < 0 || resourceIdx < 0 || scopeIdx < 0 || errorIdx < 0 {
+		t.Fatalf("Expected all parameters present in: %s", got)
+	}
+	if realmIdx >= resourceIdx || resourceIdx >= scopeIdx || scopeIdx >= errorIdx {
+		t.Errorf("Parameters not in expected order (realm, resource_metadata, scope, error) in: %s", got)
 	}
 }
 

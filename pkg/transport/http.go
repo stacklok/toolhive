@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,9 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -257,8 +256,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			Scheme: remoteURL.Scheme,
 			Host:   remoteURL.Host,
 		}).String()
-		logger.Debugf("Setting up transparent proxy to forward from host port %d to remote URL %s",
-			t.proxyPort, targetURI)
+		//nolint:gosec // G706: logging proxy port and remote URL from config
+		slog.Debug("setting up transparent proxy to forward to remote URL",
+			"port", t.proxyPort, "target", targetURI)
 	} else {
 		if t.containerName == "" {
 			return transporterrors.ErrContainerNameNotSet
@@ -269,8 +269,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			return fmt.Errorf("target URI not set for HTTP transport")
 		}
 		targetURI = t.targetURI
-		logger.Debugf("Setting up transparent proxy to forward from host port %d to %s",
-			t.proxyPort, targetURI)
+		//nolint:gosec // G706: logging proxy port and target URI from config
+		slog.Debug("setting up transparent proxy to forward to target",
+			"port", t.proxyPort, "target", targetURI)
 	}
 
 	// Create middlewares slice
@@ -314,7 +315,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return err
 	}
 
-	logger.Debugf("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
+	//nolint:gosec // G706: logging container name and port from config
+	slog.Debug("http transport started",
+		"container", t.containerName, "port", t.proxyPort)
 
 	// For remote MCP servers, we don't need container monitoring
 	if isRemote {
@@ -367,7 +370,7 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 	// Stop the transparent proxy
 	if t.proxy != nil {
 		if err := t.proxy.Stop(ctx); err != nil {
-			logger.Warnf("Warning: Failed to stop proxy: %v", err)
+			slog.Warn("failed to stop proxy", "error", err)
 		}
 	}
 
@@ -385,18 +388,23 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 		t.containerExitErr = err
 		t.exitErrMutex.Unlock()
 
-		logger.Warnf("Container %s exited: %v", t.containerName, err)
+		//nolint:gosec // G706: logging container name from config
+		slog.Warn("container exited", "container", t.containerName, "error", err)
 
 		// Check if container was removed (not just exited) using typed error
-		if errors.Is(err, docker.ErrContainerRemoved) {
-			logger.Debugf("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+		if errors.Is(err, rt.ErrContainerRemoved) {
+			//nolint:gosec // G706: logging container name from config
+			slog.Debug("container was removed, stopping proxy and cleaning up",
+				"container", t.containerName)
 		} else {
-			logger.Debugf("Container %s exited. Will attempt automatic restart.", t.containerName)
+			//nolint:gosec // G706: logging container name from config
+			slog.Debug("container exited, will attempt automatic restart",
+				"container", t.containerName)
 		}
 
 		// Stop the transport when the container exits/removed
 		if stopErr := t.Stop(ctx); stopErr != nil {
-			logger.Errorf("Error stopping transport after container exit: %v", stopErr)
+			slog.Error("error stopping transport after container exit", "error", stopErr)
 		}
 	}
 }
@@ -412,7 +420,7 @@ func (t *HTTPTransport) ShouldRestart() bool {
 	}
 
 	// Don't restart if container was removed (use typed error check)
-	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
+	return !errors.Is(t.containerExitErr, rt.ErrContainerRemoved)
 }
 
 // IsRunning checks if the transport is currently running.

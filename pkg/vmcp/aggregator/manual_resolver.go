@@ -6,9 +6,9 @@ package aggregator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -50,7 +50,7 @@ func (r *ManualConflictResolver) ResolveToolConflicts(
 	_ context.Context,
 	toolsByBackend map[string][]vmcp.Tool,
 ) (map[string]*ResolvedTool, error) {
-	logger.Debugf("Resolving conflicts using manual strategy with %d overrides", len(r.Overrides))
+	slog.Debug("resolving conflicts using manual strategy", "overrides", len(r.Overrides))
 
 	// Group tools by name to detect conflicts
 	toolsByName := groupToolsByName(toolsByBackend)
@@ -66,7 +66,7 @@ func (r *ManualConflictResolver) ResolveToolConflicts(
 		return nil, err
 	}
 
-	logger.Infof("Manual strategy: %d unique tools after applying overrides", len(resolved))
+	slog.Info("manual strategy resolved tools", "count", len(resolved))
 	return resolved, nil
 }
 
@@ -154,7 +154,7 @@ func (*ManualConflictResolver) formatConflictError(conflicts map[string][]string
 	sb.WriteString("unresolved tool name conflicts detected:\n")
 
 	for toolName, backendIDs := range conflicts {
-		sb.WriteString(fmt.Sprintf("  - %s: [%s]\n", toolName, strings.Join(backendIDs, ", ")))
+		fmt.Fprintf(&sb, "  - %s: [%s]\n", toolName, strings.Join(backendIDs, ", "))
 	}
 
 	sb.WriteString("\nUse 'overrides' in aggregation config to resolve these conflicts when using conflict_resolution: manual")

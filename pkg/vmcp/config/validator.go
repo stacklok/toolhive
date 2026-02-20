@@ -70,6 +70,9 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	// Note: Optimizer validation is handled by optimizer.GetAndValidateConfig
+	// in pkg/vmcp/optimizer/optimizer.go when the optimizer is constructed.
+
 	if len(errors) > 0 {
 		return fmt.Errorf("%w:\n  - %s", vmcp.ErrInvalidConfig, strings.Join(errors, "\n  - "))
 	}

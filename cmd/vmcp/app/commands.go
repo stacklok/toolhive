@@ -479,7 +479,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	if cfg.Optimizer != nil {
-		serverCfg.OptimizerEnabled = true
+		serverCfg.OptimizerConfig = cfg.Optimizer
 	}
 
 	// Convert composite tool configurations to workflow definitions

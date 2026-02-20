@@ -41,13 +41,23 @@ func makeLayerData(t *testing.T) []byte {
 	return data
 }
 
+func makeProjectRoot(t *testing.T) string {
+	t.Helper()
+	projectRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, ".git"), 0o755))
+	return projectRoot
+}
+
 func TestList(t *testing.T) {
 	t.Parallel()
+
+	projectRoot := makeProjectRoot(t)
 
 	tests := []struct {
 		name      string
 		opts      skills.ListOptions
 		setupMock func(*storemocks.MockSkillStore)
+		wantCode  int
 		wantErr   string
 		wantCount int
 	}{
@@ -70,6 +80,33 @@ func TestList(t *testing.T) {
 			wantCount: 0,
 		},
 		{
+			name: "delegates to store with project root",
+			opts: skills.ListOptions{Scope: skills.ScopeProject, ProjectRoot: projectRoot},
+			setupMock: func(s *storemocks.MockSkillStore) {
+				s.EXPECT().List(gomock.Any(), storage.ListFilter{
+					Scope:       skills.ScopeProject,
+					ProjectRoot: projectRoot,
+				}).Return([]skills.InstalledSkill{}, nil)
+			},
+			wantCount: 0,
+		},
+		{
+			name:      "project scope requires project root",
+			opts:      skills.ListOptions{Scope: skills.ScopeProject},
+			setupMock: func(_ *storemocks.MockSkillStore) {},
+			wantCode:  http.StatusBadRequest,
+			wantErr:   "project_root is required",
+		},
+		{
+			name: "delegates to store with client app",
+			opts: skills.ListOptions{ClientApp: "claude-code"},
+			setupMock: func(s *storemocks.MockSkillStore) {
+				s.EXPECT().List(gomock.Any(), storage.ListFilter{ClientApp: "claude-code"}).
+					Return([]skills.InstalledSkill{}, nil)
+			},
+			wantCount: 0,
+		},
+		{
 			name: "propagates store errors",
 			opts: skills.ListOptions{},
 			setupMock: func(s *storemocks.MockSkillStore) {
@@ -87,6 +124,12 @@ func TestList(t *testing.T) {
 			tt.setupMock(store)
 
 			result, err := New(store).List(t.Context(), tt.opts)
+			if tt.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -100,6 +143,8 @@ func TestList(t *testing.T) {
 
 func TestInstallPending(t *testing.T) {
 	t.Parallel()
+
+	projectRoot := makeProjectRoot(t)
 
 	tests := []struct {
 		name      string
@@ -139,16 +184,23 @@ func TestInstallPending(t *testing.T) {
 		},
 		{
 			name: "respects explicit scope",
-			opts: skills.InstallOptions{Name: "my-skill", Scope: skills.ScopeProject},
+			opts: skills.InstallOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot},
 			setupMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
 					func(_ context.Context, sk skills.InstalledSkill) error {
 						assert.Equal(t, skills.ScopeProject, sk.Scope)
+						assert.Equal(t, projectRoot, sk.ProjectRoot)
 						return nil
 					})
 			},
 			wantName:  "my-skill",
 			wantScope: skills.ScopeProject,
+		},
+		{
+			name:      "rejects project scope without root",
+			opts:      skills.InstallOptions{Name: "my-skill", Scope: skills.ScopeProject},
+			setupMock: func(_ *storemocks.MockSkillStore) {},
+			wantCode:  http.StatusBadRequest,
 		},
 		{
 			name:      "rejects invalid name",
@@ -766,6 +818,8 @@ func TestInstallFromOCI(t *testing.T) {
 func TestUninstall(t *testing.T) {
 	t.Parallel()
 
+	projectRoot := makeProjectRoot(t)
+
 	t.Run("success with file cleanup", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
@@ -824,12 +878,30 @@ func TestUninstall(t *testing.T) {
 			Scope:    skills.ScopeProject,
 		}
 
-		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeProject, "").Return(existing, nil)
-		store.EXPECT().Delete(gomock.Any(), "my-skill", skills.ScopeProject, "").Return(nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeProject, projectRoot).Return(existing, nil)
+		store.EXPECT().Delete(gomock.Any(), "my-skill", skills.ScopeProject, projectRoot).Return(nil)
 
 		svc := New(store)
-		err := svc.Uninstall(t.Context(), skills.UninstallOptions{Name: "my-skill", Scope: skills.ScopeProject})
+		err := svc.Uninstall(t.Context(), skills.UninstallOptions{
+			Name:        "my-skill",
+			Scope:       skills.ScopeProject,
+			ProjectRoot: projectRoot,
+		})
 		require.NoError(t, err)
+	})
+
+	t.Run("project scope requires project root", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+
+		svc := New(store)
+		err := svc.Uninstall(t.Context(), skills.UninstallOptions{
+			Name:  "my-skill",
+			Scope: skills.ScopeProject,
+		})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 	})
 
 	t.Run("returns 404 when not found", func(t *testing.T) {
@@ -920,6 +992,8 @@ func TestUninstall(t *testing.T) {
 func TestInfo(t *testing.T) {
 	t.Parallel()
 
+	projectRoot := makeProjectRoot(t)
+
 	installed := skills.InstalledSkill{
 		Metadata: skills.SkillMetadata{Name: "my-skill", Version: "1.0.0"},
 		Scope:    skills.ScopeUser,
@@ -972,10 +1046,16 @@ func TestInfo(t *testing.T) {
 		},
 		{
 			name: "respects project scope",
-			opts: skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject},
+			opts: skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot},
 			setupMock: func(s *storemocks.MockSkillStore) {
-				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeProject, "").Return(installed, nil)
+				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeProject, projectRoot).Return(installed, nil)
 			},
+		},
+		{
+			name:      "project scope missing project root",
+			opts:      skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject},
+			setupMock: func(_ *storemocks.MockSkillStore) {},
+			wantCode:  http.StatusBadRequest,
 		},
 		{
 			name: "defaults to user scope when empty",

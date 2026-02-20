@@ -123,8 +123,14 @@ func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 
 // List returns all installed skills matching the given options.
 func (s *service) List(ctx context.Context, opts skills.ListOptions) ([]skills.InstalledSkill, error) {
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
 	filter := storage.ListFilter{
-		Scope: opts.Scope,
+		Scope:       scope,
+		ClientApp:   opts.ClientApp,
+		ProjectRoot: projectRoot,
 	}
 	return s.store.List(ctx, filter)
 }
@@ -135,14 +141,14 @@ func (s *service) List(ctx context.Context, opts skills.ListOptions) ([]skills.I
 // to disk and a full installation record is created. Without LayerData, a
 // pending record is created.
 func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
-	scope := defaultScope(opts.Scope)
-
-	// Canonicalize the project root so that equivalent paths
-	// (e.g. trailing slash, ".." segments) produce the same lock key
-	// and DB record.
-	if opts.ProjectRoot != "" {
-		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
 	}
+	scope = defaultScope(scope)
+	// Canonicalize the project root so that equivalent paths produce
+	// the same lock key and DB record.
+	opts.ProjectRoot = projectRoot
 
 	ref, isOCI, err := parseOCIReference(opts.Name)
 	if err != nil {
@@ -177,11 +183,12 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	scope := defaultScope(opts.Scope)
-
-	if opts.ProjectRoot != "" {
-		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return err
 	}
+	scope = defaultScope(scope)
+	opts.ProjectRoot = projectRoot
 
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
@@ -221,7 +228,13 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	skill, err := s.store.Get(ctx, opts.Name, defaultScope(opts.Scope), "")
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
+	scope = defaultScope(scope)
+
+	skill, err := s.store.Get(ctx, opts.Name, scope, projectRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -522,6 +535,7 @@ func (s *service) installPending(
 			Version: opts.Version,
 		},
 		Scope:       scope,
+		ProjectRoot: opts.ProjectRoot,
 		Status:      skills.InstallStatusPending,
 		InstalledAt: time.Now().UTC(),
 	}
@@ -712,6 +726,26 @@ func validateOCITag(tag string) error {
 		)
 	}
 	return nil
+}
+
+func normalizeProjectRoot(scope skills.Scope, projectRoot string) (skills.Scope, string, error) {
+	if projectRoot != "" && scope == "" {
+		scope = skills.ScopeProject
+	}
+	if projectRoot != "" && scope != skills.ScopeProject {
+		return scope, projectRoot, httperr.WithCode(
+			errors.New("project_root is only valid with project scope"),
+			http.StatusBadRequest,
+		)
+	}
+	if scope == skills.ScopeProject {
+		cleaned, err := skills.ValidateProjectRoot(projectRoot)
+		if err != nil {
+			return scope, projectRoot, httperr.WithCode(err, http.StatusBadRequest)
+		}
+		return scope, cleaned, nil
+	}
+	return scope, projectRoot, nil
 }
 
 // defaultScope returns ScopeUser when s is empty, otherwise returns s unchanged.

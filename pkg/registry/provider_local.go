@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	types "github.com/stacklok/toolhive-core/registry/types"
 )
 
 //go:embed data/registry.json

@@ -14,12 +14,12 @@ import (
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/registry"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 

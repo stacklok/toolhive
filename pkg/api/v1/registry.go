@@ -14,9 +14,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (

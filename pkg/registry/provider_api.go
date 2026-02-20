@@ -10,9 +10,9 @@ import (
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
+	"github.com/stacklok/toolhive-core/registry/converters"
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry/api"
-	"github.com/stacklok/toolhive/pkg/registry/converters"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // APIRegistryProvider provides registry data from an MCP Registry API endpoint

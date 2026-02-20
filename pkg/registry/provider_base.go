@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	types "github.com/stacklok/toolhive-core/registry/types"
 )
 
 // BaseProvider provides common implementation for registry providers

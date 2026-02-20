@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive-core/registry/types"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // Config holds authentication configuration for remote MCP servers.

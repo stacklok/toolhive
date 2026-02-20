@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/stacklok/toolhive-core/permissions"
+	"github.com/stacklok/toolhive-core/registry/types"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"

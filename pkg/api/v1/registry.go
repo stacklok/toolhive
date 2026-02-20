@@ -573,7 +573,7 @@ type getRegistryResponse struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// Full registry data
-	Registry *registry.Registry `json:"registry"`
+	Registry *registry.Registry `json:"registry" swaggerignore:"true"`
 }
 
 // listServersResponse represents the response for listing servers in a registry
@@ -581,9 +581,9 @@ type getRegistryResponse struct {
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
 	// List of container servers in the registry
-	Servers []*registry.ImageMetadata `json:"servers"`
+	Servers []*registry.ImageMetadata `json:"servers" swaggerignore:"true"`
 	// List of remote servers in the registry (if any)
-	RemoteServers []*registry.RemoteServerMetadata `json:"remote_servers,omitempty"`
+	RemoteServers []*registry.RemoteServerMetadata `json:"remote_servers,omitempty" swaggerignore:"true"`
 }
 
 // getServerResponse represents the response for getting a server from a registry
@@ -591,9 +591,9 @@ type listServersResponse struct {
 //	@Description	Response containing server details
 type getServerResponse struct {
 	// Container server details (if it's a container server)
-	Server *registry.ImageMetadata `json:"server,omitempty"`
+	Server *registry.ImageMetadata `json:"server,omitempty" swaggerignore:"true"`
 	// Remote server details (if it's a remote server)
-	RemoteServer *registry.RemoteServerMetadata `json:"remote_server,omitempty"`
+	RemoteServer *registry.RemoteServerMetadata `json:"remote_server,omitempty" swaggerignore:"true"`
 	// Indicates if this is a remote server
 	IsRemote bool `json:"is_remote"`
 }

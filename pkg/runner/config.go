@@ -87,7 +87,7 @@ type RunConfig struct {
 	PermissionProfileNameOrPath string `json:"permission_profile_name_or_path,omitempty" yaml:"permission_profile_name_or_path,omitempty"` //nolint:lll
 
 	// PermissionProfile is the permission profile to use
-	PermissionProfile *permissions.Profile `json:"permission_profile" yaml:"permission_profile"`
+	PermissionProfile *permissions.Profile `json:"permission_profile" yaml:"permission_profile" swaggerignore:"true"`
 
 	// EnvVars are the parsed environment variables as key-value pairs
 	EnvVars map[string]string `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`

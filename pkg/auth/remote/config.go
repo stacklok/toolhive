@@ -36,10 +36,10 @@ type Config struct {
 	TokenURL     string `json:"token_url,omitempty" yaml:"token_url,omitempty"`
 
 	// Headers for HTTP requests
-	Headers []*registry.Header `json:"headers,omitempty" yaml:"headers,omitempty"`
+	Headers []*registry.Header `json:"headers,omitempty" yaml:"headers,omitempty" swaggerignore:"true"`
 
 	// Environment variables for the client
-	EnvVars []*registry.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
+	EnvVars []*registry.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty" swaggerignore:"true"`
 
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`

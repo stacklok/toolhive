@@ -31,6 +31,10 @@ var _ transportsession.Session = (*VMCPSession)(nil)
 //  2. Routing table and tools populated in AfterInitialize hook
 //  3. Retrieved by middleware on subsequent requests via type assertion
 //  4. Cleaned up automatically by session.Manager TTL worker
+//
+// TODO: VMCPSession is a transitional type. Once the server layer is wired to
+// use [MultiSession] (Phase 2 of RFC THV-0038), VMCPSession will be removed.
+// Tracked in https://github.com/stacklok/toolhive/issues/3865
 type VMCPSession struct {
 	*transportsession.StreamableSession
 	routingTable *vmcp.RoutingTable

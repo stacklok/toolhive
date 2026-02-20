@@ -4,6 +4,7 @@
 package updates
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -332,6 +333,61 @@ func TestNotifyIfUpdateAvailable(t *testing.T) {
 		// This shouldn't panic
 		notifyIfUpdateAvailable(currentVersion, latestVersion)
 	})
+}
+
+// TestNotifyIfUpdateAvailableDesktopManaged tests that update messages are suppressed
+// for desktop-managed CLI installations
+func TestNotifyIfUpdateAvailableDesktopManaged(t *testing.T) {
+	// Not parallel: modifies HOME environment variable
+
+	// Setup: create a temp HOME directory with desktop marker file
+	homeDir := t.TempDir()
+	thDir := filepath.Join(homeDir, ".toolhive")
+	require.NoError(t, os.MkdirAll(thDir, 0755))
+
+	// Get the current executable path (the test binary) to simulate desktop-managed CLI
+	currentExe, err := os.Executable()
+	require.NoError(t, err)
+	resolvedExe, err := filepath.EvalSymlinks(currentExe)
+	require.NoError(t, err)
+	resolvedExe = filepath.Clean(resolvedExe)
+
+	// Create marker file pointing to current executable (makes IsDesktopManagedCLI return true)
+	marker := map[string]interface{}{
+		"schema_version":  1,
+		"source":          "desktop",
+		"install_method":  "symlink",
+		"cli_version":     "1.0.0",
+		"symlink_target":  resolvedExe,
+		"installed_at":    "2026-01-22T10:30:00Z",
+		"desktop_version": "2.0.0",
+	}
+	markerData, err := json.Marshal(marker)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(thDir, ".cli-source"), markerData, 0600))
+
+	// Set HOME to our temp directory
+	t.Setenv("HOME", homeDir)
+
+	// Capture stderr to verify no output
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+
+	// Call with versions that would normally print an update message
+	notifyIfUpdateAvailable(testCurrentVersion, testLatestVersion)
+
+	// Restore stderr and read captured output
+	w.Close()
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	_, err = buf.ReadFrom(r)
+	require.NoError(t, err)
+
+	// Verify no output was written (message was suppressed)
+	assert.Empty(t, buf.String(), "expected no update message for desktop-managed CLI")
 }
 
 // TestCorruptedJSONRecovery tests the recovery of corrupted update files

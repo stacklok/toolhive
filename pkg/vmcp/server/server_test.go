@@ -290,6 +290,29 @@ func TestServer_Stop(t *testing.T) {
 	})
 }
 
+func TestNew_SessionManagementV2_NilFactoryReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	_, err := server.New(
+		context.Background(),
+		&server.Config{
+			SessionManagementV2: true,
+			SessionFactory:      nil, // deliberately omitted
+		},
+		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SessionFactory")
+}
+
 func TestNew_WithAuditConfig(t *testing.T) {
 	t.Parallel()
 

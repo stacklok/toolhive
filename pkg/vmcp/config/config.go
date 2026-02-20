@@ -440,6 +440,13 @@ type OperationalConfig struct {
 	// FailureHandling configures failure handling behavior.
 	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
+
+	// SessionManagementV2 enables session-scoped backend client lifecycle.
+	// When true, vMCP creates real backend connections per session via MultiSessionFactory
+	// and routes tool calls directly through the session rather than the global router.
+	// Defaults to false; existing behaviour is completely unchanged when disabled.
+	// +optional
+	SessionManagementV2 bool `json:"sessionManagementV2,omitempty" yaml:"sessionManagementV2,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings.

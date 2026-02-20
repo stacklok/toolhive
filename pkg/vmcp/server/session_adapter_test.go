@@ -205,7 +205,7 @@ func TestSessionIDAdapter_Terminate(t *testing.T) {
 		// Session should still exist but be marked as terminated
 		sess, exists := mgr.Get(sessionID)
 		assert.True(t, exists, "Session should still exist after termination")
-		assert.Equal(t, "true", sess.GetMetadata()["terminated"])
+		assert.Equal(t, metadataValTrue, sess.GetMetadata()[metadataKeyTerminated])
 	})
 
 	t.Run("terminating non-existent session succeeds", func(t *testing.T) {

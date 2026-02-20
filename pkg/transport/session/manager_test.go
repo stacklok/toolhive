@@ -68,7 +68,7 @@ func TestDeleteSession(t *testing.T) {
 	defer m.Stop()
 
 	require.NoError(t, m.AddWithID("del"))
-	m.Delete("del")
+	require.NoError(t, m.Delete("del"))
 
 	_, ok := m.Get("del")
 	assert.False(t, ok, "deleted session should not be found")
@@ -140,4 +140,77 @@ func TestStopDisablesCleanup(t *testing.T) {
 
 	_, ok := m.Get("stay")
 	assert.True(t, ok, "session should still be present even after Stop() and TTL elapsed")
+}
+
+func TestReplaceSession_NilSessionReturnsError(t *testing.T) {
+	t.Parallel()
+
+	factory := &stubFactory{fixedTime: time.Now()}
+	m := NewManager(time.Hour, factory.New)
+	defer m.Stop()
+
+	err := m.ReplaceSession(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be nil")
+}
+
+func TestReplaceSession_EmptyIDReturnsError(t *testing.T) {
+	t.Parallel()
+
+	factory := &stubFactory{fixedTime: time.Now()}
+	m := NewManager(time.Hour, factory.New)
+	defer m.Stop()
+
+	// A session with an empty ID should be rejected.
+	sess := &ProxySession{id: ""}
+	err := m.ReplaceSession(sess)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be empty")
+}
+
+func TestReplaceSession_UpsertNewSession(t *testing.T) {
+	t.Parallel()
+
+	factory := &stubFactory{fixedTime: time.Now()}
+	m := NewManager(time.Hour, factory.New)
+	defer m.Stop()
+
+	// ReplaceSession on an ID that does not exist yet should store it.
+	newSess := NewStreamableSession("brand-new-id")
+	err := m.ReplaceSession(newSess)
+	require.NoError(t, err)
+
+	got, ok := m.Get("brand-new-id")
+	require.True(t, ok, "session should exist after ReplaceSession upsert")
+	assert.Equal(t, "brand-new-id", got.ID())
+}
+
+func TestReplaceSession_ReplacesExistingSession(t *testing.T) {
+	t.Parallel()
+
+	factory := &stubFactory{fixedTime: time.Now()}
+	m := NewManager(time.Hour, factory.New)
+	defer m.Stop()
+
+	const sessionID = "replace-me"
+
+	// Phase 1: store a placeholder via AddWithID (creates a ProxySession via factory).
+	require.NoError(t, m.AddWithID(sessionID))
+
+	// Confirm the placeholder is a *ProxySession.
+	placeholder, ok := m.Get(sessionID)
+	require.True(t, ok, "placeholder should exist before replacement")
+	_, isProxy := placeholder.(*ProxySession)
+	assert.True(t, isProxy, "placeholder should be a *ProxySession")
+
+	// Phase 2: replace with a StreamableSession (different concrete type).
+	replacement := NewStreamableSession(sessionID)
+	err := m.ReplaceSession(replacement)
+	require.NoError(t, err)
+
+	// Verify that Get() now returns the replacement.
+	got, ok := m.Get(sessionID)
+	require.True(t, ok, "session should still exist after replacement")
+	_, isStreamable := got.(*StreamableSession)
+	assert.True(t, isStreamable, "stored session should now be a *StreamableSession (the replacement)")
 }

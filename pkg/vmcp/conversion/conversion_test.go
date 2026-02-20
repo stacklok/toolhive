@@ -694,3 +694,79 @@ func TestMetaRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestToMCPContent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    vmcp.Content
+		wantType string
+		wantText string
+		wantData string
+		wantMime string
+	}{
+		{
+			name:     "text content",
+			input:    vmcp.Content{Type: "text", Text: "Hello, world!"},
+			wantType: "mcp.TextContent",
+			wantText: "Hello, world!",
+		},
+		{
+			name:     "empty text content",
+			input:    vmcp.Content{Type: "text", Text: ""},
+			wantType: "mcp.TextContent",
+		},
+		{
+			name:     "image content",
+			input:    vmcp.Content{Type: "image", Data: "base64data", MimeType: "image/png"},
+			wantType: "mcp.ImageContent",
+			wantData: "base64data",
+			wantMime: "image/png",
+		},
+		{
+			name:     "audio content",
+			input:    vmcp.Content{Type: "audio", Data: "audiodata", MimeType: "audio/mpeg"},
+			wantType: "mcp.AudioContent",
+			wantData: "audiodata",
+			wantMime: "audio/mpeg",
+		},
+		{
+			name:     "resource content converts to empty text",
+			input:    vmcp.Content{Type: "resource"},
+			wantType: "mcp.TextContent",
+		},
+		{
+			name:     "unknown content type converts to empty text",
+			input:    vmcp.Content{Type: "custom-type"},
+			wantType: "mcp.TextContent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := conversion.ToMCPContent(tt.input)
+
+			switch tt.wantType {
+			case "mcp.TextContent":
+				text, ok := result.(mcp.TextContent)
+				require.True(t, ok, "expected TextContent")
+				assert.Equal(t, tt.wantText, text.Text)
+			case "mcp.ImageContent":
+				img, ok := result.(mcp.ImageContent)
+				require.True(t, ok, "expected ImageContent")
+				assert.Equal(t, tt.wantData, img.Data)
+				assert.Equal(t, tt.wantMime, img.MIMEType)
+			case "mcp.AudioContent":
+				audio, ok := result.(mcp.AudioContent)
+				require.True(t, ok, "expected AudioContent")
+				assert.Equal(t, tt.wantData, audio.Data)
+				assert.Equal(t, tt.wantMime, audio.MIMEType)
+			default:
+				t.Errorf("unexpected wantType: %s", tt.wantType)
+			}
+		})
+	}
+}

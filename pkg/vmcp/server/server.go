@@ -151,6 +151,14 @@ type Config struct {
 	// In CLI mode: NoOpReporter (no persistent status)
 	// If nil, status reporting is disabled.
 	StatusReporter vmcpstatus.Reporter
+
+	// SessionManagementV2 enables session-scoped backend client lifecycle.
+	// When true, a SessionManager is used instead of sessionIDAdapter. Defaults to false.
+	SessionManagementV2 bool
+
+	// SessionFactory creates MultiSessions for Phase 2 session management.
+	// Required when SessionManagementV2 is true; ignored otherwise.
+	SessionFactory vmcpsession.MultiSessionFactory
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -196,6 +204,10 @@ type Server struct {
 
 	// Capability adapter for converting aggregator types to SDK types
 	capabilityAdapter *adapter.CapabilityAdapter
+
+	// vmcpSessionMgr is the Phase 2 session manager. Non-nil only when
+	// Config.SessionManagementV2 is true and Config.SessionFactory is non-nil.
+	vmcpSessionMgr *vmcpSessionManager
 
 	// Composite tool workflow definitions keyed by tool name.
 	// Initialized during construction and read-only thereafter.
@@ -370,6 +382,16 @@ func New(
 		slog.Info("health monitoring disabled")
 	}
 
+	// Create session manager if the feature flag is enabled.
+	var vmcpSessMgr *vmcpSessionManager
+	if cfg.SessionManagementV2 {
+		if cfg.SessionFactory == nil {
+			return nil, fmt.Errorf("SessionManagementV2 is enabled but no SessionFactory was provided")
+		}
+		vmcpSessMgr = newVMCPSessionManager(sessionManager, cfg.SessionFactory, backendRegistry)
+		slog.Info("session-scoped backend lifecycle enabled")
+	}
+
 	// Create Server instance
 	srv := &Server{
 		config:            cfg,
@@ -386,6 +408,7 @@ func New(
 		ready:             make(chan struct{}),
 		healthMonitor:     healthMon,
 		statusReporter:    cfg.StatusReporter,
+		vmcpSessionMgr:    vmcpSessMgr,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -408,16 +431,20 @@ func New(
 // All returned handlers share the same underlying MCPServer and SessionManager,
 // so callers should not serve concurrent traffic through multiple handlers.
 func (s *Server) Handler(_ context.Context) (http.Handler, error) {
-	// Create session adapter to expose ToolHive's session.Manager via SDK interface
-	// Sessions are ENTIRELY managed by ToolHive's session.Manager (storage, TTL, cleanup).
-	// The SDK only calls our Generate/Validate/Terminate methods during MCP protocol flows.
-	sessionAdapter := newSessionIDAdapter(s.sessionManager)
+	// Use vmcpSessionMgr (session-scoped backend lifecycle) when available;
+	// otherwise fall back to sessionIDAdapter.
+	sdkSessionMgr := func() server.SessionIdManager {
+		if s.vmcpSessionMgr != nil {
+			return s.vmcpSessionMgr
+		}
+		return newSessionIDAdapter(s.sessionManager)
+	}()
 
 	// Create Streamable HTTP server with ToolHive session management
 	streamableServer := server.NewStreamableHTTPServer(
 		s.mcpServer,
 		server.WithEndpointPath(s.config.EndpointPath),
-		server.WithSessionIdManager(sessionAdapter),
+		server.WithSessionIdManager(sdkSessionMgr),
 		server.WithHeartbeatInterval(defaultHeartbeatInterval),
 	)
 
@@ -484,7 +511,15 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if healthMon != nil {
 		healthStatusProvider = healthMon
 	}
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider)(mcpHandler)
+	discoveryOpts := func() []discovery.MiddlewareOption {
+		if s.vmcpSessionMgr != nil {
+			return []discovery.MiddlewareOption{discovery.WithSessionScopedRouting()}
+		}
+		return nil
+	}()
+	mcpHandler = discovery.Middleware(
+		s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider, discoveryOpts...,
+	)(mcpHandler)
 	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
@@ -1018,6 +1053,12 @@ func (s *Server) handleSessionRegistration(
 	sessionID := session.SessionID()
 	slog.Debug("onRegisterSession hook called", "session_id", sessionID)
 
+	// Delegate to session-scoped backend lifecycle when vmcpSessionMgr is active.
+	if s.vmcpSessionMgr != nil {
+		s.handleSessionRegistrationV2(ctx, session)
+		return
+	}
+
 	// Get capabilities from context (discovered by middleware)
 	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
 	if !ok || caps == nil {
@@ -1098,6 +1139,94 @@ func (s *Server) handleSessionRegistration(
 		"session_id", sessionID,
 		"tool_count", len(caps.Tools),
 		"resource_count", len(caps.Resources))
+}
+
+// handleSessionRegistrationV2 handles session registration when SessionManagementV2 is enabled.
+//
+// It is invoked from handleSessionRegistration and:
+//  1. Creates a MultiSession with real backend HTTP connections via CreateSession().
+//  2. Retrieves SDK-format tools with session-scoped routing handlers.
+//  3. Registers the tools with the SDK MCPServer for the session.
+//
+// Tool calls are routed directly through the session's backend connections
+// rather than through the global router and discovery middleware.
+//
+// # Current capability surface
+//
+// Only backend tools are registered in this path. The following capabilities
+// are not yet supported and require future work:
+//
+//   - Resources: session-scoped resource handlers need to be added to
+//     vmcpSessionManager (analogous to GetAdaptedTools) before resources
+//     from MultiSession.Resources() can be registered via AddSessionResources.
+//
+//   - Composite tools: workflow-backed tools defined in s.workflowDefs are
+//     not wired into the V2 path. They need session-scoped executor adapters.
+//
+//   - Optimizer mode: the optimizer wraps all tools into find_tool/call_tool
+//     meta-tools. The optimizer path (injectOptimizerCapabilities) is not
+//     called here and is unsupported when SessionManagementV2 is enabled.
+//
+//   - Prompts: not supported in either path until the SDK adds
+//     AddSessionPrompts.
+func (s *Server) handleSessionRegistrationV2(ctx context.Context, session server.ClientSession) {
+	sessionID := session.SessionID()
+	slog.Debug("creating session-scoped backends", "session_id", sessionID)
+
+	// NOTE: the initialize response (including the Mcp-Session-Id header) has
+	// already been sent to the client before this hook fires. Any error below
+	// terminates the session internally, but the client holds a session ID that
+	// will appear to have no tools (tool calls will return "not found" from the
+	// SDK). This is an architectural constraint of the two-phase pattern — there
+	// is no way to retract the session ID after it has been sent.
+	//
+	// NOTE: there is a brief race window between the client receiving the session
+	// ID and this hook completing. A client that pipelines a tools/call immediately
+	// after initialize may receive a "tool not found" error before AddSessionTools
+	// completes. Conforming MCP clients call tools/list before tools/call, so this
+	// window is expected to be harmless in practice.
+	if _, err := s.vmcpSessionMgr.CreateSession(ctx, sessionID); err != nil {
+		slog.Error("failed to create session-scoped backends",
+			"session_id", sessionID,
+			"error", err)
+		if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
+			slog.Warn("failed to clean up placeholder after session creation failure",
+				"session_id", sessionID,
+				"error", termErr)
+		}
+		return
+	}
+
+	adaptedTools, err := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
+	if err != nil {
+		slog.Error("failed to get session-scoped tools",
+			"session_id", sessionID,
+			"error", err)
+		if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
+			slog.Warn("failed to clean up session after tool retrieval failure",
+				"session_id", sessionID,
+				"error", termErr)
+		}
+		return
+	}
+
+	if len(adaptedTools) > 0 {
+		if err := s.mcpServer.AddSessionTools(sessionID, adaptedTools...); err != nil {
+			slog.Error("failed to add session tools",
+				"session_id", sessionID,
+				"error", err)
+			if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
+				slog.Warn("failed to clean up session after AddSessionTools failure",
+					"session_id", sessionID,
+					"error", termErr)
+			}
+			return
+		}
+	}
+
+	slog.Info("session capabilities injected",
+		"session_id", sessionID,
+		"tool_count", len(adaptedTools))
 }
 
 // validateAndCreateExecutors validates workflow definitions and creates executors.

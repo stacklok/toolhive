@@ -72,11 +72,6 @@ func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
 		server.Name = name
 	}
 
-	// Set name field on each remote server based on map key
-	for name, server := range registry.RemoteServers {
-		server.Name = name
-	}
-
 	// Set name field on servers within groups
 	for _, group := range registry.Groups {
 		if group != nil {

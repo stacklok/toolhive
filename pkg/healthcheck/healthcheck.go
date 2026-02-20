@@ -8,10 +8,10 @@ package healthcheck
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -115,12 +115,12 @@ func (hc *HealthChecker) checkMCPStatus(ctx context.Context) *MCPStatus {
 	if err != nil {
 		status.Available = false
 		status.Error = err.Error()
-		logger.Debugf("MCP ping failed: %v", err)
+		slog.Debug("MCP ping failed", "error", err)
 	} else {
 		status.Available = true
 		responseTimeMs := duration.Milliseconds()
 		status.ResponseTime = &responseTimeMs
-		logger.Debugf("MCP ping successful: %v", duration)
+		slog.Debug("MCP ping successful", "duration", duration)
 	}
 
 	return status
@@ -148,7 +148,7 @@ func (hc *HealthChecker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(health); err != nil {
-		logger.Warnf("Failed to encode health response: %v", err)
+		slog.Warn("Failed to encode health response", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }

@@ -42,4 +42,10 @@ const (
 	curlImageTag = "8.17.0"
 	// CurlImage is used to query service endpoints and gather statistics during Kubernetes tests.
 	CurlImage = curlImageURL + ":" + curlImageTag
+
+	textEmbeddingsInferenceImageURL = "ghcr.io/huggingface/text-embeddings-inference"
+	textEmbeddingsInferenceImageTag = "cpu-latest"
+	// TextEmbeddingsInferenceImage is used for testing EmbeddingServer deployments
+	// in optimizer mode tests. Uses the CPU variant for CI environments without GPU.
+	TextEmbeddingsInferenceImage = textEmbeddingsInferenceImageURL + ":" + textEmbeddingsInferenceImageTag
 )

@@ -6,11 +6,11 @@ package migration
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -84,7 +84,7 @@ func (m *DefaultGroupMigrator) initManagers(ctx context.Context) error {
 
 // createDefaultGroup creates the default group if it doesn't exist
 func (m *DefaultGroupMigrator) createDefaultGroup(ctx context.Context) error {
-	logger.Debugf("Creating default group '%s'", groups.DefaultGroupName)
+	slog.Debug("creating default group", "name", groups.DefaultGroupName)
 	if err := m.groupManager.Create(ctx, groups.DefaultGroupName); err != nil {
 		return fmt.Errorf("failed to create default group: %w", err)
 	}
@@ -107,7 +107,7 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 		if err == nil {
 			for _, workload := range workloadList {
 				if workload.Name == workloadName && workload.Labels != nil && labels.IsAuxiliaryWorkload(workload.Labels) {
-					logger.Debugf("Skipping migration of auxiliary workload %s", workloadName)
+					slog.Debug("skipping migration of auxiliary workload", "workload", workloadName)
 					isAuxiliary = true
 					break
 				}
@@ -122,20 +122,20 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 		// ListWorkloadsInGroup doesn't check the runconfig, so we need an additional check here
 		runConfig, err := runner.LoadState(ctx, workloadName)
 		if err != nil {
-			logger.Warnf("Failed to migrate workload %s to default group due to missing or corrupt"+
-				" run configuration: %v. The workload may be unhealthy and need to be deleted.", workloadName, err)
+			slog.Warn("failed to migrate workload to default group due to missing or corrupt run configuration",
+				"workload", workloadName, "error", err)
 			continue
 		}
 
 		// Check if the workload is actually in the specified group
 		if runConfig.Group != "" {
-			logger.Debugf("Workload %s is already in group %s, skipping migration", workloadName, runConfig.Group)
+			slog.Debug("workload already in group, skipping migration", "workload", workloadName, "group", runConfig.Group)
 			continue
 		}
 
 		// Move workload to default group
 		if err := m.workloadsManager.MoveToGroup(ctx, []string{workloadName}, "", groups.DefaultGroup); err != nil {
-			logger.Warnf("Failed to migrate workload %s to default group: %v", workloadName, err)
+			slog.Warn("failed to migrate workload to default group", "workload", workloadName, "error", err)
 			continue
 		}
 		migratedCount++
@@ -150,7 +150,7 @@ func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
 
 	// If there are no registered clients, nothing to migrate
 	if len(appConfig.Clients.RegisteredClients) == 0 {
-		logger.Debugf("No client configurations to migrate")
+		slog.Debug("no client configurations to migrate")
 		return nil
 	}
 
@@ -174,7 +174,7 @@ func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
 
 		if !alreadyRegistered {
 			if err := m.groupManager.RegisterClients(ctx, []string{groups.DefaultGroupName}, []string{clientName}); err != nil {
-				logger.Warnf("Failed to register client %s to default group: %v", clientName, err)
+				slog.Warn("failed to register client to default group", "client", clientName, "error", err)
 				continue
 			}
 			migratedCount++
@@ -189,12 +189,12 @@ func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
 			c.Clients.RegisteredClients = []string{}
 		})
 		if err != nil {
-			logger.Warnf("Failed to clear global client configurations after migration: %v", err)
+			slog.Warn("failed to clear global client configurations after migration", "error", err)
 		} else {
-			logger.Debugf("Cleared global client configurations")
+			slog.Debug("cleared global client configurations")
 		}
 	} else {
-		logger.Debugf("No client configurations needed migration")
+		slog.Debug("no client configurations needed migration")
 	}
 
 	return nil

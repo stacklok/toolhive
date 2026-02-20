@@ -7,13 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	logger.Initialize() // ensure logging doesn't panic
-}
 
 func TestNewProcessor(t *testing.T) {
 	t.Parallel()

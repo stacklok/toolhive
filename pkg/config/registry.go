@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -16,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	registrytypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -87,7 +87,7 @@ func probeRegistryURL(url string, allowPrivateIPs bool) string {
 		if err == nil {
 			defer func() {
 				if err := resp.Body.Close(); err != nil {
-					logger.Debugf("Failed to close response body: %v", err)
+					slog.Debug("failed to close response body", "error", err)
 				}
 			}()
 			// If API endpoint returns 2xx or 401/403 (auth errors), it's an API
@@ -159,7 +159,7 @@ func isValidRegistryJSON(client *http.Client, url string) error {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 

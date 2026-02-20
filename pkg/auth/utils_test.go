@@ -12,8 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestExtractBearerToken(t *testing.T) {
@@ -109,8 +107,6 @@ func TestExtractBearerToken(t *testing.T) {
 
 func TestGetAuthenticationMiddleware(t *testing.T) {
 	t.Parallel()
-	// Initialize logger for testing
-	logger.Initialize()
 
 	ctx := context.Background()
 

@@ -351,7 +351,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 
 			// Use regex to extract the OAuth URL
 			// Pattern: "Please open this URL in your browser: <URL>"
-			urlPattern := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s]+)`)
+			urlPattern := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s"]+)`)
 			matches := urlPattern.FindStringSubmatch(output)
 
 			var authURL string
@@ -432,7 +432,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			Eventually(outputBuffer.String, 5*time.Second, 500*time.Millisecond).
 				Should(ContainSubstring("Please open this URL"))
 
-			matches := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s]+)`).
+			matches := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s"]+)`).
 				FindStringSubmatch(outputBuffer.String())
 			Expect(matches).To(HaveLen(2))
 			authURL := matches[1]

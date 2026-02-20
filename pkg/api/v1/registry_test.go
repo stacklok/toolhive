@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
@@ -53,8 +52,6 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 func TestRegistryRouter(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
-
 	// Create a test config provider to avoid using the singleton
 	provider, _ := CreateTestConfigProvider(t, nil)
 	routes := NewRegistryRoutesWithProvider(provider)
@@ -64,7 +61,6 @@ func TestRegistryRouter(t *testing.T) {
 //nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestGetRegistryInfo(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -119,8 +115,6 @@ func TestGetRegistryInfo(t *testing.T) {
 //nolint:paralleltest,tparallel // Subtests cannot run in parallel as they share a mock HTTP server
 func TestRegistryAPI_PutEndpoint(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	// Create a mock HTTP server that serves valid registry JSON
 	validRegistryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

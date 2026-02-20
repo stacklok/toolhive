@@ -36,7 +36,7 @@ func generateTools() ([]server.ServerTool, []string) {
 }
 
 func BenchmarkSearch_FTS5Only_1000Tools(b *testing.B) {
-	store, err := NewSQLiteToolStore(nil)
+	store, err := NewSQLiteToolStore(nil, nil)
 	require.NoError(b, err)
 	b.Cleanup(func() { _ = store.Close() })
 
@@ -53,7 +53,7 @@ func BenchmarkSearch_FTS5Only_1000Tools(b *testing.B) {
 
 func BenchmarkSearch_Semantic_1000Tools_384Dim(b *testing.B) {
 	client := newFakeEmbeddingClient(384)
-	store, err := newSQLiteToolStore("file:bench_sem384?mode=memory&cache=shared", client)
+	store, err := newSQLiteToolStore("file:bench_sem384?mode=memory&cache=shared", client, nil)
 	require.NoError(b, err)
 	b.Cleanup(func() { _ = store.Close() })
 
@@ -64,13 +64,13 @@ func BenchmarkSearch_Semantic_1000Tools_384Dim(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = store.searchSemantic(ctx, "find a task handler", names, maxToolsToReturn)
+		_, _ = store.searchSemantic(ctx, "find a task handler", names, DefaultMaxToolsToReturn)
 	}
 }
 
 func BenchmarkSearch_Hybrid_1000Tools(b *testing.B) {
 	client := newFakeEmbeddingClient(384)
-	store, err := NewSQLiteToolStore(client)
+	store, err := NewSQLiteToolStore(client, nil)
 	require.NoError(b, err)
 	b.Cleanup(func() { _ = store.Close() })
 
@@ -87,7 +87,7 @@ func BenchmarkSearch_Hybrid_1000Tools(b *testing.B) {
 
 func BenchmarkSearch_Semantic_1000Tools_768Dim(b *testing.B) {
 	client := newFakeEmbeddingClient(768)
-	store, err := newSQLiteToolStore("file:bench_sem768?mode=memory&cache=shared", client)
+	store, err := newSQLiteToolStore("file:bench_sem768?mode=memory&cache=shared", client, nil)
 	require.NoError(b, err)
 	b.Cleanup(func() { _ = store.Close() })
 
@@ -98,6 +98,6 @@ func BenchmarkSearch_Semantic_1000Tools_768Dim(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = store.searchSemantic(ctx, "find a task handler", names, maxToolsToReturn)
+		_, _ = store.searchSemantic(ctx, "find a task handler", names, DefaultMaxToolsToReturn)
 	}
 }

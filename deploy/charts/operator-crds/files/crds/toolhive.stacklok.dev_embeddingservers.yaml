@@ -93,7 +93,7 @@ spec:
                 - name
                 type: object
               image:
-                default: ghcr.io/huggingface/text-embeddings-inference:latest
+                default: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
                 description: Image is the container image for huggingface-embedding-inference
                 type: string
               imagePullPolicy:
@@ -106,6 +106,7 @@ spec:
                 - IfNotPresent
                 type: string
               model:
+                default: BAAI/bge-small-en-v1.5
                 description: Model is the HuggingFace embedding model to use (e.g.,
                   "sentence-transformers/all-MiniLM-L6-v2")
                 type: string
@@ -254,9 +255,6 @@ spec:
                         type: string
                     type: object
                 type: object
-            required:
-            - image
-            - model
             type: object
           status:
             description: EmbeddingServerStatus defines the observed state of EmbeddingServer

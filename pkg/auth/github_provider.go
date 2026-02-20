@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,7 +20,6 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -127,7 +127,7 @@ func (*GitHubProvider) CanHandle(introspectURL string) bool {
 // IntrospectToken introspects a GitHub OAuth token and returns JWT claims
 // This calls GitHub's token validation API to verify the token and extract user information
 func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt.MapClaims, error) {
-	logger.Debugf("Using GitHub token validation provider: %s", g.baseURL)
+	slog.Debug("using GitHub token validation provider", "url", g.baseURL)
 
 	// Apply rate limiting to prevent DoS and respect GitHub API limits
 	if err := g.rateLimiter.Wait(ctx); err != nil {
@@ -162,7 +162,7 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -184,8 +184,9 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 		retryAfter := resp.Header.Get("Retry-After")
 		remaining := resp.Header.Get("X-RateLimit-Remaining")
 		reset := resp.Header.Get("X-RateLimit-Reset")
-		logger.Warnf("GitHub rate limit exceeded - Retry-After: %s, Remaining: %s, Reset: %s",
-			retryAfter, remaining, reset)
+		//nolint:gosec // G706: rate limit headers are public HTTP metadata
+		slog.Warn("github rate limit exceeded",
+			"retry_after", retryAfter, "remaining", remaining, "reset", reset)
 		return nil, fmt.Errorf("github rate limit exceeded, retry after: %s", retryAfter)
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -193,7 +194,8 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	}
 
 	// Parse the GitHub response and convert to JWT claims
-	logger.Debugf("Successfully validated GitHub token (status: %d)", resp.StatusCode)
+	//nolint:gosec // G706: HTTP status code is not sensitive
+	slog.Debug("successfully validated GitHub token", "status", resp.StatusCode)
 	return g.parseGitHubResponse(body)
 }
 

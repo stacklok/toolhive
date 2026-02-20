@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path"
 	"time"
@@ -19,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/lockfile"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -172,7 +172,7 @@ func applyBackwardCompatibility(config *Config) error {
 	// Hack - if the secrets provider type is set to the old `basic` type,
 	// just change it to `encrypted`.
 	if config.Secrets.ProviderType == "basic" {
-		logger.Debugf("cleaning up basic secrets provider, migrating to encrypted type")
+		slog.Debug("cleaning up basic secrets provider, migrating to encrypted type")
 		// Attempt to cleanup path, treat errors as non fatal.
 		oldPath, err := xdg.DataFile("toolhive/secrets")
 		if err == nil {
@@ -250,7 +250,8 @@ func LoadOrCreateConfigFromPath(configPath string) (*Config, error) {
 		config = createNewConfigWithDefaults()
 
 		// Persist the new default to disk using the specific path
-		logger.Debugf("initializing configuration file at %s", configPath)
+		//nolint:gosec // G706: config path is validated and cleaned before use
+		slog.Debug("initializing configuration file", "path", configPath)
 		err = config.saveToPath(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to write default config: %w", err)

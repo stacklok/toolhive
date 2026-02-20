@@ -5,11 +5,10 @@ package status
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"k8s.io/client-go/rest"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -44,7 +43,8 @@ func NewReporter() (Reporter, error) {
 func newReporterFromEnv(vmcpName, vmcpNamespace string) (Reporter, error) {
 	// Check if we're in Kubernetes mode
 	if vmcpName != "" && vmcpNamespace != "" {
-		logger.Debugf("Kubernetes mode detected (VMCP_NAME=%s, VMCP_NAMESPACE=%s), creating K8sReporter", vmcpName, vmcpNamespace)
+		//nolint:gosec // G706: vmcpName and vmcpNamespace are from trusted env vars
+		slog.Debug("kubernetes mode detected, creating K8sReporter", "vmcp_name", vmcpName, "vmcp_namespace", vmcpNamespace)
 
 		// Get in-cluster REST config
 		restConfig, err := rest.InClusterConfig()
@@ -58,11 +58,12 @@ func newReporterFromEnv(vmcpName, vmcpNamespace string) (Reporter, error) {
 			return nil, fmt.Errorf("failed to create K8sReporter: %w", err)
 		}
 
-		logger.Debugf("K8sReporter created for %s/%s", vmcpNamespace, vmcpName)
+		//nolint:gosec // G706: vmcpName and vmcpNamespace are from trusted env vars
+		slog.Debug("k8sReporter created", "namespace", vmcpNamespace, "name", vmcpName)
 		return k8sReporter, nil
 	}
 
 	// CLI mode - use LoggingReporter
-	logger.Debug("CLI mode detected, creating LoggingReporter")
+	slog.Debug("cLI mode detected, creating LoggingReporter")
 	return NewLoggingReporter(), nil
 }

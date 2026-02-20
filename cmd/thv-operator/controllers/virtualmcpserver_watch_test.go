@@ -1787,3 +1787,166 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestMapEmbeddingServerToVirtualMCPServer tests the EmbeddingServer watch handler
+func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		embeddingServer   *mcpv1alpha1.EmbeddingServer
+		virtualMCPServers []mcpv1alpha1.VirtualMCPServer
+		expectedRequests  int
+		expectedNames     []string
+	}{
+		{
+			name: "single VirtualMCPServer references EmbeddingServer",
+			embeddingServer: &mcpv1alpha1.EmbeddingServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "shared-embedding",
+					Namespace: "default",
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config:             vmcpconfig.Config{Group: "test-group"},
+						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "shared-embedding"},
+					},
+				},
+			},
+			expectedRequests: 1,
+			expectedNames:    []string{"vmcp-1"},
+		},
+		{
+			name: "multiple VirtualMCPServers share EmbeddingServer",
+			embeddingServer: &mcpv1alpha1.EmbeddingServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "shared-embedding",
+					Namespace: "default",
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config:             vmcpconfig.Config{Group: "test-group"},
+						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "shared-embedding"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-2",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config:             vmcpconfig.Config{Group: "test-group"},
+						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "shared-embedding"},
+					},
+				},
+			},
+			expectedRequests: 2,
+			expectedNames:    []string{"vmcp-1", "vmcp-2"},
+		},
+		{
+			name: "no VirtualMCPServers reference EmbeddingServer",
+			embeddingServer: &mcpv1alpha1.EmbeddingServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "shared-embedding",
+					Namespace: "default",
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config:             vmcpconfig.Config{Group: "test-group"},
+						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "other-embedding"},
+					},
+				},
+			},
+			expectedRequests: 0,
+			expectedNames:    []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create scheme
+			scheme := runtime.NewScheme()
+			err := mcpv1alpha1.AddToScheme(scheme)
+			require.NoError(t, err)
+
+			// Create objects slice
+			objs := []client.Object{tt.embeddingServer}
+			for i := range tt.virtualMCPServers {
+				objs = append(objs, &tt.virtualMCPServers[i])
+			}
+
+			// Create fake client
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			// Create reconciler
+			r := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			// Test the watch handler
+			requests := r.mapEmbeddingServerToVirtualMCPServer(context.Background(), tt.embeddingServer)
+
+			// Verify results
+			assert.Equal(t, tt.expectedRequests, len(requests), "Expected %d requests, got %d", tt.expectedRequests, len(requests))
+
+			// Verify request names
+			if len(tt.expectedNames) > 0 {
+				requestNames := make([]string, len(requests))
+				for i, req := range requests {
+					requestNames[i] = req.Name
+				}
+				assert.ElementsMatch(t, tt.expectedNames, requestNames)
+			}
+		})
+	}
+}
+
+// TestMapEmbeddingServerToVirtualMCPServer_InvalidObject tests error handling
+func TestMapEmbeddingServerToVirtualMCPServer_InvalidObject(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	err := mcpv1alpha1.AddToScheme(scheme)
+	require.NoError(t, err)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Pass wrong object type
+	wrongObj := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+	}
+
+	requests := r.mapEmbeddingServerToVirtualMCPServer(context.Background(), wrongObj)
+	assert.Nil(t, requests, "Expected nil for invalid object type")
+}

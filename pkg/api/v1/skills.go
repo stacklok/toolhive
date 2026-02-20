@@ -181,10 +181,25 @@ func (s *SkillsRoutes) getSkillInfo(w http.ResponseWriter, r *http.Request) erro
 //	@Produce		json
 //	@Param			request	body		validateSkillRequest	true	"Validate request"
 //	@Success		200		{object}	skills.ValidationResult
-//	@Failure		501		{string}	string	"Not Implemented"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/skills/validate [post]
-func (*SkillsRoutes) validateSkill(_ http.ResponseWriter, _ *http.Request) error {
-	return httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
+func (s *SkillsRoutes) validateSkill(w http.ResponseWriter, r *http.Request) error {
+	var req validateSkillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.skillService.Validate(r.Context(), req.Path)
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
 }
 
 // buildSkill builds a skill from a local directory into an OCI artifact.
@@ -196,10 +211,28 @@ func (*SkillsRoutes) validateSkill(_ http.ResponseWriter, _ *http.Request) error
 //	@Produce		json
 //	@Param			request	body		buildSkillRequest	true	"Build request"
 //	@Success		200		{object}	skills.BuildResult
-//	@Failure		501		{string}	string	"Not Implemented"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/skills/build [post]
-func (*SkillsRoutes) buildSkill(_ http.ResponseWriter, _ *http.Request) error {
-	return httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
+func (s *SkillsRoutes) buildSkill(w http.ResponseWriter, r *http.Request) error {
+	var req buildSkillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.skillService.Build(r.Context(), skills.BuildOptions{
+		Path: req.Path,
+		Tag:  req.Tag,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
 }
 
 // pushSkill pushes a built skill artifact to a remote registry.
@@ -210,8 +243,25 @@ func (*SkillsRoutes) buildSkill(_ http.ResponseWriter, _ *http.Request) error {
 //	@Accept			json
 //	@Param			request	body	pushSkillRequest	true	"Push request"
 //	@Success		204		{string}	string	"No Content"
-//	@Failure		501		{string}	string	"Not Implemented"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/skills/push [post]
-func (*SkillsRoutes) pushSkill(_ http.ResponseWriter, _ *http.Request) error {
-	return httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
+func (s *SkillsRoutes) pushSkill(w http.ResponseWriter, r *http.Request) error {
+	var req pushSkillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	if err := s.skillService.Push(r.Context(), skills.PushOptions{
+		Reference: req.Reference,
+	}); err != nil {
+		return err
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	return nil
 }

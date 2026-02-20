@@ -634,7 +634,6 @@ func TestValidatePublisherProvidedExtensions(t *testing.T) {
 						"tags": ["api", "test"],
 						"metadata": {
 							"stars": 100,
-							"pulls": 5000,
 							"last_updated": "2025-01-15T10:30:00Z"
 						},
 						"permissions": {
@@ -657,6 +656,46 @@ func TestValidatePublisherProvidedExtensions(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid extensions with tool_definitions",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "active",
+						"tools": ["add", "echo"],
+						"tool_definitions": [
+							{
+								"name": "add",
+								"description": "Adds two numbers",
+								"inputSchema": {
+									"type": "object",
+									"properties": {
+										"a": {"type": "number"},
+										"b": {"type": "number"}
+									},
+									"required": ["a", "b"]
+								},
+								"annotations": {
+									"readOnlyHint": true
+								}
+							},
+							{
+								"name": "echo",
+								"description": "Echoes back the input",
+								"inputSchema": {
+									"type": "object",
+									"properties": {
+										"message": {"type": "string"}
+									},
+									"required": ["message"]
+								}
+							}
+						]
+					}
+				}
+			}`,
+			wantErr: false,
+		},
+		{
 			name: "valid remote extensions",
 			data: `{
 				"io.github.stacklok": {
@@ -667,7 +706,6 @@ func TestValidatePublisherProvidedExtensions(t *testing.T) {
 						"tags": ["remote", "api"],
 						"metadata": {
 							"stars": 50,
-							"pulls": 1000,
 							"last_updated": "2025-01-15T10:30:00Z"
 						},
 						"oauth_config": {
@@ -863,7 +901,6 @@ func TestValidatePublisherProvidedExtensions_ConverterOutput(t *testing.T) {
 				"tags": ["api", "github", "repository"],
 				"metadata": {
 					"stars": 23700,
-					"pulls": 5000,
 					"last_updated": "2025-10-18T02:26:51Z"
 				},
 				"permissions": {
@@ -909,7 +946,6 @@ func TestValidatePublisherProvidedExtensions_RemoteConverterOutput(t *testing.T)
 				"tags": ["remote", "sse", "api"],
 				"metadata": {
 					"stars": 150,
-					"pulls": 500,
 					"last_updated": "2025-10-20T10:00:00Z"
 				},
 				"oauth_config": {

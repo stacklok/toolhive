@@ -217,7 +217,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "scopes_supported": {
-                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to [\"openid\", \"profile\", \"email\", \"offline_access\"].",
+                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to registration.DefaultScopes ([\"openid\", \"profile\", \"email\", \"offline_access\"]).",
                         "items": {
                             "type": "string"
                         },
@@ -226,6 +226,9 @@ const docTemplate = `{
                     },
                     "signing_key_config": {
                         "$ref": "#/components/schemas/authserver.SigningKeyRunConfig"
+                    },
+                    "storage": {
+                        "$ref": "#/components/schemas/storage.RunConfig"
                     },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
@@ -843,6 +846,10 @@ const docTemplate = `{
                         "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
                         "type": "string"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
                     "permissions": {
                         "$ref": "#/components/schemas/permissions.Profile"
                     },
@@ -875,6 +882,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {
@@ -931,10 +942,6 @@ const docTemplate = `{
                     "last_updated": {
                         "description": "LastUpdated is the timestamp when the server was last updated, in RFC3339 format",
                         "type": "string"
-                    },
-                    "pulls": {
-                        "description": "Pulls indicates how many times the server image has been downloaded",
-                        "type": "integer"
                     },
                     "stars": {
                         "description": "Stars represents the popularity rating or number of stars for the server",
@@ -1093,6 +1100,10 @@ const docTemplate = `{
                     "oauth_config": {
                         "$ref": "#/components/schemas/registry.OAuthConfig"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
@@ -1111,6 +1122,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {
@@ -1672,6 +1687,87 @@ const docTemplate = `{
                     },
                     "warnings": {
                         "description": "Warnings is a list of non-blocking validation warnings, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "properties": {
+                    "password_env_var": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                        "type": "string"
+                    },
+                    "username_env_var": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "acl_user_config": {
+                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    },
+                    "auth_type": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "type": "string"
+                    },
+                    "dial_timeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
+                        "type": "string"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
+                        "type": "string"
+                    },
+                    "read_timeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
+                        "type": "string"
+                    },
+                    "sentinel_config": {
+                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
+                    },
+                    "write_timeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redis_config": {
+                        "$ref": "#/components/schemas/storage.RedisRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
+                        "type": "integer"
+                    },
+                    "master_name": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
+                        "type": "string"
+                    },
+                    "sentinel_addrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
                         "items": {
                             "type": "string"
                         },
@@ -4165,7 +4261,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4173,7 +4269,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Build a skill",
@@ -4216,7 +4322,7 @@ const docTemplate = `{
                         },
                         "description": "No Content"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4224,7 +4330,27 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Push a skill",
@@ -4267,7 +4393,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4275,7 +4401,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Validate a skill",

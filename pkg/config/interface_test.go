@@ -11,8 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestNewDefaultProvider(t *testing.T) {
@@ -40,7 +38,6 @@ func TestNewKubernetesProvider(t *testing.T) {
 
 func TestDefaultProvider(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("GetConfig", func(t *testing.T) {
 		t.Parallel()
@@ -95,7 +92,6 @@ func TestDefaultProvider(t *testing.T) {
 
 func TestPathProvider(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
@@ -271,7 +267,6 @@ func TestNewProvider(t *testing.T) {
 
 func TestProviderRegistryOperations(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("DefaultProvider_RegistryOperations", func(t *testing.T) {
 		t.Parallel()
@@ -356,7 +351,6 @@ func TestProviderRegistryOperations(t *testing.T) {
 
 func TestProviderBuildEnvOperations(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("PathProvider_BuildEnvOperations", func(t *testing.T) {
 		t.Parallel()

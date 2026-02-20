@@ -200,6 +200,7 @@ func validateImageToServerConversion(t *testing.T, inputData, outputData []byte)
 
 	// Verify core mappings
 	assert.Equal(t, input.Description, output.Description, "Description should match")
+	assert.Equal(t, input.Title, output.Title, "Title should match")
 	assert.Len(t, output.Packages, 1, "Should have exactly one package")
 	assert.Equal(t, input.Image, output.Packages[0].Identifier, "Image identifier should match")
 	assert.Equal(t, input.Transport, output.Packages[0].Transport.Type, "Transport type should match")
@@ -217,6 +218,14 @@ func validateImageToServerConversion(t *testing.T, inputData, outputData []byte)
 	assert.Equal(t, input.Tier, extensions["tier"], "Tier should be in extensions")
 	assert.NotNil(t, extensions["tools"], "Tools should be in extensions")
 	assert.NotNil(t, extensions["tags"], "Tags should be in extensions")
+
+	// Verify overview and tool_definitions if present
+	if input.Overview != "" {
+		assert.Equal(t, input.Overview, extensions["overview"], "Overview should be in extensions")
+	}
+	if len(input.ToolDefinitions) > 0 {
+		assert.NotNil(t, extensions["tool_definitions"], "tool_definitions should be in extensions")
+	}
 
 	// Verify docker_tags if present
 	if len(input.DockerTags) > 0 {
@@ -244,6 +253,7 @@ func validateServerToImageConversion(t *testing.T, inputData, outputData []byte)
 
 	// Verify core mappings
 	assert.Equal(t, input.Description, output.Description, "Description should match")
+	assert.Equal(t, input.Title, output.Title, "Title should match")
 	require.Len(t, input.Packages, 1, "Input should have exactly one package")
 	assert.Equal(t, input.Packages[0].Identifier, output.Image, "Image identifier should match")
 	assert.Equal(t, input.Packages[0].Transport.Type, output.Transport, "Transport type should match")
@@ -266,6 +276,13 @@ func validateServerToImageConversion(t *testing.T, inputData, outputData []byte)
 			assert.NotNil(t, output.CustomMetadata, "CustomMetadata should be extracted from extensions")
 			assert.Greater(t, len(output.CustomMetadata), 0, "CustomMetadata should not be empty")
 		}
+		if _, hasOverview := extensions["overview"]; hasOverview {
+			assert.NotEmpty(t, output.Overview, "Overview should be extracted from extensions")
+		}
+		if _, hasToolDefs := extensions["tool_definitions"]; hasToolDefs {
+			assert.NotNil(t, output.ToolDefinitions, "ToolDefinitions should be extracted from extensions")
+			assert.Greater(t, len(output.ToolDefinitions), 0, "ToolDefinitions should not be empty")
+		}
 	}
 }
 
@@ -279,6 +296,7 @@ func validateRemoteToServerConversion(t *testing.T, inputData, outputData []byte
 
 	// Verify core mappings
 	assert.Equal(t, input.Description, output.Description, "Description should match")
+	assert.Equal(t, input.Title, output.Title, "Title should match")
 	require.Len(t, output.Remotes, 1, "Should have exactly one remote")
 	assert.Equal(t, input.URL, output.Remotes[0].URL, "Remote URL should match")
 	assert.Equal(t, input.Transport, output.Remotes[0].Type, "Transport type should match")
@@ -289,6 +307,16 @@ func validateRemoteToServerConversion(t *testing.T, inputData, outputData []byte
 
 	// Get extensions once and verify all fields
 	extensions := getServerJSONExtensions(t, &output, input.URL)
+
+	// Verify overview and tool_definitions if present
+	if input.Overview != "" {
+		require.NotNil(t, extensions, "Extensions should exist when overview is present")
+		assert.Equal(t, input.Overview, extensions["overview"], "Overview should be in extensions")
+	}
+	if len(input.ToolDefinitions) > 0 {
+		require.NotNil(t, extensions, "Extensions should exist when tool_definitions are present")
+		assert.NotNil(t, extensions["tool_definitions"], "tool_definitions should be in extensions")
+	}
 
 	// Verify env_vars if input has them
 	if len(input.EnvVars) > 0 {
@@ -319,6 +347,7 @@ func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte
 
 	// Verify core mappings
 	assert.Equal(t, input.Description, output.Description, "Description should match")
+	assert.Equal(t, input.Title, output.Title, "Title should match")
 	require.Len(t, input.Remotes, 1, "Input should have exactly one remote")
 	assert.Equal(t, input.Remotes[0].URL, output.URL, "Remote URL should match")
 	assert.Equal(t, input.Remotes[0].Type, output.Transport, "Transport type should match")
@@ -330,6 +359,13 @@ func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte
 	// Verify fields were extracted from extensions if present
 	extensions := getServerJSONExtensions(t, &input, output.URL)
 	if extensions != nil {
+		if _, hasOverview := extensions["overview"]; hasOverview {
+			assert.NotEmpty(t, output.Overview, "Overview should be extracted from extensions")
+		}
+		if _, hasToolDefs := extensions["tool_definitions"]; hasToolDefs {
+			assert.NotNil(t, output.ToolDefinitions, "ToolDefinitions should be extracted from extensions")
+			assert.Greater(t, len(output.ToolDefinitions), 0, "ToolDefinitions should not be empty")
+		}
 		if _, hasEnvVars := extensions["env_vars"]; hasEnvVars {
 			assert.NotNil(t, output.EnvVars, "EnvVars should be extracted from extensions")
 			assert.Greater(t, len(output.EnvVars), 0, "EnvVars should not be empty")

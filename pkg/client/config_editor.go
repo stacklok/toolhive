@@ -38,6 +38,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -49,7 +50,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/lockfile"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // ConfigUpdater defines the interface for types which can edit MCP client config files.
@@ -143,11 +143,11 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 		// Write back to the file atomically
 		if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
-			logger.Warnf("Failed to write JSON config file: %v", err)
+			slog.Warn("failed to write JSON config file", "error", err)
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 
-		logger.Debugf("Successfully updated the client config file for MCPServer %s", serverName)
+		slog.Debug("successfully updated client config file", "server", serverName)
 		return nil
 	})
 }
@@ -179,7 +179,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 		if err := v.Patch([]byte(patch)); err != nil {
 			// If the patch fails because the path doesn't exist, that's fine - nothing to remove
 			if strings.Contains(err.Error(), "value not found") || strings.Contains(err.Error(), "path not found") {
-				logger.Debugf("MCPServer %s not found in client config file, nothing to remove", serverName)
+				slog.Debug("mcpserver not found in client config file, nothing to remove", "server", serverName)
 				return nil
 			}
 			// For other errors, return the error
@@ -193,11 +193,11 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 
 		// Write back to the file atomically
 		if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
-			logger.Warnf("Failed to write JSON config file: %v", err)
+			slog.Warn("failed to write JSON config file", "error", err)
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 
-		logger.Debugf("Successfully removed the MCPServer %s from the client config file", serverName)
+		slog.Debug("successfully removed mcpserver from client config file", "server", serverName)
 		return nil
 	})
 }
@@ -249,11 +249,11 @@ func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 		// Write back to file atomically
 		if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
-			logger.Warnf("Failed to write YAML config file: %v", err)
+			slog.Warn("failed to write YAML config file", "error", err)
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 
-		logger.Debugf("Successfully updated YAML client config file for server %s", serverName)
+		slog.Debug("successfully updated YAML client config file", "server", serverName)
 		return nil
 	})
 }
@@ -293,11 +293,11 @@ func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
 
 		// Write back to file atomically
 		if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
-			logger.Warnf("Failed to write YAML config file: %v", err)
+			slog.Warn("failed to write YAML config file", "error", err)
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 
-		logger.Debugf("Successfully removed server %s from YAML config file", serverName)
+		slog.Debug("successfully removed server from YAML config file", "server", serverName)
 		return nil
 	})
 }
@@ -330,7 +330,7 @@ func writeTOMLConfig(path string, config map[string]any) error {
 		return fmt.Errorf("failed to marshal TOML: %w", err)
 	}
 	if err := fileutils.AtomicWriteFile(path, updatedContent, 0600); err != nil {
-		logger.Warnf("Failed to write TOML config file: %v", err)
+		slog.Warn("failed to write TOML config file", "error", err)
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 	return nil
@@ -398,7 +398,7 @@ func (tcu *TOMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 			return err
 		}
 
-		logger.Debugf("Successfully updated TOML client config file for server %s", serverName)
+		slog.Debug("successfully updated TOML client config file", "server", serverName)
 		return nil
 	})
 }
@@ -432,7 +432,7 @@ func (tcu *TOMLConfigUpdater) Remove(serverName string) error {
 			return err
 		}
 
-		logger.Debugf("Successfully removed server %s from TOML config file", serverName)
+		slog.Debug("successfully removed server from TOML config file", "server", serverName)
 		return nil
 	})
 }
@@ -530,7 +530,7 @@ func (tmu *TOMLMapConfigUpdater) Upsert(serverName string, data MCPServer) error
 			return err
 		}
 
-		logger.Debugf("Successfully updated TOML client config file for server %s", serverName)
+		slog.Debug("successfully updated TOML client config file", "server", serverName)
 		return nil
 	})
 }
@@ -566,7 +566,7 @@ func (tmu *TOMLMapConfigUpdater) Remove(serverName string) error {
 			return err
 		}
 
-		logger.Debugf("Successfully removed server %s from TOML config file", serverName)
+		slog.Debug("successfully removed server from TOML config file", "server", serverName)
 		return nil
 	})
 }
@@ -665,7 +665,7 @@ func ensurePathExists(content []byte, path string) []byte {
 		v, _ := hujson.Parse(content)
 		err := v.Patch([]byte(patch))
 		if err != nil {
-			logger.Errorf("Failed to patch file: %v", err)
+			slog.Error("failed to patch file", "error", err)
 		}
 
 		// Update the content with the patched version

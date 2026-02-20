@@ -8,14 +8,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestValidateCACertificate(t *testing.T) {
 	t.Parallel()
-	// Initialize logger for testing
-	logger.Initialize()
 
 	tests := []struct {
 		name        string

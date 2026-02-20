@@ -26,12 +26,20 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
-// maxToolsToReturn is the maximum number of results returned to the caller.
-const maxToolsToReturn = 8
+// Default values for configurable search parameters.
+const (
+	// DefaultMaxToolsToReturn is the maximum number of results returned to the caller.
+	DefaultMaxToolsToReturn = 8
 
-// hybridSemanticToolsRatio controls the proportion of semantic vs FTS5
-// results in hybrid mode: 0 = all FTS5, 1 = all semantic.
-const hybridSemanticToolsRatio = 0.5
+	// DefaultHybridSemanticToolsRatio controls the proportion of semantic vs FTS5
+	// results in hybrid mode: 0 = all FTS5, 1 = all semantic.
+	DefaultHybridSemanticToolsRatio = 0.5
+
+	// DefaultSemanticDistanceThreshold is the maximum cosine distance for semantic search results.
+	// Results with distance > threshold are filtered out in searchSemantic only.
+	// Cosine distance: 0 = identical, 2 = opposite.
+	DefaultSemanticDistanceThreshold = 1.0
+)
 
 //go:embed schema.sql
 var schemaSQL string
@@ -40,22 +48,28 @@ var schemaSQL string
 // and optional vector embedding-based semantic search.
 // It satisfies the optimizer.ToolStore interface.
 type sqliteToolStore struct {
-	db              *sql.DB
-	embeddingClient types.EmbeddingClient // nil = FTS5-only
+	db                        *sql.DB
+	embeddingClient           types.EmbeddingClient // nil = FTS5-only
+	maxToolsToReturn          int
+	hybridSemanticRatio       float64
+	semanticDistanceThreshold float64
 }
 
 // NewSQLiteToolStore creates a new ToolStore backed by a shared in-memory
 // SQLite database. All callers of this constructor share the same database,
 // which is the intended production behavior (one shared store per server).
 // If embeddingClient is non-nil, semantic search is enabled alongside FTS5.
-func NewSQLiteToolStore(embeddingClient types.EmbeddingClient) (types.ToolStore, error) {
-	return newSQLiteToolStore("file:memdb?mode=memory&cache=shared", embeddingClient)
+// If cfg is non-nil, its search parameters override the defaults; nil values use defaults.
+func NewSQLiteToolStore(embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig) (types.ToolStore, error) {
+	return newSQLiteToolStore("file:memdb?mode=memory&cache=shared", embeddingClient, cfg)
 }
 
 // newSQLiteToolStore creates a tool store backed by a database described
 // in the connectionString. It is useful for tests, where we want multiple
 // isolated (non-shared) databases.
-func newSQLiteToolStore(connectionString string, embeddingClient types.EmbeddingClient) (sqliteToolStore, error) {
+func newSQLiteToolStore(
+	connectionString string, embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig,
+) (sqliteToolStore, error) {
 	db, err := sql.Open("sqlite", connectionString)
 	if err != nil {
 		return sqliteToolStore{}, fmt.Errorf("failed to open sqlite database: %w", err)
@@ -67,7 +81,28 @@ func newSQLiteToolStore(connectionString string, embeddingClient types.Embedding
 		return sqliteToolStore{}, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	return sqliteToolStore{db: db, embeddingClient: embeddingClient}, nil
+	maxTools := DefaultMaxToolsToReturn
+	hybridRatio := DefaultHybridSemanticToolsRatio
+	semanticThreshold := DefaultSemanticDistanceThreshold
+	if cfg != nil {
+		if cfg.MaxToolsToReturn != nil {
+			maxTools = *cfg.MaxToolsToReturn
+		}
+		if cfg.HybridSemanticRatio != nil {
+			hybridRatio = *cfg.HybridSemanticRatio
+		}
+		if cfg.SemanticDistanceThreshold != nil {
+			semanticThreshold = *cfg.SemanticDistanceThreshold
+		}
+	}
+
+	return sqliteToolStore{
+		db:                        db,
+		embeddingClient:           embeddingClient,
+		maxToolsToReturn:          maxTools,
+		hybridSemanticRatio:       hybridRatio,
+		semanticDistanceThreshold: semanticThreshold,
+	}, nil
 }
 
 // UpsertTools adds or updates tools in the store.
@@ -145,11 +180,11 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 		if ftsExpr == "" {
 			return nil, nil
 		}
-		return s.searchFTS5(ctx, ftsExpr, allowedTools, maxToolsToReturn)
+		return s.searchFTS5(ctx, ftsExpr, allowedTools, s.maxToolsToReturn)
 	}
 
 	// Hybrid search: derive per-method limits from the ratio.
-	ftsLimit, semanticLimit := hybridSearchLimits(maxToolsToReturn, hybridSemanticToolsRatio)
+	ftsLimit, semanticLimit := hybridSearchLimits(s.maxToolsToReturn, s.hybridSemanticRatio)
 
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -175,7 +210,7 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 		return nil, err
 	}
 
-	return mergeResults(ftsResults, semanticResults, maxToolsToReturn), nil
+	return mergeResults(ftsResults, semanticResults, s.maxToolsToReturn), nil
 }
 
 // Close releases the underlying database connection.
@@ -285,6 +320,13 @@ func (s sqliteToolStore) searchSemantic(
 
 		emb := decodeEmbedding(embBlob)
 		dist := similarity.CosineDistance(queryVec, emb)
+
+		// Filter by semantic distance threshold.
+		// This is meaningful only for cosine distance (semantic search).
+		// FTS5 ranks are normalized BM25 scores, not true distance measures.
+		if dist > s.semanticDistanceThreshold {
+			continue
+		}
 
 		matches = append(matches, types.ToolMatch{
 			Name:        name,

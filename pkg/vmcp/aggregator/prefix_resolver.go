@@ -5,9 +5,9 @@ package aggregator
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -39,7 +39,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 	_ context.Context,
 	toolsByBackend map[string][]vmcp.Tool,
 ) (map[string]*ResolvedTool, error) {
-	logger.Debugf("Resolving conflicts using prefix strategy (format: %s)", r.PrefixFormat)
+	slog.Debug("resolving conflicts using prefix strategy", "format", r.PrefixFormat)
 
 	resolved := make(map[string]*ResolvedTool)
 
@@ -51,8 +51,11 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 			// Check if this resolved name is unique
 			if existing, exists := resolved[resolvedName]; exists {
 				// This should be extremely rare with prefixing, but handle it
-				logger.Warnf("Collision after prefixing: %s from %s conflicts with %s from %s",
-					resolvedName, backendID, existing.ResolvedName, existing.BackendID)
+				slog.Warn("collision after prefixing",
+					"resolved_name", resolvedName,
+					"backend", backendID,
+					"existing_name", existing.ResolvedName,
+					"existing_backend", existing.BackendID)
 				continue
 			}
 
@@ -67,7 +70,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 		}
 	}
 
-	logger.Infof("Prefix strategy created %d unique tools", len(resolved))
+	slog.Info("prefix strategy created unique tools", "count", len(resolved))
 
 	return resolved, nil
 }

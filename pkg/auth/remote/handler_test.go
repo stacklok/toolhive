@@ -16,17 +16,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
 	resourceMetadataPath = "/.well-known/resource-metadata"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 func TestDiscoverIssuerAndScopes(t *testing.T) {
 	t.Parallel()

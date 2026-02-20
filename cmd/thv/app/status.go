@@ -6,6 +6,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"text/tabwriter"
 	"time"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -131,7 +131,7 @@ func printStatusTextOutput(workload core.Workload) {
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
-		logger.Errorf("Warning: Failed to flush tabwriter: %v", err)
+		slog.Error(fmt.Sprintf("Failed to flush tabwriter: %v", err))
 	}
 }
 

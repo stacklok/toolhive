@@ -6,13 +6,12 @@ package awssts
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // STSClient defines the interface for STS operations, enabling mock injection for testing.
@@ -77,7 +76,7 @@ func (e *Exchanger) ExchangeToken(
 
 	output, err := e.client.AssumeRoleWithWebIdentity(ctx, input)
 	if err != nil {
-		logger.Debugf("STS AssumeRoleWithWebIdentity failed: %v", err)
+		slog.Debug("STS AssumeRoleWithWebIdentity failed", "error", err)
 		return nil, ErrSTSExchangeFailed
 	}
 

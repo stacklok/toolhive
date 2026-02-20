@@ -1,21 +1,18 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package docker
+package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
-// ContainerMonitor watches a container's state and reports when it exits
-type ContainerMonitor struct {
-	runtime          runtime.Runtime
+// WorkloadMonitor watches a workload's state and reports when it exits
+type WorkloadMonitor struct {
+	runtime          Runtime
 	containerName    string
 	stopCh           chan struct{}
 	errorCh          chan error
@@ -25,9 +22,9 @@ type ContainerMonitor struct {
 	initialStartTime time.Time // Track container start time to detect restarts
 }
 
-// NewMonitor creates a new container monitor
-func NewMonitor(rt runtime.Runtime, containerName string) runtime.Monitor {
-	return &ContainerMonitor{
+// NewMonitor creates a new workload monitor
+func NewMonitor(rt Runtime, containerName string) Monitor {
+	return &WorkloadMonitor{
 		runtime:       rt,
 		containerName: containerName,
 		stopCh:        make(chan struct{}),
@@ -35,8 +32,8 @@ func NewMonitor(rt runtime.Runtime, containerName string) runtime.Monitor {
 	}
 }
 
-// StartMonitoring starts monitoring the container
-func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, error) {
+// StartMonitoring starts monitoring the workload
+func (m *WorkloadMonitor) StartMonitoring(ctx context.Context) (<-chan error, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -69,8 +66,8 @@ func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, e
 	return m.errorCh, nil
 }
 
-// StopMonitoring stops monitoring the container
-func (m *ContainerMonitor) StopMonitoring() {
+// StopMonitoring stops monitoring the workload
+func (m *WorkloadMonitor) StopMonitoring() {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -83,8 +80,8 @@ func (m *ContainerMonitor) StopMonitoring() {
 	m.running = false
 }
 
-// monitor checks the container status periodically
-func (m *ContainerMonitor) monitor(ctx context.Context) {
+// monitor checks the workload status periodically
+func (m *WorkloadMonitor) monitor(ctx context.Context) {
 	defer m.wg.Done()
 
 	// Check interval
@@ -161,9 +158,4 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// IsContainerNotFound checks if the error is a container not found error
-func IsContainerNotFound(err error) bool {
-	return errors.Is(err, ErrContainerNotFound) || (err != nil && err.Error() == ErrContainerNotFound.Error())
 }

@@ -7,10 +7,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
@@ -27,7 +27,7 @@ func (*Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 			// Always restore body for next handler, even on error
 			if err != nil {
 				// Log the error and restore an empty body to ensure consistent behavior
-				logger.Warnw("failed to read request body in backend enrichment middleware",
+				slog.Warn("failed to read request body in backend enrichment middleware",
 					"error", err)
 				r.Body = io.NopCloser(bytes.NewReader([]byte{}))
 			} else {

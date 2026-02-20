@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	groupval "github.com/stacklok/toolhive-core/validation/group"
@@ -15,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -73,13 +73,13 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 
 	// Save the workload state
 	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
+		slog.Error("failed to save workload config", "error", err)
 		return nil, fmt.Errorf("failed to save workload config: %w", err)
 	}
 
 	// Start workload
 	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
-		logger.Errorf("Failed to start workload: %v", err)
+		slog.Error("failed to start workload", "error", err)
 		return nil, fmt.Errorf("failed to start workload: %w", err)
 	}
 
@@ -91,7 +91,7 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 	// If ProxyPort is 0, reuse the existing port
 	if req.ProxyPort == 0 && existingPort > 0 {
 		req.ProxyPort = existingPort
-		logger.Debugf("Reusing existing port %d for workload %s", existingPort, name)
+		slog.Debug("reusing existing port", "port", existingPort, "name", name)
 	}
 
 	// Build the full run config
@@ -314,7 +314,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 
 	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{}, options...)
 	if err != nil {
-		logger.Errorf("Failed to build run config: %v", err)
+		slog.Error("failed to build run config", "error", err)
 		return nil, fmt.Errorf("%w: Failed to build run config: %w", retriever.ErrInvalidRunConfig, err)
 	}
 

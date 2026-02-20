@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -18,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -52,11 +53,8 @@ observable, and controlled way to expose multiple MCP servers through a single e
 	Run: func(cmd *cobra.Command, _ []string) {
 		// If no subcommand is provided, print help
 		if err := cmd.Help(); err != nil {
-			logger.Errorf("Error displaying help: %v", err)
+			slog.Error(fmt.Sprintf("Error displaying help: %v", err))
 		}
-	},
-	PersistentPreRun: func(_ *cobra.Command, _ []string) {
-		logger.Initialize()
 	},
 }
 
@@ -66,13 +64,13 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
 	err := viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 	if err != nil {
-		logger.Errorf("Error binding debug flag: %v", err)
+		slog.Error(fmt.Sprintf("Error binding debug flag: %v", err))
 	}
 
 	rootCmd.PersistentFlags().StringP("config", "c", "", "Path to vMCP configuration file")
 	err = viper.BindPFlag("config", rootCmd.PersistentFlags().Lookup("config"))
 	if err != nil {
-		logger.Errorf("Error binding config flag: %v", err)
+		slog.Error(fmt.Sprintf("Error binding config flag: %v", err))
 	}
 
 	// Add subcommands
@@ -115,7 +113,7 @@ func newVersionCmd() *cobra.Command {
 		Long:  "Display version information for vmcp",
 		Run: func(_ *cobra.Command, _ []string) {
 			// Version information will be injected at build time
-			logger.Infof("vmcp version: %s", getVersion())
+			slog.Info(fmt.Sprintf("vmcp version: %s", getVersion()))
 		},
 	}
 }
@@ -138,42 +136,42 @@ This command checks:
 				return fmt.Errorf("no configuration file specified, use --config flag")
 			}
 
-			logger.Infof("Validating configuration: %s", configPath)
+			slog.Info(fmt.Sprintf("Validating configuration: %s", configPath))
 
 			// Load configuration from YAML
 			envReader := &env.OSReader{}
 			loader := config.NewYAMLLoader(configPath, envReader)
 			cfg, err := loader.Load()
 			if err != nil {
-				logger.Errorf("Failed to load configuration: %v", err)
+				slog.Error(fmt.Sprintf("Failed to load configuration: %v", err))
 				return fmt.Errorf("configuration loading failed: %w", err)
 			}
 
-			logger.Debugf("Configuration loaded successfully, performing validation...")
+			slog.Debug("configuration loaded successfully, performing validation")
 
 			// Validate configuration
 			validator := config.NewValidator()
 			if err := validator.Validate(cfg); err != nil {
-				logger.Errorf("Configuration validation failed: %v", err)
+				slog.Error(fmt.Sprintf("Configuration validation failed: %v", err))
 				return fmt.Errorf("validation failed: %w", err)
 			}
 
-			logger.Infof("✓ Configuration is valid")
-			logger.Infof("  Name: %s", cfg.Name)
-			logger.Infof("  Group: %s", cfg.Group)
-			logger.Infof("  Incoming Auth: %s", cfg.IncomingAuth.Type)
-			logger.Infof("  Outgoing Auth: %s (source: %s)",
+			slog.Info("✓ Configuration is valid")
+			slog.Info(fmt.Sprintf("  Name: %s", cfg.Name))
+			slog.Info(fmt.Sprintf("  Group: %s", cfg.Group))
+			slog.Info(fmt.Sprintf("  Incoming Auth: %s", cfg.IncomingAuth.Type))
+			slog.Info(fmt.Sprintf("  Outgoing Auth: %s (source: %s)",
 				func() string {
 					if len(cfg.OutgoingAuth.Backends) > 0 {
 						return fmt.Sprintf("%d backends configured", len(cfg.OutgoingAuth.Backends))
 					}
 					return "default only"
 				}(),
-				cfg.OutgoingAuth.Source)
-			logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+				cfg.OutgoingAuth.Source))
+			slog.Info(fmt.Sprintf("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution))
 
 			if len(cfg.CompositeTools) > 0 {
-				logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
+				slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(cfg.CompositeTools)))
 			}
 
 			return nil
@@ -200,28 +198,28 @@ func getStatusReportingInterval(cfg *config.Config) time.Duration {
 
 // loadAndValidateConfig loads and validates the vMCP configuration file
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
-	logger.Infof("Loading configuration from: %s", configPath)
+	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
 
 	envReader := &env.OSReader{}
 	loader := config.NewYAMLLoader(configPath, envReader)
 	cfg, err := loader.Load()
 	if err != nil {
-		logger.Errorf("Failed to load configuration: %v", err)
+		slog.Error(fmt.Sprintf("Failed to load configuration: %v", err))
 		return nil, fmt.Errorf("configuration loading failed: %w", err)
 	}
 
 	validator := config.NewValidator()
 	if err := validator.Validate(cfg); err != nil {
-		logger.Errorf("Configuration validation failed: %v", err)
+		slog.Error(fmt.Sprintf("Configuration validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	logger.Infof("Configuration loaded and validated successfully")
-	logger.Infof("  Name: %s", cfg.Name)
-	logger.Infof("  Group: %s", cfg.Group)
-	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+	slog.Info("configuration loaded and validated successfully")
+	slog.Info(fmt.Sprintf("  Name: %s", cfg.Name))
+	slog.Info(fmt.Sprintf("  Group: %s", cfg.Group))
+	slog.Info(fmt.Sprintf("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution))
 	if len(cfg.CompositeTools) > 0 {
-		logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
+		slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(cfg.CompositeTools)))
 	}
 
 	return cfg, nil
@@ -231,7 +229,7 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 // Returns empty backends list with no error if running in Kubernetes where CLI discovery doesn't work
 func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
 	// Create outgoing authentication registry
-	logger.Info("Initializing outgoing authentication")
+	slog.Info("initializing outgoing authentication")
 	envReader := &env.OSReader{}
 	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, envReader)
 	if err != nil {
@@ -248,7 +246,7 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	var discoverer aggregator.BackendDiscoverer
 	if len(cfg.Backends) > 0 {
 		// Static mode: Use pre-configured backends from config (no K8s API access needed)
-		logger.Infof("Static mode: using %d pre-configured backends", len(cfg.Backends))
+		slog.Info(fmt.Sprintf("Static mode: using %d pre-configured backends", len(cfg.Backends)))
 		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
 			cfg.Backends,
 			cfg.OutgoingAuth,
@@ -256,7 +254,7 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		)
 	} else {
 		// Dynamic mode: Discover backends at runtime from K8s API
-		logger.Info("Dynamic mode: initializing group manager for backend discovery")
+		slog.Info("dynamic mode: initializing group manager for backend discovery")
 		groupsManager, err := groups.NewManager()
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
@@ -268,18 +266,18 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		}
 	}
 
-	logger.Infof("Discovering backends in group: %s", cfg.Group)
+	slog.Info(fmt.Sprintf("Discovering backends in group: %s", cfg.Group))
 	backends, err := discoverer.Discover(ctx, cfg.Group)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover backends: %w", err)
 	}
 
 	if len(backends) == 0 {
-		logger.Warnf("No backends discovered in group %s - vmcp will start but have no backends to proxy", cfg.Group)
+		slog.Warn(fmt.Sprintf("No backends discovered in group %s - vmcp will start but have no backends to proxy", cfg.Group))
 		return []vmcp.Backend{}, backendClient, nil
 	}
 
-	logger.Infof("Discovered %d backends", len(backends))
+	slog.Info(fmt.Sprintf("Discovered %d backends", len(backends)))
 	return backends, backendClient, nil
 }
 
@@ -306,7 +304,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		// Create default audit config with reasonable defaults
 		cfg.Audit = audit.DefaultConfig()
 		cfg.Audit.Component = "vmcp-server"
-		logger.Info("Audit logging enabled with default configuration")
+		slog.Info("audit logging enabled with default configuration")
 	}
 
 	// Discover backends and create client
@@ -331,7 +329,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		defer func() {
 			err := telemetryProvider.Shutdown(ctx)
 			if err != nil {
-				logger.Errorf("failed to shutdown telemetry provider: %v", err)
+				slog.Error(fmt.Sprintf("failed to shutdown telemetry provider: %v", err))
 			}
 		}()
 	}
@@ -355,14 +353,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
-	logger.Info("Dynamic backend registry enabled for Kubernetes environment")
+	slog.Info("dynamic backend registry enabled for Kubernetes environment")
 
 	// Backend watcher for dynamic backend discovery
 	var backendWatcher *k8s.BackendWatcher
 
 	// If outgoingAuth.source is "discovered", start K8s backend watcher to watch backend changes
 	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == "discovered" {
-		logger.Info("Detected dynamic backend discovery mode (outgoingAuth.source: discovered)")
+		slog.Info("detected dynamic backend discovery mode (outgoingAuth.source: discovered)")
 
 		// Get in-cluster REST config
 		restConfig, err := rest.InClusterConfig()
@@ -385,26 +383,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 		// Start K8s backend watcher in background goroutine
 		go func() {
-			logger.Info("Starting Kubernetes backend watcher in background")
+			slog.Info("starting Kubernetes backend watcher in background")
 			if err := backendWatcher.Start(ctx); err != nil {
-				logger.Errorf("Backend watcher stopped with error: %v", err)
+				slog.Error(fmt.Sprintf("Backend watcher stopped with error: %v", err))
 			}
 		}()
 
-		logger.Info("Kubernetes backend watcher started for dynamic backend discovery")
+		slog.Info("kubernetes backend watcher started for dynamic backend discovery")
 	}
 
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
 
-	logger.Infof("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type)
+	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type))
 
 	authMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 
-	logger.Infof("Incoming authentication configured: %s", cfg.IncomingAuth.Type)
+	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", cfg.IncomingAuth.Type))
 
 	// Create server configuration with flags
 	// Cobra validates flag types at parse time, so these values are safe to use directly
@@ -451,18 +449,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			}
 
 			if cbConfig.Enabled {
-				logger.Infof("Circuit breaker enabled (threshold: %d failures, timeout: %v)",
-					cbConfig.FailureThreshold, time.Duration(cbConfig.Timeout))
+				slog.Info(fmt.Sprintf("Circuit breaker enabled (threshold: %d failures, timeout: %v)",
+					cbConfig.FailureThreshold, time.Duration(cbConfig.Timeout)))
 			}
 		}
 
-		logger.Info("Health monitoring configured from operational settings")
+		slog.Info("health monitoring configured from operational settings")
 	}
 
 	// Create status reporter using factory (auto-detects K8s vs CLI mode)
 	statusReporter, err := vmcpstatus.NewReporter()
 	if err != nil {
 		return fmt.Errorf("failed to create status reporter: %w", err)
+	}
+
+	optCfg, err := optimizer.GetAndValidateConfig(cfg.Optimizer)
+	if err != nil {
+		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
 	serverCfg := &vmcpserver.Config{
@@ -479,10 +482,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		StatusReportingInterval: getStatusReportingInterval(cfg),
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
-	}
-
-	if cfg.Optimizer != nil {
-		serverCfg.OptimizerEnabled = true
+		OptimizerConfig:         optCfg,
 	}
 
 	// Convert composite tool configurations to workflow definitions
@@ -491,7 +491,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to convert composite tool definitions: %w", err)
 	}
 	if len(workflowDefs) > 0 {
-		logger.Infof("Loaded %d composite tool workflow definitions", len(workflowDefs))
+		slog.Info(fmt.Sprintf("Loaded %d composite tool workflow definitions", len(workflowDefs)))
 	}
 
 	// Create server with discovery manager, backend registry, and workflow definitions
@@ -501,7 +501,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Start server (blocks until shutdown signal)
-	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())
+	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
 }
 
@@ -516,7 +516,7 @@ func aggregateCapabilities(
 	agg aggregator.Aggregator,
 	backends []vmcp.Backend,
 ) (*aggregator.AggregatedCapabilities, error) {
-	logger.Info("Aggregating capabilities from backends")
+	slog.Info("aggregating capabilities from backends")
 
 	if len(backends) > 0 {
 		aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -527,17 +527,17 @@ func aggregateCapabilities(
 			return nil, fmt.Errorf("failed to aggregate capabilities: %w", err)
 		}
 
-		logger.Infof("Aggregated %d tools, %d resources, %d prompts from %d backends",
+		slog.Info(fmt.Sprintf("Aggregated %d tools, %d resources, %d prompts from %d backends",
 			capabilities.Metadata.ToolCount,
 			capabilities.Metadata.ResourceCount,
 			capabilities.Metadata.PromptCount,
-			capabilities.Metadata.BackendCount)
+			capabilities.Metadata.BackendCount))
 
 		return capabilities, nil
 	}
 
 	// No backends available - create empty capabilities
-	logger.Warnf("No backends available - starting with empty capabilities")
+	slog.Warn("no backends available - starting with empty capabilities")
 	return &aggregator.AggregatedCapabilities{
 		Tools:     []vmcp.Tool{},
 		Resources: []vmcp.Resource{},

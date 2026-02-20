@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -30,7 +31,6 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -267,7 +267,7 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		return nil, errors.New("config is required")
 	}
 
-	logger.Infow("creating OAuth2 provider",
+	slog.Info("creating OAuth2 provider",
 		"authorization_endpoint", config.AuthorizationEndpoint,
 		"token_endpoint", config.TokenEndpoint,
 	)
@@ -285,7 +285,7 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		opt(p)
 	}
 
-	logger.Infow("OAuth2 provider created successfully",
+	slog.Info("oauth2 provider created successfully",
 		"authorization_endpoint", config.AuthorizationEndpoint,
 		"token_endpoint", config.TokenEndpoint,
 	)
@@ -305,7 +305,7 @@ func (p *BaseOAuth2Provider) authorizationEndpoint() string {
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
 func (p *BaseOAuth2Provider) AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error) {
-	logger.Debugw("building authorization URL",
+	slog.Debug("building authorization URL",
 		"authorization_endpoint", p.authorizationEndpoint(),
 		"has_pkce", codeChallenge != "",
 	)
@@ -384,7 +384,7 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 		return nil, errors.New("authorization code is required")
 	}
 
-	logger.Infow("exchanging authorization code for tokens",
+	slog.Info("exchanging authorization code for tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 		"has_pkce_verifier", codeVerifier != "",
 	)
@@ -408,7 +408,7 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 		return nil, err
 	}
 
-	logger.Infow("authorization code exchange successful",
+	slog.Info("authorization code exchange successful",
 		"has_refresh_token", tokens.RefreshToken != "",
 		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
 	)
@@ -422,7 +422,7 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		return nil, errors.New("refresh token is required")
 	}
 
-	logger.Infow("refreshing tokens",
+	slog.Info("refreshing tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 	)
 
@@ -447,7 +447,7 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		return nil, err
 	}
 
-	logger.Infow("token refresh successful",
+	slog.Info("token refresh successful",
 		"has_new_refresh_token", tokens.RefreshToken != "",
 		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
 	)
@@ -485,7 +485,7 @@ func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken stri
 		return nil, errors.New("access token is required")
 	}
 
-	logger.Debugw("fetching user info",
+	slog.Debug("fetching user info",
 		"userinfo_endpoint", cfg.EndpointURL,
 	)
 
@@ -519,7 +519,7 @@ func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken stri
 		// Drain response body for connection reuse, but don't log it to avoid
 		// potentially exposing sensitive information from the upstream provider.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		logger.Debugw("userinfo request failed",
+		slog.Debug("userinfo request failed", //nolint:gosec // G706: status code is an integer
 			"status", resp.StatusCode)
 		return nil, fmt.Errorf("userinfo request failed with status %d", resp.StatusCode)
 	}
@@ -550,7 +550,7 @@ func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken stri
 		Claims:  claims,
 	}
 
-	logger.Debugw("user info retrieved",
+	slog.Debug("user info retrieved",
 		"subject", userInfo.Subject,
 		"has_email", userInfo.Email != "",
 	)
@@ -567,7 +567,7 @@ func formatOAuth2Error(err error, prefix string) error {
 			return fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription)
 		}
 		// Log full response for debugging, but return sanitized error to prevent information disclosure
-		logger.Debugw("token request failed",
+		slog.Debug("token request failed",
 			"status", retrieveErr.Response.StatusCode,
 			"body", string(retrieveErr.Body))
 		return fmt.Errorf("%s with status %d", prefix, retrieveErr.Response.StatusCode)

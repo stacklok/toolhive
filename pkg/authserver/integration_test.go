@@ -25,6 +25,7 @@ import (
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -107,7 +108,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 
 	// Apply options
 	options := &testServerOptions{
-		scopes: []string{"openid", "profile", "offline_access"},
+		scopes: registration.DefaultScopes,
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -553,7 +554,7 @@ func setupTestServerWithMockOIDC(t *testing.T, m *mockoidc.MockOIDC, extraOpts .
 
 	opts := append([]testServerOption{
 		withUpstream(upstreamIDP),
-		withScopes([]string{"openid", "profile", "email", "offline_access"}),
+		withScopes(registration.DefaultScopes),
 	}, extraOpts...)
 	ts := setupTestServer(t, opts...)
 
@@ -813,7 +814,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC) *testSe
 		RedirectURIs:  []string{testRedirectURI},
 		ResponseTypes: []string{"code"},
 		GrantTypes:    []string{"authorization_code", "refresh_token"},
-		Scopes:        []string{"openid", "profile", "email", "offline_access"},
+		Scopes:        registration.DefaultScopes,
 		Audience:      []string{testAudience},
 		Public:        true,
 	})
@@ -1038,6 +1039,54 @@ func TestIntegration_NoRefreshToken_WithoutOfflineAccess(t *testing.T) {
 	// Refresh token must NOT be present without offline_access
 	_, hasRefresh := tokenResp["refresh_token"]
 	assert.False(t, hasRefresh, "refresh_token must NOT be issued without offline_access scope")
+}
+
+// TestIntegration_ScopeElevation_Rejected verifies that the authorization
+// server rejects requests for scopes the client is not registered for.
+// The client is registered with only ["openid"] and attempts to request
+// "openid admin" — fosite's ExactScopeStrategy must reject this at the
+// /authorize endpoint with an invalid_scope error redirect.
+func TestIntegration_ScopeElevation_Rejected(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	// Register client with only "openid" scope (no profile, email, etc.)
+	ts := setupTestServerWithMockOIDC(t, m,
+		withScopes([]string{"openid"}),
+	)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	client := noRedirectClient()
+
+	// Attempt to authorize with a scope ("admin") the client is not registered for
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"scope-elevation-test"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid admin"},
+	}.Encode()
+
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Fosite should redirect back to the client with an error
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"fosite should redirect with error for unregistered scope")
+	location, err := resp.Location()
+	require.NoError(t, err)
+
+	assert.Equal(t, "invalid_scope", location.Query().Get("error"),
+		"error should be invalid_scope when requesting unregistered scopes")
+	assert.Equal(t, "scope-elevation-test", location.Query().Get("state"),
+		"state should be preserved in error redirect")
+	assert.Empty(t, location.Query().Get("code"),
+		"no authorization code should be issued")
 }
 
 // TestIntegration_RefreshToken_ShortLivedAccessToken verifies the refresh token

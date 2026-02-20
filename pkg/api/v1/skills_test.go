@@ -18,7 +18,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/skills"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
@@ -26,7 +25,6 @@ import (
 
 func TestSkillsRouter(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -289,35 +287,106 @@ func TestSkillsRouter(t *testing.T) {
 			},
 			expectedStatus: http.StatusNoContent,
 		},
-		// validateSkill stub
+		// validateSkill
 		{
-			name:           "validate skill returns 501",
+			name:   "validate skill success",
+			method: "POST",
+			path:   "/validate",
+			body:   `{"path":"/tmp/skill"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Validate(gomock.Any(), "/tmp/skill").
+					Return(&skills.ValidationResult{Valid: true}, nil)
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"valid":true`,
+		},
+		{
+			name:           "validate skill bad request",
 			method:         "POST",
 			path:           "/validate",
-			body:           `{"path":"/tmp"}`,
+			body:           `{invalid`,
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
-			expectedStatus: http.StatusNotImplemented,
-			expectedBody:   "Not Implemented",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "invalid request body",
 		},
-		// buildSkill stub
 		{
-			name:           "build skill returns 501",
+			name:   "validate skill service error",
+			method: "POST",
+			path:   "/validate",
+			body:   `{"path":"/tmp/skill"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Validate(gomock.Any(), "/tmp/skill").
+					Return(nil, fmt.Errorf("validation failed"))
+			},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBody:   "Internal Server Error",
+		},
+		// buildSkill
+		{
+			name:   "build skill success",
+			method: "POST",
+			path:   "/build",
+			body:   `{"path":"/tmp/skill","tag":"v1.0.0"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Build(gomock.Any(), skills.BuildOptions{Path: "/tmp/skill", Tag: "v1.0.0"}).
+					Return(&skills.BuildResult{Reference: "v1.0.0"}, nil)
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"reference":"v1.0.0"`,
+		},
+		{
+			name:           "build skill bad request",
 			method:         "POST",
 			path:           "/build",
-			body:           `{"path":"/tmp"}`,
+			body:           `{invalid`,
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
-			expectedStatus: http.StatusNotImplemented,
-			expectedBody:   "Not Implemented",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "invalid request body",
 		},
-		// pushSkill stub
 		{
-			name:           "push skill returns 501",
+			name:   "build skill service error",
+			method: "POST",
+			path:   "/build",
+			body:   `{"path":"/tmp/skill"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Build(gomock.Any(), skills.BuildOptions{Path: "/tmp/skill"}).
+					Return(nil, httperr.WithCode(fmt.Errorf("path is required"), http.StatusBadRequest))
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "path is required",
+		},
+		// pushSkill
+		{
+			name:   "push skill success",
+			method: "POST",
+			path:   "/push",
+			body:   `{"reference":"ghcr.io/test/skill:v1"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Push(gomock.Any(), skills.PushOptions{Reference: "ghcr.io/test/skill:v1"}).
+					Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+		},
+		{
+			name:           "push skill bad request",
 			method:         "POST",
 			path:           "/push",
-			body:           `{"reference":"ghcr.io/test/skill:v1"}`,
+			body:           `{invalid`,
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
-			expectedStatus: http.StatusNotImplemented,
-			expectedBody:   "Not Implemented",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "invalid request body",
+		},
+		{
+			name:   "push skill service error",
+			method: "POST",
+			path:   "/push",
+			body:   `{"reference":"ghcr.io/test/skill:v1"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Push(gomock.Any(), skills.PushOptions{Reference: "ghcr.io/test/skill:v1"}).
+					Return(fmt.Errorf("push failed"))
+			},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBody:   "Internal Server Error",
 		},
 	}
 
@@ -348,7 +417,6 @@ func TestSkillsRouter(t *testing.T) {
 
 func TestListSkillsResponseFormat(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	mockSvc := skillsmocks.NewMockSkillService(ctrl)

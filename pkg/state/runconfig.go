@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
@@ -61,7 +61,7 @@ func DeleteSavedRunConfig(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to delete run configuration: %w", err)
 	}
 
-	logger.Debugf("Deleted run configuration for %s", name)
+	slog.Debug("Deleted run configuration", "name", name)
 	return nil
 }
 
@@ -91,7 +91,7 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 	}
 	defer func() {
 		if err := writer.Close(); err != nil {
-			logger.Warnf("Failed to close writer: %v", err)
+			slog.Warn("Failed to close writer", "error", err)
 		}
 	}()
 
@@ -100,7 +100,7 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 		return fmt.Errorf("failed to write run configuration: %w", err)
 	}
 
-	logger.Debugf("Saved run configuration for %s", config.GetBaseName())
+	slog.Debug("Saved run configuration", "name", config.GetBaseName())
 	return nil
 }
 
@@ -113,7 +113,7 @@ func LoadRunConfig[T any](ctx context.Context, name string, readJSONFunc ReadJSO
 	}
 	defer func() {
 		if err := reader.Close(); err != nil {
-			logger.Warnf("Failed to close reader: %v", err)
+			slog.Warn("Failed to close reader", "error", err)
 		}
 	}()
 
@@ -149,7 +149,7 @@ func LoadRunConfigWithFunc(ctx context.Context, name string, readFunc RunConfigR
 	}
 	defer func() {
 		if err := reader.Close(); err != nil {
-			logger.Warnf("Failed to close reader: %v", err)
+			slog.Warn("Failed to close reader", "error", err)
 		}
 	}()
 

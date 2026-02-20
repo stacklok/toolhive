@@ -6,6 +6,7 @@ package types
 
 import (
 	"context"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -59,17 +60,31 @@ type EmbeddingClient interface {
 	Close() error
 }
 
-// OptimizerConfig defines configuration options for the Optimizer.
+// OptimizerConfig defines runtime configuration options for the Optimizer.
+//
+// This struct intentionally duplicates some fields from config.OptimizerConfig
+// (pkg/vmcp/config) because the two serve different purposes:
+//   - config.OptimizerConfig is the CRD/YAML-serializable type. Kubernetes CRDs
+//     do not support float types portably, so float parameters are encoded as strings.
+//   - This struct holds the parsed, validated, native Go values (float64, *int)
+//     consumed by the optimizer internals.
+//
+// Conversion from config.OptimizerConfig to this type is done by
+// optimizer.GetAndValidateConfig, which validates ranges and parses strings.
 type OptimizerConfig struct {
 	// EmbeddingService is the URL of the embedding service for semantic search.
-	EmbeddingService string `json:"embedding_service"`
+	EmbeddingService string
+
+	// EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.
+	// Zero means use the default timeout (30s).
+	EmbeddingServiceTimeout time.Duration
 
 	// MaxToolsToReturn limits the number of tools returned by FindTool.
-	MaxToolsToReturn *int `json:"max_tools_to_return"`
+	MaxToolsToReturn *int
 
-	// HybridSemanticRatio controls the balance between semantic and exact search in hybrid mode.
-	HybridSemanticRatio *float64 `json:"hybrid_semantic_ratio"`
+	// HybridSemanticRatio controls the balance between semantic and keyword search.
+	HybridSemanticRatio *float64
 
-	// SemanticDistanceThreshold sets the maximum cosine distance for semantic search results (0.0 = identical, 2.0 = opposite).
-	SemanticDistanceThreshold *float64 `json:"semantic_distance_threshold"`
+	// SemanticDistanceThreshold sets the maximum distance for semantic search results (0.0 = identical, 2.0 = opposite).
+	SemanticDistanceThreshold *float64
 }

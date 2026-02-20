@@ -723,8 +723,17 @@ spec:
                         description: |-
                           EmbeddingService is the full base URL of the embedding service endpoint
                           (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
-                          tool discovery. Auto-populated by the operator from the EmbeddingServer
-                          Status.URL. Do not set manually.
+                          tool discovery.
+
+                          In a Kubernetes environment, it is more convenient to use the
+                          VirtualMCPServerSpec.EmbeddingServerRef field instead of setting this
+                          directly. EmbeddingServerRef references an EmbeddingServer CRD by name,
+                          and the operator automatically resolves the referenced resource's
+                          Status.URL to populate this field. This provides managed lifecycle
+                          (the operator watches the EmbeddingServer for readiness and URL changes)
+                          and avoids hardcoding service URLs in the config. If both
+                          EmbeddingServerRef and this field are set, EmbeddingServerRef takes
+                          precedence and this value is overridden with a warning.
                         type: string
                       embeddingServiceTimeout:
                         default: 30s
@@ -735,8 +744,8 @@ spec:
                         type: string
                       hybridSearchSemanticRatio:
                         description: |-
-                          HybridSearchSemanticRatio controls the proportion of semantic vs FTS5 results
-                          in hybrid search mode. 0.0 = all FTS5, 1.0 = all semantic.
+                          HybridSearchSemanticRatio controls the balance between semantic (meaning-based)
+                          and keyword search results. 0.0 = all keyword, 1.0 = all semantic.
                           Defaults to "0.5" if not specified or empty.
                           Serialized as a string because CRDs do not support float types portably.
                         pattern: ^([0-9]*[.])?[0-9]+$
@@ -750,10 +759,10 @@ spec:
                         type: integer
                       semanticDistanceThreshold:
                         description: |-
-                          SemanticDistanceThreshold is the maximum cosine distance for semantic search results.
-                          Results with distance > threshold are filtered out in semantic search only.
-                          This does not apply to FTS5: BM25 ranks are normalized scores, not true distances.
-                          Cosine distance: 0 = identical, 2 = opposite.
+                          SemanticDistanceThreshold is the maximum distance for semantic search results.
+                          Results exceeding this threshold are filtered out from semantic search.
+                          This threshold does not apply to keyword search.
+                          Range: 0 = identical, 2 = completely unrelated.
                           Defaults to "1.0" if not specified or empty.
                           Serialized as a string because CRDs do not support float types portably.
                         pattern: ^([0-9]*[.])?[0-9]+$

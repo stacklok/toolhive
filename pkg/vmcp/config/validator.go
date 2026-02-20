@@ -5,7 +5,6 @@ package config
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -71,10 +70,8 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
-	// Validate optimizer configuration
-	if err := v.validateOptimizer(cfg.Optimizer); err != nil {
-		errors = append(errors, err.Error())
-	}
+	// Note: Optimizer validation is handled by optimizer.GetAndValidateConfig
+	// in pkg/vmcp/optimizer/optimizer.go when the optimizer is constructed.
 
 	if len(errors) > 0 {
 		return fmt.Errorf("%w:\n  - %s", vmcp.ErrInvalidConfig, strings.Join(errors, "\n  - "))
@@ -431,38 +428,6 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 			return fmt.Errorf("duplicate composite tool reference: %s", ref.Name)
 		}
 		refNames[ref.Name] = true
-	}
-
-	return nil
-}
-
-func (*DefaultValidator) validateOptimizer(opt *OptimizerConfig) error {
-	if opt == nil {
-		return nil // Optimizer is optional
-	}
-
-	if opt.MaxToolsToReturn != 0 && (opt.MaxToolsToReturn < 1 || opt.MaxToolsToReturn > 50) {
-		return fmt.Errorf("optimizer.maxToolsToReturn must be between 1 and 50, got %d", opt.MaxToolsToReturn)
-	}
-
-	if opt.HybridSearchSemanticRatio != "" {
-		ratio, err := strconv.ParseFloat(opt.HybridSearchSemanticRatio, 64)
-		if err != nil {
-			return fmt.Errorf("optimizer.hybridSearchSemanticRatio must be a valid number: %w", err)
-		}
-		if ratio < 0 || ratio > 1 {
-			return fmt.Errorf("optimizer.hybridSearchSemanticRatio must be between 0.0 and 1.0, got %s", opt.HybridSearchSemanticRatio)
-		}
-	}
-
-	if opt.SemanticDistanceThreshold != "" {
-		threshold, err := strconv.ParseFloat(opt.SemanticDistanceThreshold, 64)
-		if err != nil {
-			return fmt.Errorf("optimizer.semanticDistanceThreshold must be a valid number: %w", err)
-		}
-		if threshold < 0 || threshold > 2 {
-			return fmt.Errorf("optimizer.semanticDistanceThreshold must be between 0.0 and 2.0, got %s", opt.SemanticDistanceThreshold)
-		}
 	}
 
 	return nil

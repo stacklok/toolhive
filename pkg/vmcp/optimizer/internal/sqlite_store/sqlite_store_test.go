@@ -23,11 +23,7 @@ var testDBCounter atomic.Int64
 func newTestStore(t *testing.T, embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig) sqliteToolStore {
 	t.Helper()
 	id := testDBCounter.Add(1)
-	var optCfg *types.OptimizerConfig
-	if cfg != nil {
-		optCfg = cfg
-	}
-	store, err := newSQLiteToolStore(fmt.Sprintf("file:testdb_%d?mode=memory&cache=shared", id), embeddingClient, optCfg)
+	store, err := newSQLiteToolStore(fmt.Sprintf("file:testdb_%d?mode=memory&cache=shared", id), embeddingClient, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -292,24 +288,49 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 
 func TestSQLiteToolStore_Search_ResultsCapped(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, nil, nil)
-	ctx := context.Background()
 
-	// Create more tools than defaultSearchLimit that all match "file"
-	tools := makeTools(
-		mcp.NewTool("file_read", mcp.WithDescription("Read files")),
-		mcp.NewTool("file_write", mcp.WithDescription("Write files")),
-		mcp.NewTool("file_delete", mcp.WithDescription("Delete files")),
-		mcp.NewTool("file_copy", mcp.WithDescription("Copy files")),
-		mcp.NewTool("file_move", mcp.WithDescription("Move files")),
-		mcp.NewTool("file_list", mcp.WithDescription("List files")),
-	)
-	require.NoError(t, store.UpsertTools(ctx, tools))
+	maxTools := 3
+	tests := []struct {
+		name    string
+		cfg     *types.OptimizerConfig
+		wantMax int
+	}{
+		{
+			name:    "default max tools",
+			cfg:     nil,
+			wantMax: DefaultMaxToolsToReturn,
+		},
+		{
+			name: "custom max tools",
+			cfg: &types.OptimizerConfig{
+				MaxToolsToReturn: &maxTools,
+			},
+			wantMax: 3,
+		},
+	}
 
-	results, err := store.Search(ctx, "file", toolNames(tools))
-	require.NoError(t, err)
-	require.LessOrEqual(t, len(results), DefaultMaxToolsToReturn,
-		"results should be capped at %d", DefaultMaxToolsToReturn)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := newTestStore(t, nil, tc.cfg)
+			ctx := context.Background()
+
+			tools := makeTools(
+				mcp.NewTool("file_read", mcp.WithDescription("Read files")),
+				mcp.NewTool("file_write", mcp.WithDescription("Write files")),
+				mcp.NewTool("file_delete", mcp.WithDescription("Delete files")),
+				mcp.NewTool("file_copy", mcp.WithDescription("Copy files")),
+				mcp.NewTool("file_move", mcp.WithDescription("Move files")),
+				mcp.NewTool("file_list", mcp.WithDescription("List files")),
+			)
+			require.NoError(t, store.UpsertTools(ctx, tools))
+
+			results, err := store.Search(ctx, "file", toolNames(tools))
+			require.NoError(t, err)
+			require.LessOrEqual(t, len(results), tc.wantMax,
+				"results should be capped at %d", tc.wantMax)
+		})
+	}
 }
 
 func TestSQLiteToolStore_Close(t *testing.T) {
@@ -694,67 +715,56 @@ func TestMergeResults(t *testing.T) {
 func TestSQLiteToolStore_ConfigDefaults(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil config uses defaults", func(t *testing.T) {
-		t.Parallel()
-		store := newTestStore(t, nil, nil)
-		require.Equal(t, DefaultMaxToolsToReturn, store.maxToolsToReturn)
-		require.InDelta(t, DefaultHybridSemanticToolsRatio, store.hybridSemanticRatio, 0.001)
-		require.InDelta(t, DefaultSemanticDistanceThreshold, store.semanticDistanceThreshold, 0.001)
-	})
-
-	t.Run("zero values use defaults", func(t *testing.T) {
-		t.Parallel()
-		cfg := &types.OptimizerConfig{
-			EmbeddingService: "http://example.com:8080",
-		}
-		store := newTestStore(t, nil, cfg)
-		require.Equal(t, DefaultMaxToolsToReturn, store.maxToolsToReturn)
-		require.InDelta(t, DefaultHybridSemanticToolsRatio, store.hybridSemanticRatio, 0.001)
-		require.InDelta(t, DefaultSemanticDistanceThreshold, store.semanticDistanceThreshold, 0.001)
-	})
-
-	t.Run("explicit values override defaults", func(t *testing.T) {
-		t.Parallel()
-		maxTools := 3
-		hybridRatio := 0.8
-		semanticThreshold := 0.5
-		cfg := &types.OptimizerConfig{
-			EmbeddingService:          "http://example.com:8080",
-			MaxToolsToReturn:          &maxTools,
-			HybridSemanticRatio:       &hybridRatio,
-			SemanticDistanceThreshold: &semanticThreshold,
-		}
-		store := newTestStore(t, nil, cfg)
-		require.Equal(t, 3, store.maxToolsToReturn)
-		require.InDelta(t, 0.8, store.hybridSemanticRatio, 0.001)
-		require.InDelta(t, 0.5, store.semanticDistanceThreshold, 0.001)
-	})
-}
-
-func TestSQLiteToolStore_CustomMaxTools(t *testing.T) {
-	t.Parallel()
 	maxTools := 3
-	cfg := &types.OptimizerConfig{
-		EmbeddingService: "http://example.com:8080",
-		MaxToolsToReturn: &maxTools,
+	hybridRatio := 0.8
+	semanticThreshold := 0.5
+
+	tests := []struct {
+		name                  string
+		cfg                   *types.OptimizerConfig
+		wantMaxTools          int
+		wantHybridRatio       float64
+		wantSemanticThreshold float64
+	}{
+		{
+			name:                  "nil config uses defaults",
+			cfg:                   nil,
+			wantMaxTools:          DefaultMaxToolsToReturn,
+			wantHybridRatio:       DefaultHybridSemanticToolsRatio,
+			wantSemanticThreshold: DefaultSemanticDistanceThreshold,
+		},
+		{
+			name: "nil pointer fields use defaults",
+			cfg: &types.OptimizerConfig{
+				EmbeddingService: "http://example.com:8080",
+			},
+			wantMaxTools:          DefaultMaxToolsToReturn,
+			wantHybridRatio:       DefaultHybridSemanticToolsRatio,
+			wantSemanticThreshold: DefaultSemanticDistanceThreshold,
+		},
+		{
+			name: "explicit values override defaults",
+			cfg: &types.OptimizerConfig{
+				EmbeddingService:          "http://example.com:8080",
+				MaxToolsToReturn:          &maxTools,
+				HybridSemanticRatio:       &hybridRatio,
+				SemanticDistanceThreshold: &semanticThreshold,
+			},
+			wantMaxTools:          3,
+			wantHybridRatio:       0.8,
+			wantSemanticThreshold: 0.5,
+		},
 	}
-	store := newTestStore(t, nil, cfg)
-	ctx := context.Background()
 
-	tools := makeTools(
-		mcp.NewTool("file_read", mcp.WithDescription("Read files")),
-		mcp.NewTool("file_write", mcp.WithDescription("Write files")),
-		mcp.NewTool("file_delete", mcp.WithDescription("Delete files")),
-		mcp.NewTool("file_copy", mcp.WithDescription("Copy files")),
-		mcp.NewTool("file_move", mcp.WithDescription("Move files")),
-		mcp.NewTool("file_list", mcp.WithDescription("List files")),
-	)
-	require.NoError(t, store.UpsertTools(ctx, tools))
-
-	results, err := store.Search(ctx, "file", toolNames(tools))
-	require.NoError(t, err)
-	require.LessOrEqual(t, len(results), 3,
-		"results should be capped at custom maxToolsToReturn=3")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := newTestStore(t, nil, tc.cfg)
+			require.Equal(t, tc.wantMaxTools, store.maxToolsToReturn)
+			require.InDelta(t, tc.wantHybridRatio, store.hybridSemanticRatio, 0.001)
+			require.InDelta(t, tc.wantSemanticThreshold, store.semanticDistanceThreshold, 0.001)
+		})
+	}
 }
 
 func TestSQLiteToolStore_SemanticDistanceThreshold(t *testing.T) {

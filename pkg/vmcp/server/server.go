@@ -140,10 +140,11 @@ type Config struct {
 	// If not set, the optimizer is disabled.
 	OptimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
 
-	// OptimizerEnabled indicates that the optimizer should be enabled.
-	// When true, Start() creates the FTS5 store, wires the OptimizerFactory,
+	// OptimizerConfig holds the parsed optimizer search parameters (typed values).
+	// When non-nil, Start() creates the search store, wires the OptimizerFactory,
 	// and registers the store cleanup in shutdownFuncs.
-	OptimizerEnabled bool
+	// A nil value disables the optimizer.
+	OptimizerConfig *optimizer.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
@@ -524,16 +525,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 //
 //nolint:gocyclo // Complexity from health monitoring and startup orchestration is acceptable
 func (s *Server) Start(ctx context.Context) error {
-	// Create optimizer store if optimizer is enabled
-	if s.config.OptimizerEnabled {
-		store, err := optimizer.NewSQLiteToolStore(nil)
+	// Create optimizer store and wire factory if optimizer is configured
+	if s.config.OptimizerConfig != nil {
+		factory, cleanup, err := optimizer.NewOptimizerFactory(s.config.OptimizerConfig)
 		if err != nil {
-			return fmt.Errorf("failed to create optimizer store: %w", err)
+			return err
 		}
-		s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
-			return store.Close()
-		})
-		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store, optimizer.DefaultTokenCounter())
+		s.shutdownFuncs = append(s.shutdownFuncs, cleanup)
+		s.config.OptimizerFactory = factory
 	}
 
 	// Build the HTTP handler (middleware chain, routes, mux)

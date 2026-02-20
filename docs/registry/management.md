@@ -7,12 +7,12 @@ This document outlines the processes for managing MCP (Model Context Protocol) s
 >
 > The ToolHive registry has been migrated to a separate repository for better management and maintenance.
 >
-> **To add or modify MCP servers, please visit: https://github.com/stacklok/toolhive-registry**
+> **To add or modify MCP servers, please visit: https://github.com/stacklok/toolhive-catalog**
 
 ## Adding MCP Servers
 
 **New Process (Current):**
-1. Visit the [toolhive-registry repository](https://github.com/stacklok/toolhive-registry)
+1. Visit the [toolhive-catalog repository](https://github.com/stacklok/toolhive-catalog)
 2. Follow the contribution guidelines in that repository
 3. Submit PR with required server definition files
 4. Automated technical verification and building

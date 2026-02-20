@@ -10,7 +10,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	sqlitestore "github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/sqlite_store"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
@@ -93,22 +92,10 @@ func (s *InMemoryToolStore) Search(_ context.Context, query string, allowedTools
 	return matches, nil
 }
 
-// SQLiteStoreConfig configures the SQLite-backed ToolStore.
-// When nil is passed to NewSQLiteToolStore, only FTS5 search is used.
-type SQLiteStoreConfig struct {
-	// EmbeddingDimension enables semantic search with deterministic fake
-	// embeddings of the given dimensionality. Zero disables semantic search.
-	EmbeddingDimension int
-}
-
 // NewSQLiteToolStore creates a new ToolStore backed by SQLite for search.
 // The store uses an in-memory SQLite database with shared cache for concurrent access.
-// If cfg is nil or EmbeddingDimension is zero, only FTS5 search is used.
-// Otherwise, semantic search is enabled alongside FTS5 using the configured embedding dimension.
-func NewSQLiteToolStore(cfg *SQLiteStoreConfig) (ToolStore, error) {
-	var embClient types.EmbeddingClient
-	if cfg != nil && cfg.EmbeddingDimension > 0 {
-		embClient = similarity.NewFakeEmbeddingClient(cfg.EmbeddingDimension)
-	}
-	return sqlitestore.NewSQLiteToolStore(embClient)
+// If embeddingClient is nil, only keyword full-text search is used.
+// If optCfg is non-nil, its search parameters override the defaults; nil values use defaults.
+func NewSQLiteToolStore(embeddingClient EmbeddingClient, optCfg *Config) (ToolStore, error) {
+	return sqlitestore.NewSQLiteToolStore(embeddingClient, optCfg)
 }

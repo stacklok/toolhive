@@ -215,7 +215,7 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (types.ServerMetadata, error) 
 
 // ConvertServersToMetadata converts a slice of ServerJSON to a slice of ServerMetadata
 // Skips servers that cannot be converted (e.g., incomplete entries)
-// Uses official converters from toolhive-registry package
+// Uses official converters from toolhive-catalog package
 func ConvertServersToMetadata(servers []*v0.ServerJSON) ([]types.ServerMetadata, error) {
 	result := make([]types.ServerMetadata, 0, len(servers))
 

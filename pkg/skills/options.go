@@ -7,6 +7,10 @@ package skills
 type ListOptions struct {
 	// Scope filters results by installation scope.
 	Scope Scope `json:"scope,omitempty"`
+	// ClientApp filters results by client application.
+	ClientApp string `json:"client,omitempty"`
+	// ProjectRoot filters results by project root path.
+	ProjectRoot string `json:"project_root,omitempty"`
 }
 
 // InstallOptions configures the behavior of the Install operation.
@@ -53,6 +57,8 @@ type InfoOptions struct {
 	Name string `json:"name"`
 	// Scope filters the lookup by installation scope.
 	Scope Scope `json:"scope,omitempty"`
+	// ProjectRoot filters the lookup by project root path.
+	ProjectRoot string `json:"project_root,omitempty"`
 }
 
 // SkillInfo contains detailed information about an installed skill.

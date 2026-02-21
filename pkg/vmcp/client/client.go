@@ -20,6 +20,8 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -106,6 +108,22 @@ func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 	return i.base.RoundTrip(req)
 }
 
+// tracePropagatingRoundTripper injects W3C Trace Context (traceparent/tracestate) and
+// Baggage headers into outgoing HTTP requests. This links vMCP client spans with backend
+// server spans in distributed traces without creating duplicate spans (unlike
+// otelhttp.NewTransport).
+type tracePropagatingRoundTripper struct {
+	base       http.RoundTripper
+	propagator propagation.TextMapPropagator
+}
+
+// RoundTrip implements http.RoundTripper by injecting trace context headers.
+func (t *tracePropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	clonedReq := req.Clone(req.Context())
+	t.propagator.Inject(clonedReq.Context(), propagation.HeaderCarrier(clonedReq.Header))
+	return t.base.RoundTrip(clonedReq)
+}
+
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
 // The authentication strategy is pre-resolved and validated at client creation time,
 // eliminating per-request lookups and validation overhead.
@@ -153,7 +171,8 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
-	// Build transport chain: size limit → context propagation → authentication → HTTP
+	// Build transport chain (outermost to innermost, request execution order):
+	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
 	var baseTransport = http.DefaultTransport
 
 	// Resolve authentication strategy ONCE at client creation time
@@ -185,6 +204,13 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	baseTransport = &identityPropagatingRoundTripper{
 		base:     baseTransport,
 		identity: identity,
+	}
+
+	// Inject W3C Trace Context headers (traceparent/tracestate) into outgoing requests.
+	// This links vMCP spans with backend spans in the same distributed trace.
+	baseTransport = &tracePropagatingRoundTripper{
+		base:       baseTransport,
+		propagator: otel.GetTextMapPropagator(),
 	}
 
 	var c *client.Client

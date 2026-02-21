@@ -10,8 +10,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"

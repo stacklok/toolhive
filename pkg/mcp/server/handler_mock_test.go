@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )

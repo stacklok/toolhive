@@ -10,9 +10,9 @@ import (
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
+	"github.com/stacklok/toolhive-core/registry/converters"
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry/api"
-	"github.com/stacklok/toolhive/pkg/registry/converters"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // APIRegistryProvider provides registry data from an MCP Registry API endpoint
@@ -215,7 +215,7 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (types.ServerMetadata, error) 
 
 // ConvertServersToMetadata converts a slice of ServerJSON to a slice of ServerMetadata
 // Skips servers that cannot be converted (e.g., incomplete entries)
-// Uses official converters from toolhive-registry package
+// Uses official converters from toolhive-catalog package
 func ConvertServersToMetadata(servers []*v0.ServerJSON) ([]types.ServerMetadata, error) {
 	result := make([]types.ServerMetadata, 0, len(servers))
 

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"time"
 
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
@@ -24,21 +23,21 @@ const (
 	embedPath = "/embed"
 )
 
-// NewEmbeddingClient creates an EmbeddingClient from the given optimizer
-// configuration. It returns (nil, nil) if cfg is nil or no embedding service
-// URL is configured, meaning semantic search will be disabled.
-func NewEmbeddingClient(cfg *vmcpconfig.OptimizerConfig) (types.EmbeddingClient, error) {
-	if cfg == nil || cfg.EmbeddingService == "" {
-		return nil, nil
-	}
-	return newTEIClient(cfg.EmbeddingService, time.Duration(cfg.EmbeddingServiceTimeout))
-}
-
 // teiClient implements types.EmbeddingClient by calling the HuggingFace
 // Text Embeddings Inference (TEI) HTTP API.
 type teiClient struct {
 	baseURL    string
 	httpClient *http.Client
+}
+
+// NewEmbeddingClient creates an EmbeddingClient from the given optimizer
+// configuration. It returns (nil, nil) if cfg is nil or no embedding service
+// URL is configured, meaning semantic search will be disabled.
+func NewEmbeddingClient(cfg *types.OptimizerConfig) (types.EmbeddingClient, error) {
+	if cfg == nil || cfg.EmbeddingService == "" {
+		return nil, nil
+	}
+	return newTEIClient(cfg.EmbeddingService, cfg.EmbeddingServiceTimeout)
 }
 
 // newTEIClient creates a new TEI embedding client that calls the specified endpoint.

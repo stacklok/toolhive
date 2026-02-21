@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 

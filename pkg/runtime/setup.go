@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
-	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 

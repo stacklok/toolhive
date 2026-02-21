@@ -31,7 +31,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -141,10 +140,11 @@ type Config struct {
 	// If not set, the optimizer is disabled.
 	OptimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
 
-	// OptimizerConfig holds the optimizer configuration from the vMCP config.
-	// When non-nil, Start() creates the appropriate store and embedding client,
-	// wires the OptimizerFactory, and registers cleanup in shutdownFuncs.
-	OptimizerConfig *vmcpconfig.OptimizerConfig
+	// OptimizerConfig holds the parsed optimizer search parameters (typed values).
+	// When non-nil, Start() creates the search store, wires the OptimizerFactory,
+	// and registers the store cleanup in shutdownFuncs.
+	// A nil value disables the optimizer.
+	OptimizerConfig *optimizer.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
@@ -527,9 +527,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 func (s *Server) Start(ctx context.Context) error {
 	// Create optimizer store and wire factory if optimizer is configured
 	if s.config.OptimizerConfig != nil {
-		if err := s.initOptimizer(); err != nil {
+		factory, cleanup, err := optimizer.NewOptimizerFactory(s.config.OptimizerConfig)
+		if err != nil {
 			return err
 		}
+		s.shutdownFuncs = append(s.shutdownFuncs, cleanup)
+		s.config.OptimizerFactory = factory
 	}
 
 	// Build the HTTP handler (middleware chain, routes, mux)
@@ -703,25 +706,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	slog.Info("virtual MCP Server stopped")
-	return nil
-}
-
-// initOptimizer creates the optimizer tool store and wires the OptimizerFactory.
-// It registers the store's Close method as a shutdown function.
-func (s *Server) initOptimizer() error {
-	embClient, err := optimizer.NewEmbeddingClient(s.config.OptimizerConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create embedding client: %w", err)
-	}
-
-	store, err := optimizer.NewSQLiteToolStore(embClient)
-	if err != nil {
-		return fmt.Errorf("failed to create optimizer store: %w", err)
-	}
-	s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
-		return store.Close()
-	})
-	s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store, optimizer.DefaultTokenCounter())
 	return nil
 }
 

@@ -13,13 +13,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/permissions"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 

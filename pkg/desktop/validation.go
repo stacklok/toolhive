@@ -130,6 +130,13 @@ func getTargetPath(marker *cliSourceMarker) string {
 		return marker.SymlinkTarget
 	}
 
+	// For Flatpak installations, the target is the host-visible path to the
+	// CLI binary inside the Flatpak app directory. The validation logic is
+	// the same as symlink: check if the target exists and compare paths.
+	if marker.InstallMethod == "flatpak" && marker.FlatpakTarget != "" {
+		return marker.FlatpakTarget
+	}
+
 	// For Windows/copy method, construct the path to the desktop-managed CLI
 	// from the known installation location: %LOCALAPPDATA%\ToolHive\bin\thv.exe
 	// Note: copy method is only used on Windows; on other platforms, return empty.

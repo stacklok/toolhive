@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
@@ -17,7 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/networking"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"

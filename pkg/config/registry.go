@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
+	registrytypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/networking"
-	registrytypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (

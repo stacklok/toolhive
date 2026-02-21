@@ -5,7 +5,6 @@ package v1
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -54,25 +53,6 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 func (s *SkillsRoutes) listSkills(w http.ResponseWriter, r *http.Request) error {
 	scope := skills.Scope(r.URL.Query().Get("scope"))
 	projectRoot := r.URL.Query().Get("project_root")
-	if projectRoot != "" && scope == "" {
-		scope = skills.ScopeProject
-	}
-	if err := skills.ValidateScope(scope); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
-	}
-	if projectRoot != "" && scope != skills.ScopeProject {
-		return httperr.WithCode(
-			errors.New("project_root is only valid with project scope"),
-			http.StatusBadRequest,
-		)
-	}
-	if scope == skills.ScopeProject {
-		cleaned, err := skills.ValidateProjectRoot(projectRoot)
-		if err != nil {
-			return httperr.WithCode(err, http.StatusBadRequest)
-		}
-		projectRoot = cleaned
-	}
 
 	client := r.URL.Query().Get("client")
 
@@ -110,26 +90,6 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
-	}
-
-	if req.ProjectRoot != "" && req.Scope == "" {
-		req.Scope = skills.ScopeProject
-	}
-	if err := skills.ValidateScope(req.Scope); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
-	}
-	if req.ProjectRoot != "" && req.Scope != skills.ScopeProject {
-		return httperr.WithCode(
-			errors.New("project_root is only valid with project scope"),
-			http.StatusBadRequest,
-		)
-	}
-	if req.Scope == skills.ScopeProject {
-		cleaned, err := skills.ValidateProjectRoot(req.ProjectRoot)
-		if err != nil {
-			return httperr.WithCode(err, http.StatusBadRequest)
-		}
-		req.ProjectRoot = cleaned
 	}
 
 	result, err := s.skillService.Install(r.Context(), skills.InstallOptions{
@@ -172,25 +132,6 @@ func (s *SkillsRoutes) uninstallSkill(w http.ResponseWriter, r *http.Request) er
 
 	scope := skills.Scope(r.URL.Query().Get("scope"))
 	projectRoot := r.URL.Query().Get("project_root")
-	if projectRoot != "" && scope == "" {
-		scope = skills.ScopeProject
-	}
-	if err := skills.ValidateScope(scope); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
-	}
-	if projectRoot != "" && scope != skills.ScopeProject {
-		return httperr.WithCode(
-			errors.New("project_root is only valid with project scope"),
-			http.StatusBadRequest,
-		)
-	}
-	if scope == skills.ScopeProject {
-		cleaned, err := skills.ValidateProjectRoot(projectRoot)
-		if err != nil {
-			return httperr.WithCode(err, http.StatusBadRequest)
-		}
-		projectRoot = cleaned
-	}
 
 	if err := s.skillService.Uninstall(r.Context(), skills.UninstallOptions{
 		Name:        name,
@@ -227,25 +168,6 @@ func (s *SkillsRoutes) getSkillInfo(w http.ResponseWriter, r *http.Request) erro
 
 	scope := skills.Scope(r.URL.Query().Get("scope"))
 	projectRoot := r.URL.Query().Get("project_root")
-	if projectRoot != "" && scope == "" {
-		scope = skills.ScopeProject
-	}
-	if err := skills.ValidateScope(scope); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
-	}
-	if projectRoot != "" && scope != skills.ScopeProject {
-		return httperr.WithCode(
-			errors.New("project_root is only valid with project scope"),
-			http.StatusBadRequest,
-		)
-	}
-	if scope == skills.ScopeProject {
-		cleaned, err := skills.ValidateProjectRoot(projectRoot)
-		if err != nil {
-			return httperr.WithCode(err, http.StatusBadRequest)
-		}
-		projectRoot = cleaned
-	}
 
 	info, err := s.skillService.Info(r.Context(), skills.InfoOptions{
 		Name:        name,

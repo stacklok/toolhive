@@ -41,10 +41,9 @@ require (
 	github.com/pressly/goose/v3 v3.26.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.18.0
-	github.com/sigstore/protobuf-specs v0.5.0
-	github.com/sigstore/sigstore-go v1.1.4
 	github.com/spf13/viper v1.21.0
-	github.com/stacklok/toolhive-core v0.0.6
+	github.com/stacklok/toolhive-catalog v0.0.0-20260220124241-3f98ae192446
+	github.com/stacklok/toolhive-core v0.0.7
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
@@ -240,16 +239,17 @@ require (
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.25.6 // indirect
+	github.com/sigstore/protobuf-specs v0.5.0 // indirect
 	github.com/sigstore/rekor v1.5.0 // indirect
 	github.com/sigstore/rekor-tiles/v2 v2.0.1 // indirect
 	github.com/sigstore/sigstore v1.10.4 // indirect
+	github.com/sigstore/sigstore-go v1.1.4 // indirect
 	github.com/sigstore/timestamp-authority/v2 v2.0.3 // indirect
 	github.com/sirupsen/logrus v1.9.4-0.20230606125235-dd1b4c2e81af // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/stacklok/toolhive-catalog v0.0.0-20260220124241-3f98ae192446 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/sv-tools/openapi v0.4.0 // indirect

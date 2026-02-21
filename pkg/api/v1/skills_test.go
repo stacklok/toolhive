@@ -76,10 +76,17 @@ func TestSkillsRouter(t *testing.T) {
 			expectedBody:   `"my-skill"`,
 		},
 		{
-			name:           "list skills project scope missing project root",
-			method:         "GET",
-			path:           "/?scope=project",
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			name:   "list skills project scope missing project root",
+			method: "GET",
+			path:   "/?scope=project",
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().List(gomock.Any(), skills.ListOptions{
+					Scope: skills.ScopeProject,
+				}).Return(nil, httperr.WithCode(
+					fmt.Errorf("project_root is required for project scope"),
+					http.StatusBadRequest,
+				))
+			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "project_root is required",
 		},
@@ -215,10 +222,18 @@ func TestSkillsRouter(t *testing.T) {
 			expectedBody:   "invalid skill name",
 		},
 		{
-			name:           "uninstall skill invalid scope",
-			method:         "DELETE",
-			path:           "/my-skill?scope=invalid",
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			name:   "uninstall skill invalid scope",
+			method: "DELETE",
+			path:   "/my-skill?scope=invalid",
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{
+					Name:  "my-skill",
+					Scope: skills.Scope("invalid"),
+				}).Return(httperr.WithCode(
+					fmt.Errorf("invalid scope"),
+					http.StatusBadRequest,
+				))
+			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid scope",
 		},
@@ -307,20 +322,38 @@ func TestSkillsRouter(t *testing.T) {
 			expectedBody:   `"my-skill"`,
 		},
 		{
-			name:           "install skill project scope missing project root",
-			method:         "POST",
-			path:           "/",
-			body:           `{"name":"my-skill","scope":"project"}`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			name:   "install skill project scope missing project root",
+			method: "POST",
+			path:   "/",
+			body:   `{"name":"my-skill","scope":"project"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
+					Name:        "my-skill",
+					Scope:       skills.ScopeProject,
+					ProjectRoot: "",
+				}).Return(nil, httperr.WithCode(
+					fmt.Errorf("project_root is required for project scope"),
+					http.StatusBadRequest,
+				))
+			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "project_root is required",
 		},
 		{
-			name:           "install skill project root not git repo",
-			method:         "POST",
-			path:           "/",
-			body:           `{"name":"my-skill","scope":"project","project_root":"{{non_git_project_root}}"}`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			name:   "install skill project root not git repo",
+			method: "POST",
+			path:   "/",
+			body:   `{"name":"my-skill","scope":"project","project_root":"{{non_git_project_root}}"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
+					Name:        "my-skill",
+					Scope:       skills.ScopeProject,
+					ProjectRoot: projectRoot,
+				}).Return(nil, httperr.WithCode(
+					fmt.Errorf("project_root must be a git repository"),
+					http.StatusBadRequest,
+				))
+			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "project_root must be a git repository",
 		},
@@ -339,10 +372,19 @@ func TestSkillsRouter(t *testing.T) {
 			expectedStatus: http.StatusNoContent,
 		},
 		{
-			name:           "uninstall skill project scope missing project root",
-			method:         "DELETE",
-			path:           "/my-skill?scope=project",
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			name:   "uninstall skill project scope missing project root",
+			method: "DELETE",
+			path:   "/my-skill?scope=project",
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{
+					Name:        "my-skill",
+					Scope:       skills.ScopeProject,
+					ProjectRoot: "",
+				}).Return(httperr.WithCode(
+					fmt.Errorf("project_root is required for project scope"),
+					http.StatusBadRequest,
+				))
+			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "project_root is required",
 		},

@@ -15,13 +15,6 @@ import (
 func TestValidateProjectRoot(t *testing.T) {
 	t.Parallel()
 
-	gitRoot := func(t *testing.T) string {
-		t.Helper()
-		root := t.TempDir()
-		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
-		return root
-	}
-
 	tests := []struct {
 		name        string
 		projectRoot func(t *testing.T) string
@@ -56,6 +49,7 @@ func TestValidateProjectRoot(t *testing.T) {
 		{
 			name: "does not exist",
 			projectRoot: func(t *testing.T) string {
+				t.Helper()
 				return filepath.Join(t.TempDir(), "missing")
 			},
 			wantErr: "does not exist",
@@ -63,6 +57,7 @@ func TestValidateProjectRoot(t *testing.T) {
 		{
 			name: "not a directory",
 			projectRoot: func(t *testing.T) string {
+				t.Helper()
 				root := t.TempDir()
 				file := filepath.Join(root, "file")
 				require.NoError(t, os.WriteFile(file, []byte("test"), 0o600))
@@ -73,6 +68,7 @@ func TestValidateProjectRoot(t *testing.T) {
 		{
 			name: "missing git",
 			projectRoot: func(t *testing.T) string {
+				t.Helper()
 				return t.TempDir()
 			},
 			wantErr: "git repository",
@@ -80,12 +76,14 @@ func TestValidateProjectRoot(t *testing.T) {
 		{
 			name: "git directory",
 			projectRoot: func(t *testing.T) string {
-				return gitRoot(t)
+				t.Helper()
+				return makeGitRoot(t)
 			},
 		},
 		{
 			name: "git file",
 			projectRoot: func(t *testing.T) string {
+				t.Helper()
 				root := t.TempDir()
 				require.NoError(t, os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir"), 0o600))
 				return root
@@ -107,4 +105,106 @@ func TestValidateProjectRoot(t *testing.T) {
 			assert.Equal(t, filepath.Clean(root), cleaned)
 		})
 	}
+}
+
+func TestNormalizeScopeAndProjectRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		scope       Scope
+		projectRoot func(t *testing.T) string
+		wantScope   Scope
+		wantRoot    func(input string) string
+		wantErr     string
+	}{
+		{
+			name:        "defaults to project scope",
+			projectRoot: makeGitRoot,
+			wantScope:   ScopeProject,
+			wantRoot:    filepath.Clean,
+		},
+		{
+			name:  "invalid scope",
+			scope: Scope("nope"),
+			projectRoot: func(t *testing.T) string {
+				t.Helper()
+				return ""
+			},
+			wantErr: "invalid scope",
+		},
+		{
+			name:  "project scope requires root",
+			scope: ScopeProject,
+			projectRoot: func(t *testing.T) string {
+				t.Helper()
+				return ""
+			},
+			wantErr: "project_root is required",
+		},
+		{
+			name:  "project root with user scope",
+			scope: ScopeUser,
+			projectRoot: func(t *testing.T) string {
+				t.Helper()
+				return "project"
+			},
+			wantErr: "project_root is only valid with project scope",
+		},
+		{
+			name:        "project root with project scope",
+			scope:       ScopeProject,
+			projectRoot: makeGitRoot,
+			wantScope:   ScopeProject,
+			wantRoot:    filepath.Clean,
+		},
+		{
+			name: "empty scope and root",
+			projectRoot: func(t *testing.T) string {
+				t.Helper()
+				return ""
+			},
+			wantScope: "",
+			wantRoot: func(_ string) string {
+				return ""
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := tt.projectRoot(t)
+			scope, normalized, err := NormalizeScopeAndProjectRoot(tt.scope, root)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantScope, scope)
+			assert.Equal(t, tt.wantRoot(root), normalized)
+		})
+	}
+}
+
+func TestValidateProjectRootSymlink(t *testing.T) {
+	t.Parallel()
+
+	target := makeGitRoot(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := ValidateProjectRoot(link)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlinks")
+}
+
+func makeGitRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+	return root
 }

@@ -729,23 +729,11 @@ func validateOCITag(tag string) error {
 }
 
 func normalizeProjectRoot(scope skills.Scope, projectRoot string) (skills.Scope, string, error) {
-	if projectRoot != "" && scope == "" {
-		scope = skills.ScopeProject
+	normalizedScope, normalizedRoot, err := skills.NormalizeScopeAndProjectRoot(scope, projectRoot)
+	if err != nil {
+		return normalizedScope, normalizedRoot, httperr.WithCode(err, http.StatusBadRequest)
 	}
-	if projectRoot != "" && scope != skills.ScopeProject {
-		return scope, projectRoot, httperr.WithCode(
-			errors.New("project_root is only valid with project scope"),
-			http.StatusBadRequest,
-		)
-	}
-	if scope == skills.ScopeProject {
-		cleaned, err := skills.ValidateProjectRoot(projectRoot)
-		if err != nil {
-			return scope, projectRoot, httperr.WithCode(err, http.StatusBadRequest)
-		}
-		return scope, cleaned, nil
-	}
-	return scope, projectRoot, nil
+	return normalizedScope, normalizedRoot, nil
 }
 
 // defaultScope returns ScopeUser when s is empty, otherwise returns s unchanged.

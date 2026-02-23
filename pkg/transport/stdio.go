@@ -705,7 +705,8 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 }
 
 // ShouldRestart returns true if the container exited and should be restarted.
-// Returns false if the container was removed (intentionally deleted).
+// Returns false if the container was removed (intentionally deleted) or
+// restarted by Docker (already running, no ToolHive restart needed).
 func (t *StdioTransport) ShouldRestart() bool {
 	t.exitErrMutex.Lock()
 	defer t.exitErrMutex.Unlock()
@@ -714,6 +715,7 @@ func (t *StdioTransport) ShouldRestart() bool {
 		return false // No exit error, normal shutdown
 	}
 
-	// Don't restart if container was removed (use typed error check)
-	return !errors.Is(t.containerExitErr, rt.ErrContainerRemoved)
+	// Don't restart if container was removed or restarted by Docker (use typed error check)
+	return !errors.Is(t.containerExitErr, rt.ErrContainerRemoved) &&
+		!errors.Is(t.containerExitErr, rt.ErrContainerRestarted)
 }

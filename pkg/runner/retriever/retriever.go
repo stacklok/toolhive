@@ -13,12 +13,12 @@ import (
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive-core/httperr"
 	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
-	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -345,7 +345,7 @@ func verifyImage(image string, server *types.ImageMetadata, verifySetting string
 		slog.Warn("Image verification is disabled")
 	case VerifyImageWarn, VerifyImageEnabled:
 		// Create a new verifier
-		v, err := verifier.New(server)
+		v, err := verifier.New(server, images.NewCompositeKeychain())
 		if err != nil {
 			// This happens if we have no provenance entry in the registry for this server.
 			// Not finding provenance info in the registry is not a fatal error if the setting is "warn".

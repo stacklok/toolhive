@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	catalog "github.com/stacklok/toolhive-catalog/pkg/catalog/toolhive"
 	types "github.com/stacklok/toolhive-core/registry/types"
 )
 
@@ -19,10 +20,7 @@ import (
 func TestEmbeddedRegistrySchemaValidation(t *testing.T) {
 	t.Parallel()
 
-	registryData, err := embeddedRegistryFS.ReadFile("data/registry.json")
-	require.NoError(t, err, "Should be able to load embedded registry data")
-
-	err = types.ValidateRegistrySchema(registryData)
+	err := types.ValidateRegistrySchema(catalog.Legacy())
 	require.NoError(t, err, "Embedded registry.json must conform to the registry schema")
 }
 
@@ -30,13 +28,9 @@ func TestEmbeddedRegistrySchemaValidation(t *testing.T) {
 func TestValidateEmbeddedRegistryCanLoadData(t *testing.T) {
 	t.Parallel()
 
-	// Load the embedded registry data
-	registryData, err := embeddedRegistryFS.ReadFile("data/registry.json")
-	require.NoError(t, err, "Should be able to load embedded registry data")
-
 	// Verify it's valid JSON
 	var registry types.Registry
-	err = json.Unmarshal(registryData, &registry)
+	err := json.Unmarshal(catalog.Legacy(), &registry)
 	require.NoError(t, err, "Embedded registry should be valid JSON")
 
 	// Verify basic structure

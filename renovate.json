@@ -6,7 +6,13 @@
     ":semanticCommitsDisabled"
   ],
   "labels": ["dependencies"],
+  "schedule": ["every weekend"],
   "packageRules": [
+    {
+      "description": "Update toolhive-catalog dependency daily",
+      "matchPackageNames": ["github.com/stacklok/toolhive-catalog"],
+      "schedule": ["at any time"]
+    },
     {
       "groupName": "toolhive images",
       "matchDatasources": ["docker"],

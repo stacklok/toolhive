@@ -41,6 +41,12 @@ func makeLayerData(t *testing.T) []byte {
 	return data
 }
 
+func tempDir(t *testing.T) string {
+	t.Helper()
+	realTmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+	return realTmpDir
+}
+
 func TestList(t *testing.T) {
 	t.Parallel()
 
@@ -203,7 +209,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		store := storemocks.NewMockSkillStore(ctrl)
 		pr := skillsmocks.NewMockPathResolver(ctrl)
 
-		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		targetDir := filepath.Join(tempDir(t), "my-skill")
 		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
 		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
@@ -235,7 +241,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		store := storemocks.NewMockSkillStore(ctrl)
 		pr := skillsmocks.NewMockPathResolver(ctrl)
 
-		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		targetDir := filepath.Join(tempDir(t), "my-skill")
 		existing := skills.InstalledSkill{
 			Metadata: skills.SkillMetadata{Name: "my-skill"},
 			Digest:   "sha256:abc",
@@ -263,7 +269,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		store := storemocks.NewMockSkillStore(ctrl)
 		pr := skillsmocks.NewMockPathResolver(ctrl)
 
-		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		targetDir := filepath.Join(tempDir(t), "my-skill")
 		existing := skills.InstalledSkill{
 			Metadata: skills.SkillMetadata{Name: "my-skill"},
 			Digest:   "sha256:old",
@@ -298,7 +304,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr := skillsmocks.NewMockPathResolver(ctrl)
 
 		// Create an existing unmanaged directory
-		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		targetDir := filepath.Join(tempDir(t), "my-skill")
 		require.NoError(t, os.MkdirAll(targetDir, 0750))
 
 		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
@@ -323,7 +329,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr := skillsmocks.NewMockPathResolver(ctrl)
 
 		// Create an existing unmanaged directory
-		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		targetDir := filepath.Join(tempDir(t), "my-skill")
 		require.NoError(t, os.MkdirAll(targetDir, 0750))
 
 		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
@@ -348,7 +354,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		store := storemocks.NewMockSkillStore(ctrl)
 		pr := skillsmocks.NewMockPathResolver(ctrl)
 
-		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		targetDir := filepath.Join(tempDir(t), "my-skill")
 		pr.EXPECT().GetSkillPath("custom-client", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 		store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -528,7 +534,7 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 				return ocimocks.NewMockRegistryClient(ctrl), ociStore, storemocks.NewMockSkillStore(ctrl), nil
 			},
@@ -539,7 +545,7 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 				reg := ocimocks.NewMockRegistryClient(ctrl)
 				reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
@@ -554,11 +560,11 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/bad-artifact:v1"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 
 				// Build an artifact with an invalid skill name (uppercase).
-				skillDir := filepath.Join(t.TempDir(), "INVALID")
+				skillDir := filepath.Join(tempDir(t), "INVALID")
 				require.NoError(t, os.MkdirAll(skillDir, 0o750))
 				require.NoError(t, os.WriteFile(
 					filepath.Join(skillDir, "SKILL.md"),
@@ -582,7 +588,7 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/oversize-skill:v1"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 				manifestDigest := buildManifestWithLayerSize(t, ociStore, "oversize-skill", maxCompressedLayerSize+1)
 
@@ -600,7 +606,7 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Client: "claude-code"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
 
@@ -610,7 +616,7 @@ func TestInstallFromOCI(t *testing.T) {
 
 				store := storemocks.NewMockSkillStore(ctrl)
 				pr := skillsmocks.NewMockPathResolver(ctrl)
-				targetDir := filepath.Join(t.TempDir(), "installed", "my-skill")
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
 				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
 				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -634,7 +640,7 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/some-repo:v1", Client: "claude-code"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 				// The artifact declares itself as "actual-skill", not "some-repo".
 				indexDigest := buildTestArtifact(t, ociStore, "actual-skill", "2.0.0")
@@ -654,7 +660,7 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Version: "override-version", Client: "claude-code"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
 
@@ -664,7 +670,7 @@ func TestInstallFromOCI(t *testing.T) {
 
 				store := storemocks.NewMockSkillStore(ctrl)
 				pr := skillsmocks.NewMockPathResolver(ctrl)
-				targetDir := filepath.Join(t.TempDir(), "installed", "my-skill")
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
 				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
 				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -682,7 +688,7 @@ func TestInstallFromOCI(t *testing.T) {
 			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Client: "claude-code"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				ociStore, err := ociskills.NewStore(t.TempDir())
+				ociStore, err := ociskills.NewStore(tempDir(t))
 				require.NoError(t, err)
 				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "3.0.0")
 
@@ -692,7 +698,7 @@ func TestInstallFromOCI(t *testing.T) {
 
 				store := storemocks.NewMockSkillStore(ctrl)
 				pr := skillsmocks.NewMockPathResolver(ctrl)
-				targetDir := filepath.Join(t.TempDir(), "installed", "my-skill")
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
 				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
 				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(

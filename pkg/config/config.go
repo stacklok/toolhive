@@ -140,7 +140,6 @@ func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.Provider
 // Clients contains settings for client configuration.
 type Clients struct {
 	RegisteredClients []string `yaml:"registered_clients"`
-	AutoDiscovery     bool     `yaml:"auto_discovery"` // Deprecated: kept for migration purposes only
 }
 
 // defaultPathGenerator generates the default config path using xdg

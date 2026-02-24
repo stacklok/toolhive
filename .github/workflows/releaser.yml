@@ -140,6 +140,9 @@ jobs:
           echo "✅ Version verification passed: $BINARY_VERSION"
           rm ./thv-test
 
+      - name: Bundle CLI docs
+        run: tar -czf /tmp/thv-cli-docs.tar.gz -C docs/cli .
+
       - name: Run GoReleaser
         id: run-goreleaser
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7

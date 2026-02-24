@@ -17,7 +17,6 @@ import (
 
 	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/cmd/thv/app"
-	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/migration"
@@ -48,10 +47,6 @@ func main() {
 
 	// Skip migrations for informational commands that don't need container runtime
 	if !app.IsInformationalCommand(os.Args) {
-		// Check and perform auto-discovery migration if needed
-		// Handles the auto-discovery flag depreciation, only executes once on old config files
-		client.CheckAndPerformAutoDiscoveryMigration()
-
 		// Check and perform telemetry config migration if needed
 		// Converts telemetry_config.samplingRate from float64 to string in run configs
 		migration.CheckAndPerformTelemetryConfigMigration()
@@ -60,9 +55,8 @@ func main() {
 		// Ensures middleware-based telemetry configs are properly migrated
 		migration.CheckAndPerformMiddlewareTelemetryMigration()
 
-		// Check and perform default group migration if needed
-		// Migrates existing workloads to the default group, only executes once
-		migration.CheckAndPerformDefaultGroupMigration()
+		// Ensure default group exists (creates it for fresh installs, no-op otherwise)
+		migration.EnsureDefaultGroupExists()
 	}
 
 	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args))

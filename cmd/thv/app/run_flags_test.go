@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/logging"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 )
 
@@ -401,4 +402,110 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	assert.Equal(t, false, finalInsecure, "Insecure setting should use runFlags value when not set via CLI")
 	assert.Equal(t, true, finalUseLegacyAttributes, "UseLegacyAttributes should default to true when not set via CLI or config")
 	assert.Equal(t, false, finalEnablePrometheusMetricsPath, "Enable Prometheus metrics path should use runFlags value when not set via CLI")
+}
+
+func TestResolveTransportType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		runFlags       *RunFlags
+		serverMetadata regtypes.ServerMetadata
+		expected       string
+	}{
+		{
+			name:           "explicit transport flag takes precedence",
+			runFlags:       &RunFlags{Transport: "stdio"},
+			serverMetadata: &regtypes.ImageMetadata{BaseServerMetadata: regtypes.BaseServerMetadata{Transport: "sse"}},
+			expected:       "stdio",
+		},
+		{
+			name:           "transport from metadata when flag is empty",
+			runFlags:       &RunFlags{},
+			serverMetadata: &regtypes.ImageMetadata{BaseServerMetadata: regtypes.BaseServerMetadata{Transport: "sse"}},
+			expected:       "sse",
+		},
+		{
+			name:           "nil interface returns default transport",
+			runFlags:       &RunFlags{},
+			serverMetadata: nil,
+			expected:       defaultTransportType,
+		},
+		{
+			name:           "typed nil pointer in interface returns default (protocol scheme case)",
+			runFlags:       &RunFlags{},
+			serverMetadata: regtypes.ServerMetadata((*regtypes.ImageMetadata)(nil)),
+			expected:       defaultTransportType,
+		},
+		{
+			name:           "metadata with empty transport returns default",
+			runFlags:       &RunFlags{},
+			serverMetadata: &regtypes.ImageMetadata{},
+			expected:       defaultTransportType,
+		},
+		{
+			name:           "explicit flag overrides even with nil metadata",
+			runFlags:       &RunFlags{Transport: "streamable-http"},
+			serverMetadata: nil,
+			expected:       "streamable-http",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := resolveTransportType(tt.runFlags, tt.serverMetadata)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestResolveServerName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		runFlags       *RunFlags
+		serverMetadata regtypes.ServerMetadata
+		expected       string
+	}{
+		{
+			name:           "explicit name flag takes precedence",
+			runFlags:       &RunFlags{Name: "my-server"},
+			serverMetadata: &regtypes.ImageMetadata{BaseServerMetadata: regtypes.BaseServerMetadata{Name: "registry-name"}},
+			expected:       "my-server",
+		},
+		{
+			name:           "name from metadata when flag is empty",
+			runFlags:       &RunFlags{},
+			serverMetadata: &regtypes.ImageMetadata{BaseServerMetadata: regtypes.BaseServerMetadata{Name: "registry-name"}},
+			expected:       "registry-name",
+		},
+		{
+			name:           "nil interface returns empty string",
+			runFlags:       &RunFlags{},
+			serverMetadata: nil,
+			expected:       "",
+		},
+		{
+			name:           "typed nil pointer in interface returns empty string (protocol scheme case)",
+			runFlags:       &RunFlags{},
+			serverMetadata: regtypes.ServerMetadata((*regtypes.ImageMetadata)(nil)),
+			expected:       "",
+		},
+		{
+			name:           "explicit flag overrides even with nil metadata",
+			runFlags:       &RunFlags{Name: "explicit"},
+			serverMetadata: nil,
+			expected:       "explicit",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := resolveServerName(tt.runFlags, tt.serverMetadata)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

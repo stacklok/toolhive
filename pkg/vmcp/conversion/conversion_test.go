@@ -185,6 +185,31 @@ func TestConvertMCPContent(t *testing.T) {
 			input: mcp.NewAudioContent("base64audiodata", "audio/mpeg"),
 			want:  vmcp.Content{Type: "audio", Data: "base64audiodata", MimeType: "audio/mpeg"},
 		},
+		{
+			name: "embedded resource with text content",
+			input: mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				URI:      "file://readme.md",
+				MIMEType: "text/markdown",
+				Text:     "# Hello World",
+			}),
+			want: vmcp.Content{Type: "resource", Text: "# Hello World", URI: "file://readme.md", MimeType: "text/markdown"},
+		},
+		{
+			name: "embedded resource with blob content",
+			input: mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+				URI:      "file://image.png",
+				MIMEType: "image/png",
+				Blob:     "base64blobdata",
+			}),
+			want: vmcp.Content{Type: "resource", Data: "base64blobdata", URI: "file://image.png", MimeType: "image/png"},
+		},
+		{
+			name: "embedded resource with empty URI and MimeType",
+			input: mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				Text: "content only",
+			}),
+			want: vmcp.Content{Type: "resource", Text: "content only"},
+		},
 	}
 
 	for _, tt := range tests {

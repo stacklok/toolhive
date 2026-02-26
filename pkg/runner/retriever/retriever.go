@@ -344,32 +344,31 @@ func verifyImage(image string, server *types.ImageMetadata, verifySetting string
 	case VerifyImageDisabled:
 		slog.Warn("Image verification is disabled")
 	case VerifyImageWarn, VerifyImageEnabled:
-		// Create a new verifier
-		v, err := verifier.New(server, images.NewCompositeKeychain())
-		if err != nil {
-			// This happens if we have no provenance entry in the registry for this server.
-			// Not finding provenance info in the registry is not a fatal error if the setting is "warn".
-			if errors.Is(err, verifier.ErrProvenanceServerInformationNotSet) && verifySetting == VerifyImageWarn {
+		// Guard against missing provenance info before calling the verifier.
+		if server == nil || server.Provenance == nil {
+			if verifySetting == VerifyImageWarn {
 				slog.Warn("MCP server has no provenance information set, skipping image verification", "image", image)
 				return nil
 			}
+			return verifier.ErrProvenanceServerInformationNotSet
+		}
+
+		// Create a new verifier
+		v, err := verifier.New(server.Provenance, images.NewCompositeKeychain())
+		if err != nil {
 			return err
 		}
 
-		// Verify the image passing the server info
-		isSafe, err := v.VerifyServer(image, server)
-		if err != nil {
+		// Verify the image passing the provenance info
+		if err = v.VerifyServer(image, server.Provenance); err != nil {
+			if (errors.Is(err, verifier.ErrImageNotSigned) || errors.Is(err, verifier.ErrProvenanceMismatch)) &&
+				verifySetting == VerifyImageWarn {
+				slog.Warn("MCP server failed image verification", "image", image, "reason", err)
+				return nil
+			}
 			return fmt.Errorf("image verification failed: %w", err)
 		}
-		if !isSafe {
-			if verifySetting == VerifyImageWarn {
-				slog.Warn("MCP server failed image verification", "image", image)
-			} else {
-				return fmt.Errorf("MCP server %s failed image verification", image)
-			}
-		} else {
-			slog.Debug("MCP server is verified successfully", "image", image)
-		}
+		slog.Debug("MCP server is verified successfully", "image", image)
 	default:
 		return fmt.Errorf("invalid value for --image-verification: %s", verifySetting)
 	}

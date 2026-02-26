@@ -43,7 +43,7 @@ require (
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/spf13/viper v1.21.0
 	github.com/stacklok/toolhive-catalog v0.20260223.0
-	github.com/stacklok/toolhive-core v0.0.7
+	github.com/stacklok/toolhive-core v0.0.8
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a

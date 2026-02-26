@@ -358,12 +358,15 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Ensure the deployment size is the same as the spec
-	if *deployment.Spec.Replicas != 1 {
+	// Enforce stdio transport replica cap: stdio requires 1:1 proxy-to-backend
+	// connections and cannot scale beyond 1. Other transports are hands-off
+	// to allow HPAs, KEDA, or manual kubectl scale to manage replicas freely.
+	if mcpServer.Spec.Transport == "stdio" &&
+		deployment.Spec.Replicas != nil && *deployment.Spec.Replicas > 1 {
 		deployment.Spec.Replicas = int32Ptr(1)
 		err = r.Update(ctx, deployment)
 		if err != nil {
-			ctxLogger.Error(err, "Failed to update Deployment",
+			ctxLogger.Error(err, "Failed to cap stdio deployment replicas",
 				"Deployment.Namespace", deployment.Namespace,
 				"Deployment.Name", deployment.Name)
 			return ctrl.Result{}, err
@@ -416,9 +419,13 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if the deployment spec changed
 	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum) {
-		// Update the deployment
+		// Update template and metadata only — preserve Spec.Replicas so that
+		// HPAs, KEDA, and manual scaling are not overwritten by the controller.
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
-		deployment.Spec = newDeployment.Spec
+		deployment.Spec.Template = newDeployment.Spec.Template
+		deployment.Spec.Selector = newDeployment.Spec.Selector
+		deployment.Labels = newDeployment.Labels
+		deployment.Annotations = newDeployment.Annotations
 		err = r.Update(ctx, deployment)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment",
@@ -1331,6 +1338,17 @@ func categorizePodStatus(pod corev1.Pod) (running, pending, failed int, failureR
 
 // updateMCPServerStatus updates the status of the MCPServer
 func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	// Handle scale-to-zero: if deployment exists with 0 replicas, report Stopped
+	deployment := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, deployment); err == nil {
+		if deployment.Spec.Replicas != nil && *deployment.Spec.Replicas == 0 {
+			m.Status.Phase = mcpv1alpha1.MCPServerPhaseStopped
+			m.Status.Message = "MCP server is stopped (scaled to zero)"
+			m.Status.ReadyReplicas = 0
+			return r.Status().Update(ctx, m)
+		}
+	}
+
 	// List pods for the MCPServer Deployment only (not proxy pods)
 	// The Deployment pods are labeled with "app": "mcpserver"
 	podList := &corev1.PodList{}
@@ -1346,6 +1364,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 		// No Deployment pods found yet
 		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
 		m.Status.Message = "MCP server is being created"
+		m.Status.ReadyReplicas = 0
 		return r.Status().Update(ctx, m)
 	}
 
@@ -1362,6 +1381,9 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 			failureReason = reason
 		}
 	}
+
+	// Set ReadyReplicas to the count of running pods
+	m.Status.ReadyReplicas = int32(running)
 
 	// Update the status based on pod health
 	if running > 0 {

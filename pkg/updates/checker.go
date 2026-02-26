@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 
+	"github.com/stacklok/toolhive/pkg/desktop"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -223,6 +224,10 @@ func getComponentFromVersionClient(versionClient VersionClient) string {
 }
 
 func notifyIfUpdateAvailable(current, latest string) {
+	// Desktop app manages its own updates, suppress CLI update message
+	if desktop.IsDesktopManagedCLI() {
+		return
+	}
 	// Print a meaningful message for people running local builds.
 	if strings.HasPrefix(current, "build-") {
 		// No need to compare versions, user is already aware they are not on the latest release.

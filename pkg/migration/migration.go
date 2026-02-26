@@ -9,27 +9,38 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/groups"
 )
 
-// migrationOnce ensures the migration only runs once
-var migrationOnce sync.Once
+// ensureDefaultGroupOnce ensures the default group check only runs once per process
+var ensureDefaultGroupOnce sync.Once
 
-// CheckAndPerformDefaultGroupMigration checks if default group migration is needed and performs it
-// This is called once at application startup
-func CheckAndPerformDefaultGroupMigration() {
-	migrationOnce.Do(func() {
-		if err := performDefaultGroupMigration(); err != nil {
-			slog.Error("failed to perform default group migration", "error", err)
+// EnsureDefaultGroupExists ensures the default group exists, creating it if necessary.
+// This is called at application startup for fresh installs and is a no-op when
+// the group already exists (e.g. after a previous migration or existing setup).
+func EnsureDefaultGroupExists() {
+	ensureDefaultGroupOnce.Do(func() {
+		if err := ensureDefaultGroupExists(context.Background()); err != nil {
+			slog.Error("failed to ensure default group exists", "error", err)
 			return
 		}
 	})
 }
 
-// performDefaultGroupMigration migrates all existing workloads to the default group
-func performDefaultGroupMigration() error {
-	migrator := &DefaultGroupMigrator{
-		configProvider: config.NewDefaultProvider(),
+func ensureDefaultGroupExists(ctx context.Context) error {
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return err
 	}
-	return migrator.Migrate(context.Background())
+
+	exists, err := groupManager.Exists(ctx, groups.DefaultGroupName)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	slog.Debug("creating default group", "name", groups.DefaultGroupName)
+	return groupManager.Create(ctx, groups.DefaultGroupName)
 }

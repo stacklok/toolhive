@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package sqlitestore implements a SQLite-based ToolStore for search over
+// Package toolstore implements a SQLite-based ToolStore for search over
 // MCP tool metadata. It uses FTS5 for full-text search and optional
 // embedding-based semantic search for hybrid retrieval.
-package sqlitestore
+package toolstore
 
 import (
 	"context"
@@ -46,7 +46,7 @@ var schemaSQL string
 
 // sqliteToolStore implements a tool store using SQLite with FTS5 for full-text search
 // and optional vector embedding-based semantic search.
-// It satisfies the optimizer.ToolStore interface.
+// It satisfies the types.ToolStore interface.
 type sqliteToolStore struct {
 	db                        *sql.DB
 	embeddingClient           types.EmbeddingClient // nil = FTS5-only
@@ -96,13 +96,15 @@ func newSQLiteToolStore(
 		}
 	}
 
-	return sqliteToolStore{
+	store := sqliteToolStore{
 		db:                        db,
 		embeddingClient:           embeddingClient,
 		maxToolsToReturn:          maxTools,
 		hybridSemanticRatio:       hybridRatio,
 		semanticDistanceThreshold: semanticThreshold,
-	}, nil
+	}
+
+	return store, nil
 }
 
 // UpsertTools adds or updates tools in the store.
@@ -180,7 +182,11 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 		if ftsExpr == "" {
 			return nil, nil
 		}
-		return s.searchFTS5(ctx, ftsExpr, allowedTools, s.maxToolsToReturn)
+		results, err := s.searchFTS5(ctx, ftsExpr, allowedTools, s.maxToolsToReturn)
+		if err != nil {
+			return nil, err
+		}
+		return results, nil
 	}
 
 	// Hybrid search: derive per-method limits from the ratio.
@@ -210,7 +216,9 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 		return nil, err
 	}
 
-	return mergeResults(ftsResults, semanticResults, s.maxToolsToReturn), nil
+	merged := mergeResults(ftsResults, semanticResults, s.maxToolsToReturn)
+
+	return merged, nil
 }
 
 // Close releases the underlying database connection.
@@ -267,11 +275,14 @@ func (s sqliteToolStore) searchFTS5(
 		matches = append(matches, types.ToolMatch{
 			Name:        name,
 			Description: description,
-			Score:       normalizeBM25(rank),
 		})
 	}
 
-	return matches, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return matches, nil
 }
 
 // searchSemantic performs embedding-based semantic search.
@@ -310,7 +321,14 @@ func (s sqliteToolStore) searchSemantic(
 	}
 	defer func() { _ = rows.Close() }()
 
-	var matches []types.ToolMatch
+	type rankedMatch struct {
+		name        string
+		description string
+		dist        float64
+	}
+
+	var ranked []rankedMatch
+	var candidatesEvaluated int
 	for rows.Next() {
 		var name, description string
 		var embBlob []byte
@@ -318,6 +336,7 @@ func (s sqliteToolStore) searchSemantic(
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
+		candidatesEvaluated++
 		emb := decodeEmbedding(embBlob)
 		dist := similarity.CosineDistance(queryVec, emb)
 
@@ -328,10 +347,10 @@ func (s sqliteToolStore) searchSemantic(
 			continue
 		}
 
-		matches = append(matches, types.ToolMatch{
-			Name:        name,
-			Description: description,
-			Score:       dist,
+		ranked = append(ranked, rankedMatch{
+			name:        name,
+			description: description,
+			dist:        dist,
 		})
 	}
 
@@ -340,40 +359,49 @@ func (s sqliteToolStore) searchSemantic(
 	}
 
 	// Sort by distance ascending (lower = better match)
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].Score < matches[j].Score
+	sort.Slice(ranked, func(i, j int) bool {
+		return ranked[i].dist < ranked[j].dist
 	})
 
-	if len(matches) > limit {
-		matches = matches[:limit]
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+
+	matches := make([]types.ToolMatch, len(ranked))
+	for i, r := range ranked {
+		matches[i] = types.ToolMatch{
+			Name:        r.name,
+			Description: r.description,
+		}
 	}
 
 	return matches, nil
 }
 
-// mergeResults combines FTS5 and semantic results, deduplicating by name
-// (keeping the lower score for duplicates), sorting by score ascending
-// (lower = better match), and truncating to maxResults.
+// mergeResults combines semantic and FTS5 results, deduplicating by name.
+// Semantic results are listed first (preserving their distance-based order),
+// followed by FTS5 results not already present, and truncated to maxResults.
 func mergeResults(fts, semantic []types.ToolMatch, maxResults int) []types.ToolMatch {
-	seen := make(map[string]types.ToolMatch, len(fts)+len(semantic))
-	for _, m := range fts {
-		seen[m.Name] = m
-	}
-	for _, m := range semantic {
-		existing, ok := seen[m.Name]
-		if !ok || m.Score < existing.Score {
-			seen[m.Name] = m
-		}
-	}
+	seen := make(map[string]struct{}, len(fts)+len(semantic))
+	merged := make([]types.ToolMatch, 0, len(fts)+len(semantic))
 
-	merged := make([]types.ToolMatch, 0, len(seen))
-	for _, m := range seen {
+	// Semantic results first.
+	for _, m := range semantic {
+		if _, ok := seen[m.Name]; ok {
+			continue
+		}
+		seen[m.Name] = struct{}{}
 		merged = append(merged, m)
 	}
 
-	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].Score < merged[j].Score
-	})
+	// Then FTS5 results not already seen.
+	for _, m := range fts {
+		if _, ok := seen[m.Name]; ok {
+			continue
+		}
+		seen[m.Name] = struct{}{}
+		merged = append(merged, m)
+	}
 
 	if len(merged) > maxResults {
 		merged = merged[:maxResults]
@@ -444,13 +472,6 @@ func hybridSearchLimits(total int, semanticRatio float64) (ftsLimit, semanticLim
 	semanticLimit = int(math.Round(float64(total) * semanticRatio))
 	ftsLimit = total - semanticLimit
 	return ftsLimit, semanticLimit
-}
-
-// normalizeBM25 converts an FTS5 bm25() rank to a [0, 2) distance score.
-// FTS5 bm25() returns negative values where more negative = better match.
-// The output is scaled to [0, 2) to align with cosine distance range.
-func normalizeBM25(rank float64) float64 {
-	return 2.0 / (1.0 - rank)
 }
 
 // encodeEmbedding serializes a float32 slice to a little-endian byte slice.

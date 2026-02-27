@@ -5,7 +5,7 @@
 // functional tests of sqlite_store. Consider moving them to a dedicated
 // benchmarking repo or similar in the future.
 
-package sqlitestore
+package toolstore
 
 import (
 	"context"
@@ -15,9 +15,20 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
 const benchToolCount = 1000
+
+func newBenchStore(b *testing.B, embeddingClient types.EmbeddingClient) sqliteToolStore {
+	b.Helper()
+	id := testDBCounter.Add(1)
+	store, err := newSQLiteToolStore(fmt.Sprintf("file:benchdb_%d?mode=memory&cache=shared", id), embeddingClient, nil)
+	require.NoError(b, err)
+	b.Cleanup(func() { _ = store.Close() })
+	return store
+}
 
 func generateTools() ([]server.ServerTool, []string) {
 	tools := make([]server.ServerTool, benchToolCount)
@@ -36,9 +47,7 @@ func generateTools() ([]server.ServerTool, []string) {
 }
 
 func BenchmarkSearch_FTS5Only_1000Tools(b *testing.B) {
-	store, err := NewSQLiteToolStore(nil, nil)
-	require.NoError(b, err)
-	b.Cleanup(func() { _ = store.Close() })
+	store := newBenchStore(b, nil)
 
 	ctx := context.Background()
 	tools, names := generateTools()
@@ -53,9 +62,7 @@ func BenchmarkSearch_FTS5Only_1000Tools(b *testing.B) {
 
 func BenchmarkSearch_Semantic_1000Tools_384Dim(b *testing.B) {
 	client := newFakeEmbeddingClient(384)
-	store, err := newSQLiteToolStore("file:bench_sem384?mode=memory&cache=shared", client, nil)
-	require.NoError(b, err)
-	b.Cleanup(func() { _ = store.Close() })
+	store := newBenchStore(b, client)
 
 	ctx := context.Background()
 	tools, names := generateTools()
@@ -70,9 +77,7 @@ func BenchmarkSearch_Semantic_1000Tools_384Dim(b *testing.B) {
 
 func BenchmarkSearch_Hybrid_1000Tools(b *testing.B) {
 	client := newFakeEmbeddingClient(384)
-	store, err := NewSQLiteToolStore(client, nil)
-	require.NoError(b, err)
-	b.Cleanup(func() { _ = store.Close() })
+	store := newBenchStore(b, client)
 
 	ctx := context.Background()
 	tools, names := generateTools()
@@ -87,9 +92,7 @@ func BenchmarkSearch_Hybrid_1000Tools(b *testing.B) {
 
 func BenchmarkSearch_Semantic_1000Tools_768Dim(b *testing.B) {
 	client := newFakeEmbeddingClient(768)
-	store, err := newSQLiteToolStore("file:bench_sem768?mode=memory&cache=shared", client, nil)
-	require.NoError(b, err)
-	b.Cleanup(func() { _ = store.Close() })
+	store := newBenchStore(b, client)
 
 	ctx := context.Background()
 	tools, names := generateTools()

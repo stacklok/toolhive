@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -124,6 +125,10 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	selectedClients, selectedGroups, confirmed, err := ui.RunClientSetup(availableClients, availableGroups)
 	if err != nil {
+		if errors.Is(err, ui.ErrAllClientsRegistered) {
+			fmt.Println("All installed clients are already registered for the selected groups.")
+			return nil
+		}
 		return fmt.Errorf("error running interactive setup: %w", err)
 	}
 	if !confirmed {

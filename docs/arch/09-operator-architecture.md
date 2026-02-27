@@ -172,7 +172,7 @@ Manages external authentication configurations that can be shared across multipl
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers.
+MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
 
 **Referenced by MCPServer** using `oidcConfig.type: external`.
 

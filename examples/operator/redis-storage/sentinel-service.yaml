@@ -1,0 +1,121 @@
+# Manual Sentinel Service for non-Spotahome deployments.
+#
+# If you are using the Spotahome Redis Operator (redis-failover.yaml), you do NOT
+# need this file — the operator automatically creates a "rfs-redis-sentinel" Service.
+#
+# This example shows how to create the Sentinel Service manually when running
+# Redis Sentinel outside of the Spotahome operator (e.g., a StatefulSet, Helm
+# chart, or externally managed Redis). The MCPExternalAuthConfig sentinelService
+# field resolves endpoints from this Service via EndpointSlices.
+#
+# Prerequisites:
+#   1. Redis Sentinel pods running with a known label selector
+#   2. Create the target namespace: kubectl create namespace redis
+#
+# Usage:
+#   kubectl apply -f sentinel-service.yaml
+
+---
+# Headless Service that selects your Sentinel pods.
+# Adjust the selector labels to match your Sentinel deployment.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: redis
+  labels:
+    app: redis-sentinel
+spec:
+  # ClusterIP: None makes this headless — each Sentinel pod gets its own
+  # EndpointSlice entry, which is how the ToolHive operator discovers them.
+  clusterIP: None
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
+      protocol: TCP
+  selector:
+    # Change these labels to match your Sentinel pod labels.
+    app: redis-sentinel
+
+---
+# Example StatefulSet running 3 Redis Sentinel instances.
+# This is one way to deploy Sentinel manually. Adapt as needed for your
+# environment (e.g., different image, config, or volume mounts).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sentinel
+  namespace: redis
+spec:
+  serviceName: redis-sentinel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-sentinel
+  template:
+    metadata:
+      labels:
+        app: redis-sentinel
+    spec:
+      # Sentinel modifies its config at runtime, so copy from the
+      # read-only ConfigMap to a writable location before starting.
+      initContainers:
+        - name: copy-config
+          image: redis:7-alpine
+          command: ["cp", "/etc/redis-ro/sentinel.conf", "/data/sentinel.conf"]
+          volumeMounts:
+            - name: sentinel-config
+              mountPath: /etc/redis-ro
+            - name: sentinel-data
+              mountPath: /data
+      containers:
+        - name: sentinel
+          image: redis:7-alpine
+          ports:
+            - containerPort: 26379
+              name: sentinel
+          command:
+            - redis-sentinel
+            - /data/sentinel.conf
+          volumeMounts:
+            - name: sentinel-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - -p
+                - "26379"
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: sentinel-config
+          configMap:
+            name: redis-sentinel-config
+  volumeClaimTemplates:
+    - metadata:
+        name: sentinel-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Mi
+
+---
+# Sentinel configuration ConfigMap.
+# Update "sentinel monitor" with your Redis master address.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-sentinel-config
+  namespace: redis
+data:
+  sentinel.conf: |
+    # Monitor the Redis master named "mymaster" at the given address.
+    # The "2" means quorum: 2 out of 3 Sentinels must agree for failover.
+    sentinel monitor mymaster redis-master.redis.svc.cluster.local 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 10000
+    sentinel parallel-syncs mymaster 1

@@ -192,7 +192,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			return nil, fmt.Errorf("failed to retrieve MCP server image: %w", err)
 		}
 
-		if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok {
+		if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteServerMetadata != nil {
 			if remoteServerMetadata.OAuthConfig != nil {
 				// Default resource: user-provided > registry metadata > derived from remote URL
 				resource := req.OAuthConfig.Resource
@@ -228,8 +228,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 				}
 			}
 		}
-		// Handle server metadata - API only supports container servers
-		imageMetadata, _ = serverMetadata.(*regtypes.ImageMetadata)
+		// Handle server metadata - API only supports container servers.
+		// Use type assertion with nil check to guard against typed nil pointers.
+		if md, ok := serverMetadata.(*regtypes.ImageMetadata); ok && md != nil {
+			imageMetadata = md
+		}
 	}
 
 	// Build RunConfig
@@ -291,8 +294,10 @@ func (s *WorkloadService) BuildFullRunConfig(
 	transportType := "streamable-http"
 	if req.Transport != "" {
 		transportType = req.Transport
-	} else if serverMetadata != nil {
-		transportType = serverMetadata.GetTransport()
+	} else if md, ok := serverMetadata.(*regtypes.ImageMetadata); ok && md != nil {
+		if t := md.GetTransport(); t != "" {
+			transportType = t
+		}
 	}
 
 	// Configure middleware from flags

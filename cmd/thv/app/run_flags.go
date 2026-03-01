@@ -454,13 +454,17 @@ func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	return nil
 }
 
-// resolveTransportType selects the appropriate transport type based on flags and metadata
+// resolveTransportType selects the appropriate transport type based on flags and metadata.
+// Uses a type assertion with nil check to guard against typed nil pointers wrapped
+// in a non-nil interface (e.g., nil *ImageMetadata returned as ServerMetadata).
 func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata) string {
 	if runFlags.Transport != "" {
 		return runFlags.Transport
 	}
-	if serverMetadata != nil {
-		return serverMetadata.GetTransport()
+	if imageMetadata, ok := serverMetadata.(*regtypes.ImageMetadata); ok && imageMetadata != nil {
+		if t := imageMetadata.GetTransport(); t != "" {
+			return t
+		}
 	}
 	return defaultTransportType
 }
@@ -547,7 +551,13 @@ func buildRunnerConfig(
 ) (*runner.RunConfig, error) {
 	transportType := resolveTransportType(runFlags, serverMetadata)
 	serverName := resolveServerName(runFlags, serverMetadata)
-	imageMetadata, _ := serverMetadata.(*regtypes.ImageMetadata)
+
+	// Use type assertion with nil check to guard against typed nil pointers
+	// wrapped in a non-nil interface (e.g., protocol scheme images).
+	var imageMetadata *regtypes.ImageMetadata
+	if md, ok := serverMetadata.(*regtypes.ImageMetadata); ok && md != nil {
+		imageMetadata = md
+	}
 
 	// Build default options
 	opts := []runner.RunConfigBuilderOption{
@@ -701,7 +711,7 @@ func configureMiddlewareAndOptions(
 func configureRemoteAuth(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
 
-	if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok {
+	if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteServerMetadata != nil {
 		remoteAuthConfig, err := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata, runFlags)
 		if err != nil {
 			return nil, err

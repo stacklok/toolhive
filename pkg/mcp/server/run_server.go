@@ -50,8 +50,12 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}
 
-	// Build run configuration
-	imageMetadata, _ := serverMetadata.(*types.ImageMetadata)
+	// Build run configuration.
+	// Use type assertion with nil check to guard against typed nil pointers.
+	var imageMetadata *types.ImageMetadata
+	if md, ok := serverMetadata.(*types.ImageMetadata); ok && md != nil {
+		imageMetadata = md
+	}
 
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
 	if err != nil {

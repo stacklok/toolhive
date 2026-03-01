@@ -148,7 +148,7 @@ func (m *WorkloadMonitor) monitor(ctx context.Context) {
 			if err == nil && !info.StartedAt.IsZero() && !info.StartedAt.Equal(m.initialStartTime) {
 				// Container was restarted (has a different start time)
 				restartErr := NewContainerError(
-					ErrContainerExited,
+					ErrContainerRestarted,
 					m.containerName,
 					fmt.Sprintf("Container %s was restarted (start time changed from %s to %s)",
 						m.containerName, m.initialStartTime.Format(time.RFC3339), info.StartedAt.Format(time.RFC3339)),

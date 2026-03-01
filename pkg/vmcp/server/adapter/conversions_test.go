@@ -80,12 +80,74 @@ func TestConvertToMCPContent(t *testing.T) {
 			wantType: "mcp.AudioContent",
 		},
 		{
-			name: "resource content converts to empty text",
+			name: "resource content with text becomes embedded resource",
+			input: vmcp.Content{
+				Type:     "resource",
+				Text:     "file contents here",
+				URI:      "file://test.txt",
+				MimeType: "text/plain",
+			},
+			expected: mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				URI:      "file://test.txt",
+				MIMEType: "text/plain",
+				Text:     "file contents here",
+			}),
+			wantType: "mcp.EmbeddedResource",
+		},
+		{
+			name: "resource content with blob becomes embedded resource",
+			input: vmcp.Content{
+				Type:     "resource",
+				Data:     "base64blobdata",
+				URI:      "file://binary.bin",
+				MimeType: "application/octet-stream",
+			},
+			expected: mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+				URI:      "file://binary.bin",
+				MIMEType: "application/octet-stream",
+				Blob:     "base64blobdata",
+			}),
+			wantType: "mcp.EmbeddedResource",
+		},
+		{
+			name: "resource content with no text or blob preserves resource type",
+			input: vmcp.Content{
+				Type:     "resource",
+				URI:      "file://empty",
+				MimeType: "text/plain",
+			},
+			expected: mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				URI:      "file://empty",
+				MIMEType: "text/plain",
+			}),
+			wantType: "mcp.EmbeddedResource",
+		},
+		{
+			name: "resource with both text and data uses text (text takes precedence)",
+			input: vmcp.Content{
+				Type:     "resource",
+				Text:     "text content wins",
+				Data:     "blob-should-be-ignored",
+				URI:      "file://dual.txt",
+				MimeType: "text/plain",
+			},
+			expected: mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				URI:      "file://dual.txt",
+				MIMEType: "text/plain",
+				Text:     "text content wins",
+			}),
+			wantType: "mcp.EmbeddedResource",
+		},
+		{
+			name: "resource with text but empty URI and MimeType",
 			input: vmcp.Content{
 				Type: "resource",
+				Text: "content without metadata",
 			},
-			expected: mcp.NewTextContent(""),
-			wantType: "mcp.TextContent",
+			expected: mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				Text: "content without metadata",
+			}),
+			wantType: "mcp.EmbeddedResource",
 		},
 		{
 			name: "unknown content type converts to empty text",
@@ -135,6 +197,13 @@ func TestConvertToMCPContent(t *testing.T) {
 				assert.True(t, ok)
 				assert.Equal(t, expectedAudio.Data, audioResult.Data)
 				assert.Equal(t, expectedAudio.MIMEType, audioResult.MIMEType)
+
+			case "mcp.EmbeddedResource":
+				resResult, ok := result.(mcp.EmbeddedResource)
+				assert.True(t, ok, "Expected EmbeddedResource type")
+				expectedRes, ok := tt.expected.(mcp.EmbeddedResource)
+				assert.True(t, ok)
+				assert.Equal(t, expectedRes.Resource, resResult.Resource)
 
 			default:
 				t.Errorf("Unexpected content type: %s", tt.wantType)

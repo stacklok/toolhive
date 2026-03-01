@@ -29,6 +29,16 @@ func ConvertMCPContent(content mcp.Content) vmcp.Content {
 	if audio, ok := mcp.AsAudioContent(content); ok {
 		return vmcp.Content{Type: "audio", Data: audio.Data, MimeType: audio.MIMEType}
 	}
+	if res, ok := mcp.AsEmbeddedResource(content); ok {
+		if textRes, ok := mcp.AsTextResourceContents(res.Resource); ok {
+			return vmcp.Content{Type: "resource", Text: textRes.Text, URI: textRes.URI, MimeType: textRes.MIMEType}
+		}
+		if blobRes, ok := mcp.AsBlobResourceContents(res.Resource); ok {
+			return vmcp.Content{Type: "resource", Data: blobRes.Blob, URI: blobRes.URI, MimeType: blobRes.MIMEType}
+		}
+		slog.Debug("Embedded resource has unknown resource contents type", "type", fmt.Sprintf("%T", res.Resource))
+		return vmcp.Content{Type: "resource"}
+	}
 	slog.Debug("Encountered unknown MCP content type", "type", fmt.Sprintf("%T", content))
 	return vmcp.Content{Type: "unknown"}
 }

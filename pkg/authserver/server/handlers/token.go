@@ -34,6 +34,14 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// For client_credentials grant, fosite uses the placeholder session directly
+	// (there's no stored authorize session to retrieve). We must populate the
+	// session's subject with the client ID so the JWT has a meaningful "sub" claim.
+	if accessRequest.GetGrantTypes().ExactOne("client_credentials") {
+		clientID := accessRequest.GetClient().GetID()
+		accessRequest.SetSession(session.New(clientID, "", clientID))
+	}
+
 	// RFC 8707: Handle resource parameter for audience claim.
 	// The resource parameter allows clients to specify which protected resource (MCP server)
 	// the token is intended for. This value becomes the "aud" claim in the JWT.

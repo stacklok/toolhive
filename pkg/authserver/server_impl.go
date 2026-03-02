@@ -218,8 +218,9 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		authServerConfig.Config,
 		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
-		compose.OAuth2AuthorizeExplicitFactory, // Authorization code grant
-		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
-		compose.OAuth2PKCEFactory,              // PKCE for public clients
+		compose.OAuth2AuthorizeExplicitFactory,      // Authorization code grant
+		compose.OAuth2ClientCredentialsGrantFactory, // Client credentials grant (M2M)
+		compose.OAuth2RefreshTokenGrantFactory,      // Refresh token grant
+		compose.OAuth2PKCEFactory,                   // PKCE for public clients
 	)
 }

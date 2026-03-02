@@ -29,8 +29,27 @@ spec:
         file: assert-mcpserver-running.yaml
     - assert:
         file: assert-mcpserver-pod-running.yaml
-    - assert:
-        file: assert-mcpserver-proxy-runner-running.yaml
+    - script:
+        content: |
+          #!/bin/sh
+          set -u
+
+          echo "Waiting for proxy runner deployment to become available..."
+          if kubectl wait --for=condition=Available deployment/yardstick -n test-namespace --timeout=60s; then
+            echo "✓ Deployment is available"
+            exit 0
+          fi
+
+          echo "! Deployment did not become available, dumping debug info"
+          kubectl get deployment yardstick -n test-namespace -o yaml || true
+          kubectl describe deployment yardstick -n test-namespace || true
+          kubectl get rs -n test-namespace -o wide || true
+          kubectl describe rs -n test-namespace || true
+          kubectl get pods -n test-namespace -o wide || true
+          kubectl describe pods -n test-namespace || true
+          kubectl logs deployment/yardstick -n test-namespace --all-containers=true --tail=200 || true
+          kubectl get events -n test-namespace --sort-by=.lastTimestamp || true
+          exit 1
     - assert:
         file: assert-mcpserver-proxy-runner-svc.yaml
     - assert:

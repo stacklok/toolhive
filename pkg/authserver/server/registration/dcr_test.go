@@ -310,13 +310,14 @@ func TestValidateDCRRequest(t *testing.T) {
 			errorCode:   DCRErrorInvalidClientMetadata,
 		},
 		{
-			name: "grant_types with only client_credentials fails",
+			name: "grant_types with only client_credentials succeeds for confidential client",
 			request: &DCRRequest{
-				RedirectURIs: []string{"http://127.0.0.1/callback"},
-				GrantTypes:   []string{"client_credentials"},
+				GrantTypes:              []string{"client_credentials"},
+				TokenEndpointAuthMethod: "client_secret_basic",
 			},
-			expectError: true,
-			errorCode:   DCRErrorInvalidClientMetadata,
+			expectError:        false,
+			expectedAuthMethod: "client_secret_basic",
+			expectedGrants:     []string{"client_credentials"},
 		},
 		{
 			name: "grant_types with authorization_code passes",
@@ -328,10 +329,72 @@ func TestValidateDCRRequest(t *testing.T) {
 			expectedGrants: []string{"authorization_code"},
 		},
 		{
-			name: "grant_types with unsupported type rejected",
+			name: "grant_types with authorization_code and client_credentials succeeds",
 			request: &DCRRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				GrantTypes:   []string{"authorization_code", "client_credentials"},
+			},
+			expectError:        false,
+			expectedAuthMethod: "none",
+			expectedGrants:     []string{"authorization_code", "client_credentials"},
+		},
+
+		// Confidential client (client_credentials) validation
+		{
+			name: "confidential client with client_secret_basic",
+			request: &DCRRequest{
+				ClientName:              "My M2M Service",
+				GrantTypes:              []string{"client_credentials"},
+				TokenEndpointAuthMethod: "client_secret_basic",
+			},
+			expectError:        false,
+			expectedAuthMethod: "client_secret_basic",
+			expectedGrants:     []string{"client_credentials"},
+		},
+		{
+			name: "confidential client with client_secret_post",
+			request: &DCRRequest{
+				GrantTypes:              []string{"client_credentials"},
+				TokenEndpointAuthMethod: "client_secret_post",
+			},
+			expectError:        false,
+			expectedAuthMethod: "client_secret_post",
+			expectedGrants:     []string{"client_credentials"},
+		},
+		{
+			name: "confidential client with auth_method none fails",
+			request: &DCRRequest{
+				GrantTypes:              []string{"client_credentials"},
+				TokenEndpointAuthMethod: "none",
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "confidential client ignores redirect_uris",
+			request: &DCRRequest{
+				RedirectURIs:            []string{"http://127.0.0.1/callback"},
+				GrantTypes:              []string{"client_credentials"},
+				TokenEndpointAuthMethod: "client_secret_basic",
+			},
+			expectError:        false,
+			expectedAuthMethod: "client_secret_basic",
+			expectedGrants:     []string{"client_credentials"},
+		},
+		{
+			name: "grant_types with only refresh_token still fails",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				GrantTypes:   []string{"refresh_token"},
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "grant_types with unsupported implicit type rejected",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				GrantTypes:   []string{"authorization_code", "implicit"},
 			},
 			expectError: true,
 			errorCode:   DCRErrorInvalidClientMetadata,
@@ -446,8 +509,12 @@ func TestValidateDCRRequest(t *testing.T) {
 					assert.ElementsMatch(t, tt.expectedResponses, result.ResponseTypes)
 				}
 
-				// Verify redirect_uris are preserved
-				assert.Equal(t, tt.request.RedirectURIs, result.RedirectURIs)
+				// Verify redirect_uris: nil for confidential clients, preserved for public
+				if result.TokenEndpointAuthMethod != "none" {
+					assert.Nil(t, result.RedirectURIs, "confidential clients should have nil redirect_uris")
+				} else {
+					assert.Equal(t, tt.request.RedirectURIs, result.RedirectURIs)
+				}
 
 				// Verify client_name is preserved
 				assert.Equal(t, tt.request.ClientName, result.ClientName)

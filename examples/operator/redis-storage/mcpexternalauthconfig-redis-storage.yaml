@@ -3,8 +3,9 @@
 #
 # Prerequisites:
 #   1. A running Redis Sentinel deployment with a Sentinel Service:
-#      - Spotahome operator: see redis-failover.yaml (creates "rfs-redis-sentinel" automatically)
-#      - Manual setup: see sentinel-service.yaml
+#      - Recommended: see sentinel-service.yaml (complete Redis + Sentinel setup)
+#      - Note: the Spotahome operator (redis-failover.yaml) has known issues;
+#        see that file for details.
 #   2. Redis ACL user configured (see redis-credentials.yaml)
 #   3. An upstream IDP client configured
 #
@@ -35,9 +36,11 @@ spec:
       redis:
         sentinelConfig:
           masterName: mymaster
-          # Discover Sentinels via Kubernetes Service
+          # Discover Sentinels via the headless Service created by sentinel-service.yaml.
+          # The ToolHive operator resolves this Service's EndpointSlices to find
+          # individual Sentinel pod addresses.
           sentinelService:
-            name: rfs-redis-sentinel
+            name: redis-sentinel
             namespace: redis
         aclUserConfig:
           usernameSecretRef:

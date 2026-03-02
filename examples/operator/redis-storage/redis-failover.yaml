@@ -1,29 +1,35 @@
 # Spotahome Redis Operator - RedisFailover resource
-# Deploys a Redis master-replica set with Sentinel monitoring.
 #
-# Prerequisites:
-#   1. Install the Spotahome Redis Operator:
+# WARNING: The Spotahome Redis Operator has known issues that make it
+# unsuitable for this use case. Use sentinel-service.yaml instead.
+#
+# Known issues:
+#
+#   1. Helm chart 3.3.0+ fails to install its own CRD:
+#      "failed to install CRD: error converting YAML to JSON: did not find
+#       expected node content"
+#      Workaround: pin to chart 3.2.9 or apply the CRD manually.
+#      See: https://github.com/spotahome/redis-operator/issues/679
+#
+#   2. Sentinel advertises 127.0.0.1 as the Redis master address.
+#      The operator configures Sentinel to initially monitor 127.0.0.1:6379.
+#      Because sentinel.conf is generated internally by the operator, adding
+#      "sentinel resolve-hostnames yes" / "sentinel announce-hostnames yes"
+#      via customConfig does not reliably fix this. Clients in other pods
+#      receive 127.0.0.1 as the master address and cannot connect.
+#
+# This file is retained for reference only. For a working Redis Sentinel
+# deployment, see sentinel-service.yaml.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Original prerequisites (if you still want to try this approach):
+#   1. Install the Spotahome Redis Operator (pin to 3.2.9):
 #      helm repo add redis-operator https://spotahome.github.io/redis-operator
 #      helm install redis-operator redis-operator/redis-operator \
-#        --namespace redis-operator --create-namespace
+#        --version 3.2.9 --namespace redis-operator --create-namespace
 #   2. Create the target namespace:
 #      kubectl create namespace redis
-#
-# Usage:
-#   kubectl apply -f redis-failover.yaml
-#
-# This creates:
-#   - 3 Redis replicas (1 master + 2 replicas) with persistent storage
-#   - 3 Sentinel instances for automatic failover
-#   - Service "rfs-redis" (redis namespace) — Redis master, port 6379
-#   - Service "rfs-redis-sentinel" (redis namespace) — Sentinel, port 26379
-#
-# The "rfs-redis-sentinel" Service is what mcpexternalauthconfig-redis-storage.yaml
-# references via sentinelService. The operator resolves its EndpointSlices to
-# discover individual Sentinel pod addresses.
-#
-# If you are NOT using the Spotahome operator, see sentinel-service.yaml for
-# how to create this Service manually.
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:

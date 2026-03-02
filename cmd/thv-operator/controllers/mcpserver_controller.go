@@ -1634,7 +1634,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if !mapIsSubset(expectedAnnotations, deployment.Annotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, deployment.Annotations) {
 		return true
 	}
 
@@ -1657,17 +1657,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	}
 
 	return false
-}
-
-// mapIsSubset returns true if every key-value pair in subset exists in superset.
-// Extra keys in superset (e.g. K8s-managed annotations) are ignored.
-func mapIsSubset(subset, superset map[string]string) bool {
-	for k, v := range subset {
-		if sv, ok := superset[k]; !ok || sv != v {
-			return false
-		}
-	}
-	return true
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

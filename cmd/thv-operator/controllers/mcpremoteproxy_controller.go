@@ -768,7 +768,7 @@ func (*MCPRemoteProxyReconciler) deploymentMetadataNeedsUpdate(
 		return true
 	}
 
-	if !mapIsSubset(expectedAnnotations, deployment.Annotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, deployment.Annotations) {
 		return true
 	}
 

@@ -22,6 +22,11 @@ var (
 	// ErrContainerExited is returned when a container has exited unexpectedly
 	ErrContainerExited = httperr.WithCode(fmt.Errorf("container exited unexpectedly"), http.StatusBadRequest)
 
+	// ErrContainerRestarted is returned when a container has been restarted
+	// (e.g., by Docker restart policy). The container is still running.
+	// This is distinct from ErrContainerExited.
+	ErrContainerRestarted = httperr.WithCode(fmt.Errorf("container restarted"), http.StatusBadRequest)
+
 	// ErrContainerRemoved is returned when a container has been removed
 	ErrContainerRemoved = httperr.WithCode(fmt.Errorf("container removed"), http.StatusBadRequest)
 )

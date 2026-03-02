@@ -262,8 +262,7 @@ func TestWorkloadMonitor_ContainerRestarted(t *testing.T) {
 	select {
 	case exitErr := <-ch:
 		require.Error(t, exitErr)
-		assert.ErrorIs(t, exitErr, runtime.ErrContainerExited)
-		assert.Contains(t, exitErr.Error(), "restarted")
+		assert.ErrorIs(t, exitErr, runtime.ErrContainerRestarted)
 	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for container restart error")
 	}

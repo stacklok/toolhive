@@ -1134,7 +1134,14 @@ func TestBuild(t *testing.T) {
 			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
 				ociStore, err := ociskills.NewStore(t.TempDir())
 				require.NoError(t, err)
-				return ocimocks.NewMockSkillPackager(ctrl), ociStore
+				d := putTestManifest(t, ociStore)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(&ociskills.PackageResult{
+						IndexDigest: d,
+						Config:      &ociskills.SkillConfig{},
+					}, nil)
+				return p, ociStore
 			},
 			wantCode: http.StatusBadRequest,
 		},
@@ -1201,6 +1208,23 @@ func TestBuild(t *testing.T) {
 				return p, ociStore
 			},
 			// wantRef is set dynamically below since the digest depends on store content
+		},
+		{
+			name: "invalid fallback config name returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				d := putTestManifest(t, ociStore)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(&ociskills.PackageResult{
+						IndexDigest: d,
+						Config:      &ociskills.SkillConfig{Name: "invalid name!@#"},
+					}, nil)
+				return p, ociStore
+			},
+			wantCode: http.StatusBadRequest,
 		},
 	}
 

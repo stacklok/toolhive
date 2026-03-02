@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -251,12 +252,6 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	if err := validateLocalPath(opts.Path); err != nil {
 		return nil, err
 	}
-	if opts.Tag != "" {
-		if err := validateOCITag(opts.Tag); err != nil {
-			return nil, err
-		}
-	}
-
 	result, err := s.packager.Package(ctx, opts.Path, ociskills.DefaultPackageOptions())
 	if err != nil {
 		return nil, fmt.Errorf("packaging skill: %w", err)
@@ -275,6 +270,12 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 		}
 		return ""
 	}()
+
+	if tag != "" {
+		if err := validateOCITag(tag); err != nil {
+			return nil, err
+		}
+	}
 
 	if tag != "" {
 		if tagErr := s.ociStore.Tag(ctx, result.IndexDigest, tag); tagErr != nil {
@@ -309,6 +310,7 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 
 	d, err := s.ociStore.Resolve(ctx, opts.Reference)
 	if err != nil {
+		slog.Debug("failed to resolve OCI reference", "reference", opts.Reference, "error", err)
 		return httperr.WithCode(
 			fmt.Errorf("reference %q not found in local store", opts.Reference),
 			http.StatusNotFound,

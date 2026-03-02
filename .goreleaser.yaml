@@ -100,7 +100,7 @@ release:
     owner: stacklok
     name: toolhive
   extra_files:
-    - glob: /tmp/thv-cli-docs.tar.gz
+    - glob: build/thv-cli-docs.tar.gz
     - glob: docs/server/swagger.yaml
     - glob: docs/server/swagger.json
     - glob: docs/operator/crd-api.md

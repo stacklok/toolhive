@@ -258,7 +258,7 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 		// Update the deployment spec but preserve replica count for HPA compatibility
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = newDeployment.Annotations
+		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
@@ -768,7 +768,7 @@ func (*MCPRemoteProxyReconciler) deploymentMetadataNeedsUpdate(
 		return true
 	}
 
-	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+	if !mapIsSubset(expectedAnnotations, deployment.Annotations) {
 		return true
 	}
 

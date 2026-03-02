@@ -425,7 +425,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Spec.Selector = newDeployment.Spec.Selector
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = newDeployment.Annotations
+		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
 		err = r.Update(ctx, deployment)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment",
@@ -1634,7 +1634,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+	if !mapIsSubset(expectedAnnotations, deployment.Annotations) {
 		return true
 	}
 
@@ -1657,6 +1657,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	}
 
 	return false
+}
+
+// mapIsSubset returns true if every key-value pair in subset exists in superset.
+// Extra keys in superset (e.g. K8s-managed annotations) are ignored.
+func mapIsSubset(subset, superset map[string]string) bool {
+	for k, v := range subset {
+		if sv, ok := superset[k]; !ok || sv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

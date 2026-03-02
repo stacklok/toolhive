@@ -292,5 +292,6 @@ func (f *defaultMultiSessionFactory) MakeSession(
 		resources:       allResources,
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
+		queue:           newAdmissionQueue(),
 	}, nil
 }

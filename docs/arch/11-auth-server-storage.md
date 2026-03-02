@@ -139,7 +139,7 @@ All values are stored as JSON. The implementation uses defensive copies on read 
 
 ### TTL Management
 
-Redis TTL (`SETEX`) is used for all time-bounded data. TTL values are derived from OAuth 2.0 token lifetimes:
+Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2.0 token lifetimes:
 
 | Data Type | Default TTL |
 |---|---|

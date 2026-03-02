@@ -113,6 +113,11 @@ metadata:
   namespace: redis
 data:
   sentinel.conf: |
+    # Required for Kubernetes: resolve and announce hostnames instead of IPs.
+    # Without these, after a failover Sentinel advertises raw pod IPs which
+    # become stale when pods reschedule.
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
     # Monitor the Redis master named "mymaster" at the given address.
     # The "2" means quorum: 2 out of 3 Sentinels must agree for failover.
     sentinel monitor mymaster redis-master.redis.svc.cluster.local 6379 2

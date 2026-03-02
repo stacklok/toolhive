@@ -20,6 +20,9 @@ By default, ToolHive's embedded auth server uses in-memory storage. This works w
 
 ## Configuration
 
+> **Note: No TLS support.** Redis connections are currently unencrypted. All traffic — including OAuth tokens, authorization codes, and credentials — is transmitted in plaintext between the auth server and Redis.
+> In shared network environments, use Kubernetes NetworkPolicies to restrict access to Redis pods, or deploy a service mesh (e.g., Istio, Linkerd) for transparent mTLS. TLS support is planned as a future enhancement.
+
 ### Kubernetes (MCPExternalAuthConfig CRD)
 
 When using the ToolHive operator, Redis storage is configured through the `storage` field in the embedded auth server section of `MCPExternalAuthConfig`.
@@ -202,17 +205,19 @@ Create a ConfigMap or init container to provision the ACL file. The ACL user nee
 
 ```
 # /data/users.acl
-user toolhive-auth on ><your-secure-password> ~thv:auth:* &* +@all
+user toolhive-auth on ><your-secure-password> ~thv:auth:* &* +GET +SET +DEL +EXISTS +EXPIRE +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +PING
 ```
 
 This ACL entry:
 - `on` — Enables the user
 - `><your-secure-password>` — Sets the password
 - `~thv:auth:*` — Allows access to all keys with the `thv:auth:` prefix
-- `&*` — Allows access to all Pub/Sub channels (required for Sentinel)
-- `+@all` — Allows all commands
+- `&*` — Allows access to all Pub/Sub channels; required by the go-redis Sentinel client to receive `+switch-master` failover notifications. In a multi-tenant Redis deployment, consider restricting this to specific channels if your Redis version supports it.
+- `+GET +SET +DEL ...` — Grants only the commands used by the ToolHive auth server
 
-> **Security note:** In production, restrict the allowed commands to the minimum required set. The auth server uses `GET`, `SET`, `DEL`, `EXISTS`, `EXPIRE`, `SADD`, `SREM`, `SMEMBERS`, `EVAL`, `MULTI`, `EXEC`, and `PING`.
+> **Development / quick-start only:** You can replace the explicit command list with `+@all` to allow all commands, but this is not recommended for production environments.
+
+> **Security note:** The auth server uses `GET`, `SET`, `DEL`, `EXISTS`, `EXPIRE`, `SADD`, `SREM`, `SMEMBERS`, `EVAL`, `MULTI`, `EXEC`, and `PING`. Restrict the ACL to this set to follow the principle of least privilege.
 
 ### Step 4: Create the ToolHive Auth Config
 

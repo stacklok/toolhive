@@ -6,7 +6,6 @@ package server_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -381,65 +380,6 @@ func TestNew_WithAuditConfig(t *testing.T) {
 	}
 }
 
-// startTestServer creates and starts a vMCP server for testing, returning
-// the server instance and its base URL. The server is automatically stopped
-// when the test completes.
-func startTestServer(t *testing.T) string {
-	t.Helper()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-
-	mockRouter := routerMocks.NewMockRouter(ctrl)
-	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
-
-	mockDiscoveryMgr.EXPECT().Stop().Times(1)
-	// Allow discovery middleware to call List/Discover for requests that pass Accept validation.
-	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-
-	srv, err := server.New(
-		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0},
-		mockRouter,
-		mockBackendClient,
-		mockDiscoveryMgr,
-		mockBackendRegistry,
-		nil,
-	)
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- srv.Start(ctx)
-	}()
-
-	select {
-	case <-srv.Ready():
-	case err := <-done:
-		cancel()
-		t.Fatalf("server failed to start: %v", err)
-	case <-time.After(3 * time.Second):
-		cancel()
-		t.Fatalf("server did not become ready")
-	}
-
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Log("warning: server did not stop within timeout")
-		}
-	})
-
-	return fmt.Sprintf("http://%s", srv.Address())
-}
-
 func TestServerStopClosesOptimizerStore(t *testing.T) {
 	t.Parallel()
 
@@ -613,9 +553,6 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 func TestAcceptHeaderValidation(t *testing.T) {
 	t.Parallel()
 
-	baseURL := startTestServer(t)
-	mcpURL := baseURL + "/mcp"
-
 	tests := []struct {
 		name           string
 		method         string
@@ -658,15 +595,42 @@ func TestAcceptHeaderValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req, err := http.NewRequestWithContext(context.Background(), tt.method, mcpURL, nil)
+			// Use httptest recorder + handler directly to avoid shared server lifecycle issues.
+			// Each subtest gets its own mocks and handler, making parallel execution safe.
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+
+			mockRouter := routerMocks.NewMockRouter(ctrl)
+			mockBackendClient := mocks.NewMockBackendClient(ctrl)
+			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+			mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+			mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+			mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+			srv, err := server.New(
+				t.Context(),
+				&server.Config{Host: "127.0.0.1", Port: 0},
+				mockRouter,
+				mockBackendClient,
+				mockDiscoveryMgr,
+				mockBackendRegistry,
+				nil,
+			)
 			require.NoError(t, err)
 
+			handler, err := srv.Handler(t.Context())
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(tt.method, "/mcp", nil)
 			if tt.acceptHeader != "" {
 				req.Header.Set("Accept", tt.acceptHeader)
 			}
 
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			resp := rec.Result()
 			defer resp.Body.Close()
 
 			body, err := io.ReadAll(resp.Body)

@@ -71,3 +71,4 @@ jobs:
         uses: coverallsapp/github-action@v2
         with:
           file: coverage/coverage.out
+          fail-on-error: false

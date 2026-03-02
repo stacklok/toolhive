@@ -356,6 +356,8 @@ func mapK8SWorkloadPhaseToHealth(phase mcpv1alpha1.MCPServerPhase) vmcp.BackendH
 		return vmcp.BackendUnhealthy
 	case mcpv1alpha1.MCPServerPhaseTerminating:
 		return vmcp.BackendUnhealthy
+	case mcpv1alpha1.MCPServerPhaseStopped:
+		return vmcp.BackendUnhealthy
 	case mcpv1alpha1.MCPServerPhasePending:
 		return vmcp.BackendUnknown
 	default:

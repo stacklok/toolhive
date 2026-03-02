@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.phase
       name: Status
       type: string
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
     - jsonPath: .status.url
       name: URL
       type: string
@@ -827,7 +830,12 @@ spec:
                 - Running
                 - Failed
                 - Terminating
+                - Stopped
                 type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of ready proxy replicas
+                format: int32
+                type: integer
               toolConfigHash:
                 description: ToolConfigHash stores the hash of the referenced ToolConfig
                   for change detection

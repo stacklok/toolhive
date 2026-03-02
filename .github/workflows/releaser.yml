@@ -141,7 +141,9 @@ jobs:
           rm ./thv-test
 
       - name: Bundle CLI docs
-        run: tar -czf /tmp/thv-cli-docs.tar.gz -C docs/cli .
+        run: |
+          mkdir -p build
+          tar -czf build/thv-cli-docs.tar.gz -C docs/cli .
 
       - name: Run GoReleaser
         id: run-goreleaser

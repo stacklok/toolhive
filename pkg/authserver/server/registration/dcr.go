@@ -115,10 +115,11 @@ type DCRError struct {
 // defaultGrantTypes are the default grant types for registered clients.
 var defaultGrantTypes = []string{"authorization_code", "refresh_token"}
 
-// allowedGrantTypes defines the grant types permitted for public clients.
+// allowedGrantTypes defines the grant types permitted for registered clients.
 var allowedGrantTypes = map[string]bool{
 	"authorization_code": true,
 	"refresh_token":      true,
+	"client_credentials": true,
 }
 
 // defaultResponseTypes are the default response types for registered clients.
@@ -129,34 +130,50 @@ var allowedResponseTypes = map[string]bool{
 	"code": true,
 }
 
+// isClientCredentialsOnly returns true when the request is for a client_credentials-only
+// client (no authorization_code grant). Such clients are confidential by definition.
+func isClientCredentialsOnly(grantTypes []string) bool {
+	return slices.Contains(grantTypes, "client_credentials") &&
+		!slices.Contains(grantTypes, "authorization_code")
+}
+
 // ValidateDCRRequest validates a DCR request according to RFC 7591
 // and the server's security policy (loopback-only public clients).
 // Returns the validated request with defaults applied, or an error.
 func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
-	// 1. Validate redirect_uris - required
-	if len(req.RedirectURIs) == 0 {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidRedirectURI,
-			ErrorDescription: "redirect_uris is required",
+	// 1. Validate/default grant_types first — we need this to determine client type.
+	grantTypes, err := validateGrantTypes(req.GrantTypes)
+	if err != nil {
+		return nil, err
+	}
+
+	confidential := isClientCredentialsOnly(grantTypes)
+
+	// 2. Validate redirect_uris — required for public clients, optional for confidential.
+	if confidential {
+		// Confidential client_credentials-only clients don't use redirect URIs.
+		// Ignore any provided redirect_uris (don't fail, just don't store them).
+	} else {
+		if len(req.RedirectURIs) == 0 {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidRedirectURI,
+				ErrorDescription: "redirect_uris is required",
+			}
+		}
+		if len(req.RedirectURIs) > MaxRedirectURICount {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidRedirectURI,
+				ErrorDescription: "too many redirect_uris (maximum 10)",
+			}
+		}
+		for _, uri := range req.RedirectURIs {
+			if err := ValidateRedirectURI(uri); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	// 2. Validate redirect_uris count limit
-	if len(req.RedirectURIs) > MaxRedirectURICount {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidRedirectURI,
-			ErrorDescription: "too many redirect_uris (maximum 10)",
-		}
-	}
-
-	// 3. Validate all redirect_uris per RFC 8252
-	for _, uri := range req.RedirectURIs {
-		if err := ValidateRedirectURI(uri); err != nil {
-			return nil, err
-		}
-	}
-
-	// 4. Validate client_name length
+	// 3. Validate client_name length
 	if len(req.ClientName) > MaxClientNameLength {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
@@ -164,33 +181,56 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 		}
 	}
 
-	// 5. Validate/default token_endpoint_auth_method
+	// 4. Validate/default token_endpoint_auth_method
 	authMethod := req.TokenEndpointAuthMethod
-	if authMethod == "" {
-		authMethod = "none"
-	}
-	if authMethod != "none" {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
+	if confidential {
+		// Confidential clients must authenticate at the token endpoint.
+		if authMethod == "" {
+			authMethod = "client_secret_basic"
+		}
+		if authMethod != "client_secret_basic" && authMethod != "client_secret_post" {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "token_endpoint_auth_method must be 'client_secret_basic' or 'client_secret_post' for confidential clients",
+			}
+		}
+	} else {
+		// Public clients don't authenticate at the token endpoint.
+		if authMethod == "" {
+			authMethod = "none"
+		}
+		if authMethod != "none" {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
+			}
 		}
 	}
 
-	// 6. Validate/default grant_types
-	grantTypes, err := validateGrantTypes(req.GrantTypes)
-	if err != nil {
-		return nil, err
+	// 5. Validate/default response_types
+	var responseTypes []string
+	if confidential {
+		// client_credentials-only clients don't use the authorize endpoint,
+		// so response_types is not applicable. Default to empty.
+		responseTypes = req.ResponseTypes
+		if len(responseTypes) == 0 {
+			responseTypes = nil
+		}
+	} else {
+		responseTypes, err = validateResponseTypes(req.ResponseTypes)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	// 7. Validate/default response_types
-	responseTypes, err := validateResponseTypes(req.ResponseTypes)
-	if err != nil {
-		return nil, err
+	// Build validated redirect URIs — empty for confidential clients.
+	redirectURIs := req.RedirectURIs
+	if confidential {
+		redirectURIs = nil
 	}
 
-	// Return validated request with defaults applied
 	return &DCRRequest{
-		RedirectURIs:            req.RedirectURIs,
+		RedirectURIs:            redirectURIs,
 		ClientName:              req.ClientName,
 		TokenEndpointAuthMethod: authMethod,
 		GrantTypes:              grantTypes,
@@ -202,14 +242,7 @@ func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
 	if len(grantTypes) == 0 {
 		grantTypes = defaultGrantTypes
 	}
-	// Require authorization_code explicitly - provides a clearer error for the
-	// "refresh_token only" case that would otherwise pass the allowlist.
-	if !slices.Contains(grantTypes, "authorization_code") {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "grant_types must include 'authorization_code'",
-		}
-	}
+
 	for _, gt := range grantTypes {
 		if !allowedGrantTypes[gt] {
 			return nil, &DCRError{
@@ -218,6 +251,18 @@ func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
 			}
 		}
 	}
+
+	// At least one primary grant type must be present.
+	// "refresh_token" alone is not valid — it must accompany a primary grant.
+	hasAuthCode := slices.Contains(grantTypes, "authorization_code")
+	hasClientCredentials := slices.Contains(grantTypes, "client_credentials")
+	if !hasAuthCode && !hasClientCredentials {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "grant_types must include 'authorization_code' or 'client_credentials'",
+		}
+	}
+
 	return grantTypes, nil
 }
 

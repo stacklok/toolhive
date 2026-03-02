@@ -12,13 +12,13 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"reflect"
 	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	equality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1547,7 +1547,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 		// Add default environment variables that are always injected
 		expectedProxyEnv = ctrlutil.EnsureRequiredEnvVars(ctx, expectedProxyEnv)
-		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
+		if !equality.Semantic.DeepEqual(container.Env, expectedProxyEnv) {
 			return true
 		}
 
@@ -1598,7 +1598,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Check if the resource requirements have changed
-		if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
+		if !equality.Semantic.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
 			return true
 		}
 	}

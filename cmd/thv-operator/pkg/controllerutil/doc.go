@@ -15,6 +15,7 @@
 //   - tokenexchange.go: Token exchange configuration for external auth
 //   - config.go: General configuration merging and validation utilities
 //   - podtemplatespec_builder.go: PodTemplateSpec builder for constructing pod template patches
+//   - maps.go: Map comparison utilities (e.g. subset checks for annotations)
 //
 // These utilities are used by multiple controllers including MCPServer, MCPRemoteProxy,
 // and ToolConfig controllers to maintain consistent behavior across the operator.

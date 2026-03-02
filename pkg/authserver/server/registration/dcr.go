@@ -82,6 +82,11 @@ type DCRResponse struct {
 	// as a Unix timestamp.
 	ClientIDIssuedAt int64 `json:"client_id_issued_at,omitempty"`
 
+	// ClientSecret is the client secret for confidential clients.
+	// Only returned during registration (cannot be retrieved later).
+	// Omitted for public clients.
+	ClientSecret string `json:"client_secret,omitempty"`
+
 	// RedirectURIs is an array of redirection URIs for the client.
 	RedirectURIs []string `json:"redirect_uris"`
 

@@ -63,14 +63,22 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// Generate client ID
+	// Determine if this is a confidential client registration.
+	isConfidential := validated.TokenEndpointAuthMethod != "none"
+
+	// Generate client credentials.
 	clientID := uuid.NewString()
+	var clientSecret string
+	if isConfidential {
+		clientSecret = uuid.NewString() // Secure random secret
+	}
 
 	// Create fosite client using factory.
 	fositeClient, err := registration.New(registration.Config{
 		ID:            clientID,
+		Secret:        clientSecret,
 		RedirectURIs:  validated.RedirectURIs,
-		Public:        true,
+		Public:        !isConfidential,
 		GrantTypes:    validated.GrantTypes,
 		ResponseTypes: validated.ResponseTypes,
 		Scopes:        scopes,
@@ -106,6 +114,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// the client know exactly which scopes it can request.
 	response := registration.DCRResponse{
 		ClientID:                clientID,
+		ClientSecret:            clientSecret, // Only set for confidential clients
 		ClientIDIssuedAt:        time.Now().Unix(),
 		RedirectURIs:            validated.RedirectURIs,
 		ClientName:              validated.ClientName,

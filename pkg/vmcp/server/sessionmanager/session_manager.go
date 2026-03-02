@@ -149,6 +149,16 @@ func (sm *Manager) CreateSession(
 	// Resolve the caller identity (may be nil for anonymous access).
 	identity, _ := auth.IdentityFromContext(ctx)
 
+	// Store the token hash on the placeholder immediately to enforce token
+	// binding even during the (potentially slow) backend initialization window.
+	// This prevents unauthorized requests from bypassing validation while
+	// MakeSessionWithID() is still opening backend connections.
+	tokenHash := vmcpsession.ComputeTokenHash(identity)
+	placeholder.SetMetadata(vmcpsession.MetadataKeyTokenHash, tokenHash)
+	if err := sm.storage.UpsertSession(placeholder); err != nil {
+		return nil, fmt.Errorf("Manager.CreateSession: failed to persist token hash on placeholder: %w", err)
+	}
+
 	// List all available backends from the registry.
 	rawBackends := sm.backendRegistry.List(ctx)
 	backends := make([]*vmcp.Backend, len(rawBackends))
@@ -183,6 +193,12 @@ func (sm *Manager) CreateSession(
 			sessionID,
 		)
 	}
+
+	// Transfer the token hash from the placeholder to the fully-formed MultiSession.
+	// The hash was computed and stored on the placeholder earlier (before backend
+	// init) to enforce token binding during the Phase 1→Phase 2 window. We must
+	// preserve it on the MultiSession that replaces the placeholder.
+	sess.SetMetadata(vmcpsession.MetadataKeyTokenHash, tokenHash)
 
 	// Replace the placeholder in the transport manager.
 	if err := sm.storage.UpsertSession(sess); err != nil {

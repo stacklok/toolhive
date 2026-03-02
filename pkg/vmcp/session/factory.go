@@ -5,6 +5,8 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -34,6 +36,13 @@ const (
 	// a comma-separated, sorted list of successfully-connected backend IDs.
 	// The key is omitted entirely when no backends connected.
 	MetadataKeyBackendIDs = "vmcp.backend.ids"
+
+	// MetadataKeyTokenHash is the transport-session metadata key that holds
+	// the SHA256 hash of the bearer token used to create the session.
+	// For authenticated sessions this is hex(SHA256(bearerToken)).
+	// For anonymous sessions (no bearer token) this is the empty string sentinel.
+	// The raw token is never stored — only the hash.
+	MetadataKeyTokenHash = "vmcp.token.hash" //nolint:gosec // This is a metadata key name, not a credential.
 )
 
 // MultiSessionFactory creates new MultiSessions for connecting clients.
@@ -221,6 +230,31 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 	return rt, tools, resources, prompts
 }
 
+// HashToken returns the hex-encoded SHA256 hash of a raw bearer token string.
+// For empty tokens (anonymous sessions) it returns the empty string, which is
+// the sentinel value used by the token binding middleware to identify sessions
+// created without credentials. The raw token is never stored — only the hash.
+func HashToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+// ComputeTokenHash returns the hex-encoded SHA256 hash of the bearer token
+// stored in identity. For anonymous sessions (nil identity or empty token) it
+// returns the empty string, which is the sentinel value used by the token
+// binding middleware to identify sessions that were created without credentials.
+//
+// The raw token is never stored — only the hash.
+func ComputeTokenHash(identity *auth.Identity) string {
+	if identity == nil {
+		return ""
+	}
+	return HashToken(identity.Token)
+}
+
 // MakeSession implements MultiSessionFactory.
 func (f *defaultMultiSessionFactory) MakeSession(
 	ctx context.Context,
@@ -330,6 +364,13 @@ func (f *defaultMultiSessionFactory) makeSession(
 	if identity != nil && identity.Subject != "" {
 		transportSess.SetMetadata(MetadataKeyIdentitySubject, identity.Subject)
 	}
+
+	// Compute and store the token hash for session binding security.
+	// For authenticated sessions this is hex(SHA256(bearerToken)).
+	// For anonymous sessions the empty-string sentinel is stored.
+	// The raw token is never stored.
+	transportSess.SetMetadata(MetadataKeyTokenHash, ComputeTokenHash(identity))
+
 	if len(results) > 0 {
 		// IDs are extracted from the already-sorted results slice to avoid a
 		// second sort of the connections map.

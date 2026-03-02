@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -466,7 +467,7 @@ func TestHandler_ReturnsNonNilHandler(t *testing.T) {
 
 	// Allow discovery middleware calls
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{}, nil).AnyTimes()
 
 	srv, err := server.New(
 		t.Context(),
@@ -543,7 +544,7 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{}, nil).AnyTimes()
 
 	srv, err := server.New(
 		t.Context(),
@@ -629,7 +630,7 @@ func TestAcceptHeaderValidation(t *testing.T) {
 			mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 			mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-			mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{}, nil).AnyTimes()
 
 			srv, err := server.New(
 				t.Context(),

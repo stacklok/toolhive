@@ -557,6 +557,21 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("audit middleware enabled for MCP endpoints")
 	}
 
+	// Apply token binding middleware (V2 only).
+	// Validates that the bearer token on each request matches the token that was
+	// used to create the session. Mismatched tokens produce HTTP 401 and the
+	// session is immediately terminated and deleted from storage to prevent reuse.
+	if s.config.SessionManagementV2 {
+		var terminator sessionTerminator
+		if s.vmcpSessionMgr != nil {
+			terminator = s.vmcpSessionMgr
+		} else {
+			terminator = newSessionIDAdapter(s.sessionManager)
+		}
+		mcpHandler = tokenBindingMiddleware(s.sessionManager, terminator)(mcpHandler)
+		slog.Info("token binding middleware enabled for session security")
+	}
+
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
@@ -1114,6 +1129,7 @@ func (s *Server) handleSessionRegistration(
 
 	vmcpSess.SetRoutingTable(caps.RoutingTable)
 	vmcpSess.SetTools(caps.Tools)
+
 	slog.Debug("routing table and tools stored in VMCPSession",
 		"session_id", sessionID,
 		"tool_count", len(caps.RoutingTable.Tools),

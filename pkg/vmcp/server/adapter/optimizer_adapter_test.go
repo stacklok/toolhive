@@ -55,7 +55,6 @@ func TestFindToolHandler(t *testing.T) {
 					{
 						Name:        "read_file",
 						Description: "Read a file",
-						Score:       1.0,
 					},
 				},
 			}, nil

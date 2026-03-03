@@ -91,7 +91,7 @@ func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
 // registered for each session.
 type Optimizer interface {
 	// FindTool searches for tools matching the given description and keywords.
-	// Returns matching tools ranked by relevance score.
+	// Returns matching tools ranked by relevance.
 	FindTool(ctx context.Context, input FindToolInput) (*FindToolOutput, error)
 
 	// CallTool invokes a tool by name with the given parameters.

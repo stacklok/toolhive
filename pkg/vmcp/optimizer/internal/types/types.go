@@ -42,10 +42,6 @@ type ToolMatch struct {
 
 	// Description is the human-readable description of the tool.
 	Description string `json:"description"`
-
-	// Score is a distance metric indicating how well this tool matches.
-	// Lower values indicate better matches (0 = identical, 2 = opposite).
-	Score float64 `json:"score"`
 }
 
 // EmbeddingClient generates vector embeddings from text.

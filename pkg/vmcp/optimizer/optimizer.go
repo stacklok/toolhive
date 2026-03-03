@@ -15,6 +15,7 @@ package optimizer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -161,6 +162,11 @@ func NewOptimizerFactory(cfg *Config) (
 		return store.Close()
 	}
 
+	slog.Debug("optimizer factory created",
+		"embedding_service", cfg.EmbeddingService,
+		"semantic_search_enabled", embClient != nil,
+	)
+
 	return factory, cleanup, nil
 }
 
@@ -216,6 +222,11 @@ func newToolOptimizer(
 		return nil, fmt.Errorf("failed to upsert tools into store: %w", err)
 	}
 
+	slog.Debug("optimizer session created",
+		"tools", len(tools),
+		"baseline_tokens", baselineTokens,
+	)
+
 	return &toolOptimizer{
 		store:          store,
 		tools:          toolMap,
@@ -245,6 +256,15 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 	}
 	metrics := tokencounter.ComputeTokenMetrics(d.baselineTokens, d.tokenCounts, matchedNames)
 
+	slog.Debug("find_tool completed",
+		"query", input.ToolDescription,
+		"keywords", input.ToolKeywords,
+		"results", len(matches),
+		"baseline_tokens", metrics.BaselineTokens,
+		"returned_tokens", metrics.ReturnedTokens,
+		"savings_percent", metrics.SavingsPercent,
+	)
+
 	return &FindToolOutput{
 		Tools:        matches,
 		TokenMetrics: metrics,
@@ -263,8 +283,11 @@ func (d *toolOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp
 	// Verify the tool exists
 	tool, exists := d.tools[input.ToolName]
 	if !exists {
+		slog.Debug("call_tool failed, tool not found", "tool", input.ToolName)
 		return mcp.NewToolResultError(fmt.Sprintf("tool not found: %s", input.ToolName)), nil
 	}
+
+	slog.Debug("call_tool invoking backend tool", "tool", input.ToolName)
 
 	// Build the MCP request
 	request := mcp.CallToolRequest{}

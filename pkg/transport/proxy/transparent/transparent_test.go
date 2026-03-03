@@ -1789,7 +1789,7 @@ func TestTransparentProxy_IsRunningDoesNotBlockDuringStop(t *testing.T) {
 		withShutdownTimeout(10*time.Second),
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := proxy.Start(ctx)
 	require.NoError(t, err)
 
@@ -1872,7 +1872,7 @@ func TestTransparentProxy_StopForcesCloseAfterTimeout(t *testing.T) {
 		withShutdownTimeout(500*time.Millisecond),
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := proxy.Start(ctx)
 	require.NoError(t, err)
 
@@ -1910,7 +1910,7 @@ func TestTransparentProxy_ServerHasIdleTimeout(t *testing.T) {
 		false, false, "sse", nil, nil, "", false, nil,
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := proxy.Start(ctx)
 	require.NoError(t, err)
 	defer func() { _ = proxy.Stop(ctx) }()

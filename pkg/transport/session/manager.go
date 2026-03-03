@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+const (
+	// defaultOperationTimeout is the timeout for standard storage operations
+	defaultOperationTimeout = 5 * time.Second
+	// cleanupOperationTimeout is the timeout for cleanup operations which may take longer
+	cleanupOperationTimeout = 30 * time.Second
+)
+
 // Session interface defines the contract for all session types
 type Session interface {
 	ID() string
@@ -113,7 +120,7 @@ func (m *Manager) cleanupRoutine() {
 		select {
 		case <-ticker.C:
 			cutoff := time.Now().Add(-m.ttl)
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), cleanupOperationTimeout)
 			if err := m.storage.DeleteExpired(ctx, cutoff); err != nil {
 				slog.Error("failed to delete expired sessions", "error", err)
 			}
@@ -131,7 +138,7 @@ func (m *Manager) AddWithID(id string) error {
 		return fmt.Errorf("session ID cannot be empty")
 	}
 	// Check if session already exists
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 
 	if _, err := m.storage.Load(ctx, id); err == nil {
@@ -154,7 +161,7 @@ func (m *Manager) AddSession(session Session) error {
 	}
 
 	// Check if session already exists
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 
 	if _, err := m.storage.Load(ctx, session.ID()); err == nil {
@@ -167,7 +174,7 @@ func (m *Manager) AddSession(session Session) error {
 // Get retrieves a session by ID. Returns (session, true) if found,
 // and also updates its UpdatedAt timestamp.
 func (m *Manager) Get(id string) (Session, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 
 	sess, err := m.storage.Load(ctx, id)
@@ -189,7 +196,7 @@ func (m *Manager) UpsertSession(session Session) error {
 	if session.ID() == "" {
 		return fmt.Errorf("session ID cannot be empty")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 	return m.storage.Store(ctx, session)
 }
@@ -197,7 +204,7 @@ func (m *Manager) UpsertSession(session Session) error {
 // Delete removes a session by ID.
 // Returns an error if the deletion fails.
 func (m *Manager) Delete(id string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 	return m.storage.Delete(ctx, id)
 }
@@ -246,7 +253,7 @@ func (m *Manager) Count() int {
 
 func (m *Manager) cleanupExpiredOnce() error {
 	cutoff := time.Now().Add(-m.ttl)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupOperationTimeout)
 	defer cancel()
 	return m.storage.DeleteExpired(ctx, cutoff)
 }

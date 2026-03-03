@@ -337,21 +337,32 @@ func New(
 	stateStore := composer.NewInMemoryStateStore(5*time.Minute, 1*time.Hour)
 	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore, workflowAuditor)
 
-	// Validate workflows and create executors (fail fast on invalid workflows)
-	workflowDefs, workflowExecutors, err := validateAndCreateExecutors(workflowComposer, workflowDefs)
-	if err != nil {
-		return nil, fmt.Errorf("workflow validation failed: %w", err)
-	}
-
-	// Decorate workflow executors with telemetry if provider is configured
-	if cfg.TelemetryProvider != nil {
-		workflowExecutors, err = monitorWorkflowExecutors(
-			cfg.TelemetryProvider.MeterProvider(),
-			cfg.TelemetryProvider.TracerProvider(),
-			workflowExecutors,
-		)
+	// Skip workflow validation and executor creation when SessionManagementV2 is enabled
+	// (composite tools are not supported in V2 path)
+	var workflowExecutors map[string]adapter.WorkflowExecutor
+	var err error
+	if cfg.SessionManagementV2 && len(workflowDefs) > 0 {
+		slog.Warn("SessionManagementV2 does not support composite tools; skipping workflow validation",
+			"workflow_count", len(workflowDefs))
+		workflowDefs = nil
+		workflowExecutors = nil
+	} else {
+		// Validate workflows and create executors (fail fast on invalid workflows)
+		workflowDefs, workflowExecutors, err = validateAndCreateExecutors(workflowComposer, workflowDefs)
 		if err != nil {
-			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
+			return nil, fmt.Errorf("workflow validation failed: %w", err)
+		}
+
+		// Decorate workflow executors with telemetry if provider is configured
+		if cfg.TelemetryProvider != nil && len(workflowExecutors) > 0 {
+			workflowExecutors, err = monitorWorkflowExecutors(
+				cfg.TelemetryProvider.MeterProvider(),
+				cfg.TelemetryProvider.TracerProvider(),
+				workflowExecutors,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
+			}
 		}
 	}
 
@@ -391,6 +402,13 @@ func New(
 		}
 		vmcpSessMgr = sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry)
 		slog.Info("session-scoped backend lifecycle enabled")
+
+		// Warn about incompatible optimizer configuration and disable it
+		if cfg.OptimizerConfig != nil {
+			slog.Warn("SessionManagementV2 does not support optimizer mode; optimizer configuration will be ignored")
+			cfg.OptimizerConfig = nil // Prevent optimizer initialization in Start()
+		}
+		// Note: Composite tools warning and disabling happens earlier before validation
 	}
 
 	// Create Server instance

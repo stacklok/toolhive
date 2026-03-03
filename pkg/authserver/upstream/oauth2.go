@@ -26,6 +26,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -577,11 +578,13 @@ func formatOAuth2Error(err error, prefix string) error {
 }
 
 // newHTTPClientForHost creates an HTTP client configured for the given host.
-// It enables HTTP and private IPs only for localhost (development/testing).
+// It enables HTTP and private IPs only for localhost (development/testing),
+// or when INSECURE_DISABLE_URL_VALIDATION is set (e.g. Kubernetes dev environments).
 func newHTTPClientForHost(host string) (*http.Client, error) {
-	isLocalhost := networking.IsLocalhost(host)
+	allowInsecure := networking.IsLocalhost(host) ||
+		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
 	return networking.NewHttpClientBuilder().
-		WithInsecureAllowHTTP(isLocalhost).
-		WithPrivateIPs(isLocalhost).
+		WithInsecureAllowHTTP(allowInsecure).
+		WithPrivateIPs(allowInsecure).
 		Build()
 }

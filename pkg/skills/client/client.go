@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive-core/env"
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
@@ -27,6 +29,11 @@ const (
 	maxResponseSize  = 1 << 20 // 1 MiB — matches server-side maxRequestBodySize
 	maxErrorBodySize = 1 << 16 // 64 KiB — matches auth/token and DCR limits
 )
+
+// ErrServerUnreachable is returned when the client cannot connect to the
+// ToolHive API server. The most common cause is that "thv serve" is not
+// running.
+var ErrServerUnreachable = errors.New("could not reach ToolHive API server — is 'thv serve' running?")
 
 // Compile-time interface check.
 var _ skills.SkillService = (*Client)(nil)
@@ -258,7 +265,7 @@ func (c *Client) doJSONRequest(
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.httpClient.Do(req) //#nosec G107 -- baseURL is a trusted local API server URL
+	resp, err := c.httpClient.Do(req) // #nosec G704 -- baseURL is a trusted local API server URL
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrServerUnreachable, err)
 	}
@@ -278,17 +285,11 @@ func (c *Client) doJSONRequest(
 	return nil
 }
 
-// handleErrorResponse reads the response body and returns an *APIError.
+// handleErrorResponse reads the response body and returns an *httperr.CodedError.
 func handleErrorResponse(resp *http.Response) error {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 	if err != nil {
-		return &APIError{
-			StatusCode: resp.StatusCode,
-			Message:    "failed to read error response body",
-		}
+		return httperr.New("failed to read error response body", resp.StatusCode)
 	}
-	return &APIError{
-		StatusCode: resp.StatusCode,
-		Message:    strings.TrimSpace(string(body)),
-	}
+	return httperr.New(strings.TrimSpace(string(body)), resp.StatusCode)
 }

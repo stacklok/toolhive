@@ -17,6 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
@@ -121,7 +122,7 @@ func TestInstall(t *testing.T) {
 		response   installResponse
 		statusCode int
 		wantErr    bool
-		errCheck   func(error) bool
+		wantCode   int
 	}{
 		{
 			name: "success",
@@ -152,14 +153,14 @@ func TestInstall(t *testing.T) {
 			opts:       skills.InstallOptions{Name: ""},
 			statusCode: http.StatusBadRequest,
 			wantErr:    true,
-			errCheck:   IsBadRequest,
+			wantCode:   http.StatusBadRequest,
 		},
 		{
 			name:       "conflict",
 			opts:       skills.InstallOptions{Name: "existing-skill"},
 			statusCode: http.StatusConflict,
 			wantErr:    true,
-			errCheck:   IsConflict,
+			wantCode:   http.StatusConflict,
 		},
 	}
 
@@ -192,9 +193,7 @@ func TestInstall(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
-				if tt.errCheck != nil {
-					assert.True(t, tt.errCheck(err), "error check failed for: %v", err)
-				}
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
 				return
 			}
 			require.NoError(t, err)
@@ -213,7 +212,7 @@ func TestUninstall(t *testing.T) {
 		wantQuery  map[string]string
 		statusCode int
 		wantErr    bool
-		errCheck   func(error) bool
+		wantCode   int
 	}{
 		{
 			name:       "success",
@@ -241,7 +240,7 @@ func TestUninstall(t *testing.T) {
 			wantPath:   skillsBasePath + "/missing",
 			statusCode: http.StatusNotFound,
 			wantErr:    true,
-			errCheck:   IsNotFound,
+			wantCode:   http.StatusNotFound,
 		},
 	}
 
@@ -270,9 +269,7 @@ func TestUninstall(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
-				if tt.errCheck != nil {
-					assert.True(t, tt.errCheck(err), "error check failed for: %v", err)
-				}
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
 				return
 			}
 			require.NoError(t, err)
@@ -292,7 +289,7 @@ func TestInfo(t *testing.T) {
 		response   skills.SkillInfo
 		statusCode int
 		wantErr    bool
-		errCheck   func(error) bool
+		wantCode   int
 	}{
 		{
 			name:     "success",
@@ -315,7 +312,7 @@ func TestInfo(t *testing.T) {
 			wantPath:   skillsBasePath + "/missing",
 			statusCode: http.StatusNotFound,
 			wantErr:    true,
-			errCheck:   IsNotFound,
+			wantCode:   http.StatusNotFound,
 		},
 	}
 
@@ -341,9 +338,7 @@ func TestInfo(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
-				if tt.errCheck != nil {
-					assert.True(t, tt.errCheck(err), "error check failed for: %v", err)
-				}
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
 				return
 			}
 			require.NoError(t, err)
@@ -364,12 +359,10 @@ func TestValidate(t *testing.T) {
 		wantErr    bool
 	}{
 		{
-			name:     "valid skill",
-			path:     "/home/user/my-skill",
-			wantBody: validateRequest{Path: "/home/user/my-skill"},
-			response: skills.ValidationResult{
-				Valid: true,
-			},
+			name:       "valid skill",
+			path:       "/home/user/my-skill",
+			wantBody:   validateRequest{Path: "/home/user/my-skill"},
+			response:   skills.ValidationResult{Valid: true},
 			statusCode: http.StatusOK,
 		},
 		{
@@ -438,12 +431,10 @@ func TestBuild(t *testing.T) {
 		wantErr    bool
 	}{
 		{
-			name:     "success",
-			opts:     skills.BuildOptions{Path: "/home/user/my-skill", Tag: "v1.0.0"},
-			wantBody: buildRequest{Path: "/home/user/my-skill", Tag: "v1.0.0"},
-			response: skills.BuildResult{
-				Reference: "ghcr.io/org/my-skill:v1.0.0",
-			},
+			name:       "success",
+			opts:       skills.BuildOptions{Path: "/home/user/my-skill", Tag: "v1.0.0"},
+			wantBody:   buildRequest{Path: "/home/user/my-skill", Tag: "v1.0.0"},
+			response:   skills.BuildResult{Reference: "ghcr.io/org/my-skill:v1.0.0"},
 			statusCode: http.StatusOK,
 		},
 		{
@@ -499,7 +490,7 @@ func TestPush(t *testing.T) {
 		wantBody   pushRequest
 		statusCode int
 		wantErr    bool
-		errCheck   func(error) bool
+		wantCode   int
 	}{
 		{
 			name:       "success",
@@ -512,7 +503,7 @@ func TestPush(t *testing.T) {
 			opts:       skills.PushOptions{Reference: "ghcr.io/org/missing:v1"},
 			statusCode: http.StatusNotFound,
 			wantErr:    true,
-			errCheck:   IsNotFound,
+			wantCode:   http.StatusNotFound,
 		},
 	}
 
@@ -543,9 +534,7 @@ func TestPush(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
-				if tt.errCheck != nil {
-					assert.True(t, tt.errCheck(err), "error check failed for: %v", err)
-				}
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
 				return
 			}
 			require.NoError(t, err)
@@ -553,41 +542,9 @@ func TestPush(t *testing.T) {
 	}
 }
 
-func TestAPIError(t *testing.T) {
-	t.Parallel()
-
-	t.Run("error message format", func(t *testing.T) {
-		t.Parallel()
-		err := &APIError{StatusCode: 404, Message: "skill not found"}
-		assert.Equal(t, "skills API error (HTTP 404): skill not found", err.Error())
-	})
-
-	t.Run("IsNotFound", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, IsNotFound(&APIError{StatusCode: 404, Message: "not found"}))
-		assert.False(t, IsNotFound(&APIError{StatusCode: 400, Message: "bad request"}))
-		assert.False(t, IsNotFound(errors.New("other error")))
-	})
-
-	t.Run("IsConflict", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, IsConflict(&APIError{StatusCode: 409, Message: "conflict"}))
-		assert.False(t, IsConflict(&APIError{StatusCode: 404, Message: "not found"}))
-		assert.False(t, IsConflict(errors.New("other error")))
-	})
-
-	t.Run("IsBadRequest", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, IsBadRequest(&APIError{StatusCode: 400, Message: "bad"}))
-		assert.False(t, IsBadRequest(&APIError{StatusCode: 404, Message: "not found"}))
-		assert.False(t, IsBadRequest(errors.New("other error")))
-	})
-}
-
 func TestConnectionError(t *testing.T) {
 	t.Parallel()
 
-	// Create a server and immediately close it to simulate an unreachable server.
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	srv.Close()
 
@@ -644,7 +601,6 @@ func TestURLEncodesSkillNames(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skill name with special characters should be path-escaped.
 		assert.Equal(t, skillsBasePath+"/my%20skill%2Fv2", r.URL.RawPath)
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(skills.SkillInfo{
@@ -662,20 +618,17 @@ func TestURLEncodesSkillNames(t *testing.T) {
 func TestHandleErrorResponseReadFailure(t *testing.T) {
 	t.Parallel()
 
-	// Test handleErrorResponse directly with a body that always errors on read.
 	resp := &http.Response{
 		StatusCode: http.StatusInternalServerError,
 		Body:       io.NopCloser(&failReader{}),
 	}
 	err := handleErrorResponse(resp)
 
-	var apiErr *APIError
-	require.True(t, errors.As(err, &apiErr))
-	assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
-	assert.Equal(t, "failed to read error response body", apiErr.Message)
+	require.Error(t, err)
+	assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
+	assert.Contains(t, err.Error(), "failed to read error response body")
 }
 
-// failReader is an io.Reader that always returns an error.
 type failReader struct{}
 
 func (*failReader) Read([]byte) (int, error) {

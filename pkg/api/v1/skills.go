@@ -45,16 +45,22 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 //	@Tags			skills
 //	@Produce		json
 //	@Param			scope	query		string	false	"Filter by scope (user or project)"	Enums(user, project)
+//	@Param			client	query		string	false	"Filter by client app"
+//	@Param			project_root	query	string	false	"Filter by project root path"
 //	@Success		200		{object}	skillListResponse
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/skills [get]
 func (s *SkillsRoutes) listSkills(w http.ResponseWriter, r *http.Request) error {
 	scope := skills.Scope(r.URL.Query().Get("scope"))
-	if err := skills.ValidateScope(scope); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
-	}
+	projectRoot := r.URL.Query().Get("project_root")
 
-	result, err := s.skillService.List(r.Context(), skills.ListOptions{Scope: scope})
+	client := r.URL.Query().Get("client")
+
+	result, err := s.skillService.List(r.Context(), skills.ListOptions{
+		Scope:       scope,
+		ClientApp:   client,
+		ProjectRoot: projectRoot,
+	})
 	if err != nil {
 		return err
 	}
@@ -87,11 +93,12 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.skillService.Install(r.Context(), skills.InstallOptions{
-		Name:    req.Name,
-		Version: req.Version,
-		Scope:   req.Scope,
-		Client:  req.Client,
-		Force:   req.Force,
+		Name:        req.Name,
+		Version:     req.Version,
+		Scope:       req.Scope,
+		ProjectRoot: req.ProjectRoot,
+		Client:      req.Client,
+		Force:       req.Force,
 	})
 	if err != nil {
 		return err
@@ -110,6 +117,7 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 //	@Tags			skills
 //	@Param			name	path		string	true	"Skill name"
 //	@Param			scope	query		string	false	"Scope to uninstall from (user or project)"	Enums(user, project)
+//	@Param			project_root	query	string	false	"Project root path for project-scoped skills"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		404		{string}	string	"Not Found"
@@ -123,13 +131,12 @@ func (s *SkillsRoutes) uninstallSkill(w http.ResponseWriter, r *http.Request) er
 	}
 
 	scope := skills.Scope(r.URL.Query().Get("scope"))
-	if err := skills.ValidateScope(scope); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
-	}
+	projectRoot := r.URL.Query().Get("project_root")
 
 	if err := s.skillService.Uninstall(r.Context(), skills.UninstallOptions{
-		Name:  name,
-		Scope: scope,
+		Name:        name,
+		Scope:       scope,
+		ProjectRoot: projectRoot,
 	}); err != nil {
 		return err
 	}
@@ -146,6 +153,7 @@ func (s *SkillsRoutes) uninstallSkill(w http.ResponseWriter, r *http.Request) er
 //	@Produce		json
 //	@Param			name	path		string	true	"Skill name"
 //	@Param			scope	query		string	false	"Filter by scope (user or project)"	Enums(user, project)
+//	@Param			project_root	query	string	false	"Project root path for project-scoped skills"
 //	@Success		200		{object}	skills.SkillInfo
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		404		{string}	string	"Not Found"
@@ -159,11 +167,13 @@ func (s *SkillsRoutes) getSkillInfo(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	scope := skills.Scope(r.URL.Query().Get("scope"))
-	if err := skills.ValidateScope(scope); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
-	}
+	projectRoot := r.URL.Query().Get("project_root")
 
-	info, err := s.skillService.Info(r.Context(), skills.InfoOptions{Name: name, Scope: scope})
+	info, err := s.skillService.Info(r.Context(), skills.InfoOptions{
+		Name:        name,
+		Scope:       scope,
+		ProjectRoot: projectRoot,
+	})
 	if err != nil {
 		return err
 	}

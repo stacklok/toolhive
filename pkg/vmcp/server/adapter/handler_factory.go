@@ -83,10 +83,25 @@ func convertToMCPContent(content vmcp.Content) mcp.Content {
 	case "audio":
 		return mcp.NewAudioContent(content.Data, content.MimeType)
 	case "resource":
-		// Handle embedded resources if needed
-		// For now, convert to text
-		slog.Warn("converting resource content to empty text - embedded resources not yet supported")
-		return mcp.NewTextContent("")
+		if content.Text != "" {
+			return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				URI:      content.URI,
+				MIMEType: content.MimeType,
+				Text:     content.Text,
+			})
+		}
+		if content.Data != "" {
+			return mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+				URI:      content.URI,
+				MIMEType: content.MimeType,
+				Blob:     content.Data,
+			})
+		}
+		slog.Warn("embedded resource content has no text or blob data", "uri", content.URI)
+		return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+			URI:      content.URI,
+			MIMEType: content.MimeType,
+		})
 	default:
 		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
 		return mcp.NewTextContent("")

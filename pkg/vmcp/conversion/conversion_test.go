@@ -719,3 +719,177 @@ func TestMetaRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestToMCPContent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    vmcp.Content
+		wantType string
+		wantText string
+		wantData string
+		wantMime string
+		wantURI  string
+	}{
+		{
+			name:     "text content",
+			input:    vmcp.Content{Type: "text", Text: "Hello, world!"},
+			wantType: "mcp.TextContent",
+			wantText: "Hello, world!",
+		},
+		{
+			name:     "empty text content",
+			input:    vmcp.Content{Type: "text", Text: ""},
+			wantType: "mcp.TextContent",
+		},
+		{
+			name:     "image content",
+			input:    vmcp.Content{Type: "image", Data: "base64data", MimeType: "image/png"},
+			wantType: "mcp.ImageContent",
+			wantData: "base64data",
+			wantMime: "image/png",
+		},
+		{
+			name:     "audio content",
+			input:    vmcp.Content{Type: "audio", Data: "audiodata", MimeType: "audio/mpeg"},
+			wantType: "mcp.AudioContent",
+			wantData: "audiodata",
+			wantMime: "audio/mpeg",
+		},
+		{
+			name:     "text resource content",
+			input:    vmcp.Content{Type: "resource", Text: "# README", URI: "file://readme.md", MimeType: "text/markdown"},
+			wantType: "mcp.EmbeddedResource",
+			wantText: "# README",
+			wantURI:  "file://readme.md",
+			wantMime: "text/markdown",
+		},
+		{
+			name:     "blob resource content",
+			input:    vmcp.Content{Type: "resource", Data: "base64blob", URI: "file://image.png", MimeType: "image/png"},
+			wantType: "mcp.EmbeddedResource",
+			wantData: "base64blob",
+			wantURI:  "file://image.png",
+			wantMime: "image/png",
+		},
+		{
+			name:     "empty resource content preserves resource type",
+			input:    vmcp.Content{Type: "resource"},
+			wantType: "mcp.EmbeddedResource",
+			wantText: "", // Empty text but still an EmbeddedResource
+		},
+		{
+			name:     "unknown content type converts to empty text",
+			input:    vmcp.Content{Type: "custom-type"},
+			wantType: "mcp.TextContent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := conversion.ToMCPContent(tt.input)
+
+			switch tt.wantType {
+			case "mcp.TextContent":
+				text, ok := result.(mcp.TextContent)
+				require.True(t, ok, "expected TextContent")
+				assert.Equal(t, tt.wantText, text.Text)
+			case "mcp.ImageContent":
+				img, ok := result.(mcp.ImageContent)
+				require.True(t, ok, "expected ImageContent")
+				assert.Equal(t, tt.wantData, img.Data)
+				assert.Equal(t, tt.wantMime, img.MIMEType)
+			case "mcp.AudioContent":
+				audio, ok := result.(mcp.AudioContent)
+				require.True(t, ok, "expected AudioContent")
+				assert.Equal(t, tt.wantData, audio.Data)
+				assert.Equal(t, tt.wantMime, audio.MIMEType)
+			case "mcp.EmbeddedResource":
+				res, ok := mcp.AsEmbeddedResource(result)
+				require.True(t, ok, "expected EmbeddedResource")
+				// Check if it's a text resource or blob resource
+				if tt.wantText != "" {
+					textRes, ok := mcp.AsTextResourceContents(res.Resource)
+					require.True(t, ok, "expected TextResourceContents")
+					assert.Equal(t, tt.wantText, textRes.Text)
+					assert.Equal(t, tt.wantURI, textRes.URI)
+					assert.Equal(t, tt.wantMime, textRes.MIMEType)
+				} else if tt.wantData != "" {
+					blobRes, ok := mcp.AsBlobResourceContents(res.Resource)
+					require.True(t, ok, "expected BlobResourceContents")
+					assert.Equal(t, tt.wantData, blobRes.Blob)
+					assert.Equal(t, tt.wantURI, blobRes.URI)
+					assert.Equal(t, tt.wantMime, blobRes.MIMEType)
+				}
+			default:
+				t.Errorf("unexpected wantType: %s", tt.wantType)
+			}
+		})
+	}
+}
+
+func TestResourceContentRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		initial mcp.Content
+	}{
+		{
+			name: "text resource round-trip preserves data",
+			initial: mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				URI:      "file://readme.md",
+				MIMEType: "text/markdown",
+				Text:     "# README\n\nWelcome!",
+			}),
+		},
+		{
+			name: "blob resource round-trip preserves data",
+			initial: mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+				URI:      "file://image.png",
+				MIMEType: "image/png",
+				Blob:     "base64imagedata",
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Convert mcp → vmcp
+			vmcpContent := conversion.ConvertMCPContent(tt.initial)
+
+			// Convert vmcp → mcp
+			mcpContent := conversion.ToMCPContent(vmcpContent)
+
+			// Verify the result matches the original
+			initialRes, ok := mcp.AsEmbeddedResource(tt.initial)
+			require.True(t, ok, "initial content should be EmbeddedResource")
+
+			finalRes, ok := mcp.AsEmbeddedResource(mcpContent)
+			require.True(t, ok, "round-trip result should be EmbeddedResource")
+
+			// Compare text resources
+			if initialText, ok := mcp.AsTextResourceContents(initialRes.Resource); ok {
+				finalText, ok := mcp.AsTextResourceContents(finalRes.Resource)
+				require.True(t, ok, "round-trip should preserve TextResourceContents type")
+				assert.Equal(t, initialText.URI, finalText.URI, "URI should be preserved")
+				assert.Equal(t, initialText.MIMEType, finalText.MIMEType, "MIMEType should be preserved")
+				assert.Equal(t, initialText.Text, finalText.Text, "Text should be preserved")
+			}
+
+			// Compare blob resources
+			if initialBlob, ok := mcp.AsBlobResourceContents(initialRes.Resource); ok {
+				finalBlob, ok := mcp.AsBlobResourceContents(finalRes.Resource)
+				require.True(t, ok, "round-trip should preserve BlobResourceContents type")
+				assert.Equal(t, initialBlob.URI, finalBlob.URI, "URI should be preserved")
+				assert.Equal(t, initialBlob.MIMEType, finalBlob.MIMEType, "MIMEType should be preserved")
+				assert.Equal(t, initialBlob.Blob, finalBlob.Blob, "Blob should be preserved")
+			}
+		})
+	}
+}

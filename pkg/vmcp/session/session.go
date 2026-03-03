@@ -22,22 +22,22 @@ import (
 // Because MCP clients cannot be serialised, horizontal scaling requires sticky
 // sessions (session affinity at the load balancer). Without sticky sessions, a
 // request routed to a different vMCP instance must recreate backend clients
-// (one-time cost per re-route). This is a known trade-off documented in
-// RFC THV-0038: https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0038-session-scoped-client-lifecycle.md
+// (one-time cost per re-route). This is an accepted trade-off.
 //
-// # Dual-layer storage model
+// # Storage
 //
-// A MultiSession separates two layers with different lifecycles:
+// A MultiSession uses a two-layer storage model:
 //
-//   - Metadata layer (serialisable): session ID, timestamps, identity reference,
-//     backend ID list. Stored via the transportsession.Storage interface and
-//     can persist across restarts.
+//   - Runtime layer (in-process only): backend HTTP connections, routing
+//     table, and capability lists. These cannot be serialized and are lost
+//     when the process exits. Sessions are therefore node-local.
 //
-//   - Runtime layer (non-serialisable): MCP client objects, routing table,
-//     capabilities, backend session ID map, closed flag. Lives only in-process.
-//
-// All session metadata goes through the same Storage interface — no parallel
-// storage path is introduced.
+//   - Metadata layer (serializable): identity subject and connected backend
+//     IDs are written to the embedded transportsession.Session so that
+//     pluggable transportsession.Storage backends (e.g. Redis) can persist
+//     them. This enables auditing and future session reconstruction, but
+//     does not make the session itself portable — the runtime layer must
+//     be rebuilt from scratch on a different node.
 type MultiSession interface {
 	transportsession.Session
 	sessiontypes.Caller

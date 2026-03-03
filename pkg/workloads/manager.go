@@ -1095,28 +1095,19 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 			slog.Debug("remote workload is already running", "workload", name)
 			return nil, nil
 		}
+	}
 
-		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
-		slog.Debug("remote workload is running but supervisor is dead, cleaning up before restart", "workload", name)
-
-		// Set status to stopping
-		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
-			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
-		}
-
-		// Stop the supervisor process (proxy) if it exists (may already be dead)
-		// This ensures we clean up any orphaned supervisor processes
-		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
-
-		// Clean up client configurations
-		if err := removeClientConfigurations(name, false); err != nil {
-			slog.Warn("failed to remove client configurations", "error", err)
-		}
-
-		// Set status to stopped after cleanup is complete
-		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
-			slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
-		}
+	// Unified restart flow for all states (Running+dead, Unauthenticated, Unhealthy, Error, etc.)
+	// Stop proxy first so status accurately reflects reality, then clean up before loading new config
+	d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
+		slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
+	}
+	if err := removeClientConfigurations(name, false); err != nil {
+		slog.Warn("failed to remove client configurations", "error", err)
+	}
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
+		slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
 	}
 
 	// Load runner configuration from state

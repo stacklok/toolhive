@@ -29,6 +29,7 @@ The skill will be fetched from a remote registry and installed locally.`,
 		validateGroupFlag(),
 		validateSkillScope(&skillInstallScope),
 		validateProjectRootForScope(&skillInstallScope, &skillInstallProjectRoot),
+		validateGroupFlag(),
 	),
 	RunE: skillInstallCmdFunc,
 }

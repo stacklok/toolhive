@@ -30,6 +30,7 @@ var skillListCmd = &cobra.Command{
 	Long:    `List all currently installed skills and their status.`,
 	PreRunE: chainPreRunE(
 		validateSkillScope(&skillListScope),
+		validateGroupFlag(),
 		ValidateFormat(&skillListFormat),
 		validateGroupFlag(),
 	),
@@ -42,6 +43,7 @@ func init() {
 	skillListCmd.Flags().StringVar(&skillListScope, "scope", "", "Filter by scope (user, project)")
 	skillListCmd.Flags().StringVar(&skillListClient, "client", "", "Filter by client application")
 	AddFormatFlag(skillListCmd, &skillListFormat)
+	AddGroupFlag(skillListCmd, &skillListGroup, false)
 	skillListCmd.Flags().StringVar(&skillListProjectRoot, "project-root", "", "Project root path for project-scoped skills")
 	skillListCmd.Flags().StringVar(&skillListGroup, "group", "", "Filter by group")
 }

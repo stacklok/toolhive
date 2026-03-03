@@ -39,7 +39,7 @@ func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
 }
 
 // newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer already set.
-func newMCPRegistryWithFinalizer(name, namespace string) *mcpv1alpha1.MCPRegistry {
+func newMCPRegistryWithFinalizer(name, namespace string) *mcpv1alpha1.MCPRegistry { //nolint:unparam
 	return &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
@@ -420,4 +420,3 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 		})
 	}
 }
-

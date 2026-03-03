@@ -61,7 +61,7 @@ func ConvertMCPContents(contents []mcp.Content) []vmcp.Content {
 }
 
 // ToMCPContent converts a single vmcp.Content item to mcp.Content.
-// Unknown and resource content types are converted to empty text with a warning.
+// Unknown content types are converted to empty text with a warning.
 func ToMCPContent(content vmcp.Content) mcp.Content {
 	switch content.Type {
 	case contentTypeText:
@@ -71,8 +71,29 @@ func ToMCPContent(content vmcp.Content) mcp.Content {
 	case contentTypeAudio:
 		return mcp.NewAudioContent(content.Data, content.MimeType)
 	case contentTypeResource:
-		slog.Warn("converting resource content to empty text - embedded resources not yet supported")
-		return mcp.NewTextContent("")
+		// Reconstruct embedded resource from vmcp.Content fields.
+		// Text content takes precedence over blob content when both are present.
+		if content.Text != "" {
+			return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+				URI:      content.URI,
+				MIMEType: content.MimeType,
+				Text:     content.Text,
+			})
+		}
+		if content.Data != "" {
+			return mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+				URI:      content.URI,
+				MIMEType: content.MimeType,
+				Blob:     content.Data,
+			})
+		}
+		// Empty resource content — preserve resource wrapper and metadata with empty contents.
+		slog.Warn("converting empty resource content to empty embedded resource - no Text or Data field present")
+		return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+			URI:      content.URI,
+			MIMEType: content.MimeType,
+			Text:     "",
+		})
 	default:
 		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
 		return mcp.NewTextContent("")

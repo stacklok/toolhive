@@ -49,6 +49,11 @@ type MultiSessionFactory interface {
 	// If all backends fail, MakeSession still returns a valid (empty) session
 	// rather than an error, allowing clients to connect even when all backends
 	// are temporarily unavailable.
+	//
+	// TODO(sessionManagementV2): MakeSession is only used by tests for convenience
+	// (auto-generates UUID). Production code uses MakeSessionWithID exclusively.
+	// This method can be removed once the sessionManagementV2 migration is complete
+	// and VMCPSession is deleted. Tests can be updated to generate their own UUIDs.
 	MakeSession(ctx context.Context, identity *auth.Identity, backends []*vmcp.Backend) (MultiSession, error)
 
 	// MakeSessionWithID creates a new MultiSession with a specific session ID.
@@ -244,7 +249,7 @@ func validateSessionID(id string) error {
 	if id == "" {
 		return fmt.Errorf("session ID must not be empty")
 	}
-	for i := range len(id) {
+	for i := 0; i < len(id); i++ {
 		c := id[i]
 		if c < 0x21 || c > 0x7E {
 			return fmt.Errorf("session ID contains invalid character at index %d (0x%02X): must be visible ASCII (0x21–0x7E)", i, c)

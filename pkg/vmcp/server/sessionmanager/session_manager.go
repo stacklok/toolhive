@@ -1,7 +1,16 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package server
+// Package sessionmanager provides session lifecycle management for sessionManagementV2.
+//
+// This package implements the two-phase session creation pattern that bridges
+// the MCP SDK's session management with the vMCP server's backend lifecycle:
+//   - Phase 1 (Generate): Creates a placeholder session with no context
+//   - Phase 2 (CreateSession): Replaces placeholder with fully-initialized MultiSession
+//
+// The Manager type implements the server.SessionManager interface and is used by
+// the server package when SessionManagementV2 is enabled.
+package sessionmanager
 
 import (
 	"context"
@@ -21,16 +30,16 @@ import (
 )
 
 const (
-	// metadataKeyTerminated is the session metadata key that marks a placeholder
+	// MetadataKeyTerminated is the session metadata key that marks a placeholder
 	// session as explicitly terminated by the client.
-	metadataKeyTerminated = "terminated"
+	MetadataKeyTerminated = "terminated"
 
-	// metadataValTrue is the string value stored under metadataKeyTerminated
+	// MetadataValTrue is the string value stored under MetadataKeyTerminated
 	// when a session has been terminated.
-	metadataValTrue = "true"
+	MetadataValTrue = "true"
 )
 
-// vmcpSessionManager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
+// Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
 // to the mark3labs SDK's SessionIdManager interface.
 //
 // It implements a two-phase session-creation pattern:
@@ -53,20 +62,20 @@ const (
 // durability, but a session can only be served by the process that created it.
 // Horizontal scaling requires sticky routing (e.g., session-affinity load
 // balancing) — cross-node reconstruction is not implemented.
-type vmcpSessionManager struct {
+type Manager struct {
 	storage         *transportsession.Manager
 	factory         vmcpsession.MultiSessionFactory
 	backendRegistry vmcp.BackendRegistry
 }
 
-// newVMCPSessionManager creates a vmcpSessionManager backed by the given transport
+// New creates a Manager backed by the given transport
 // manager, session factory, and backend registry.
-func newVMCPSessionManager(
+func New(
 	storage *transportsession.Manager,
 	factory vmcpsession.MultiSessionFactory,
 	backendRegistry vmcp.BackendRegistry,
-) *vmcpSessionManager {
-	return &vmcpSessionManager{
+) *Manager {
+	return &Manager{
 		storage:         storage,
 		factory:         factory,
 		backendRegistry: backendRegistry,
@@ -81,20 +90,20 @@ func newVMCPSessionManager(
 //
 // The placeholder is replaced by CreateSession() in Phase 2 once context
 // is available via the OnRegisterSession hook.
-func (sm *vmcpSessionManager) Generate() string {
+func (sm *Manager) Generate() string {
 	sessionID := uuid.New().String()
 
 	if err := sm.storage.AddWithID(sessionID); err != nil {
 		// UUID collision is astronomically unlikely; log and retry once.
-		slog.Error("vmcpSessionManager: failed to store placeholder session", "session_id", sessionID, "error", err)
+		slog.Error("Manager: failed to store placeholder session", "session_id", sessionID, "error", err)
 		sessionID = uuid.New().String()
 		if err := sm.storage.AddWithID(sessionID); err != nil {
-			slog.Error("vmcpSessionManager: failed to store placeholder session on retry", "session_id", sessionID, "error", err)
+			slog.Error("Manager: failed to store placeholder session on retry", "session_id", sessionID, "error", err)
 			return ""
 		}
 	}
 
-	slog.Debug("vmcpSessionManager: generated placeholder session", "session_id", sessionID)
+	slog.Debug("Manager: generated placeholder session", "session_id", sessionID)
 	return sessionID
 }
 
@@ -109,12 +118,12 @@ func (sm *vmcpSessionManager) Generate() string {
 //  4. Replaces the placeholder stored by Generate() with the new MultiSession.
 //
 // The returned MultiSession can be retrieved later via GetMultiSession().
-func (sm *vmcpSessionManager) CreateSession(
+func (sm *Manager) CreateSession(
 	ctx context.Context,
 	sessionID string,
 ) (vmcpsession.MultiSession, error) {
 	if sessionID == "" {
-		return nil, fmt.Errorf("vmcpSessionManager.CreateSession: session ID must not be empty")
+		return nil, fmt.Errorf("Manager.CreateSession: session ID must not be empty")
 	}
 
 	// Fast-fail before opening any backend connections: verify the phase-1
@@ -126,13 +135,13 @@ func (sm *vmcpSessionManager) CreateSession(
 	placeholder, exists := sm.storage.Get(sessionID)
 	if !exists {
 		return nil, fmt.Errorf(
-			"vmcpSessionManager.CreateSession: placeholder for session %q not found (terminated concurrently?)",
+			"Manager.CreateSession: placeholder for session %q not found (terminated concurrently?)",
 			sessionID,
 		)
 	}
-	if placeholder.GetMetadata()[metadataKeyTerminated] == metadataValTrue {
+	if placeholder.GetMetadata()[MetadataKeyTerminated] == MetadataValTrue {
 		return nil, fmt.Errorf(
-			"vmcpSessionManager.CreateSession: session %q was terminated before backend connections could be opened",
+			"Manager.CreateSession: session %q was terminated before backend connections could be opened",
 			sessionID,
 		)
 	}
@@ -144,36 +153,45 @@ func (sm *vmcpSessionManager) CreateSession(
 	rawBackends := sm.backendRegistry.List(ctx)
 	backends := make([]*vmcp.Backend, len(rawBackends))
 	for i := range rawBackends {
-		b := rawBackends[i] // avoid loop-variable capture
-		backends[i] = &b
+		backends[i] = &rawBackends[i]
 	}
 
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
 	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends)
 	if err != nil {
-		return nil, fmt.Errorf("vmcpSessionManager.CreateSession: failed to create multi-session: %w", err)
+		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)
 	}
 
-	// Re-check that the placeholder is still present after the (potentially
-	// slow) MakeSessionWithID call. A second DELETE arriving during backend
-	// initialisation would remove the placeholder; upserting over an absent
-	// entry would silently resurrect a terminated session.
-	if _, exists := sm.storage.Get(sessionID); !exists {
+	// Re-check that the placeholder is still present AND not terminated after
+	// the (potentially slow) MakeSessionWithID call. A concurrent DELETE could:
+	//   1. Delete the placeholder entirely (caught by !exists check), OR
+	//   2. Mark it terminated=true (caught by terminated flag check)
+	// Without this second check, UpsertSession would silently resurrect a
+	// session the client already terminated, wasting backend connections.
+	placeholder2, exists := sm.storage.Get(sessionID)
+	if !exists {
 		_ = sess.Close()
 		return nil, fmt.Errorf(
-			"vmcpSessionManager.CreateSession: placeholder for session %q disappeared during backend init (terminated concurrently)",
+			"Manager.CreateSession: placeholder for session %q disappeared during backend init (terminated concurrently)",
+			sessionID,
+		)
+	}
+	if placeholder2.GetMetadata()[MetadataKeyTerminated] == MetadataValTrue {
+		_ = sess.Close()
+		return nil, fmt.Errorf(
+			"Manager.CreateSession: session %q was terminated during backend init (marked after first check)",
 			sessionID,
 		)
 	}
 
 	// Replace the placeholder in the transport manager.
-	if err := sm.storage.ReplaceSession(sess); err != nil {
+	if err := sm.storage.UpsertSession(sess); err != nil {
 		// Best-effort close of the newly created session to release backend connections.
 		_ = sess.Close()
-		return nil, fmt.Errorf("vmcpSessionManager.CreateSession: failed to replace placeholder: %w", err)
+		return nil, fmt.Errorf("Manager.CreateSession: failed to replace placeholder: %w", err)
 	}
 
-	slog.Debug("vmcpSessionManager: created multi-session",
+	slog.Debug("Manager: created multi-session",
 		"session_id", sessionID,
 		"backend_count", len(backends))
 	return sess, nil
@@ -185,19 +203,19 @@ func (sm *vmcpSessionManager) CreateSession(
 // Returns (false, error) for unknown sessions — per the SDK interface contract,
 // a lookup failure is signalled via err, not via isTerminated.
 // Returns (false, nil) for valid, active sessions.
-func (sm *vmcpSessionManager) Validate(sessionID string) (isTerminated bool, err error) {
+func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	if sessionID == "" {
-		return false, fmt.Errorf("vmcpSessionManager.Validate: empty session ID")
+		return false, fmt.Errorf("Manager.Validate: empty session ID")
 	}
 
 	sess, exists := sm.storage.Get(sessionID)
 	if !exists {
-		slog.Debug("vmcpSessionManager.Validate: session not found", "session_id", sessionID)
+		slog.Debug("Manager.Validate: session not found", "session_id", sessionID)
 		return false, fmt.Errorf("session not found")
 	}
 
-	if sess.GetMetadata()[metadataKeyTerminated] == metadataValTrue {
-		slog.Debug("vmcpSessionManager.Validate: session is terminated", "session_id", sessionID)
+	if sess.GetMetadata()[MetadataKeyTerminated] == MetadataValTrue {
+		slog.Debug("Manager.Validate: session is terminated", "session_id", sessionID)
 		return true, nil
 	}
 
@@ -206,7 +224,9 @@ func (sm *vmcpSessionManager) Validate(sessionID string) (isTerminated bool, err
 
 // Terminate implements the SDK's SessionIdManager.Terminate().
 //
-// The two session types are handled asymmetrically:
+// The two session types are handled asymmetrically to prevent a race condition
+// where client termination during the Phase 1→Phase 2 window could resurrect
+// sessions with open backend connections:
 //
 //   - MultiSession (Phase 2): Close() releases backend connections, then the
 //     session is deleted from storage immediately. After deletion Validate()
@@ -215,53 +235,73 @@ func (sm *vmcpSessionManager) Validate(sessionID string) (isTerminated bool, err
 //     immediate removal is cleaner than marking and waiting for TTL.
 //
 //   - Placeholder (Phase 1): the session is marked terminated=true and left
-//     for TTL cleanup. This lets Validate() return (isTerminated=true, nil)
-//     during the window between client termination and TTL expiry, which
-//     allows the SDK to distinguish "actively terminated" from "never existed".
+//     for TTL cleanup. This prevents CreateSession() from opening backend
+//     connections for an already-terminated session (see fast-fail check in
+//     CreateSession at lines 142-147). The terminated flag also lets Validate()
+//     return (isTerminated=true, nil) during the window between termination
+//     and TTL expiry, allowing the SDK to distinguish "actively terminated"
+//     from "never existed".
 //
 // Returns (isNotAllowed=false, nil) on success; client termination is always permitted.
-func (sm *vmcpSessionManager) Terminate(sessionID string) (isNotAllowed bool, err error) {
+func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	if sessionID == "" {
-		return false, fmt.Errorf("vmcpSessionManager.Terminate: empty session ID")
+		return false, fmt.Errorf("Manager.Terminate: empty session ID")
 	}
 
 	sess, exists := sm.storage.Get(sessionID)
 	if !exists {
-		slog.Debug("vmcpSessionManager.Terminate: session not found (already expired?)", "session_id", sessionID)
+		slog.Debug("Manager.Terminate: session not found (already expired?)", "session_id", sessionID)
 		return false, nil
 	}
 
 	// If the session is a fully-formed MultiSession, close its backend connections.
 	if multiSess, ok := sess.(vmcpsession.MultiSession); ok {
 		if closeErr := multiSess.Close(); closeErr != nil {
-			slog.Warn("vmcpSessionManager.Terminate: error closing multi-session backend connections",
+			slog.Warn("Manager.Terminate: error closing multi-session backend connections",
 				"session_id", sessionID, "error", closeErr)
 			// Continue with removal even if Close() fails.
 		}
 		if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
-			return false, fmt.Errorf("vmcpSessionManager.Terminate: failed to delete session from storage: %w", deleteErr)
+			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
 	} else {
-		// Placeholder session — mark as terminated and write back to storage so
-		// the flag is visible to any storage backend (including distributed ones).
-		// TTL cleanup will remove the record later; the terminated flag lets
-		// Validate() return isTerminated=true during the intervening window.
-		sess.SetMetadata(metadataKeyTerminated, metadataValTrue)
-		if replaceErr := sm.storage.ReplaceSession(sess); replaceErr != nil {
-			slog.Warn("vmcpSessionManager.Terminate: failed to persist terminated flag for placeholder",
+		// Placeholder session (not yet upgraded to MultiSession).
+		//
+		// This handles the race condition where a client sends DELETE between
+		// Generate() (Phase 1) and CreateSession() (Phase 2). The two-phase
+		// pattern creates a window where the session exists as a placeholder:
+		//
+		//   1. Client sends initialize → Generate() creates placeholder
+		//   2. Client sends DELETE before OnRegisterSession hook fires
+		//   3. We mark the placeholder as terminated (don't delete it)
+		//   4. CreateSession() hook fires → sees terminated flag → fails fast
+		//
+		// Without this branch, CreateSession() would open backend HTTP connections
+		// for a session the client already terminated, silently resurrecting it.
+		//
+		// We mark (not delete) so Validate() can return isTerminated=true, which
+		// lets the SDK distinguish "actively terminated" from "never existed".
+		// TTL cleanup will remove the placeholder later.
+		sess.SetMetadata(MetadataKeyTerminated, MetadataValTrue)
+		if replaceErr := sm.storage.UpsertSession(sess); replaceErr != nil {
+			slog.Warn("Manager.Terminate: failed to persist terminated flag for placeholder; attempting delete fallback",
 				"session_id", sessionID, "error", replaceErr)
-			// Non-fatal: the in-memory flag is set; TTL will clean up anyway.
+			if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
+				return false, fmt.Errorf(
+					"Manager.Terminate: failed to persist terminated flag and delete placeholder: upsertErr=%v, deleteErr=%w",
+					replaceErr, deleteErr)
+			}
 		}
 	}
 
-	slog.Info("vmcpSessionManager.Terminate: session terminated", "session_id", sessionID)
+	slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 	return false, nil
 }
 
 // GetMultiSession retrieves the fully-formed MultiSession for a given SDK session ID.
 // Returns (nil, false) if the session does not exist or has not yet been
 // upgraded from placeholder to MultiSession.
-func (sm *vmcpSessionManager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool) {
+func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool) {
 	sess, exists := sm.storage.Get(sessionID)
 	if !exists {
 		return nil, false
@@ -275,28 +315,26 @@ func (sm *vmcpSessionManager) GetMultiSession(sessionID string) (vmcpsession.Mul
 //
 // This enables session-scoped routing: each tool call goes through the session's
 // backend connections rather than the global router.
-func (sm *vmcpSessionManager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error) {
+func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error) {
 	multiSess, ok := sm.GetMultiSession(sessionID)
 	if !ok {
-		return nil, fmt.Errorf("vmcpSessionManager.GetAdaptedTools: session %q not found or not a multi-session", sessionID)
+		return nil, fmt.Errorf("Manager.GetAdaptedTools: session %q not found or not a multi-session", sessionID)
 	}
 
 	domainTools := multiSess.Tools()
 	sdkTools := make([]mcpserver.ServerTool, 0, len(domainTools))
 
 	for _, domainTool := range domainTools {
-		t := domainTool // capture loop variable
-
 		// Marshal InputSchema to JSON so the SDK exposes the full parameter
 		// schema to clients (matching the behaviour of CapabilityAdapter.ToSDKTools).
-		schemaJSON, err := json.Marshal(t.InputSchema)
+		schemaJSON, err := json.Marshal(domainTool.InputSchema)
 		if err != nil {
-			return nil, fmt.Errorf("vmcpSessionManager.GetAdaptedTools: failed to marshal schema for tool %s: %w", t.Name, err)
+			return nil, fmt.Errorf("Manager.GetAdaptedTools: failed to marshal schema for tool %s: %w", domainTool.Name, err)
 		}
 
 		tool := mcp.Tool{
-			Name:           t.Name,
-			Description:    t.Description,
+			Name:           domainTool.Name,
+			Description:    domainTool.Description,
 			RawInputSchema: schemaJSON,
 		}
 
@@ -304,7 +342,7 @@ func (sm *vmcpSessionManager) GetAdaptedTools(sessionID string) ([]mcpserver.Ser
 		// by value. Using the captured toolName (not req.Params.Name) ensures
 		// routing is driven by the server-registered name, not client-supplied input.
 		capturedSess := multiSess
-		toolName := t.Name
+		toolName := domainTool.Name
 		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, ok := req.Params.Arguments.(map[string]any)
 			if !ok {
@@ -333,7 +371,7 @@ func (sm *vmcpSessionManager) GetAdaptedTools(sessionID string) ([]mcpserver.Ser
 			Tool:    tool,
 			Handler: handler,
 		})
-		slog.Debug("vmcpSessionManager.GetAdaptedTools: adapted tool", "session_id", sessionID, "tool", t.Name)
+		slog.Debug("Manager.GetAdaptedTools: adapted tool", "session_id", sessionID, "tool", domainTool.Name)
 	}
 
 	return sdkTools, nil

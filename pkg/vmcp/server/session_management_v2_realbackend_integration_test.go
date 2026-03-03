@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -35,37 +33,7 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-// startRealMCPBackend creates a real in-process MCP server over streamable-HTTP
-// and returns its endpoint URL. The server is shut down via t.Cleanup.
-//
-// The server exposes a single "echo" tool that returns the "input" argument
-// as a text content item.
-func startRealMCPBackend(t *testing.T) string {
-	t.Helper()
-
-	mcpSrv := mcpserver.NewMCPServer("real-backend", "1.0.0")
-	mcpSrv.AddTool(
-		mcpmcp.NewTool("echo",
-			mcpmcp.WithDescription("Echoes the input back"),
-			mcpmcp.WithString("input", mcpmcp.Required()),
-		),
-		func(_ context.Context, req mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
-			args, _ := req.Params.Arguments.(map[string]any)
-			input, _ := args["input"].(string)
-			return &mcpmcp.CallToolResult{
-				Content: []mcpmcp.Content{mcpmcp.NewTextContent(input)},
-			}, nil
-		},
-	)
-
-	streamableSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", streamableSrv)
-
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-	return ts.URL + "/mcp"
-}
+// startRealMCPBackend is defined in testutil_test.go as a shared test utility.
 
 // newRealV2Server builds a vMCP server with SessionManagementV2 enabled and a
 // real SessionFactory. The BackendRegistry mock returns the backend at backendURL
@@ -161,33 +129,15 @@ func TestIntegration_V2RealBackend_ToolDiscovery(t *testing.T) {
 	backendURL := startRealMCPBackend(t)
 	ts := newRealV2Server(t, backendURL)
 
-	// Initialize and obtain a session ID.
-	initResp := postMCP(t, ts.URL, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2025-06-18",
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
-		},
-	}, "")
-	defer initResp.Body.Close()
-	require.Equal(t, http.StatusOK, initResp.StatusCode)
-
-	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	require.NotEmpty(t, sessionID)
+	// Initialize session using the test client.
+	client := NewMCPTestClient(t, ts.URL)
+	client.InitializeSession()
 
 	// Wait for the OnRegisterSession hook to complete and the echo tool to appear.
-	waitForEchoTool(t, ts.URL, sessionID)
+	waitForEchoTool(t, ts.URL, client.SessionID())
 
-	// Fetch tools/list one final time and parse the full response.
-	resp := postMCP(t, ts.URL, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      2,
-		"method":  "tools/list",
-		"params":  map[string]any{},
-	}, sessionID)
+	// Fetch tools/list and parse the response.
+	resp := client.ListTools()
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
@@ -218,36 +168,15 @@ func TestIntegration_V2RealBackend_ToolCall(t *testing.T) {
 	backendURL := startRealMCPBackend(t)
 	ts := newRealV2Server(t, backendURL)
 
-	// Initialize.
-	initResp := postMCP(t, ts.URL, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2025-06-18",
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
-		},
-	}, "")
-	defer initResp.Body.Close()
-	require.Equal(t, http.StatusOK, initResp.StatusCode)
-
-	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	require.NotEmpty(t, sessionID)
+	// Initialize session.
+	client := NewMCPTestClient(t, ts.URL)
+	client.InitializeSession()
 
 	// Wait for the session to be fully established before sending a tool call.
-	waitForEchoTool(t, ts.URL, sessionID)
+	waitForEchoTool(t, ts.URL, client.SessionID())
 
 	// Call the echo tool and verify the result from the real backend.
-	toolResp := postMCP(t, ts.URL, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      3,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "hello from V2"},
-		},
-	}, sessionID)
+	toolResp := client.CallTool("echo", map[string]any{"input": "hello from V2"})
 	defer toolResp.Body.Close()
 
 	body, err := io.ReadAll(toolResp.Body)
@@ -279,43 +208,22 @@ func TestIntegration_V2RealBackend_Termination(t *testing.T) {
 	backendURL := startRealMCPBackend(t)
 	ts := newRealV2Server(t, backendURL)
 
-	// Initialize.
-	initResp := postMCP(t, ts.URL, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2025-06-18",
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
-		},
-	}, "")
-	defer initResp.Body.Close()
-	require.Equal(t, http.StatusOK, initResp.StatusCode)
-
-	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	require.NotEmpty(t, sessionID)
+	// Initialize session.
+	client := NewMCPTestClient(t, ts.URL)
+	client.InitializeSession()
 
 	// Wait for session creation to complete before terminating.
-	waitForEchoTool(t, ts.URL, sessionID)
+	waitForEchoTool(t, ts.URL, client.SessionID())
 
 	// Terminate the session.
-	delResp := deleteMCP(t, ts.URL, sessionID)
+	delResp := client.Terminate()
 	defer delResp.Body.Close()
 	require.Equal(t, http.StatusOK, delResp.StatusCode, "DELETE should return 200 OK")
 
 	// Subsequent requests with the terminated session ID are rejected.
 	// After Terminate() deletes the session from storage, the discovery middleware
 	// returns HTTP 401 ("session not found") before the SDK's Validate() is invoked.
-	postResp := postMCP(t, ts.URL, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      4,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "should fail"},
-		},
-	}, sessionID)
+	postResp := client.CallTool("echo", map[string]any{"input": "should fail"})
 	defer postResp.Body.Close()
 	assert.Equal(t, http.StatusUnauthorized, postResp.StatusCode,
 		"request with terminated session ID should be rejected")

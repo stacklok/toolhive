@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package server
+package sessionmanager
 
 import (
 	"context"
@@ -88,6 +88,8 @@ type fakeMultiSessionFactory struct {
 	err error
 	// createdSessions tracks the sessions created, keyed by session ID.
 	createdSessions map[string]*fakeMultiSession
+	// delay to inject before creating session (simulates slow backend init).
+	delay time.Duration
 }
 
 func newFakeFactory(tools []vmcp.Tool) *fakeMultiSessionFactory {
@@ -113,6 +115,10 @@ func (f *fakeMultiSessionFactory) MakeSession(
 func (f *fakeMultiSessionFactory) MakeSessionWithID(
 	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
+	// Simulate slow backend initialization if delay is set (for race condition tests).
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -135,6 +141,30 @@ func (alwaysFailStorage) Load(_ context.Context, _ string) (transportsession.Ses
 func (alwaysFailStorage) Delete(_ context.Context, _ string) error           { return nil }
 func (alwaysFailStorage) DeleteExpired(_ context.Context, _ time.Time) error { return nil }
 func (alwaysFailStorage) Close() error                                       { return nil }
+
+// configurableFailStorage wraps a real storage and allows injecting failures
+// for specific operations. Used to test fallback behavior in Terminate().
+type configurableFailStorage struct {
+	transportsession.Storage
+	storeCallCount int
+	failStoreAfter int // fail Store after this many successful calls (0 = never fail, -1 = always fail)
+	failDelete     bool
+}
+
+func (s *configurableFailStorage) Store(ctx context.Context, sess transportsession.Session) error {
+	s.storeCallCount++
+	if s.failStoreAfter == -1 || (s.failStoreAfter >= 0 && s.storeCallCount > s.failStoreAfter) {
+		return errors.New("injected Store failure")
+	}
+	return s.Storage.Store(ctx, sess)
+}
+
+func (s *configurableFailStorage) Delete(ctx context.Context, id string) error {
+	if s.failDelete {
+		return errors.New("injected Delete failure")
+	}
+	return s.Storage.Delete(ctx, id)
+}
 
 // fakeBackendRegistry is a simple BackendRegistry for tests.
 type fakeBackendRegistry struct {
@@ -178,10 +208,10 @@ func newTestVMCPSessionManager(
 	t *testing.T,
 	factory vmcpsession.MultiSessionFactory,
 	registry vmcp.BackendRegistry,
-) (*vmcpSessionManager, *transportsession.Manager) {
+) (*Manager, *transportsession.Manager) {
 	t.Helper()
 	storage := newTestTransportManager(t)
-	return newVMCPSessionManager(storage, factory, registry), storage
+	return New(storage, factory, registry), storage
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +251,7 @@ func TestVMCPSessionManager_Generate(t *testing.T) {
 		t.Cleanup(func() { _ = failingMgr.Stop() })
 
 		factory := newFakeFactory(nil)
-		sm := newVMCPSessionManager(failingMgr, factory, newFakeRegistry())
+		sm := New(failingMgr, factory, newFakeRegistry())
 
 		id := sm.Generate()
 		assert.Empty(t, id, "Generate() should return '' when storage is unavailable")
@@ -359,6 +389,51 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 		// The factory must not have been called.
 		_, called := factory.createdSessions[sessionID]
 		assert.False(t, called, "factory should not be called when placeholder is terminated")
+	})
+
+	t.Run("returns error when session is terminated during backend initialization", func(t *testing.T) {
+		t.Parallel()
+
+		tools := []vmcp.Tool{{Name: "tool-a"}}
+		factory := newFakeFactory(tools)
+		// Inject a delay to simulate slow backend initialization, creating a window
+		// where the client can terminate the session after the first check passes
+		// but before MakeSessionWithID completes.
+		factory.delay = 50 * time.Millisecond
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+
+		// Generate a placeholder.
+		sessionID := sm.Generate()
+		require.NotEmpty(t, sessionID)
+
+		// Start CreateSession in a goroutine — it will pass the first terminated
+		// check and then sleep during MakeSessionWithID.
+		errChan := make(chan error, 1)
+		go func() {
+			_, err := sm.CreateSession(context.Background(), sessionID)
+			errChan <- err
+		}()
+
+		// Give the goroutine time to pass the first check and enter MakeSessionWithID.
+		time.Sleep(10 * time.Millisecond)
+
+		// Terminate the session while MakeSessionWithID is running. This sets
+		// terminated=true on the placeholder (does not delete it).
+		_, terminateErr := sm.Terminate(sessionID)
+		require.NoError(t, terminateErr)
+
+		// Wait for CreateSession to complete. The second terminated check (after
+		// MakeSessionWithID) should detect terminated=true and fail.
+		createErr := <-errChan
+		require.Error(t, createErr)
+		assert.ErrorContains(t, createErr, "was terminated during backend init")
+
+		// The factory WAS called (first check passed), but the resulting session
+		// should have been closed before being stored.
+		createdSess, called := factory.createdSessions[sessionID]
+		assert.True(t, called, "factory should be called when first check passes")
+		assert.True(t, createdSess.closed, "session should be closed when second check fails")
 	})
 }
 
@@ -534,7 +609,80 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 		// Placeholder should still be in storage but marked terminated.
 		sess, exists := storage.Get(sessionID)
 		require.True(t, exists, "placeholder should remain in storage (TTL will clean it)")
-		assert.Equal(t, metadataValTrue, sess.GetMetadata()[metadataKeyTerminated])
+		assert.Equal(t, MetadataValTrue, sess.GetMetadata()[MetadataKeyTerminated])
+	})
+
+	t.Run("placeholder termination falls back to delete when upsert fails", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+
+		// Create a storage that succeeds on the first Store (Generate creates
+		// placeholder) but fails on the second Store (Terminate tries to upsert).
+		// Delete succeeds. This tests the fallback path in Terminate().
+		baseStorage := transportsession.NewLocalStorage()
+		failingStorage := &configurableFailStorage{
+			Storage:        baseStorage,
+			failStoreAfter: 1, // fail after 1 successful Store
+			failDelete:     false,
+		}
+		storage := transportsession.NewManagerWithStorage(
+			time.Hour,
+			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
+			failingStorage,
+		)
+		t.Cleanup(func() { _ = storage.Stop() })
+		sm := New(storage, factory, registry)
+
+		// Generate a placeholder (first Store, succeeds).
+		sessionID := sm.Generate()
+		require.NotEmpty(t, sessionID)
+
+		// Terminate should succeed via the delete fallback (second Store fails, Delete succeeds).
+		isNotAllowed, err := sm.Terminate(sessionID)
+		require.NoError(t, err)
+		assert.False(t, isNotAllowed)
+
+		// Placeholder should be deleted (not just marked terminated).
+		_, exists := storage.Get(sessionID)
+		assert.False(t, exists, "placeholder should be deleted when upsert fails")
+	})
+
+	t.Run("placeholder termination fails when both upsert and delete fail", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+
+		// Create a storage that succeeds on the first Store (Generate creates
+		// placeholder) but fails on the second Store (Terminate tries to upsert)
+		// and also fails on Delete. This forces the error path.
+		baseStorage := transportsession.NewLocalStorage()
+		failingStorage := &configurableFailStorage{
+			Storage:        baseStorage,
+			failStoreAfter: 1, // fail after 1 successful Store
+			failDelete:     true,
+		}
+		storage := transportsession.NewManagerWithStorage(
+			time.Hour,
+			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
+			failingStorage,
+		)
+		t.Cleanup(func() { _ = storage.Stop() })
+		sm := New(storage, factory, registry)
+
+		// Generate a placeholder (first Store, succeeds).
+		sessionID := sm.Generate()
+		require.NotEmpty(t, sessionID)
+
+		// Terminate should fail when both upsert and delete fail.
+		isNotAllowed, err := sm.Terminate(sessionID)
+		require.Error(t, err)
+		assert.False(t, isNotAllowed)
+		assert.ErrorContains(t, err, "failed to persist terminated flag and delete placeholder")
+		assert.ErrorContains(t, err, "upsertErr=")
+		assert.ErrorContains(t, err, "deleteErr=")
 	})
 }
 

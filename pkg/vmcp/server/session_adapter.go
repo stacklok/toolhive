@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/transport/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
 
 // sessionIDAdapter adapts ToolHive's session.Manager to implement
@@ -102,7 +103,7 @@ func (a *sessionIDAdapter) Validate(sessionID string) (isTerminated bool, err er
 
 	// Check if session is marked as terminated via metadata
 	// Terminated sessions are kept briefly to distinguish "terminated" from "never existed"
-	if sess.GetMetadata()[metadataKeyTerminated] == metadataValTrue {
+	if sess.GetMetadata()[sessionmanager.MetadataKeyTerminated] == sessionmanager.MetadataValTrue {
 		slog.Debug("session is terminated", "session", sessionID)
 		return true, nil
 	}
@@ -141,7 +142,7 @@ func (a *sessionIDAdapter) Terminate(sessionID string) (isNotAllowed bool, err e
 	// Mark session as terminated via metadata
 	// Don't delete immediately - keep it for a short time to return proper
 	// isTerminated=true on Validate() calls for subsequent requests
-	sess.SetMetadata(metadataKeyTerminated, metadataValTrue)
+	sess.SetMetadata(sessionmanager.MetadataKeyTerminated, sessionmanager.MetadataValTrue)
 	slog.Info("session terminated", "session", sessionID)
 
 	// Note: The session.Manager's TTL cleanup will eventually delete this session.

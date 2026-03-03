@@ -112,7 +112,11 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 			return mcp.NewToolResultError(fmt.Sprintf("Tool call failed: %v", err)), nil
 		}
 
-		// Convert vmcp.Content array to MCP content array
+		// Convert vmcp.Content array to MCP content array.
+		// Note: This uses centralized conversion logic from pkg/vmcp/conversion/content.go.
+		// Previously, this file had a local convertToMCPContent() function that duplicated
+		// this logic. The local duplicate was removed to maintain a single source of truth
+		// for MCP protocol conversions (DRY principle, easier testing, consistency).
 		mcpContent := conversion.ToMCPContents(result.Content)
 
 		// Create MCP tool result with _meta field preserved

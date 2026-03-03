@@ -12,6 +12,13 @@
 // that periodically rediscovers capabilities, detects changes via hash comparison, and
 // pushes updates to active sessions via MCP tools/list_changed notifications. Middleware
 // flow remains unchanged - still just retrieves from session cache on subsequent requests.
+//
+// TODO(sessionManagementV2): This entire middleware package can be deleted after the
+// sessionManagementV2 migration is complete. For MultiSession (the new path), the
+// middleware does nothing except validate that the session exists, which is already
+// handled by the SDK via SessionIdManager.Validate(). Tool routing is handled by
+// session-scoped handlers registered with AddSessionTools. This middleware only exists
+// for VMCPSession backward compatibility (routing table reconstruction from session data).
 package discovery
 
 import (
@@ -267,6 +274,10 @@ func handleSubsequentRequest(
 	// If the session is a MultiSession, tools are already registered with the SDK via
 	// AddSessionTools and routed by session-scoped handlers. No routing-table
 	// reconstruction is needed — pass through without modifying the context.
+	//
+	// TODO(sessionManagementV2): Remove this type coercion check once the sessionManagementV2
+	// migration is complete and all sessions are MultiSession instances. At that point, this
+	// early return becomes the only code path and the VMCPSession fallback below can be deleted.
 	if _, isMulti := rawSess.(vmcpsession.MultiSession); isMulti {
 		//nolint:gosec // G706: session ID is not an injection vector
 		slog.Debug("session uses session-scoped tool routing; skipping routing-table reconstruction",

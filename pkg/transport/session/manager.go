@@ -179,10 +179,10 @@ func (m *Manager) Get(id string) (Session, bool) {
 	return sess, true
 }
 
-// ReplaceSession upserts a session into storage, replacing any existing session
-// with the same ID. Used by SessionManager to replace placeholder sessions
+// UpsertSession inserts or updates a session in storage, replacing any existing
+// session with the same ID. Used by SessionManager to replace placeholder sessions
 // with fully-formed MultiSession objects after phase-2 construction.
-func (m *Manager) ReplaceSession(session Session) error {
+func (m *Manager) UpsertSession(session Session) error {
 	if session == nil {
 		return fmt.Errorf("session cannot be nil")
 	}

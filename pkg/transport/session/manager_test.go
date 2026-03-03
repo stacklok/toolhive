@@ -142,19 +142,19 @@ func TestStopDisablesCleanup(t *testing.T) {
 	assert.True(t, ok, "session should still be present even after Stop() and TTL elapsed")
 }
 
-func TestReplaceSession_NilSessionReturnsError(t *testing.T) {
+func TestUpsertSession_NilSessionReturnsError(t *testing.T) {
 	t.Parallel()
 
 	factory := &stubFactory{fixedTime: time.Now()}
 	m := NewManager(time.Hour, factory.New)
 	defer m.Stop()
 
-	err := m.ReplaceSession(nil)
+	err := m.UpsertSession(nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be nil")
 }
 
-func TestReplaceSession_EmptyIDReturnsError(t *testing.T) {
+func TestUpsertSession_EmptyIDReturnsError(t *testing.T) {
 	t.Parallel()
 
 	factory := &stubFactory{fixedTime: time.Now()}
@@ -163,29 +163,29 @@ func TestReplaceSession_EmptyIDReturnsError(t *testing.T) {
 
 	// A session with an empty ID should be rejected.
 	sess := &ProxySession{id: ""}
-	err := m.ReplaceSession(sess)
+	err := m.UpsertSession(sess)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be empty")
 }
 
-func TestReplaceSession_UpsertNewSession(t *testing.T) {
+func TestUpsertSession_UpsertNewSession(t *testing.T) {
 	t.Parallel()
 
 	factory := &stubFactory{fixedTime: time.Now()}
 	m := NewManager(time.Hour, factory.New)
 	defer m.Stop()
 
-	// ReplaceSession on an ID that does not exist yet should store it.
+	// UpsertSession on an ID that does not exist yet should store it.
 	newSess := NewStreamableSession("brand-new-id")
-	err := m.ReplaceSession(newSess)
+	err := m.UpsertSession(newSess)
 	require.NoError(t, err)
 
 	got, ok := m.Get("brand-new-id")
-	require.True(t, ok, "session should exist after ReplaceSession upsert")
+	require.True(t, ok, "session should exist after UpsertSession upsert")
 	assert.Equal(t, "brand-new-id", got.ID())
 }
 
-func TestReplaceSession_ReplacesExistingSession(t *testing.T) {
+func TestUpsertSession_ReplacesExistingSession(t *testing.T) {
 	t.Parallel()
 
 	factory := &stubFactory{fixedTime: time.Now()}
@@ -205,7 +205,7 @@ func TestReplaceSession_ReplacesExistingSession(t *testing.T) {
 
 	// Phase 2: replace with a StreamableSession (different concrete type).
 	replacement := NewStreamableSession(sessionID)
-	err := m.ReplaceSession(replacement)
+	err := m.UpsertSession(replacement)
 	require.NoError(t, err)
 
 	// Verify that Get() now returns the replacement.

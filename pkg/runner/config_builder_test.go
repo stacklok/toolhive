@@ -6,7 +6,6 @@ package runner
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"os"
 	"testing"
 
@@ -20,10 +19,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
-
-const testPort = math.MaxInt16
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
@@ -989,6 +987,14 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 
 	mockValidator := &mockEnvVarValidator{}
 
+	// Find available ports dynamically to avoid flaky failures when a
+	// hardcoded port happens to be in use on the CI runner.
+	registryPort := networking.FindAvailable()
+	require.NotZero(t, registryPort, "should find an available port for registry proxy")
+
+	cliOverridePort := networking.FindAvailable()
+	require.NotZero(t, cliOverridePort, "should find an available port for CLI override")
+
 	tests := []struct {
 		name              string
 		imageMetadata     *regtypes.ImageMetadata
@@ -1003,11 +1009,11 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 					Transport: "streamable-http",
 				},
 				Image:      "test-image:latest",
-				ProxyPort:  testPort,
-				TargetPort: testPort,
+				ProxyPort:  registryPort,
+				TargetPort: registryPort,
 			},
 			cliProxyPort:      0,
-			expectedProxyPort: testPort,
+			expectedProxyPort: registryPort,
 		},
 		{
 			name: "CLI proxy_port overrides registry",
@@ -1017,11 +1023,11 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 					Transport: "streamable-http",
 				},
 				Image:      "test-image:latest",
-				ProxyPort:  testPort,
-				TargetPort: testPort,
+				ProxyPort:  registryPort,
+				TargetPort: registryPort,
 			},
-			cliProxyPort:      9999,
-			expectedProxyPort: 9999,
+			cliProxyPort:      cliOverridePort,
+			expectedProxyPort: cliOverridePort,
 		},
 		{
 			name: "random port when neither CLI nor registry specified",

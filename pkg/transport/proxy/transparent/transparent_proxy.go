@@ -184,8 +184,6 @@ func withShutdownTimeout(timeout time.Duration) Option {
 	}
 }
 
-// NewTransparentProxy creates a new transparent proxy with optional middlewares and configuration options.
-
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
 // The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.
@@ -440,6 +438,11 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+
+	// Guard against calling Start() after Stop()
+	if p.stopped {
+		return fmt.Errorf("proxy has been stopped")
+	}
 
 	// Parse the target URI
 	targetURL, err := url.Parse(p.targetURI)

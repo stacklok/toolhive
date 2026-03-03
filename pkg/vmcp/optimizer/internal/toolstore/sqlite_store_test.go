@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package sqlitestore
+package toolstore
 
 import (
 	"context"
@@ -52,26 +52,16 @@ func TestNewSQLiteToolStore(t *testing.T) {
 
 	t.Run("without embedding client", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil, nil)
-		require.NoError(t, err)
-		require.NotNil(t, store)
-		concrete, ok := store.(sqliteToolStore)
-		require.True(t, ok)
-		require.NotNil(t, concrete.db)
-		require.Nil(t, concrete.embeddingClient)
-		require.NoError(t, store.Close())
+		store := newTestStore(t, nil, nil)
+		require.NotNil(t, store.db)
+		require.Nil(t, store.embeddingClient)
 	})
 
 	t.Run("with embedding client", func(t *testing.T) {
 		t.Parallel()
 		client := newFakeEmbeddingClient(384)
-		store, err := NewSQLiteToolStore(client, nil)
-		require.NoError(t, err)
-		require.NotNil(t, store)
-		concrete, ok := store.(sqliteToolStore)
-		require.True(t, ok)
-		require.NotNil(t, concrete.embeddingClient)
-		require.NoError(t, store.Close())
+		store := newTestStore(t, client, nil)
+		require.NotNil(t, store.embeddingClient)
 	})
 }
 
@@ -162,7 +152,6 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 		allowedTools []string
 		wantNames    []string
 		wantNonEmpty bool // just assert results are non-empty (when exact names vary)
-		checkScores  bool // assert all scores are in (0, 2)
 	}{
 		{
 			name: "search by name",
@@ -243,7 +232,7 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 			wantNonEmpty: true,
 		},
 		{
-			name: "BM25 scores are normalized to (0, 2)",
+			name: "BM25 returns results for matching query",
 			tools: makeTools(
 				mcp.NewTool("generic_tool", mcp.WithDescription("A tool that does many things including search")),
 				mcp.NewTool("search_tool", mcp.WithDescription("Search for files, search documents, search everything")),
@@ -251,7 +240,6 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 			query:        "search",
 			allowedTools: []string{"generic_tool", "search_tool"},
 			wantNonEmpty: true,
-			checkScores:  true,
 		},
 	}
 
@@ -276,12 +264,6 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 				require.ElementsMatch(t, tc.wantNames, gotNames)
 			}
 
-			if tc.checkScores {
-				for _, r := range results {
-					require.Greater(t, r.Score, 0.0, "score should be positive for tool %s", r.Name)
-					require.Less(t, r.Score, 2.0, "score should be < 2 for tool %s", r.Name)
-				}
-			}
 		})
 	}
 }
@@ -338,23 +320,20 @@ func TestSQLiteToolStore_Close(t *testing.T) {
 
 	t.Run("close without embedding client", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil, nil)
-		require.NoError(t, err)
+		store := newTestStore(t, nil, nil)
 		require.NoError(t, store.Close())
 	})
 
 	t.Run("close with embedding client", func(t *testing.T) {
 		t.Parallel()
 		client := newFakeEmbeddingClient(384)
-		store, err := NewSQLiteToolStore(client, nil)
-		require.NoError(t, err)
+		store := newTestStore(t, client, nil)
 		require.NoError(t, store.Close())
 	})
 
 	t.Run("double close is safe", func(t *testing.T) {
 		t.Parallel()
-		store, err := NewSQLiteToolStore(nil, nil)
-		require.NoError(t, err)
+		store := newTestStore(t, nil, nil)
 		require.NoError(t, store.Close())
 		// sql.DB.Close() returns nil on repeated calls
 		require.NoError(t, store.Close())
@@ -420,12 +399,6 @@ func TestSQLiteToolStore_SemanticSearch(t *testing.T) {
 	results, err := store.searchSemantic(ctx, "read a file from disk", toolNames(tools), DefaultMaxToolsToReturn)
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
-
-	// Results should be sorted by score ascending (lower = better)
-	for i := 1; i < len(results); i++ {
-		require.LessOrEqual(t, results[i-1].Score, results[i].Score,
-			"results should be sorted by score ascending")
-	}
 }
 
 func TestSQLiteToolStore_HybridSearch(t *testing.T) {
@@ -557,31 +530,6 @@ func TestHybridSearchLimits(t *testing.T) {
 	}
 }
 
-func TestNormalizeBM25(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		rank    float64
-		wantMin float64
-		wantMax float64
-	}{
-		{name: "zero rank", rank: 0, wantMin: 1.9, wantMax: 2.1},
-		{name: "rank -1", rank: -1, wantMin: 0.9, wantMax: 1.1},
-		{name: "rank -9", rank: -9, wantMin: 0.19, wantMax: 0.21},
-		{name: "rank -0.5", rank: -0.5, wantMin: 1.3, wantMax: 1.4},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			score := normalizeBM25(tt.rank)
-			require.GreaterOrEqual(t, score, tt.wantMin, "normalizeBM25(%f) = %f", tt.rank, score)
-			require.LessOrEqual(t, score, tt.wantMax, "normalizeBM25(%f) = %f", tt.rank, score)
-		})
-	}
-}
-
 func TestMergeResults(t *testing.T) {
 	t.Parallel()
 
@@ -590,85 +538,55 @@ func TestMergeResults(t *testing.T) {
 		fts        []types.ToolMatch
 		semantic   []types.ToolMatch
 		maxResults int
-		wantNames  []string // expected names in order (sorted by score ascending)
-		wantScores []float64
+		wantNames  []string // expected names in order (semantic first, then FTS5)
 	}{
 		{
-			name: "deduplicates keeping lower score",
+			name: "deduplicates keeping semantic entry",
 			fts: []types.ToolMatch{
-				{Name: "tool_a", Description: "A", Score: 1.0},
+				{Name: "tool_a", Description: "A"},
 			},
 			semantic: []types.ToolMatch{
-				{Name: "tool_a", Description: "A", Score: 0.5},
+				{Name: "tool_a", Description: "A"},
 			},
 			maxResults: 10,
 			wantNames:  []string{"tool_a"},
-			wantScores: []float64{0.5},
 		},
 		{
-			name: "deduplicates keeping fts score when lower",
+			name: "semantic results come first",
 			fts: []types.ToolMatch{
-				{Name: "tool_a", Description: "A", Score: 0.3},
+				{Name: "tool_a", Description: "A"},
 			},
 			semantic: []types.ToolMatch{
-				{Name: "tool_a", Description: "A", Score: 0.8},
-			},
-			maxResults: 10,
-			wantNames:  []string{"tool_a"},
-			wantScores: []float64{0.3},
-		},
-		{
-			name: "combines unique results sorted by score",
-			fts: []types.ToolMatch{
-				{Name: "tool_a", Description: "A", Score: 0.5},
-			},
-			semantic: []types.ToolMatch{
-				{Name: "tool_b", Description: "B", Score: 0.3},
+				{Name: "tool_b", Description: "B"},
 			},
 			maxResults: 10,
 			wantNames:  []string{"tool_b", "tool_a"},
-			wantScores: []float64{0.3, 0.5},
 		},
 		{
-			name: "sorts by score ascending",
+			name: "preserves order within each group",
 			fts: []types.ToolMatch{
-				{Name: "tool_c", Description: "C", Score: 0.9},
-				{Name: "tool_a", Description: "A", Score: 0.1},
+				{Name: "tool_c", Description: "C"},
+				{Name: "tool_a", Description: "A"},
 			},
 			semantic: []types.ToolMatch{
-				{Name: "tool_b", Description: "B", Score: 0.5},
+				{Name: "tool_b", Description: "B"},
 			},
 			maxResults: 10,
-			wantNames:  []string{"tool_a", "tool_b", "tool_c"},
-			wantScores: []float64{0.1, 0.5, 0.9},
+			wantNames:  []string{"tool_b", "tool_c", "tool_a"},
 		},
 		{
 			name: "truncates to maxResults",
 			fts: []types.ToolMatch{
-				{Name: "tool_a", Description: "A", Score: 0.1},
-				{Name: "tool_b", Description: "B", Score: 0.2},
-				{Name: "tool_c", Description: "C", Score: 0.3},
+				{Name: "tool_a", Description: "A"},
+				{Name: "tool_b", Description: "B"},
+				{Name: "tool_c", Description: "C"},
 			},
 			semantic: []types.ToolMatch{
-				{Name: "tool_d", Description: "D", Score: 0.4},
-				{Name: "tool_e", Description: "E", Score: 0.5},
+				{Name: "tool_d", Description: "D"},
+				{Name: "tool_e", Description: "E"},
 			},
 			maxResults: 3,
-			wantNames:  []string{"tool_a", "tool_b", "tool_c"},
-			wantScores: []float64{0.1, 0.2, 0.3},
-		},
-		{
-			name: "truncation removes worst scores",
-			fts: []types.ToolMatch{
-				{Name: "tool_z", Description: "Z", Score: 1.5},
-				{Name: "tool_a", Description: "A", Score: 0.1},
-			},
-			semantic: []types.ToolMatch{
-				{Name: "tool_m", Description: "M", Score: 0.7},
-			},
-			maxResults: 2,
-			wantNames:  []string{"tool_a", "tool_m"},
-			wantScores: []float64{0.1, 0.7},
+			wantNames:  []string{"tool_d", "tool_e", "tool_a"},
 		},
 		{
 			name:       "both empty",
@@ -676,22 +594,20 @@ func TestMergeResults(t *testing.T) {
 			semantic:   nil,
 			maxResults: 10,
 			wantNames:  nil,
-			wantScores: nil,
 		},
 		{
-			name: "dedup with sort and truncate combined",
+			name: "dedup with truncate combined",
 			fts: []types.ToolMatch{
-				{Name: "dup", Description: "D", Score: 0.8},
-				{Name: "best", Description: "B", Score: 0.1},
-				{Name: "worst", Description: "W", Score: 1.9},
+				{Name: "dup", Description: "D"},
+				{Name: "best", Description: "B"},
+				{Name: "worst", Description: "W"},
 			},
 			semantic: []types.ToolMatch{
-				{Name: "dup", Description: "D", Score: 0.3},
-				{Name: "mid", Description: "M", Score: 0.5},
+				{Name: "dup", Description: "D"},
+				{Name: "mid", Description: "M"},
 			},
 			maxResults: 3,
-			wantNames:  []string{"best", "dup", "mid"},
-			wantScores: []float64{0.1, 0.3, 0.5},
+			wantNames:  []string{"dup", "mid", "best"},
 		},
 	}
 
@@ -701,13 +617,10 @@ func TestMergeResults(t *testing.T) {
 			merged := mergeResults(tc.fts, tc.semantic, tc.maxResults)
 
 			var gotNames []string
-			var gotScores []float64
 			for _, m := range merged {
 				gotNames = append(gotNames, m.Name)
-				gotScores = append(gotScores, m.Score)
 			}
 			require.Equal(t, tc.wantNames, gotNames)
-			require.Equal(t, tc.wantScores, gotScores)
 		})
 	}
 }
@@ -790,11 +703,9 @@ func TestSQLiteToolStore_SemanticDistanceThreshold(t *testing.T) {
 	// With a threshold of 0.001, most results should be filtered out in semantic search
 	results, err := store.searchSemantic(ctx, "some random query", toolNames(tools), DefaultMaxToolsToReturn)
 	require.NoError(t, err)
-	// All results should have distance <= 0.001
-	for _, r := range results {
-		require.LessOrEqual(t, r.Score, 0.001,
-			"semantic result %s should have distance <= threshold", r.Name)
-	}
+	// With such a tight threshold, very few (if any) results should pass
+	require.Less(t, len(results), len(tools),
+		"tight threshold should filter out some results")
 }
 
 // newFakeEmbeddingClient is a test helper that creates a deterministic embedding client.

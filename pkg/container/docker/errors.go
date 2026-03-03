@@ -32,6 +32,9 @@ var (
 	// Deprecated: Use runtime.ErrContainerExited.
 	ErrContainerExited = runtime.ErrContainerExited
 
+	// Deprecated: Use runtime.ErrContainerRestarted.
+	ErrContainerRestarted = runtime.ErrContainerRestarted
+
 	// Deprecated: Use runtime.ErrContainerRemoved.
 	ErrContainerRemoved = runtime.ErrContainerRemoved
 

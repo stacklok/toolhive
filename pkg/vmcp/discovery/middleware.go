@@ -12,6 +12,13 @@
 // that periodically rediscovers capabilities, detects changes via hash comparison, and
 // pushes updates to active sessions via MCP tools/list_changed notifications. Middleware
 // flow remains unchanged - still just retrieves from session cache on subsequent requests.
+//
+// TODO(sessionManagementV2): This entire middleware package can be deleted after the
+// sessionManagementV2 migration is complete. For MultiSession (the new path), the
+// middleware does nothing except validate that the session exists, which is already
+// handled by the SDK via SessionIdManager.Validate(). Tool routing is handled by
+// session-scoped handlers registered with AddSessionTools. This middleware only exists
+// for VMCPSession backward compatibility (routing table reconstruction from session data).
 package discovery
 
 import (
@@ -35,6 +42,24 @@ const (
 	discoveryTimeout = 15 * time.Second
 )
 
+// middlewareConfig holds optional configuration for Middleware.
+type middlewareConfig struct {
+	sessionScopedRouting bool
+}
+
+// MiddlewareOption configures Middleware behaviour.
+type MiddlewareOption func(*middlewareConfig)
+
+// WithSessionScopedRouting disables backend capability discovery for any request
+// that arrives without an Mcp-Session-Id header (i.e. initialize requests).
+// Use this when tools are registered per-session via AddSessionTools rather
+// than through the discovery pipeline.
+func WithSessionScopedRouting() MiddlewareOption {
+	return func(c *middlewareConfig) {
+		c.sessionScopedRouting = true
+	}
+}
+
 // Middleware performs capability discovery on session initialization and retrieves
 // cached capabilities for subsequent requests. Must be placed after auth middleware.
 //
@@ -57,7 +82,12 @@ func Middleware(
 	registry vmcp.BackendRegistry,
 	sessionManager *transportsession.Manager,
 	healthStatusProvider health.StatusProvider,
+	opts ...MiddlewareOption,
 ) func(http.Handler) http.Handler {
+	cfg := middlewareConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -65,6 +95,12 @@ func Middleware(
 
 			var err error
 			if sessionID == "" {
+				if cfg.sessionScopedRouting {
+					// Session-scoped routing registers capabilities via the OnRegisterSession
+					// hook rather than through discovery. Skip discovery on initialize.
+					next.ServeHTTP(w, r)
+					return
+				}
 				// Initialize request: discover and cache capabilities in session.
 				ctx, err = handleInitializeRequest(ctx, r, manager, registry, healthStatusProvider)
 			} else {
@@ -224,16 +260,41 @@ func handleSubsequentRequest(
 		"method", r.Method,
 		"path", r.URL.Path)
 
-	// Retrieve and validate session
-	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
-	if err != nil {
-		//nolint:gosec // G706: session ID and request fields are not injection vectors
-		slog.Error("failed to get VMCPSession",
-			"error", err,
+	// First, validate the session exists at all.
+	rawSess, exists := sessionManager.Get(sessionID)
+	if !exists {
+		//nolint:gosec // G706: session ID is not an injection vector
+		slog.Error("session not found",
 			"session_id", sessionID,
 			"method", r.Method,
 			"path", r.URL.Path)
-		return ctx, err
+		return ctx, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	// If the session is a MultiSession, tools are already registered with the SDK via
+	// AddSessionTools and routed by session-scoped handlers. No routing-table
+	// reconstruction is needed — pass through without modifying the context.
+	//
+	// TODO(sessionManagementV2): Remove this type coercion check once the sessionManagementV2
+	// migration is complete and all sessions are MultiSession instances. At that point, this
+	// early return becomes the only code path and the VMCPSession fallback below can be deleted.
+	if _, isMulti := rawSess.(vmcpsession.MultiSession); isMulti {
+		//nolint:gosec // G706: session ID is not an injection vector
+		slog.Debug("session uses session-scoped tool routing; skipping routing-table reconstruction",
+			"session_id", sessionID)
+		return ctx, nil
+	}
+
+	// Retrieve and validate the VMCPSession for routing-table access.
+	vmcpSess, ok := rawSess.(*vmcpsession.VMCPSession)
+	if !ok {
+		//nolint:gosec // G706: session ID and request fields are not injection vectors
+		slog.Error("invalid session type",
+			"session_id", sessionID,
+			"type", fmt.Sprintf("%T", rawSess),
+			"method", r.Method,
+			"path", r.URL.Path)
+		return ctx, fmt.Errorf("invalid session type: %T (expected *VMCPSession)", rawSess)
 	}
 
 	// Get routing table from session

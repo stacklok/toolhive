@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -123,8 +124,14 @@ func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 
 // List returns all installed skills matching the given options.
 func (s *service) List(ctx context.Context, opts skills.ListOptions) ([]skills.InstalledSkill, error) {
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
 	filter := storage.ListFilter{
-		Scope: opts.Scope,
+		Scope:       scope,
+		ClientApp:   opts.ClientApp,
+		ProjectRoot: projectRoot,
 	}
 	return s.store.List(ctx, filter)
 }
@@ -135,14 +142,14 @@ func (s *service) List(ctx context.Context, opts skills.ListOptions) ([]skills.I
 // to disk and a full installation record is created. Without LayerData, a
 // pending record is created.
 func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
-	scope := defaultScope(opts.Scope)
-
-	// Canonicalize the project root so that equivalent paths
-	// (e.g. trailing slash, ".." segments) produce the same lock key
-	// and DB record.
-	if opts.ProjectRoot != "" {
-		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
 	}
+	scope = defaultScope(scope)
+	// Canonicalize the project root so that equivalent paths produce
+	// the same lock key and DB record.
+	opts.ProjectRoot = projectRoot
 
 	ref, isOCI, err := parseOCIReference(opts.Name)
 	if err != nil {
@@ -177,11 +184,12 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	scope := defaultScope(opts.Scope)
-
-	if opts.ProjectRoot != "" {
-		opts.ProjectRoot = filepath.Clean(opts.ProjectRoot)
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return err
 	}
+	scope = defaultScope(scope)
+	opts.ProjectRoot = projectRoot
 
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
@@ -221,7 +229,13 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	skill, err := s.store.Get(ctx, opts.Name, defaultScope(opts.Scope), "")
+	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
+	scope = defaultScope(scope)
+
+	skill, err := s.store.Get(ctx, opts.Name, scope, projectRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -251,12 +265,6 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	if err := validateLocalPath(opts.Path); err != nil {
 		return nil, err
 	}
-	if opts.Tag != "" {
-		if err := validateOCITag(opts.Tag); err != nil {
-			return nil, err
-		}
-	}
-
 	result, err := s.packager.Package(ctx, opts.Path, ociskills.DefaultPackageOptions())
 	if err != nil {
 		return nil, fmt.Errorf("packaging skill: %w", err)
@@ -275,6 +283,12 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 		}
 		return ""
 	}()
+
+	if tag != "" {
+		if err := validateOCITag(tag); err != nil {
+			return nil, err
+		}
+	}
 
 	if tag != "" {
 		if tagErr := s.ociStore.Tag(ctx, result.IndexDigest, tag); tagErr != nil {
@@ -309,6 +323,7 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 
 	d, err := s.ociStore.Resolve(ctx, opts.Reference)
 	if err != nil {
+		slog.Debug("failed to resolve OCI reference", "reference", opts.Reference, "error", err)
 		return httperr.WithCode(
 			fmt.Errorf("reference %q not found in local store", opts.Reference),
 			http.StatusNotFound,
@@ -522,6 +537,7 @@ func (s *service) installPending(
 			Version: opts.Version,
 		},
 		Scope:       scope,
+		ProjectRoot: opts.ProjectRoot,
 		Status:      skills.InstallStatusPending,
 		InstalledAt: time.Now().UTC(),
 	}
@@ -712,6 +728,14 @@ func validateOCITag(tag string) error {
 		)
 	}
 	return nil
+}
+
+func normalizeProjectRoot(scope skills.Scope, projectRoot string) (skills.Scope, string, error) {
+	normalizedScope, normalizedRoot, err := skills.NormalizeScopeAndProjectRoot(scope, projectRoot)
+	if err != nil {
+		return normalizedScope, normalizedRoot, httperr.WithCode(err, http.StatusBadRequest)
+	}
+	return normalizedScope, normalizedRoot, nil
 }
 
 // defaultScope returns ScopeUser when s is empty, otherwise returns s unchanged.

@@ -381,6 +381,7 @@ _Appears in:_
 | `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />The only valid value is "debug" to enable debug logging.<br />When omitted or empty, the server uses info level logging. |  | Enum: [debug] <br />Optional: \{\} <br /> |
 | `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures timeout settings. |  | Optional: \{\} <br /> |
 | `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling behavior. |  | Optional: \{\} <br /> |
+| `sessionManagementV2` _boolean_ | SessionManagementV2 enables session-scoped backend client lifecycle.<br />When true, vMCP creates real backend connections per session via MultiSessionFactory<br />and routes tool calls directly through the session rather than the global router.<br />Defaults to false; existing behaviour is completely unchanged when disabled. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OptimizerConfig
@@ -1939,7 +1940,7 @@ _Underlying type:_ _string_
 MCPServerPhase is the phase of the MCPServer
 
 _Validation:_
-- Enum: [Pending Running Failed Terminating]
+- Enum: [Pending Running Failed Terminating Stopped]
 
 _Appears in:_
 - [api.v1alpha1.MCPServerStatus](#apiv1alpha1mcpserverstatus)
@@ -1950,6 +1951,7 @@ _Appears in:_
 | `Running` | MCPServerPhaseRunning means the MCPServer is running<br /> |
 | `Failed` | MCPServerPhaseFailed means the MCPServer failed to start<br /> |
 | `Terminating` | MCPServerPhaseTerminating means the MCPServer is being deleted<br /> |
+| `Stopped` | MCPServerPhaseStopped means the MCPServer is scaled to zero<br /> |
 
 
 #### api.v1alpha1.MCPServerSpec
@@ -2010,8 +2012,9 @@ _Appears in:_
 | `toolConfigHash` _string_ | ToolConfigHash stores the hash of the referenced ToolConfig for change detection |  | Optional: \{\} <br /> |
 | `externalAuthConfigHash` _string_ | ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPServerPhase](#apiv1alpha1mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1alpha1.MCPServerPhase](#apiv1alpha1mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating Stopped] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
+| `readyReplicas` _integer_ | ReadyReplicas is the number of ready proxy replicas |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPToolConfig

@@ -1760,3 +1760,163 @@ func TestPrefixHandlers_WellKnownNamespaceCoexistence(t *testing.T) {
 		})
 	}
 }
+
+// TestTransparentProxy_IsRunningDoesNotBlockDuringStop verifies that IsRunning()
+// returns immediately even while Stop() is blocked draining long-lived connections.
+// This is the core regression test for the mutex contention fix.
+func TestTransparentProxy_IsRunningDoesNotBlockDuringStop(t *testing.T) {
+	t.Parallel()
+
+	// Create a backend that holds SSE connections open until we signal
+	releaseConn := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Hold the connection open until released
+		<-releaseConn
+	}))
+	defer backend.Close()
+
+	proxy := newTransparentProxyWithOptions(
+		"127.0.0.1", 0, backend.URL,
+		nil, nil, nil,
+		false, // no health check
+		false, "sse", nil, nil, "", false, nil,
+		// Use a long shutdown timeout so Stop() blocks on the SSE connection
+		withShutdownTimeout(10*time.Second),
+	)
+
+	ctx := t.Context()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	// Establish an SSE connection through the proxy
+	client := &http.Client{Timeout: 0} // no client timeout
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", actualPort))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Call Stop() in a goroutine — it will block on server.Shutdown()
+	// waiting for the SSE connection to close
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- proxy.Stop(ctx)
+	}()
+
+	// Give Stop() a moment to acquire the lock and begin shutdown
+	time.Sleep(100 * time.Millisecond)
+
+	// IsRunning() must return false within 2 seconds — not blocked by mutex
+	isRunningDone := make(chan bool, 1)
+	go func() {
+		running, _ := proxy.IsRunning()
+		isRunningDone <- running
+	}()
+
+	select {
+	case running := <-isRunningDone:
+		assert.False(t, running, "IsRunning() should return false after Stop() signals shutdown")
+	case <-time.After(2 * time.Second):
+		t.Fatal("IsRunning() blocked for >2s — mutex contention not fixed")
+	}
+
+	// Release the backend connection so Stop() can complete
+	close(releaseConn)
+
+	select {
+	case err := <-stopDone:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() did not complete after releasing connection")
+	}
+}
+
+// TestTransparentProxy_StopForcesCloseAfterTimeout verifies that Stop()
+// force-closes connections after the shutdown timeout expires, preventing
+// indefinite blocking on long-lived connections.
+func TestTransparentProxy_StopForcesCloseAfterTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Channel to unblock the backend handler when the test is done,
+	// so httptest.Server.Close() doesn't hang.
+	testDone := make(chan struct{})
+
+	// Create a backend that holds SSE connections open until testDone
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Hold the connection open — simulates a long-lived SSE stream.
+		// Released by testDone so httptest.Server.Close() can complete.
+		<-testDone
+	}))
+	// Release handler BEFORE closing backend (Close waits for handlers to finish)
+	defer func() {
+		close(testDone)
+		backend.Close()
+	}()
+
+	proxy := newTransparentProxyWithOptions(
+		"127.0.0.1", 0, backend.URL,
+		nil, nil, nil,
+		false, // no health check
+		false, "sse", nil, nil, "", false, nil,
+		// Use a very short timeout to test the force-close path
+		withShutdownTimeout(500*time.Millisecond),
+	)
+
+	ctx := t.Context()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	// Establish an SSE connection through the proxy
+	client := &http.Client{Timeout: 0}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", actualPort))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Stop() should complete within shutdownTimeout + margin, not block forever
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- proxy.Stop(ctx)
+	}()
+
+	select {
+	case err := <-stopDone:
+		assert.NoError(t, err, "Stop() should not return an error after force-close")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop() blocked for >3s — shutdown timeout safety net not working")
+	}
+}
+
+// TestTransparentProxy_ServerHasIdleTimeout verifies that the HTTP server
+// is configured with an IdleTimeout to prevent idle keep-alive connections
+// from blocking server.Shutdown() indefinitely.
+func TestTransparentProxy_ServerHasIdleTimeout(t *testing.T) {
+	t.Parallel()
+
+	proxy := newTransparentProxyWithOptions(
+		"127.0.0.1", 0, "http://localhost:9999",
+		nil, nil, nil,
+		false, false, "sse", nil, nil, "", false, nil,
+	)
+
+	ctx := t.Context()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	// Access the server directly (we're in the same package)
+	require.NotNil(t, proxy.server)
+	assert.Equal(t, 120*time.Second, proxy.server.IdleTimeout,
+		"HTTP server should have IdleTimeout set to 120s")
+}

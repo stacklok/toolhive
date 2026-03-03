@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -49,6 +50,8 @@ func newTEIClient(baseURL string, timeout time.Duration) (*teiClient, error) {
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
+
+	slog.Debug("TEI embedding client created", "base_url", baseURL, "timeout", timeout)
 
 	return &teiClient{
 		baseURL: baseURL,
@@ -121,6 +124,8 @@ func (c *teiClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32
 	if len(embeddings) != len(texts) {
 		return nil, fmt.Errorf("TEI returned %d embeddings for %d inputs", len(embeddings), len(texts))
 	}
+
+	slog.Debug("TEI embedding batch completed", "inputs", len(texts), "dimensions", len(embeddings[0]))
 
 	return embeddings, nil
 }

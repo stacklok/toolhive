@@ -38,6 +38,11 @@ func TestHTTPTransport_ShouldRestart(t *testing.T) {
 			expectedResult: false,
 		},
 		{
+			name:           "container restarted by Docker - should not restart",
+			exitError:      rt.NewContainerError(rt.ErrContainerRestarted, "test", "Container restarted"),
+			expectedResult: false,
+		},
+		{
 			name:           "no error - should not restart",
 			exitError:      nil,
 			expectedResult: false,

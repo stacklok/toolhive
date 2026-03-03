@@ -4,10 +4,9 @@
 package session
 
 import (
-	"context"
-
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // MultiSession is the vMCP domain session interface. It extends the
@@ -23,24 +22,25 @@ import (
 // Because MCP clients cannot be serialised, horizontal scaling requires sticky
 // sessions (session affinity at the load balancer). Without sticky sessions, a
 // request routed to a different vMCP instance must recreate backend clients
-// (one-time cost per re-route). This is a known trade-off documented in
-// RFC THV-0038: https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0038-session-scoped-client-lifecycle.md
+// (one-time cost per re-route). This is an accepted trade-off.
 //
-// # Dual-layer storage model
+// # Storage
 //
-// A MultiSession separates two layers with different lifecycles:
+// A MultiSession uses a two-layer storage model:
 //
-//   - Metadata layer (serialisable): session ID, timestamps, identity reference,
-//     backend ID list. Stored via the transportsession.Storage interface and
-//     can persist across restarts.
+//   - Runtime layer (in-process only): backend HTTP connections, routing
+//     table, and capability lists. These cannot be serialized and are lost
+//     when the process exits. Sessions are therefore node-local.
 //
-//   - Runtime layer (non-serialisable): MCP client objects, routing table,
-//     capabilities, backend session ID map, closed flag. Lives only in-process.
-//
-// All session metadata goes through the same Storage interface — no parallel
-// storage path is introduced.
+//   - Metadata layer (serializable): identity subject and connected backend
+//     IDs are written to the embedded transportsession.Session so that
+//     pluggable transportsession.Storage backends (e.g. Redis) can persist
+//     them. This enables auditing and future session reconstruction, but
+//     does not make the session itself portable — the runtime layer must
+//     be rebuilt from scratch on a different node.
 type MultiSession interface {
 	transportsession.Session
+	sessiontypes.Caller
 
 	// Tools returns the resolved tools available in this session.
 	// The list is built once at session creation and is read-only thereafter.
@@ -57,39 +57,4 @@ type MultiSession interface {
 	// backend MCP server and is used to correlate vMCP sessions with backend
 	// sessions for debugging and auditing.
 	BackendSessions() map[string]string
-
-	// CallTool invokes toolName on the appropriate backend for this session.
-	// The routing table is consulted to identify the backend; the
-	// session-scoped client for that backend is then used, avoiding
-	// per-request connection overhead.
-	//
-	// arguments contains the tool input parameters.
-	// meta contains protocol-level metadata (_meta) forwarded from the client.
-	CallTool(
-		ctx context.Context,
-		toolName string,
-		arguments map[string]any,
-		meta map[string]any,
-	) (*vmcp.ToolCallResult, error)
-
-	// ReadResource retrieves the resource identified by uri from the
-	// appropriate backend for this session.
-	ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
-
-	// GetPrompt retrieves the named prompt from the appropriate backend for
-	// this session.
-	//
-	// arguments contains the prompt input parameters.
-	GetPrompt(
-		ctx context.Context,
-		name string,
-		arguments map[string]any,
-	) (*vmcp.PromptGetResult, error)
-
-	// Close releases all resources held by this session, including all
-	// backend client connections. It waits for any in-flight operations to
-	// complete before tearing down clients.
-	//
-	// Close is idempotent: calling it multiple times returns nil.
-	Close() error
 }

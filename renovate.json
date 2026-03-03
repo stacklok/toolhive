@@ -6,7 +6,15 @@
     ":semanticCommitsDisabled"
   ],
   "labels": ["dependencies"],
+  "schedule": ["every weekend"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
   "packageRules": [
+    {
+      "description": "Update toolhive-catalog dependency daily",
+      "matchPackageNames": ["github.com/stacklok/toolhive-catalog"],
+      "schedule": ["at any time"]
+    },
     {
       "groupName": "toolhive images",
       "matchDatasources": ["docker"],
@@ -35,6 +43,143 @@
       "matchDatasources": ["docker"],
       "matchManagers": ["custom.regex"],
       "matchPackageNames": ["!kindest/node"]
+    },
+    {
+      "description": "Group core workflow actions",
+      "groupName": "core workflow actions",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": [
+        "actions/checkout",
+        "actions/upload-artifact",
+        "actions/download-artifact",
+        "actions/github-script",
+        "actions/cache"
+      ]
+    },
+    {
+      "description": "Group setup and language actions",
+      "groupName": "setup and language actions",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": [
+        "actions/setup-go",
+        "arduino/setup-task",
+        "azure/setup-helm",
+        "ko-build/setup-ko"
+      ]
+    },
+    {
+      "description": "Group container build and publish actions",
+      "groupName": "container build actions",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": [
+        "docker/build-push-action",
+        "docker/login-action",
+        "docker/setup-buildx-action",
+        "docker/metadata-action"
+      ]
+    },
+    {
+      "description": "Group security scanning and signing actions",
+      "groupName": "security scanning and signing actions",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": [
+        "sigstore/cosign-installer",
+        "aquasecurity/trivy-action",
+        "anchore/sbom-action/download-syft",
+        "golang/govulncheck-action",
+        "github/codeql-action/upload-sarif",
+        "slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml",
+        "slsa-framework/slsa-verifier/actions/installer"
+      ]
+    },
+    {
+      "description": "Group release and publishing actions",
+      "groupName": "release and publishing actions",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": [
+        "goreleaser/goreleaser-action",
+        "codecov/codecov-action",
+        "coverallsapp/github-action",
+        "helm/chart-testing-action",
+        "helm/kind-action"
+      ]
+    },
+    {
+      "description": "Group Kubernetes and controller-runtime dependencies",
+      "groupName": "kubernetes dependencies",
+      "matchDatasources": ["go"],
+      "matchPackagePatterns": [
+        "^k8s\\.io/",
+        "^sigs\\.k8s\\.io/"
+      ]
+    },
+    {
+      "description": "Group OpenTelemetry and observability dependencies",
+      "groupName": "opentelemetry and observability",
+      "matchDatasources": ["go"],
+      "matchPackagePatterns": [
+        "^go\\.opentelemetry\\.io/",
+        "^github\\.com/prometheus/"
+      ]
+    },
+    {
+      "description": "Group authentication and security libraries",
+      "groupName": "auth and security libraries",
+      "matchDatasources": ["go"],
+      "matchPackageNames": [
+        "github.com/coreos/go-oidc/v3",
+        "github.com/go-jose/go-jose/v4",
+        "github.com/golang-jwt/jwt/v5",
+        "github.com/cedar-policy/cedar-go",
+        "golang.org/x/oauth2"
+      ]
+    },
+    {
+      "description": "Group signing and attestation libraries",
+      "groupName": "signing and attestation libraries",
+      "matchDatasources": ["go"],
+      "matchPackagePatterns": [
+        "^github\\.com/sigstore/",
+        "^github\\.com/in-toto/"
+      ]
+    },
+    {
+      "description": "Group Docker and container libraries",
+      "groupName": "container and docker libraries",
+      "matchDatasources": ["go"],
+      "matchPackagePatterns": [
+        "^github\\.com/docker/",
+        "^github\\.com/google/go-containerregistry",
+        "^github\\.com/containerd/",
+        "^github\\.com/opencontainers/"
+      ]
+    },
+    {
+      "description": "Group CLI and UI libraries",
+      "groupName": "cli and ui libraries",
+      "matchDatasources": ["go"],
+      "matchPackagePatterns": [
+        "^github\\.com/charmbracelet/",
+        "^github\\.com/spf13/"
+      ]
+    },
+    {
+      "description": "Group testing libraries",
+      "groupName": "testing libraries",
+      "matchDatasources": ["go"],
+      "matchPackagePatterns": [
+        "^github\\.com/onsi/",
+        "^github\\.com/stretchr/testify"
+      ]
+    },
+    {
+      "description": "Group MCP and protocol libraries",
+      "groupName": "mcp and protocol libraries",
+      "matchDatasources": ["go"],
+      "matchPackageNames": [
+        "github.com/mark3labs/mcp-go",
+        "github.com/modelcontextprotocol/registry"
+      ]
     }
   ],
   "customManagers": [

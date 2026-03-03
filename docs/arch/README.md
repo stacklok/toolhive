@@ -76,6 +76,13 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Two-boundary authentication model
     - Composite tool workflows
 
+12. **[Auth Server Storage Architecture](11-auth-server-storage.md)**
+    - Storage interface design (fosite + ToolHive extensions)
+    - Memory and Redis Sentinel backends
+    - Multi-tenancy via key prefixes
+    - Atomic operations with Lua scripts
+    - Configuration and security model
+
 ### Existing Documentation
 
 For middleware architecture, see: **[docs/middleware.md](../middleware.md)**
@@ -118,6 +125,7 @@ graph TB
         Workloads[08: Workloads Lifecycle<br/>Deploy, stop, restart, delete]
         Operator[09: Kubernetes Operator<br/>CRDs & reconciliation]
         vMCP[10: Virtual MCP<br/>Aggregation & Gateway]
+        AuthStorage[11: Auth Server Storage<br/>Memory & Redis backends]
     end
 
     %% Navigation paths
@@ -144,6 +152,7 @@ graph TB
 
     Workloads --> Operator
     vMCP --> Operator
+    AuthStorage --> Operator
 
     %% Styling
     style Overview fill:#e1f5fe,stroke:#01579b,stroke-width:3px
@@ -158,6 +167,7 @@ graph TB
     style Workloads fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style Operator fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style vMCP fill:#e0f2f1,stroke:#004d40,stroke-width:2px
+    style AuthStorage fill:#e0f2f1,stroke:#004d40,stroke-width:2px
 ```
 
 **Color Legend:**
@@ -383,5 +393,5 @@ Links to related docs
 ---
 
 **Version**: 0.1.0 (Initial architecture documentation)
-**Last Updated**: 2025-10-13
+**Last Updated**: 2026-02-13
 **Maintainers**: ToolHive Core Team

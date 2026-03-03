@@ -104,6 +104,7 @@ func buildTestSession(
 		resources:       resources,
 		prompts:         prompts,
 		backendSessions: map[string]string{backendID: "backend-session-abc"},
+		queue:           newAdmissionQueue(),
 	}
 }
 
@@ -451,6 +452,7 @@ func TestDefaultSession_ErrNoBackendClient(t *testing.T) {
 		resources:       []vmcp.Resource{{URI: "file://readme", BackendID: "b1"}},
 		prompts:         []vmcp.Prompt{{Name: "greet", BackendID: "b1"}},
 		backendSessions: map[string]string{},
+		queue:           newAdmissionQueue(),
 	}
 	defer func() { _ = sess.Close() }()
 
@@ -484,6 +486,7 @@ func TestDefaultSession_Close_AllBackendsAttemptedOnError(t *testing.T) {
 			Prompts:   map[string]*vmcp.BackendTarget{},
 		},
 		backendSessions: map[string]string{},
+		queue:           newAdmissionQueue(),
 	}
 
 	err := sess.Close()
@@ -1073,4 +1076,51 @@ func TestWithBackendInitTimeout_IgnoresNonPositive(t *testing.T) {
 
 	WithBackendInitTimeout(-time.Second)(f)
 	assert.Equal(t, defaultBackendInitTimeout, f.backendInitTimeout)
+}
+
+func TestValidateSessionID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		id      string
+		wantErr bool
+	}{
+		{name: "valid UUID", id: "550e8400-e29b-41d4-a716-446655440000", wantErr: false},
+		{name: "valid short ID", id: "abc123", wantErr: false},
+		{name: "all visible ASCII boundaries", id: "!~", wantErr: false},
+		{name: "empty string", id: "", wantErr: true},
+		{name: "contains space (0x20)", id: "a b", wantErr: true},
+		{name: "contains DEL (0x7F)", id: "a\x7fb", wantErr: true},
+		{name: "contains control char (0x01)", id: "a\x01b", wantErr: true},
+		{name: "contains newline", id: "a\nb", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSessionID(tt.id)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestMakeSessionWithID_InvalidIDReturnsError(t *testing.T) {
+	t.Parallel()
+
+	f := newSessionFactoryWithConnector(func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
+		return nil, nil, nil
+	})
+
+	_, err := f.MakeSessionWithID(context.Background(), "", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be empty")
+
+	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid character")
 }

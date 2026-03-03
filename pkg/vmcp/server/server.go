@@ -587,6 +587,17 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.shutdownFuncs = append(s.shutdownFuncs, cleanup)
 		s.config.OptimizerFactory = factory
+
+		if s.config.TelemetryProvider != nil {
+			s.config.OptimizerFactory, err = monitorOptimizer(
+				s.config.TelemetryProvider.MeterProvider(),
+				s.config.TelemetryProvider.TracerProvider(),
+				s.config.OptimizerFactory,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to monitor optimizer: %w", err)
+			}
+		}
 	}
 
 	// Build the HTTP handler (middleware chain, routes, mux)

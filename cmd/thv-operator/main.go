@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
 	"sigs.k8s.io/controller-runtime/pkg/webhook"                      // Import for webhook
 
@@ -68,8 +69,9 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.Parse()
 
-	// Note: controller-runtime logger is initialized using the default logger
-	// The operator does not use debug mode from viper, so we use the default level
+	// Initialize the controller-runtime logger. Without this call, controller-runtime
+	// uses a no-op logger by default and ALL operator log output is silently discarded.
+	ctrl.SetLogger(zap.New())
 
 	options := ctrl.Options{
 		Scheme:                 scheme,

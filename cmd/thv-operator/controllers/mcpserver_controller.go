@@ -306,18 +306,33 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// check if the RBAC resources are in place for the MCP server
 	if err := r.ensureRBACResources(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure RBAC resources: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RBAC error")
+		}
 		return ctrl.Result{}, err
 	}
 
 	// Ensure authorization ConfigMap for inline configuration
 	if err := r.ensureAuthzConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure authorization ConfigMap")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure authorization ConfigMap: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after authz ConfigMap error")
+		}
 		return ctrl.Result{}, err
 	}
 
 	// Ensure RunConfig ConfigMap exists and is up to date
 	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig error")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -332,6 +347,11 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		ctxLogger.Error(err, "Failed to get RunConfig checksum")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig checksum error")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -343,12 +363,23 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		dep := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		if dep == nil {
 			ctxLogger.Error(nil, "Failed to create Deployment object")
-			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
+			deploymentErr := fmt.Errorf("failed to create Deployment object")
+			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+			mcpServer.Status.Message = deploymentErr.Error()
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment build failure")
+			}
+			return ctrl.Result{}, deploymentErr
 		}
 		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 		err = r.Create(ctx, dep)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+			mcpServer.Status.Message = fmt.Sprintf("Failed to create Deployment: %s", err.Error())
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment creation failure")
+			}
 			return ctrl.Result{}, err
 		}
 		// Deployment created successfully - return and requeue
@@ -1361,11 +1392,16 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	}
 
 	if len(podList.Items) == 0 {
-		// No Deployment pods found yet
-		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
-		m.Status.Message = "MCP server is being created"
-		m.Status.ReadyReplicas = 0
-		return r.Status().Update(ctx, m)
+		// No Deployment pods found yet. If a previous reconciliation already set Phase=Failed
+		// (e.g. due to a RunConfig or RBAC error), preserve that status so the failure
+		// reason remains visible. Only reset to Pending when the phase is not Failed.
+		if m.Status.Phase != mcpv1alpha1.MCPServerPhaseFailed {
+			m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
+			m.Status.Message = "MCP server is being created"
+			m.Status.ReadyReplicas = 0
+			return r.Status().Update(ctx, m)
+		}
+		return nil
 	}
 
 	// Check pod and container statuses

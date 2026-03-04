@@ -20,6 +20,18 @@ const envSkipDesktopCheck = "TOOLHIVE_SKIP_DESKTOP_CHECK"
 // current CLI and the desktop-managed CLI.
 var ErrDesktopConflict = errors.New("CLI conflict detected")
 
+// IsDesktopManagedCLI reports whether the current CLI binary is the one
+// managed by the ToolHive Desktop application. It returns false on any error
+// (fail open: show updates when uncertain).
+func IsDesktopManagedCLI() bool {
+	result, err := checkDesktopAlignment()
+	if err != nil {
+		return false
+	}
+	// No conflict + DesktopCLIPath populated = paths matched, we ARE the desktop binary
+	return !result.HasConflict && result.DesktopCLIPath != ""
+}
+
 // ValidateDesktopAlignment checks if the current CLI binary conflicts with
 // a desktop-managed CLI installation.
 //

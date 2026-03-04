@@ -297,6 +297,94 @@ func TestCheckDesktopAlignment(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // These tests modify HOME env var and cannot run in parallel
+func TestIsDesktopManagedCLI(t *testing.T) {
+	t.Run("no marker file returns false", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+		setHomeDir(t, dir)
+
+		assert.False(t, IsDesktopManagedCLI())
+	})
+
+	t.Run("target binary does not exist returns false", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+
+		marker := cliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "symlink",
+			CLIVersion:     "1.0.0",
+			SymlinkTarget:  "/nonexistent/path/to/thv",
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(thDir, ".cli-source"), data, 0600))
+
+		setHomeDir(t, dir)
+
+		assert.False(t, IsDesktopManagedCLI())
+	})
+
+	t.Run("paths match returns true", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+
+		currentExe, err := os.Executable()
+		require.NoError(t, err)
+		resolvedExe, err := filepath.EvalSymlinks(currentExe)
+		require.NoError(t, err)
+		resolvedExe = filepath.Clean(resolvedExe)
+
+		marker := cliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "symlink",
+			CLIVersion:     "1.0.0",
+			SymlinkTarget:  resolvedExe,
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(thDir, ".cli-source"), data, 0600))
+
+		setHomeDir(t, dir)
+
+		assert.True(t, IsDesktopManagedCLI())
+	})
+
+	t.Run("paths differ returns false", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+
+		fakeBinaryPath := filepath.Join(dir, "fake-thv")
+		require.NoError(t, os.WriteFile(fakeBinaryPath, []byte("fake"), 0755))
+
+		marker := cliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "symlink",
+			CLIVersion:     "1.0.0",
+			SymlinkTarget:  fakeBinaryPath,
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(thDir, ".cli-source"), data, 0600))
+
+		setHomeDir(t, dir)
+
+		assert.False(t, IsDesktopManagedCLI())
+	})
+}
+
 func TestValidateDesktopAlignment(t *testing.T) {
 	t.Run("skip validation when env var is set", func(t *testing.T) {
 		// Set the skip env var

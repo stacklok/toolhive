@@ -905,6 +905,34 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			vmcp:        baseVmcp.DeepCopy(),
 			needsUpdate: true,
 		},
+		{
+			name: "session affinity spec changed to None",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.SessionAffinity = corev1.ServiceAffinityClientIP
+				return s
+			}(),
+			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+				v := baseVmcp.DeepCopy()
+				v.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+				return v
+			}(),
+			needsUpdate: true,
+		},
+		{
+			name: "session affinity matches spec None",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.SessionAffinity = corev1.ServiceAffinityNone
+				return s
+			}(),
+			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+				v := baseVmcp.DeepCopy()
+				v.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+				return v
+			}(),
+			needsUpdate: false,
+		},
 	}
 
 	for _, tt := range tests {

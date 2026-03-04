@@ -20,6 +20,7 @@ var (
 	skillListClient      string
 	skillListFormat      string
 	skillListProjectRoot string
+	skillListGroup       string
 )
 
 var skillListCmd = &cobra.Command{
@@ -30,6 +31,7 @@ var skillListCmd = &cobra.Command{
 	PreRunE: chainPreRunE(
 		validateSkillScope(&skillListScope),
 		ValidateFormat(&skillListFormat),
+		validateGroupFlag(),
 	),
 	RunE: skillListCmdFunc,
 }
@@ -40,6 +42,7 @@ func init() {
 	skillListCmd.Flags().StringVar(&skillListScope, "scope", "", "Filter by scope (user, project)")
 	skillListCmd.Flags().StringVar(&skillListClient, "client", "", "Filter by client application")
 	AddFormatFlag(skillListCmd, &skillListFormat)
+	AddGroupFlag(skillListCmd, &skillListGroup, false)
 	skillListCmd.Flags().StringVar(&skillListProjectRoot, "project-root", "", "Project root path for project-scoped skills")
 }
 
@@ -50,6 +53,7 @@ func skillListCmdFunc(cmd *cobra.Command, _ []string) error {
 		Scope:       skills.Scope(skillListScope),
 		ClientApp:   skillListClient,
 		ProjectRoot: skillListProjectRoot,
+		Group:       skillListGroup,
 	})
 	if err != nil {
 		return formatSkillError("list skills", err)

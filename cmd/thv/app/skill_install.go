@@ -14,6 +14,7 @@ var (
 	skillInstallClient      string
 	skillInstallForce       bool
 	skillInstallProjectRoot string
+	skillInstallGroup       string
 )
 
 var skillInstallCmd = &cobra.Command{
@@ -25,6 +26,7 @@ The skill will be fetched from a remote registry and installed locally.`,
 	PreRunE: chainPreRunE(
 		validateSkillScope(&skillInstallScope),
 		validateProjectRootForScope(&skillInstallScope, &skillInstallProjectRoot),
+		validateGroupFlag(),
 	),
 	RunE: skillInstallCmdFunc,
 }
@@ -36,6 +38,7 @@ func init() {
 	skillInstallCmd.Flags().StringVar(&skillInstallScope, "scope", string(skills.ScopeUser), "Installation scope (user, project)")
 	skillInstallCmd.Flags().BoolVar(&skillInstallForce, "force", false, "Overwrite existing skill directory")
 	skillInstallCmd.Flags().StringVar(&skillInstallProjectRoot, "project-root", "", "Project root path for project-scoped installs")
+	skillInstallCmd.Flags().StringVar(&skillInstallGroup, "group", "", "Group to add the skill to after installation")
 }
 
 func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
@@ -47,6 +50,7 @@ func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 		Client:      skillInstallClient,
 		Force:       skillInstallForce,
 		ProjectRoot: skillInstallProjectRoot,
+		Group:       skillInstallGroup,
 	})
 	if err != nil {
 		return formatSkillError("install skill", err)

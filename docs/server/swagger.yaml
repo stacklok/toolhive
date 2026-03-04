@@ -598,6 +598,11 @@ components:
             type: string
           type: array
           uniqueItems: false
+        skills:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     ignore.Config:
       description: IgnoreConfig contains configuration for ignore processing

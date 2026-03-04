@@ -89,38 +89,6 @@ func newDefaultClientWithEnv(envReader env.Reader, opts ...Option) *Client {
 	return NewClient(base, opts...)
 }
 
-// --- request/response types (mirror pkg/api/v1/skills_types.go) ---
-
-type installRequest struct {
-	Name        string       `json:"name"`
-	Version     string       `json:"version,omitempty"`
-	Scope       skills.Scope `json:"scope,omitempty"`
-	ProjectRoot string       `json:"project_root,omitempty"`
-	Client      string       `json:"client,omitempty"`
-	Force       bool         `json:"force,omitempty"`
-}
-
-type validateRequest struct {
-	Path string `json:"path"`
-}
-
-type buildRequest struct {
-	Path string `json:"path"`
-	Tag  string `json:"tag,omitempty"`
-}
-
-type pushRequest struct {
-	Reference string `json:"reference"`
-}
-
-type listResponse struct {
-	Skills []skills.InstalledSkill `json:"skills"`
-}
-
-type installResponse struct {
-	Skill skills.InstalledSkill `json:"skill"`
-}
-
 // --- SkillService implementation ---
 
 // List returns all installed skills matching the given options.

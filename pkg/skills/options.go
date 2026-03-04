@@ -11,6 +11,8 @@ type ListOptions struct {
 	ClientApp string `json:"client,omitempty"`
 	// ProjectRoot filters results by project root path.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// Group filters results to only skills that belong to the specified group.
+	Group string `json:"group,omitempty"`
 }
 
 // InstallOptions configures the behavior of the Install operation.
@@ -27,6 +29,8 @@ type InstallOptions struct {
 	Force bool `json:"force,omitempty"`
 	// ProjectRoot is the project root path for project-scoped installs.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// Group is the group name to add the skill to after installation.
+	Group string `json:"group,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).

@@ -18,6 +18,7 @@ const DefaultGroup = "default"
 type Group struct {
 	Name              string   `json:"name"`
 	RegisteredClients []string `json:"registered_clients"`
+	Skills            []string `json:"skills,omitempty"`
 }
 
 // WriteJSON serializes the Group to JSON and writes it to the provided writer
@@ -55,4 +56,8 @@ type Manager interface {
 
 	// UnregisterClients removes multiple clients from multiple groups.
 	UnregisterClients(ctx context.Context, groupNames []string, clientNames []string) error
+
+	// Update persists changes to an existing group.
+	// The group must already exist; returns an error if it does not.
+	Update(ctx context.Context, group *Group) error
 }

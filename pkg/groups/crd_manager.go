@@ -153,6 +153,11 @@ func (*crdManager) UnregisterClients(context.Context, []string, []string) error 
 	return nil
 }
 
+func (*crdManager) Update(context.Context, *Group) error {
+	// In Kubernetes, group state is managed via CRDs; filesystem-level updates are not applicable.
+	return nil
+}
+
 // mcpGroupListToGroups converts an MCPGroupList to a slice of Groups
 func mcpGroupListToGroups(mcpGroupList *mcpv1alpha1.MCPGroupList) []*Group {
 	groups := make([]*Group, 0, len(mcpGroupList.Items))

@@ -136,7 +136,8 @@ sequenceDiagram
 - Extract the token session ID (`tsid`) claim from the ToolHive JWT
 - Look up the stored upstream IdP tokens associated with that session
 - Inject the upstream access token into the request (replacing Authorization header or using a custom header)
-- Gracefully proceed without modification if tokens are unavailable or expired
+- Return 401 Unauthorized with WWW-Authenticate header when tokens are expired or not found
+- Gracefully proceed without modification if identity, session ID, or storage is unavailable
 
 **Configuration**:
 
@@ -147,9 +148,11 @@ sequenceDiagram
 
 **Behavior**:
 - **Automatic activation**: Enabled whenever the embedded auth server is configured, even without explicit `UpstreamSwapConfig`
-- **Expired tokens**: Logs a warning but continues with the expired token (backend will reject if necessary)
-- **Missing tokens**: Proceeds without modification (logs debug message)
+- **Expired tokens**: Returns 401 Unauthorized with `WWW-Authenticate` header indicating re-authentication is required
+- **Tokens not found**: Returns 401 Unauthorized with `WWW-Authenticate` header indicating re-authentication is required
+- **Missing identity/tsid**: Proceeds without modification (logs debug message)
 - **Storage unavailable**: Proceeds without modification (logs warning)
+- **Other storage errors**: Returns 503 Service Unavailable to fail closed (logs warning)
 
 **Context Data Used**:
 - Identity from Authentication middleware (specifically the `tsid` claim)

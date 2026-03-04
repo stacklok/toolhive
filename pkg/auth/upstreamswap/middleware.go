@@ -7,6 +7,7 @@ package upstreamswap
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -113,6 +114,15 @@ func validateConfig(cfg *Config) error {
 	return nil
 }
 
+// writeUpstreamAuthRequired writes a 401 response with a WWW-Authenticate Bearer
+// challenge per RFC 6750 Section 3.1, signalling that the caller must re-authenticate
+// with the upstream IdP.
+func writeUpstreamAuthRequired(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate",
+		`Bearer error="invalid_token", error_description="upstream token is no longer valid; re-authentication required"`)
+	http.Error(w, "upstream authentication required", http.StatusUnauthorized)
+}
+
 // injectionFunc is a function that injects a token into an HTTP request.
 type injectionFunc func(*http.Request, string)
 
@@ -183,15 +193,28 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			if err != nil {
 				slog.Warn("Failed to get upstream tokens",
 					"middleware", "upstreamswap", "error", err)
-				next.ServeHTTP(w, r)
+				// Token is expired, was not found, or failed binding validation
+				// (e.g., subject/client mismatch). All three are client-attributable
+				// errors that require the caller to re-authenticate with the upstream IdP.
+				if errors.Is(err, storage.ErrExpired) ||
+					errors.Is(err, storage.ErrNotFound) ||
+					errors.Is(err, storage.ErrInvalidBinding) {
+					writeUpstreamAuthRequired(w)
+					return
+				}
+				// Other storage errors: fail closed to avoid bypassing the token swap
+				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
 
-			// 5. Check if expired (MVP: just log warning, continue with token)
+			// 5. Check if expired
+			// Defense in depth: some storage implementations may return tokens
+			// without checking expiry (the interface does not require it).
 			if tokens.IsExpired(time.Now()) {
 				slog.Warn("Upstream tokens expired",
 					"middleware", "upstreamswap")
-				// Continue with expired token - backend will reject if needed
+				writeUpstreamAuthRequired(w)
+				return
 			}
 
 			// 6. Inject access token

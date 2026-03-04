@@ -172,33 +172,34 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			// 3. Get storage
 			stor := storageGetter()
 			if stor == nil {
-				slog.Warn("Storage unavailable, proceeding without swap",
+				slog.Error("Storage unavailable, cannot swap upstream token",
 					"middleware", "upstreamswap")
-				next.ServeHTTP(w, r)
+				http.Error(w, "upstream token storage unavailable", http.StatusServiceUnavailable)
 				return
 			}
 
 			// 4. Lookup upstream tokens
 			tokens, err := stor.GetUpstreamTokens(r.Context(), tsid)
 			if err != nil {
-				slog.Warn("Failed to get upstream tokens",
+				slog.Error("Failed to get upstream tokens",
 					"middleware", "upstreamswap", "error", err)
-				next.ServeHTTP(w, r)
+				http.Error(w, "upstream token unavailable", http.StatusServiceUnavailable)
 				return
 			}
 
-			// 5. Check if expired (MVP: just log warning, continue with token)
+			// 5. Check if expired
 			if tokens.IsExpired(time.Now()) {
-				slog.Warn("Upstream tokens expired",
+				slog.Error("Upstream tokens expired, cannot forward request",
 					"middleware", "upstreamswap")
-				// Continue with expired token - backend will reject if needed
+				http.Error(w, "upstream token expired", http.StatusServiceUnavailable)
+				return
 			}
 
 			// 6. Inject access token
 			if tokens.AccessToken == "" {
-				slog.Warn("Access token is empty",
+				slog.Error("Access token is empty, cannot swap upstream token",
 					"middleware", "upstreamswap")
-				next.ServeHTTP(w, r)
+				http.Error(w, "upstream access token empty", http.StatusServiceUnavailable)
 				return
 			}
 

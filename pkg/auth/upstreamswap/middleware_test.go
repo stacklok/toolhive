@@ -190,7 +190,8 @@ func TestMiddleware_StorageUnavailable(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	assert.True(t, nextCalled, "next handler should be called")
+	assert.False(t, nextCalled, "next handler should NOT be called when storage is unavailable")
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "should return 503")
 }
 
 func TestMiddleware_TokensNotFound(t *testing.T) {
@@ -232,7 +233,8 @@ func TestMiddleware_TokensNotFound(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	assert.True(t, nextCalled, "next handler should be called")
+	assert.False(t, nextCalled, "next handler should NOT be called when tokens not found")
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "should return 503")
 }
 
 func TestMiddleware_StorageError(t *testing.T) {
@@ -274,7 +276,8 @@ func TestMiddleware_StorageError(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	assert.True(t, nextCalled, "next handler should be called despite error")
+	assert.False(t, nextCalled, "next handler should NOT be called on storage error")
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "should return 503")
 }
 
 func TestMiddleware_SuccessfulSwap_AccessToken(t *testing.T) {
@@ -382,7 +385,7 @@ func TestMiddleware_CustomHeader(t *testing.T) {
 	assert.Equal(t, "Bearer original-token", capturedAuthHeader)
 }
 
-func TestMiddleware_ExpiredTokens_ContinuesWithWarning(t *testing.T) {
+func TestMiddleware_ExpiredTokens_Returns503(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -406,9 +409,9 @@ func TestMiddleware_ExpiredTokens_ContinuesWithWarning(t *testing.T) {
 	cfg := &Config{}
 	middleware := createMiddlewareFunc(cfg, storageGetter)
 
-	var capturedAuthHeader string
-	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		capturedAuthHeader = r.Header.Get("Authorization")
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
 	})
 
 	handler := middleware(nextHandler)
@@ -427,8 +430,8 @@ func TestMiddleware_ExpiredTokens_ContinuesWithWarning(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	// MVP: Should continue with expired token
-	assert.Equal(t, "Bearer expired-upstream-token", capturedAuthHeader)
+	assert.False(t, nextCalled, "next handler should NOT be called with expired token")
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "should return 503")
 }
 
 func TestMiddleware_EmptySelectedToken(t *testing.T) {
@@ -457,10 +460,8 @@ func TestMiddleware_EmptySelectedToken(t *testing.T) {
 	middleware := createMiddlewareFunc(cfg, storageGetter)
 
 	var nextCalled bool
-	var capturedAuthHeader string
-	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		nextCalled = true
-		capturedAuthHeader = r.Header.Get("Authorization")
 	})
 
 	handler := middleware(nextHandler)
@@ -479,8 +480,8 @@ func TestMiddleware_EmptySelectedToken(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	assert.True(t, nextCalled, "next handler should be called")
-	assert.Empty(t, capturedAuthHeader, "should not inject empty token")
+	assert.False(t, nextCalled, "next handler should NOT be called with empty token")
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "should return 503")
 }
 
 func TestMiddleware_Close(t *testing.T) {

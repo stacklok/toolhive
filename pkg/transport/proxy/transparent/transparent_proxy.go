@@ -94,6 +94,15 @@ type TransparentProxy struct {
 	// Callback when 401 Unauthorized response is received (for bearer token authentication)
 	onUnauthorizedResponse types.UnauthorizedResponseCallback
 
+	// consecutiveUnauthorized tracks consecutive 401 responses from the remote server.
+	// The onUnauthorizedResponse callback fires only after this reaches unauthorizedThreshold.
+	consecutiveUnauthorized atomic.Int32
+
+	// unauthorizedThreshold is the number of consecutive 401 responses required
+	// before firing onUnauthorizedResponse. Prevents transient 401s (e.g., token
+	// race conditions, clock skew) from permanently killing the workload.
+	unauthorizedThreshold int32
+
 	// Response processor for transport-specific logic
 	responseProcessor ResponseProcessor
 
@@ -135,6 +144,12 @@ const (
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	// This is primarily useful for testing with shorter intervals.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
+
+	// defaultUnauthorizedThreshold is the number of consecutive 401 responses
+	// from the remote server required before marking the workload as permanently
+	// unauthenticated. This prevents transient auth failures (token races,
+	// clock skew, brief token propagation delays) from permanently killing workloads.
+	defaultUnauthorizedThreshold int32 = 3
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -158,6 +173,16 @@ func withHealthCheckRetryDelay(delay time.Duration) Option {
 	return func(p *TransparentProxy) {
 		if delay > 0 {
 			p.healthCheckRetryDelay = delay
+		}
+	}
+}
+
+// withUnauthorizedThreshold sets the consecutive 401 threshold.
+// This is primarily useful for testing with lower thresholds.
+func withUnauthorizedThreshold(threshold int32) Option {
+	return func(p *TransparentProxy) {
+		if threshold > 0 {
+			p.unauthorizedThreshold = threshold
 		}
 	}
 }
@@ -272,6 +297,7 @@ func newTransparentProxyWithOptions(
 		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
 		healthCheckPingTimeout: DefaultPingerTimeout,
 		shutdownTimeout:        defaultShutdownTimeout,
+		unauthorizedThreshold:  defaultUnauthorizedThreshold,
 	}
 
 	// Apply options
@@ -361,14 +387,22 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 
-	// Check for 401 Unauthorized response (bearer token authentication failure)
+	// Track consecutive 401 responses for bearer token authentication failure detection.
+	// A single 401 may be transient (token race, clock skew, brief propagation delay),
+	// so we only fire the unauthorized callback after multiple consecutive failures.
 	if resp.StatusCode == http.StatusUnauthorized {
+		count := t.p.consecutiveUnauthorized.Add(1)
 		//nolint:gosec // G706: logging target URI from config
-		slog.Debug("received 401 Unauthorized response, bearer token may be invalid",
-			"target", t.p.targetURI)
-		if t.p.onUnauthorizedResponse != nil {
+		slog.Warn("received 401 Unauthorized response from remote server",
+			"target", t.p.targetURI,
+			"consecutive_count", count,
+			"threshold", t.p.unauthorizedThreshold)
+		if count >= t.p.unauthorizedThreshold && t.p.onUnauthorizedResponse != nil {
 			t.p.onUnauthorizedResponse()
 		}
+	} else {
+		// Reset consecutive counter on any non-401 response
+		t.p.consecutiveUnauthorized.Store(0)
 	}
 
 	if resp.StatusCode == http.StatusOK {

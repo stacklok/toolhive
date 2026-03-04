@@ -399,7 +399,8 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	_ = err
 }
 
-// TestTransparentProxy_UnauthorizedResponseCallback tests that 401 responses trigger the callback
+// TestTransparentProxy_UnauthorizedResponseCallback tests that consecutive 401 responses
+// trigger the callback only after reaching the threshold (default: 3).
 func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
 	t.Parallel()
 
@@ -422,8 +423,10 @@ func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
 	targetURL, err := url.Parse(target.URL)
 	assert.NoError(t, err)
 
-	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	// Create a proxy with threshold of 1 to test that the callback fires after threshold
+	proxy := newTransparentProxyWithOptions("127.0.0.1", 0, target.URL, nil, nil, nil, true, false, "streamable-http", nil, callback, "", false, nil,
+		withUnauthorizedThreshold(1),
+	)
 
 	// Verify callback is set
 	assert.NotNil(t, proxy.onUnauthorizedResponse, "Callback should be set on proxy")
@@ -442,11 +445,11 @@ func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
 	// Verify 401 was returned
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 
-	// Verify callback was called
+	// Verify callback was called (threshold=1, so first 401 triggers it)
 	mu.Lock()
 	actualCalled := callbackCalled
 	mu.Unlock()
-	assert.True(t, actualCalled, "Unauthorized response callback should have been called")
+	assert.True(t, actualCalled, "Unauthorized response callback should have been called after reaching threshold")
 }
 
 func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T) {
@@ -471,15 +474,17 @@ func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T
 	targetURL, err := url.Parse(target.URL)
 	assert.NoError(t, err)
 
-	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	// Create a proxy with threshold of 3
+	proxy := newTransparentProxyWithOptions("127.0.0.1", 0, target.URL, nil, nil, nil, true, false, "streamable-http", nil, callback, "", false, nil,
+		withUnauthorizedThreshold(3),
+	)
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 	reverseProxy.FlushInterval = -1
 	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
 
-	// Make multiple requests through the proxy
+	// Make 5 requests through the proxy
 	for i := 0; i < 5; i++ {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", target.URL, nil)
@@ -487,11 +492,12 @@ func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T
 		assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	}
 
-	// Verify callback was called for each 401 response
+	// Callback fires once when threshold is reached (at request 3),
+	// then on each subsequent 401 (requests 4 and 5) = 3 total
 	mu.Lock()
 	actualCount := callbackCallCount
 	mu.Unlock()
-	assert.Equal(t, 5, actualCount, "Callback should be called for each 401 response")
+	assert.Equal(t, 3, actualCount, "Callback should fire once at threshold and on each subsequent 401")
 }
 
 func TestTransparentProxy_NoUnauthorizedCallbackOnSuccess(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"strings"
 
 	"golang.org/x/sync/syncmap"
 
@@ -174,6 +175,13 @@ func NewEncryptedManager(filePath string, key []byte) (Provider, error) {
 		}
 		decryptedContents, err := aes.Decrypt(encryptedContents, key)
 		if err != nil {
+			if strings.Contains(err.Error(), "message authentication failed") {
+				fmt.Fprintf(os.Stderr, "\nSecrets file decryption failed: this usually means the password "+
+					"is incorrect or the secrets file has been corrupted.\n"+
+					"If your keyring was recently reset, try again with your original password.\n"+
+					"If the secrets file is corrupted, delete it at %s and run 'thv secret setup' to start fresh.\n\n",
+					filePath)
+			}
 			return nil, fmt.Errorf("unable to decrypt secrets file: %w", err)
 		}
 

@@ -72,9 +72,19 @@ type MultiSessionFactory interface {
 	// The id parameter must be non-empty and should be a valid MCP session ID
 	// (visible ASCII characters, 0x21 to 0x7E per the MCP specification).
 	//
+	// The allowAnonymous parameter controls whether the session allows nil caller
+	// identity. If false, all session method calls must provide a valid caller
+	// that matches the session creator's identity.
+	//
 	// All other behaviour (partial initialisation, bounded concurrency, etc.)
 	// is identical to MakeSession.
-	MakeSessionWithID(ctx context.Context, id string, identity *auth.Identity, backends []*vmcp.Backend) (MultiSession, error)
+	MakeSessionWithID(
+		ctx context.Context,
+		id string,
+		identity *auth.Identity,
+		allowAnonymous bool,
+		backends []*vmcp.Backend,
+	) (MultiSession, error)
 }
 
 // backendConnector creates a connected, initialised backend Session for use
@@ -255,13 +265,26 @@ func ComputeTokenHash(identity *auth.Identity) string {
 	return HashToken(identity.Token)
 }
 
+// ShouldAllowAnonymous determines if a session should allow anonymous access
+// based on the creator's identity. Sessions without an identity (nil) are
+// anonymous; sessions with an identity are bound to that identity.
+//
+// This helper consolidates the anonymous session logic used by both
+// MakeSession and external callers like SessionManager.
+func ShouldAllowAnonymous(identity *auth.Identity) bool {
+	return identity == nil
+}
+
 // MakeSession implements MultiSessionFactory.
 func (f *defaultMultiSessionFactory) MakeSession(
 	ctx context.Context,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	return f.makeSession(ctx, uuid.New().String(), identity, backends)
+	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
+	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
+	allowAnonymous := ShouldAllowAnonymous(identity)
+	return f.makeSession(ctx, uuid.New().String(), identity, allowAnonymous, backends)
 }
 
 // MakeSessionWithID implements MultiSessionFactory.
@@ -269,12 +292,13 @@ func (f *defaultMultiSessionFactory) MakeSessionWithID(
 	ctx context.Context,
 	id string,
 	identity *auth.Identity,
+	allowAnonymous bool,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
 	if err := validateSessionID(id); err != nil {
 		return nil, err
 	}
-	return f.makeSession(ctx, id, identity, backends)
+	return f.makeSession(ctx, id, identity, allowAnonymous, backends)
 }
 
 // validateSessionID checks that id is non-empty and contains only visible
@@ -299,6 +323,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 	ctx context.Context,
 	sessID string,
 	identity *auth.Identity,
+	allowAnonymous bool,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
 	// Filter nil entries upfront so that every downstream dereference of a
@@ -365,11 +390,21 @@ func (f *defaultMultiSessionFactory) makeSession(
 		transportSess.SetMetadata(MetadataKeyIdentitySubject, identity.Subject)
 	}
 
-	// Compute and store the token hash for session binding security.
+	// Compute token hash for session-level binding security.
 	// For authenticated sessions this is hex(SHA256(bearerToken)).
-	// For anonymous sessions the empty-string sentinel is stored.
+	// For anonymous sessions the empty-string sentinel is used.
 	// The raw token is never stored.
-	transportSess.SetMetadata(MetadataKeyTokenHash, ComputeTokenHash(identity))
+	//
+	// Token hash is stored in TWO places for different purposes:
+	// 1. Struct field (boundTokenHash): Fast runtime validation in validateCaller()
+	// 2. Session metadata: Persistence/auditing and backward compatibility with
+	//    existing code that reads MetadataKeyTokenHash
+	boundTokenHash := ""
+	if !allowAnonymous && identity != nil {
+		boundTokenHash = HashToken(identity.Token)
+	}
+	// Store in metadata for persistence, auditing, and backward compatibility
+	transportSess.SetMetadata(MetadataKeyTokenHash, boundTokenHash)
 
 	if len(results) > 0 {
 		// IDs are extracted from the already-sorted results slice to avoid a
@@ -390,5 +425,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
 		queue:           newAdmissionQueue(),
+		boundTokenHash:  boundTokenHash,
+		allowAnonymous:  allowAnonymous,
 	}, nil
 }

@@ -15,10 +15,12 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 //go:generate mockgen -destination=mocks/mock_handler_factory.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/server/adapter HandlerFactory
@@ -56,6 +58,14 @@ type WorkflowResult struct {
 
 	// Error contains error information if the workflow failed.
 	Error error
+}
+
+// isAuthorizationError checks if an error is a caller identity validation error.
+// This helper consolidates authorization error detection to avoid duplication
+// across CallTool, ReadResource, and GetPrompt handlers.
+func isAuthorizationError(err error) bool {
+	return errors.Is(err, sessiontypes.ErrUnauthorizedCaller) ||
+		errors.Is(err, sessiontypes.ErrNilCaller)
 }
 
 // DefaultHandlerFactory creates MCP request handlers that route to backend workloads.
@@ -100,9 +110,17 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 		// Extract metadata from request to forward to backend
 		meta := conversion.FromMCPMeta(request.Params.Meta)
 
+		// Extract caller identity from context
+		caller, _ := auth.IdentityFromContext(ctx)
+
 		// Call the backend tool - the backend client handles name translation and metadata forwarding
-		result, err := f.backendClient.CallTool(ctx, target, toolName, args, meta)
+		result, err := f.backendClient.CallTool(ctx, caller, target, toolName, args, meta)
 		if err != nil {
+			// Handle authorization errors specially
+			if isAuthorizationError(err) {
+				slog.Warn("caller authorization failed for tool", "tool", toolName, "error", err)
+				return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", err)), nil
+			}
 			// Only actual network/transport errors reach here now (IsError=true is handled in result)
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
 				slog.Warn("backend unavailable for tool", "tool", toolName, "error", err)
@@ -159,8 +177,16 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 
 		backendURI := target.GetBackendCapabilityName(uri)
 
-		result, err := f.backendClient.ReadResource(ctx, target, backendURI)
+		// Extract caller identity from context
+		caller, _ := auth.IdentityFromContext(ctx)
+
+		result, err := f.backendClient.ReadResource(ctx, caller, target, backendURI)
 		if err != nil {
+			// Handle authorization errors specially
+			if isAuthorizationError(err) {
+				slog.Warn("caller authorization failed for resource", "uri", uri, "error", err)
+				return nil, fmt.Errorf("unauthorized: %w", err)
+			}
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
 				slog.Warn("backend unavailable for resource", "uri", uri, "error", err)
 				return nil, fmt.Errorf("backend unavailable: %w", err)
@@ -224,9 +250,17 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 		// Get the name to use when calling the backend (handles conflict resolution renaming)
 		backendPromptName := target.GetBackendCapabilityName(promptName)
 
+		// Extract caller identity from context
+		caller, _ := auth.IdentityFromContext(ctx)
+
 		// Forward request to backend
-		result, err := f.backendClient.GetPrompt(ctx, target, backendPromptName, args)
+		result, err := f.backendClient.GetPrompt(ctx, caller, target, backendPromptName, args)
 		if err != nil {
+			// Handle authorization errors specially
+			if isAuthorizationError(err) {
+				slog.Warn("caller authorization failed for prompt", "prompt", promptName, "error", err)
+				return nil, fmt.Errorf("unauthorized: %w", err)
+			}
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
 				slog.Warn("backend unavailable for prompt", "prompt", promptName, "error", err)
 				return nil, fmt.Errorf("backend unavailable: %w", err)

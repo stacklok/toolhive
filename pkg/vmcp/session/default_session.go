@@ -8,10 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sync"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/security"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // Compile-time assertions: defaultMultiSession must implement both interfaces.
@@ -66,6 +70,12 @@ type defaultMultiSession struct {
 	backendSessions map[string]string
 
 	queue AdmissionQueue
+
+	// Token binding fields: enforce that subsequent requests come from the same
+	// identity that created the session.
+	boundTokenHash string       // SHA256 hash of creator's token (empty for anonymous)
+	allowAnonymous bool         // Whether to allow nil caller
+	mu             sync.RWMutex // Protects token binding fields
 }
 
 // Tools returns a snapshot copy of the tools available in this session.
@@ -94,6 +104,38 @@ func (s *defaultMultiSession) BackendSessions() map[string]string {
 	result := make(map[string]string, len(s.backendSessions))
 	maps.Copy(result, s.backendSessions)
 	return result
+}
+
+// validateCaller checks if the provided caller identity matches the session owner.
+// Returns nil if validation succeeds, or an error if:
+//   - The session requires a bound identity but caller is nil (ErrNilCaller)
+//   - The caller's token hash doesn't match the session owner (ErrUnauthorizedCaller)
+//
+// For anonymous sessions (allowAnonymous=true, boundTokenHash=""), validation always succeeds.
+func (s *defaultMultiSession) validateCaller(caller *auth.Identity) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Anonymous sessions: no validation needed
+	if s.allowAnonymous && s.boundTokenHash == "" {
+		return nil
+	}
+
+	// Bound sessions require a caller
+	if caller == nil {
+		return sessiontypes.ErrNilCaller
+	}
+
+	// Compute caller's token hash
+	callerHash := HashToken(caller.Token)
+
+	// Constant-time comparison to prevent timing attacks
+	const sha256HexLen = 64
+	if !security.ConstantTimeHashCompare(s.boundTokenHash, callerHash, sha256HexLen) {
+		return sessiontypes.ErrUnauthorizedCaller
+	}
+
+	return nil
 }
 
 // lookupBackend resolves capName against table, admits the request via the
@@ -126,42 +168,67 @@ func (s *defaultMultiSession) lookupBackend(
 }
 
 // CallTool invokes toolName on the appropriate backend.
+// The caller parameter identifies the requesting user/service and is validated
+// against the session owner's identity before proceeding.
 func (s *defaultMultiSession) CallTool(
 	ctx context.Context,
+	caller *auth.Identity,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
+	// Validate caller identity
+	if err := s.validateCaller(caller); err != nil {
+		return nil, err
+	}
+
 	conn, done, err := s.lookupBackend(toolName, s.routingTable.Tools, ErrToolNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
-	return conn.CallTool(ctx, toolName, arguments, meta)
+	return conn.CallTool(ctx, caller, toolName, arguments, meta)
 }
 
 // ReadResource retrieves the resource identified by uri.
-func (s *defaultMultiSession) ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error) {
+// The caller parameter identifies the requesting user/service and is validated
+// against the session owner's identity before proceeding.
+func (s *defaultMultiSession) ReadResource(
+	ctx context.Context, caller *auth.Identity, uri string,
+) (*vmcp.ResourceReadResult, error) {
+	// Validate caller identity
+	if err := s.validateCaller(caller); err != nil {
+		return nil, err
+	}
+
 	conn, done, err := s.lookupBackend(uri, s.routingTable.Resources, ErrResourceNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
-	return conn.ReadResource(ctx, uri)
+	return conn.ReadResource(ctx, caller, uri)
 }
 
 // GetPrompt retrieves the named prompt from the appropriate backend.
+// The caller parameter identifies the requesting user/service and is validated
+// against the session owner's identity before proceeding.
 func (s *defaultMultiSession) GetPrompt(
 	ctx context.Context,
+	caller *auth.Identity,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
+	// Validate caller identity
+	if err := s.validateCaller(caller); err != nil {
+		return nil, err
+	}
+
 	conn, done, err := s.lookupBackend(name, s.routingTable.Prompts, ErrPromptNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
-	return conn.GetPrompt(ctx, name, arguments)
+	return conn.GetPrompt(ctx, caller, name, arguments)
 }
 
 // Close releases all resources. CloseAndDrain blocks until in-flight

@@ -162,7 +162,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
-		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
+		result, err := backendClient.CallTool(context.Background(), nil, target, "test_tool", map[string]any{}, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -192,7 +192,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
-		data, err := backendClient.ReadResource(context.Background(), target, "test://resource")
+		data, err := backendClient.ReadResource(context.Background(), nil, target, "test://resource")
 
 		require.Error(t, err)
 		assert.Nil(t, data)
@@ -222,7 +222,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
-		prompt, err := backendClient.GetPrompt(context.Background(), target, "test_prompt", map[string]any{"arg": "value"})
+		prompt, err := backendClient.GetPrompt(context.Background(), nil, target, "test_prompt", map[string]any{"arg": "value"})
 
 		require.Error(t, err)
 		assert.Empty(t, prompt)

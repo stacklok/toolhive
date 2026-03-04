@@ -15,6 +15,7 @@ package sessionmanager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 const (
@@ -167,7 +169,10 @@ func (sm *Manager) CreateSession(
 	}
 
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
-	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends)
+	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
+	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
+	allowAnonymous := vmcpsession.ShouldAllowAnonymous(identity)
+	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, allowAnonymous, backends)
 	if err != nil {
 		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)
 	}
@@ -368,8 +373,17 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 			}
 
 			meta := conversion.FromMCPMeta(req.Params.Meta)
-			result, callErr := capturedSess.CallTool(ctx, toolName, args, meta)
+
+			// Extract caller identity from context
+			caller, _ := auth.IdentityFromContext(ctx)
+
+			result, callErr := capturedSess.CallTool(ctx, caller, toolName, args, meta)
 			if callErr != nil {
+				// Handle authorization errors specially
+				if errors.Is(callErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(callErr, sessiontypes.ErrNilCaller) {
+					slog.Warn("caller authorization failed for tool", "tool", toolName, "error", callErr)
+					return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", callErr)), nil
+				}
 				return mcp.NewToolResultError(callErr.Error()), nil
 			}
 

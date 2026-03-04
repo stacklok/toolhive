@@ -70,18 +70,18 @@ func (*v2FakeMultiSession) BackendSessions() map[string]string {
 }
 
 func (f *v2FakeMultiSession) CallTool(
-	_ context.Context, _ string, _ map[string]any, _ map[string]any,
+	_ context.Context, _ *auth.Identity, _ string, _ map[string]any, _ map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	f.callToolCalled.Store(true)
 	return f.callToolResult, f.callToolErr
 }
 
-func (*v2FakeMultiSession) ReadResource(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
+func (*v2FakeMultiSession) ReadResource(_ context.Context, _ *auth.Identity, _ string) (*vmcp.ResourceReadResult, error) {
 	return nil, errors.New("not implemented")
 }
 
 func (*v2FakeMultiSession) GetPrompt(
-	_ context.Context, _ string, _ map[string]any,
+	_ context.Context, _ *auth.Identity, _ string, _ map[string]any,
 ) (*vmcp.PromptGetResult, error) {
 	return nil, errors.New("not implemented")
 }
@@ -116,7 +116,7 @@ func (f *v2FakeMultiSessionFactory) MakeSession(
 }
 
 func (f *v2FakeMultiSessionFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend,
+	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
 	f.makeWithIDCalled.Store(true)
 	if f.err != nil {

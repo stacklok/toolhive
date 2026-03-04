@@ -76,9 +76,9 @@ func (f *tokenBindingFactory) MakeSession(
 }
 
 func (f *tokenBindingFactory) MakeSessionWithID(
-	ctx context.Context, sessID string, id *auth.Identity, backends []*vmcp.Backend,
+	ctx context.Context, sessID string, id *auth.Identity, allowAnonymous bool, backends []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
-	sess, err := f.inner.MakeSessionWithID(ctx, sessID, id, backends)
+	sess, err := f.inner.MakeSessionWithID(ctx, sessID, id, allowAnonymous, backends)
 	if err == nil {
 		f.mu.Lock()
 		f.lastSession = sess

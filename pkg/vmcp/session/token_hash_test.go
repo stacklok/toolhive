@@ -200,7 +200,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		identity := &auth.Identity{Subject: "bob", Token: rawToken}
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
-		sess, err := factory.MakeSessionWithID(t.Context(), "explicit-session-id", identity, nil)
+		sess, err := factory.MakeSessionWithID(t.Context(), "explicit-session-id", identity, false, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 

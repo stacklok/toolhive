@@ -58,19 +58,19 @@ func (*fakeMultiSession) BackendSessions() map[string]string { return nil }
 
 // CallTool records the meta argument and returns the preconfigured result / error.
 func (f *fakeMultiSession) CallTool(
-	_ context.Context, _ string, _ map[string]any, meta map[string]any,
+	_ context.Context, _ *auth.Identity, _ string, _ map[string]any, meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	f.lastCallMeta = meta
 	return f.callToolResult, f.callToolErr
 }
 
 // ReadResource is a no-op stub.
-func (*fakeMultiSession) ReadResource(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
+func (*fakeMultiSession) ReadResource(_ context.Context, _ *auth.Identity, _ string) (*vmcp.ResourceReadResult, error) {
 	return nil, errors.New("not implemented")
 }
 
 // GetPrompt is a no-op stub.
-func (*fakeMultiSession) GetPrompt(_ context.Context, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+func (*fakeMultiSession) GetPrompt(_ context.Context, _ *auth.Identity, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -113,7 +113,7 @@ func (f *fakeMultiSessionFactory) MakeSession(
 
 // MakeSessionWithID implements MultiSessionFactory.
 func (f *fakeMultiSessionFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend,
+	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
 	// Simulate slow backend initialization if delay is set (for race condition tests).
 	if f.delay > 0 {

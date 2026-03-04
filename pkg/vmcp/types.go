@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -477,19 +478,33 @@ type HealthChecker interface {
 //go:generate mockgen -destination=mocks/mock_backend_client.go -package=mocks -source=types.go BackendClient HealthChecker
 type BackendClient interface {
 	// CallTool invokes a tool on the backend MCP server.
+	// The caller parameter identifies the requesting user/service.
 	// The meta parameter contains _meta fields from the client request that should be forwarded to the backend.
 	// Returns the complete tool result including _meta field from the backend response.
 	CallTool(
-		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
+		ctx context.Context,
+		caller *auth.Identity,
+		target *BackendTarget,
+		toolName string,
+		arguments map[string]any,
+		meta map[string]any,
 	) (*ToolCallResult, error)
 
 	// ReadResource retrieves a resource from the backend MCP server.
+	// The caller parameter identifies the requesting user/service.
 	// Returns the complete resource result including _meta field.
-	ReadResource(ctx context.Context, target *BackendTarget, uri string) (*ResourceReadResult, error)
+	ReadResource(ctx context.Context, caller *auth.Identity, target *BackendTarget, uri string) (*ResourceReadResult, error)
 
 	// GetPrompt retrieves a prompt from the backend MCP server.
+	// The caller parameter identifies the requesting user/service.
 	// Returns the complete prompt result including _meta field.
-	GetPrompt(ctx context.Context, target *BackendTarget, name string, arguments map[string]any) (*PromptGetResult, error)
+	GetPrompt(
+		ctx context.Context,
+		caller *auth.Identity,
+		target *BackendTarget,
+		name string,
+		arguments map[string]any,
+	) (*PromptGetResult, error)
 
 	// ListCapabilities queries a backend for its capabilities.
 	// Returns tools, resources, and prompts exposed by the backend.

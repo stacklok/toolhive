@@ -15,6 +15,7 @@ import (
 	"github.com/cenkalti/backoff/v5"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
@@ -452,8 +453,10 @@ func (e *workflowEngine) callToolWithRetry(
 	attemptCount := 0
 	operation := func() (map[string]any, error) {
 		attemptCount++
+		// Extract caller identity from context
+		caller, _ := auth.IdentityFromContext(ctx)
 		// TODO: For composite tools, we may want to propagate metadata from the parent request
-		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil)
+		result, err := e.backendClient.CallTool(ctx, caller, target, step.Tool, args, nil)
 		if err != nil {
 			slog.Warn("tool call failed for step",
 				"step", step.ID, "attempt", attemptCount, "max_attempts", maxRetries+1, "error", err)

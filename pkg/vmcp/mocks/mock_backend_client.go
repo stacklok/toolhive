@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	auth "github.com/stacklok/toolhive/pkg/auth"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -81,33 +82,33 @@ func (m *MockBackendClient) EXPECT() *MockBackendClientMockRecorder {
 }
 
 // CallTool mocks base method.
-func (m *MockBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
+func (m *MockBackendClient) CallTool(ctx context.Context, caller *auth.Identity, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CallTool", ctx, target, toolName, arguments, meta)
+	ret := m.ctrl.Call(m, "CallTool", ctx, caller, target, toolName, arguments, meta)
 	ret0, _ := ret[0].(*vmcp.ToolCallResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // CallTool indicates an expected call of CallTool.
-func (mr *MockBackendClientMockRecorder) CallTool(ctx, target, toolName, arguments, meta any) *gomock.Call {
+func (mr *MockBackendClientMockRecorder) CallTool(ctx, caller, target, toolName, arguments, meta any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallTool", reflect.TypeOf((*MockBackendClient)(nil).CallTool), ctx, target, toolName, arguments, meta)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallTool", reflect.TypeOf((*MockBackendClient)(nil).CallTool), ctx, caller, target, toolName, arguments, meta)
 }
 
 // GetPrompt mocks base method.
-func (m *MockBackendClient) GetPrompt(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
+func (m *MockBackendClient) GetPrompt(ctx context.Context, caller *auth.Identity, target *vmcp.BackendTarget, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetPrompt", ctx, target, name, arguments)
+	ret := m.ctrl.Call(m, "GetPrompt", ctx, caller, target, name, arguments)
 	ret0, _ := ret[0].(*vmcp.PromptGetResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetPrompt indicates an expected call of GetPrompt.
-func (mr *MockBackendClientMockRecorder) GetPrompt(ctx, target, name, arguments any) *gomock.Call {
+func (mr *MockBackendClientMockRecorder) GetPrompt(ctx, caller, target, name, arguments any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPrompt", reflect.TypeOf((*MockBackendClient)(nil).GetPrompt), ctx, target, name, arguments)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPrompt", reflect.TypeOf((*MockBackendClient)(nil).GetPrompt), ctx, caller, target, name, arguments)
 }
 
 // ListCapabilities mocks base method.
@@ -126,16 +127,16 @@ func (mr *MockBackendClientMockRecorder) ListCapabilities(ctx, target any) *gomo
 }
 
 // ReadResource mocks base method.
-func (m *MockBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) (*vmcp.ResourceReadResult, error) {
+func (m *MockBackendClient) ReadResource(ctx context.Context, caller *auth.Identity, target *vmcp.BackendTarget, uri string) (*vmcp.ResourceReadResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReadResource", ctx, target, uri)
+	ret := m.ctrl.Call(m, "ReadResource", ctx, caller, target, uri)
 	ret0, _ := ret[0].(*vmcp.ResourceReadResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ReadResource indicates an expected call of ReadResource.
-func (mr *MockBackendClientMockRecorder) ReadResource(ctx, target, uri any) *gomock.Call {
+func (mr *MockBackendClientMockRecorder) ReadResource(ctx, caller, target, uri any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadResource", reflect.TypeOf((*MockBackendClient)(nil).ReadResource), ctx, target, uri)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadResource", reflect.TypeOf((*MockBackendClient)(nil).ReadResource), ctx, caller, target, uri)
 }

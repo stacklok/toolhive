@@ -66,7 +66,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{
+					CallTool(gomock.Any(), gomock.Any(), target, "test_tool", map[string]any{
 						"input": "test",
 						"count": 42,
 					}, gomock.Any()).
@@ -174,7 +174,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					CallTool(gomock.Any(), gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
 					Return(&vmcp.ToolCallResult{
 						Content: []vmcp.Content{
 							{Type: "text", Text: "tool execution failed"},
@@ -208,7 +208,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					CallTool(gomock.Any(), gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
 					Return(nil, vmcp.ErrBackendUnavailable)
 			},
 			request: mcp.CallToolRequest{
@@ -237,7 +237,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					CallTool(gomock.Any(), gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
 					Return(nil, errors.New("unknown backend error"))
 			},
 			request: mcp.CallToolRequest{
@@ -271,7 +271,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 				// Handler factory now passes the client-facing name (backend1_fetch)
 				// Backend client handles translation to original name (fetch)
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}, gomock.Any()).
+					CallTool(gomock.Any(), gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}, gomock.Any()).
 					Return(&vmcp.ToolCallResult{StructuredContent: expectedResult}, nil)
 			},
 			request: mcp.CallToolRequest{
@@ -346,7 +346,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					ReadResource(gomock.Any(), target, "file:///path/to/resource.json").
+					ReadResource(gomock.Any(), gomock.Any(), target, "file:///path/to/resource.json").
 					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
 			},
 			setupCtx: func() context.Context {
@@ -479,7 +479,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					ReadResource(gomock.Any(), target, "file:///test").
+					ReadResource(gomock.Any(), gomock.Any(), target, "file:///test").
 					Return(nil, vmcp.ErrBackendUnavailable)
 			},
 			setupCtx: func() context.Context {
@@ -521,7 +521,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					ReadResource(gomock.Any(), target, "file:///test").
+					ReadResource(gomock.Any(), gomock.Any(), target, "file:///test").
 					Return(nil, errors.New("read failed"))
 			},
 			setupCtx: func() context.Context {
@@ -565,7 +565,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					ReadResource(gomock.Any(), target, "file:///test.json").
+					ReadResource(gomock.Any(), gomock.Any(), target, "file:///test.json").
 					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
 			},
 			setupCtx: func() context.Context {
@@ -613,7 +613,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					ReadResource(gomock.Any(), target, "file:///test.bin").
+					ReadResource(gomock.Any(), gomock.Any(), target, "file:///test.bin").
 					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: ""}, nil)
 			},
 			setupCtx: func() context.Context {
@@ -662,7 +662,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					ReadResource(gomock.Any(), target, "file:///resource").
+					ReadResource(gomock.Any(), gomock.Any(), target, "file:///resource").
 					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
 			},
 			setupCtx: func() context.Context {
@@ -755,7 +755,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
+					GetPrompt(gomock.Any(), gomock.Any(), target, "test_prompt", expectedArgs).
 					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
@@ -838,7 +838,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
+					GetPrompt(gomock.Any(), gomock.Any(), target, "test_prompt", expectedArgs).
 					Return(nil, vmcp.ErrBackendUnavailable)
 			},
 			request: mcp.GetPromptRequest{
@@ -870,7 +870,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
+					GetPrompt(gomock.Any(), gomock.Any(), target, "test_prompt", expectedArgs).
 					Return(nil, errors.New("prompt rendering failed"))
 			},
 			request: mcp.GetPromptRequest{
@@ -904,7 +904,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					GetPrompt(gomock.Any(), target, "summarize", expectedArgs).
+					GetPrompt(gomock.Any(), gomock.Any(), target, "summarize", expectedArgs).
 					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
@@ -937,7 +937,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					GetPrompt(gomock.Any(), target, "simple_prompt", emptyArgs).
+					GetPrompt(gomock.Any(), gomock.Any(), target, "simple_prompt", emptyArgs).
 					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{

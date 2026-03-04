@@ -1092,8 +1092,14 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		return true
 	}
 
-	// Check if session affinity has drifted
-	if service.Spec.SessionAffinity != corev1.ServiceAffinityClientIP {
+	// Check if session affinity has drifted from spec
+	expectedAffinity := func() corev1.ServiceAffinity {
+		if vmcp.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(vmcp.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+	if service.Spec.SessionAffinity != expectedAffinity {
 		return true
 	}
 

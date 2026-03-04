@@ -36,6 +36,14 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	ServiceType string `json:"serviceType,omitempty"`
 
+	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+	// Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+	// +kubebuilder:validation:Enum=ClientIP;None
+	// +kubebuilder:default=ClientIP
+	// +optional
+	SessionAffinity string `json:"sessionAffinity,omitempty"`
+
 	// ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.
 	// If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server.
 	// +optional

@@ -64,7 +64,7 @@ jobs:
       - name: Setup docker (missing on MacOS)
         if: matrix.os == 'macos-latest'
         run: |
-          brew install docker
+          brew install docker colima
           colima start
 
       # Run tests with all dependencies already cached

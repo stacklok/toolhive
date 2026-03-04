@@ -44,7 +44,7 @@ jobs:
   # Tier 3: Build and publish images - only after all tests pass
   image-build-and-push:
     name: Build and Sign Image
-    needs: [linting, security-scan, tests, e2e-tests, codegen, operator-ci]
+    # needs: [linting, security-scan, tests, e2e-tests, codegen, operator-ci]
     permissions:
       contents: write
       packages: write

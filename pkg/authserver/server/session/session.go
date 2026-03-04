@@ -71,7 +71,8 @@ type Session struct {
 	UpstreamSessionID string
 }
 
-// New creates a new Session with the given subject, IDP session ID, and client ID.
+// New creates a new Session with the given subject, IDP session ID, client ID, and
+// optional user profile claims (name, email).
 //
 // Parameters:
 //   - subject: The OAuth subject (user identifier). May be empty for placeholder sessions.
@@ -80,6 +81,10 @@ type Session struct {
 //     upstream IDP tokens.
 //   - clientID: The OAuth client ID. When provided, it will be included in the JWT
 //     claims as "client_id" for binding verification per RFC 9068.
+//   - name: The user's display name from the upstream IDP (optional). Included as
+//     the "name" claim in the JWT per OIDC Core Section 5.1.
+//   - email: The user's email from the upstream IDP (optional). Included as
+//     the "email" claim in the JWT per OIDC Core Section 5.1.
 //
 // ClientID handling:
 //   - For token issuance (authorize handler): Pass the client ID to ensure RFC 9068
@@ -92,7 +97,7 @@ type Session struct {
 // Note: The remaining RFC 9068 required claims (iss, aud, exp, iat, jti) are
 // populated by Fosite during token generation. This session only initializes
 // custom claims that are not part of Fosite's standard JWT handling.
-func New(subject, idpSessionID, clientID string) *Session {
+func New(subject, idpSessionID, clientID, name, email string) *Session {
 	// Initialize the Extra map for JWT claims
 	claimsExtra := make(map[string]any)
 
@@ -106,6 +111,14 @@ func New(subject, idpSessionID, clientID string) *Session {
 	// in those cases the claim is preserved from the original session.
 	if clientID != "" {
 		claimsExtra[ClientIDClaimKey] = clientID
+	}
+
+	// Add user profile claims per OIDC Core Section 5.1
+	if name != "" {
+		claimsExtra["name"] = name
+	}
+	if email != "" {
+		claimsExtra["email"] = email
 	}
 
 	return &Session{

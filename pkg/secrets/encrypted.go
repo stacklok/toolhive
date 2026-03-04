@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sync/syncmap"
 
+	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/secrets/aes"
 )
 
@@ -51,8 +52,10 @@ func (e *EncryptedManager) SetSecret(_ context.Context, name, value string) erro
 		return errors.New("secret name cannot be empty")
 	}
 
-	e.secrets.Store(name, value)
-	return e.updateFile()
+	return fileutils.WithFileLock(e.filePath, func() error {
+		e.secrets.Store(name, value)
+		return e.updateFile()
+	})
 }
 
 // DeleteSecret removes a secret from the secret store.
@@ -67,8 +70,10 @@ func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 		return fmt.Errorf("cannot delete non-existent secret: %s", name)
 	}
 
-	e.secrets.Delete(name)
-	return e.updateFile()
+	return fileutils.WithFileLock(e.filePath, func() error {
+		e.secrets.Delete(name)
+		return e.updateFile()
+	})
 }
 
 // ListSecrets returns a list of all secret names stored in the manager.
@@ -85,11 +90,13 @@ func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, 
 
 // Cleanup removes all secrets managed by this manager.
 func (e *EncryptedManager) Cleanup() error {
-	// Create a new empty syncmap.Map
-	e.secrets = syncmap.Map{}
+	return fileutils.WithFileLock(e.filePath, func() error {
+		// Create a new empty syncmap.Map
+		e.secrets = syncmap.Map{}
 
-	// Update the file to reflect the empty state
-	return e.updateFile()
+		// Update the file to reflect the empty state
+		return e.updateFile()
+	})
 }
 
 // Capabilities returns the capabilities of the encrypted provider.
@@ -121,8 +128,7 @@ func (e *EncryptedManager) updateFile() error {
 		return fmt.Errorf("failed to encrypt secrets: %w", err)
 	}
 
-	err = os.WriteFile(e.filePath, encryptedContents, 0600)
-	if err != nil {
+	if err := fileutils.AtomicWriteFile(e.filePath, encryptedContents, 0600); err != nil {
 		return fmt.Errorf("failed to write secrets to file: %w", err)
 	}
 	return nil

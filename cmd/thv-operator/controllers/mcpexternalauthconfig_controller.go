@@ -160,6 +160,7 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	for _, server := range referencingServers {
 		serverNames = append(serverNames, server.Name)
 	}
+	slices.Sort(serverNames)
 	externalAuthConfig.Status.ReferencingServers = serverNames
 
 	// Update the MCPExternalAuthConfig status
@@ -297,6 +298,7 @@ func (r *MCPExternalAuthConfigReconciler) updateReferencingServers(
 	for _, server := range referencingServers {
 		serverNames = append(serverNames, server.Name)
 	}
+	slices.Sort(serverNames)
 
 	if !slices.Equal(externalAuthConfig.Status.ReferencingServers, serverNames) {
 		externalAuthConfig.Status.ReferencingServers = serverNames

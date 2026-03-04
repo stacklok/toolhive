@@ -117,6 +117,7 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	for _, server := range referencingServers {
 		serverNames = append(serverNames, server.Name)
 	}
+	slices.Sort(serverNames)
 	toolConfig.Status.ReferencingServers = serverNames
 
 	// Update the MCPToolConfig status
@@ -159,6 +160,7 @@ func (r *ToolConfigReconciler) updateReferencingServers(
 	for _, server := range referencingServers {
 		serverNames = append(serverNames, server.Name)
 	}
+	slices.Sort(serverNames)
 
 	if !slices.Equal(toolConfig.Status.ReferencingServers, serverNames) {
 		toolConfig.Status.ReferencingServers = serverNames

@@ -358,7 +358,8 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 			Annotations: serviceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: ls,
+			Selector:        ls,
+			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
 				Port:       int32(proxy.GetProxyPort()),
 				TargetPort: intstr.FromInt(int(proxy.GetProxyPort())),

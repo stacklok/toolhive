@@ -473,6 +473,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Update the service
 		newService := r.serviceForMCPServer(ctx, mcpServer)
 		service.Spec.Ports = newService.Spec.Ports
+		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
 		err = r.Update(ctx, service)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
@@ -1288,7 +1289,8 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 			Annotations: serviceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: ls, // Keep original labels for selector
+			Selector:        ls, // Keep original labels for selector
+			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
 				Port:       m.GetProxyPort(),
 				TargetPort: intstr.FromInt(int(m.GetProxyPort())),
@@ -1699,6 +1701,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServer) bool {
 	// Check if the service port has changed
 	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.GetProxyPort() {
+		return true
+	}
+
+	// Check if session affinity has drifted
+	if service.Spec.SessionAffinity != corev1.ServiceAffinityClientIP {
 		return true
 	}
 

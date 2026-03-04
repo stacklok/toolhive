@@ -264,6 +264,9 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				// Verify selector
 				assert.Equal(t, labelsForMCPRemoteProxy("basic-proxy"), svc.Spec.Selector)
 
+				// Verify session affinity
+				assert.Equal(t, corev1.ServiceAffinityClientIP, svc.Spec.SessionAffinity)
+
 				// Verify port
 				require.Len(t, svc.Spec.Ports, 1)
 				assert.Equal(t, int32(8080), svc.Spec.Ports[0].Port)
@@ -297,6 +300,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				assert.Equal(t, "svc-value", svc.Labels["svc-label"])
 				assert.Equal(t, "svc-annotation-value", svc.Annotations["svc-annotation"])
 				assert.Equal(t, int32(9090), svc.Spec.Ports[0].Port)
+				assert.Equal(t, corev1.ServiceAffinityClientIP, svc.Spec.SessionAffinity)
 			},
 		},
 	}

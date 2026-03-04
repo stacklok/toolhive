@@ -28,20 +28,18 @@
 //
 // # File Locking
 //
-// All operations use file-based locking via withFileLock() to ensure safe concurrent
+// All operations use file-based locking via fileutils.WithFileLock() to ensure safe concurrent
 // access. Each config file has a corresponding ".lock" file that is acquired before
 // any read-modify-write operation.
 
 package client
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
@@ -49,7 +47,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
-	"github.com/stacklok/toolhive/pkg/lockfile"
 )
 
 // ConfigUpdater defines the interface for types which can edit MCP client config files.
@@ -78,27 +75,6 @@ type MCPServer struct {
 
 // --- Shared helper functions ---
 
-// withFileLock executes the given function while holding a file lock for the specified path.
-// This is used by all config updaters (JSON, YAML, TOML) to ensure safe concurrent access.
-func withFileLock(path string, fn func() error) error {
-	lockPath := path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
-
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	return fn()
-}
-
 // JSONConfigUpdater is a ConfigUpdater that is responsible for updating
 // JSON config files.
 type JSONConfigUpdater struct {
@@ -108,7 +84,7 @@ type JSONConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the MCP client config file
 func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	return withFileLock(jcu.Path, func() error {
+	return fileutils.WithFileLock(jcu.Path, func() error {
 		content, err := os.ReadFile(jcu.Path)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to read file: %w", err)
@@ -154,7 +130,7 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 // Remove removes an MCP server from the MCP client config file
 func (jcu *JSONConfigUpdater) Remove(serverName string) error {
-	return withFileLock(jcu.Path, func() error {
+	return fileutils.WithFileLock(jcu.Path, func() error {
 		content, err := os.ReadFile(jcu.Path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -211,7 +187,7 @@ type YAMLConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the config.yaml file using the converter
 func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	return withFileLock(ycu.Path, func() error {
+	return fileutils.WithFileLock(ycu.Path, func() error {
 		content, err := os.ReadFile(ycu.Path)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to read file: %w", err)
@@ -260,7 +236,7 @@ func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 // Remove removes an entry from the config.yaml file using the converter
 func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
-	return withFileLock(ycu.Path, func() error {
+	return fileutils.WithFileLock(ycu.Path, func() error {
 		// Read existing config
 		content, err := os.ReadFile(ycu.Path)
 		if err != nil {
@@ -383,7 +359,7 @@ type TOMLConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the TOML config file
 func (tcu *TOMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	return withFileLock(tcu.Path, func() error {
+	return fileutils.WithFileLock(tcu.Path, func() error {
 		config, err := readTOMLConfig(tcu.Path)
 		if err != nil {
 			return err
@@ -405,7 +381,7 @@ func (tcu *TOMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 // Remove removes an MCP server from the TOML config file
 func (tcu *TOMLConfigUpdater) Remove(serverName string) error {
-	return withFileLock(tcu.Path, func() error {
+	return fileutils.WithFileLock(tcu.Path, func() error {
 		config, err := readTOMLConfig(tcu.Path)
 		if err != nil {
 			return err
@@ -510,7 +486,7 @@ type TOMLMapConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the TOML config file using map format
 func (tmu *TOMLMapConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	return withFileLock(tmu.Path, func() error {
+	return fileutils.WithFileLock(tmu.Path, func() error {
 		config, err := readTOMLConfig(tmu.Path)
 		if err != nil {
 			return err
@@ -537,7 +513,7 @@ func (tmu *TOMLMapConfigUpdater) Upsert(serverName string, data MCPServer) error
 
 // Remove removes an MCP server from the TOML config file
 func (tmu *TOMLMapConfigUpdater) Remove(serverName string) error {
-	return withFileLock(tmu.Path, func() error {
+	return fileutils.WithFileLock(tmu.Path, func() error {
 		config, err := readTOMLConfig(tmu.Path)
 		if err != nil {
 			return err

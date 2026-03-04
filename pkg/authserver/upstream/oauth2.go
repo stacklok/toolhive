@@ -136,6 +136,31 @@ type OAuth2Config struct {
 	// UserInfo contains configuration for fetching user information (optional).
 	// When nil, the provider does not support UserInfo fetching.
 	UserInfo *UserInfoConfig `json:"userinfo,omitempty" yaml:"userinfo,omitempty"`
+
+	// TokenResponseMapping configures custom field extraction from non-standard token responses.
+	// When set, the provider performs the token exchange HTTP call directly (bypassing
+	// golang.org/x/oauth2) and extracts fields using gjson dot-notation paths.
+	// When nil, standard OAuth 2.0 token response parsing is used.
+	TokenResponseMapping *TokenResponseMapping `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+}
+
+// TokenResponseMapping configures extraction of token fields from non-standard
+// OAuth token endpoint responses using gjson dot-notation paths.
+type TokenResponseMapping struct {
+	// AccessTokenPath is the gjson path to the access token (required).
+	AccessTokenPath string
+
+	// TokenTypePath is the gjson path to the token type. Defaults to "token_type".
+	TokenTypePath string
+
+	// ScopePath is the gjson path to the scope. Defaults to "scope".
+	ScopePath string
+
+	// RefreshTokenPath is the gjson path to the refresh token. Defaults to "refresh_token".
+	RefreshTokenPath string
+
+	// ExpiresInPath is the gjson path to the expires_in value. Defaults to "expires_in".
+	ExpiresInPath string
 }
 
 // Validate checks that OAuth2Config has all required fields.
@@ -155,6 +180,11 @@ func (c *OAuth2Config) Validate() error {
 	if c.UserInfo != nil {
 		if err := c.UserInfo.Validate(); err != nil {
 			return fmt.Errorf("invalid userinfo config: %w", err)
+		}
+	}
+	if c.TokenResponseMapping != nil {
+		if c.TokenResponseMapping.AccessTokenPath == "" {
+			return errors.New("token_response_mapping.access_token_path is required when token_response_mapping is set")
 		}
 	}
 	return c.CommonOAuthConfig.Validate()
@@ -390,7 +420,13 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 	slog.Info("exchanging authorization code for tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 		"has_pkce_verifier", codeVerifier != "",
+		"custom_mapping", p.config.TokenResponseMapping != nil,
 	)
+
+	// If custom token response mapping is configured, bypass oauth2 library
+	if p.config.TokenResponseMapping != nil {
+		return p.customExchangeCodeForTokens(ctx, code, codeVerifier)
+	}
 
 	// Inject our custom HTTP client into the context for oauth2 to use
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
@@ -428,6 +464,11 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 	slog.Info("refreshing tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 	)
+
+	// If custom token response mapping is configured, bypass oauth2 library
+	if p.config.TokenResponseMapping != nil {
+		return p.customRefreshTokens(ctx, refreshToken)
+	}
 
 	// Inject our custom HTTP client into the context for oauth2 to use
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)

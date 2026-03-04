@@ -326,7 +326,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)
 	}
 
-	return &upstream.OAuth2Config{
+	cfg := &upstream.OAuth2Config{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
 			ClientID:     oauth2.ClientID,
 			ClientSecret: clientSecret,
@@ -336,7 +336,19 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
-	}, nil
+	}
+
+	if oauth2.TokenResponseMapping != nil {
+		cfg.TokenResponseMapping = &upstream.TokenResponseMapping{
+			AccessTokenPath:  oauth2.TokenResponseMapping.AccessTokenPath,
+			TokenTypePath:    oauth2.TokenResponseMapping.TokenTypePath,
+			ScopePath:        oauth2.TokenResponseMapping.ScopePath,
+			RefreshTokenPath: oauth2.TokenResponseMapping.RefreshTokenPath,
+			ExpiresInPath:    oauth2.TokenResponseMapping.ExpiresInPath,
+		}
+	}
+
+	return cfg, nil
 }
 
 // resolveSecret reads a secret from file or environment variable.

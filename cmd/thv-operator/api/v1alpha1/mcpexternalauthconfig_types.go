@@ -331,6 +331,45 @@ type OAuth2UpstreamConfig struct {
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
+
+	// TokenResponseMapping configures custom field extraction from non-standard token responses.
+	// Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths
+	// instead of returning them at the top level. When set, ToolHive performs the token
+	// exchange HTTP call directly and extracts fields using the configured dot-notation paths.
+	// If nil, standard OAuth 2.0 token response parsing is used.
+	// +optional
+	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+}
+
+// TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
+// using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
+// the access token under paths like "authed_user.access_token".
+type TokenResponseMapping struct {
+	// AccessTokenPath is the dot-notation path to the access token in the response.
+	// Example: "authed_user.access_token"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	AccessTokenPath string `json:"accessTokenPath"`
+
+	// TokenTypePath is the dot-notation path to the token type in the response.
+	// If not specified, defaults to "token_type".
+	// +optional
+	TokenTypePath string `json:"tokenTypePath,omitempty"`
+
+	// ScopePath is the dot-notation path to the scope string in the response.
+	// If not specified, defaults to "scope".
+	// +optional
+	ScopePath string `json:"scopePath,omitempty"`
+
+	// RefreshTokenPath is the dot-notation path to the refresh token in the response.
+	// If not specified, defaults to "refresh_token".
+	// +optional
+	RefreshTokenPath string `json:"refreshTokenPath,omitempty"`
+
+	// ExpiresInPath is the dot-notation path to the expires_in value (in seconds).
+	// If not specified, defaults to "expires_in".
+	// +optional
+	ExpiresInPath string `json:"expiresInPath,omitempty"`
 }
 
 // UserInfoConfig contains configuration for fetching user information from an upstream provider.

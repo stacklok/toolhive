@@ -4,8 +4,6 @@
 package app
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/skills"
@@ -55,15 +53,4 @@ func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-// validateProjectRootForScope returns a PreRunE that ensures --project-root is
-// provided when --scope is "project".
-func validateProjectRootForScope(scopeVar, projectRootVar *string) func(*cobra.Command, []string) error {
-	return func(_ *cobra.Command, _ []string) error {
-		if skills.Scope(*scopeVar) == skills.ScopeProject && *projectRootVar == "" {
-			return fmt.Errorf("--project-root is required when --scope is %q", skills.ScopeProject)
-		}
-		return nil
-	}
 }

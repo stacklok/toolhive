@@ -20,14 +20,19 @@ var skillUninstallCmd = &cobra.Command{
 	Long:              `Remove a previously installed skill by name.`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeSkillNames,
-	PreRunE:           validateSkillScope(&skillUninstallScope),
-	RunE:              skillUninstallCmdFunc,
+	PreRunE: chainPreRunE(
+		validateSkillScope(&skillUninstallScope),
+		validateProjectRootForScope(&skillUninstallScope, &skillUninstallProjectRoot),
+	),
+	RunE: skillUninstallCmdFunc,
 }
 
 func init() {
 	skillCmd.AddCommand(skillUninstallCmd)
 
-	skillUninstallCmd.Flags().StringVar(&skillUninstallScope, "scope", "", "Scope to uninstall from (user, project)")
+	skillUninstallCmd.Flags().StringVar(
+		&skillUninstallScope, "scope", string(skills.ScopeUser), "Scope to uninstall from (user, project)",
+	)
 	skillUninstallCmd.Flags().StringVar(
 		&skillUninstallProjectRoot, "project-root", "", "Project root path for project-scoped skills",
 	)

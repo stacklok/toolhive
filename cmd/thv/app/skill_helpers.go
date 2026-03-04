@@ -52,3 +52,14 @@ func validateSkillScope(scopeVar *string) func(*cobra.Command, []string) error {
 		return skills.ValidateScope(skills.Scope(*scopeVar))
 	}
 }
+
+// validateProjectRootForScope returns a PreRunE that ensures --project-root is
+// provided when --scope is "project".
+func validateProjectRootForScope(scopeVar, projectRootVar *string) func(*cobra.Command, []string) error {
+	return func(_ *cobra.Command, _ []string) error {
+		if skills.Scope(*scopeVar) == skills.ScopeProject && *projectRootVar == "" {
+			return fmt.Errorf("--project-root is required when --scope is %q", skills.ScopeProject)
+		}
+		return nil
+	}
+}

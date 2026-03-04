@@ -555,6 +555,16 @@ spec:
                   ServiceAccount is the name of an already existing service account to use by the proxy.
                   If not specified, a ServiceAccount will be created automatically and used by the proxy.
                 type: string
+              sessionAffinity:
+                default: ClientIP
+                description: |-
+                  SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+                  MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+                  Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+                enum:
+                - ClientIP
+                - None
+                type: string
               telemetry:
                 description: Telemetry defines observability configuration for the
                   proxy

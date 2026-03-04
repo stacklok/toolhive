@@ -354,7 +354,13 @@ func TestResourceOverrides(t *testing.T) {
 
 			assert.Equal(t, tt.expectedServiceLabels, service.Labels)
 			assert.Equal(t, tt.expectedServiceAnns, service.Annotations)
-			assert.Equal(t, corev1.ServiceAffinityClientIP, service.Spec.SessionAffinity)
+
+			// Verify session affinity defaults to ClientIP when not explicitly set
+			expectedAffinity := corev1.ServiceAffinityClientIP
+			if tt.mcpServer.Spec.SessionAffinity != "" {
+				expectedAffinity = corev1.ServiceAffinity(tt.mcpServer.Spec.SessionAffinity)
+			}
+			assert.Equal(t, expectedAffinity, service.Spec.SessionAffinity)
 
 			// For test cases with environment variables, verify they are set correctly
 			if tt.name == "with proxy environment variables" || tt.name == "with both metadata overrides and proxy environment variables" || tt.name == "with debug logging via TOOLHIVE_DEBUG env var" {
@@ -632,6 +638,118 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					t.Logf("Deployment needs update even though proxy env hasn't changed - likely due to other factors")
 				}
 			}
+		})
+	}
+}
+
+func TestMCPServerSessionAffinityNone(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:           "test-image",
+			ProxyPort:       8080,
+			SessionAffinity: string(corev1.ServiceAffinityNone),
+		},
+	}
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+	service := r.serviceForMCPServer(context.Background(), mcpServer)
+	require.NotNil(t, service)
+	assert.Equal(t, corev1.ServiceAffinityNone, service.Spec.SessionAffinity)
+}
+
+func TestMCPServerServiceNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	baseMCPServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image",
+			ProxyPort: 8080,
+		},
+	}
+
+	baseService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        ctrlutil.CreateProxyServiceName(baseMCPServer.Name),
+			Namespace:   baseMCPServer.Namespace,
+			Labels:      labelsForMCPServer(baseMCPServer.Name),
+			Annotations: map[string]string{},
+		},
+		Spec: corev1.ServiceSpec{
+			SessionAffinity: corev1.ServiceAffinityClientIP,
+			Ports: []corev1.ServicePort{{
+				Port: 8080,
+			}},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		service     *corev1.Service
+		mcpServer   *mcpv1alpha1.MCPServer
+		needsUpdate bool
+	}{
+		{
+			name:        "no update needed",
+			service:     baseService.DeepCopy(),
+			mcpServer:   baseMCPServer.DeepCopy(),
+			needsUpdate: false,
+		},
+		{
+			name: "session affinity drifted to empty",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.SessionAffinity = ""
+				return s
+			}(),
+			mcpServer:   baseMCPServer.DeepCopy(),
+			needsUpdate: true,
+		},
+		{
+			name:    "session affinity spec changed to None",
+			service: baseService.DeepCopy(),
+			mcpServer: func() *mcpv1alpha1.MCPServer {
+				m := baseMCPServer.DeepCopy()
+				m.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+				return m
+			}(),
+			needsUpdate: true,
+		},
+		{
+			name: "session affinity matches spec None",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.SessionAffinity = corev1.ServiceAffinityNone
+				return s
+			}(),
+			mcpServer: func() *mcpv1alpha1.MCPServer {
+				m := baseMCPServer.DeepCopy()
+				m.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+				return m
+			}(),
+			needsUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := serviceNeedsUpdate(tt.service, tt.mcpServer)
+			assert.Equal(t, tt.needsUpdate, result)
 		})
 	}
 }

@@ -323,6 +323,35 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 	assert.Equal(t, "http", service.Spec.Ports[0].Name)
 }
 
+// TestServiceForVirtualMCPServerSessionAffinityNone tests session affinity None
+func TestServiceForVirtualMCPServerSessionAffinityNone(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config:          vmcpconfig.Config{Group: "test-group"},
+			SessionAffinity: string(corev1.ServiceAffinityNone),
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	r := &VirtualMCPServerReconciler{
+		Scheme: scheme,
+	}
+
+	service := r.serviceForVirtualMCPServer(context.Background(), vmcp)
+
+	require.NotNil(t, service)
+	assert.Equal(t, corev1.ServiceAffinityNone, service.Spec.SessionAffinity)
+}
+
 // TestBuildServiceMetadataForVmcp tests service metadata generation
 func TestBuildServiceMetadataForVmcp(t *testing.T) {
 	t.Parallel()

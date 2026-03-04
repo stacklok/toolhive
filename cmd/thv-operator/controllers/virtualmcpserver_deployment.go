@@ -605,6 +605,13 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 		serviceType = corev1.ServiceType(vmcp.Spec.ServiceType)
 	}
 
+	sessionAffinity := func() corev1.ServiceAffinity {
+		if vmcp.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(vmcp.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName,
@@ -615,7 +622,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 		Spec: corev1.ServiceSpec{
 			Type:            serviceType,
 			Selector:        ls,
-			SessionAffinity: corev1.ServiceAffinityClientIP,
+			SessionAffinity: sessionAffinity,
 			Ports: []corev1.ServicePort{{
 				Port:       vmcpDefaultPort,
 				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),

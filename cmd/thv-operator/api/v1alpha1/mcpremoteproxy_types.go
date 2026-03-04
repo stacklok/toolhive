@@ -123,6 +123,14 @@ type MCPRemoteProxySpec struct {
 	// Must reference an existing MCPGroup in the same namespace
 	// +optional
 	GroupRef string `json:"groupRef,omitempty"`
+
+	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+	// Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+	// +kubebuilder:validation:Enum=ClientIP;None
+	// +kubebuilder:default=ClientIP
+	// +optional
+	SessionAffinity string `json:"sessionAffinity,omitempty"`
 }
 
 // MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy

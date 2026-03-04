@@ -474,6 +474,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		newService := r.serviceForMCPServer(ctx, mcpServer)
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
+		service.Labels = newService.Labels
+		service.Annotations = newService.Annotations
 		err = r.Update(ctx, service)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
@@ -1281,6 +1283,13 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 		}
 	}
 
+	sessionAffinity := func() corev1.ServiceAffinity {
+		if m.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(m.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName,
@@ -1290,7 +1299,7 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 		},
 		Spec: corev1.ServiceSpec{
 			Selector:        ls, // Keep original labels for selector
-			SessionAffinity: corev1.ServiceAffinityClientIP,
+			SessionAffinity: sessionAffinity,
 			Ports: []corev1.ServicePort{{
 				Port:       m.GetProxyPort(),
 				TargetPort: intstr.FromInt(int(m.GetProxyPort())),
@@ -1704,8 +1713,14 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServe
 		return true
 	}
 
-	// Check if session affinity has drifted
-	if service.Spec.SessionAffinity != corev1.ServiceAffinityClientIP {
+	// Check if session affinity has drifted from spec
+	expectedAffinity := func() corev1.ServiceAffinity {
+		if mcpServer.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(mcpServer.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+	if service.Spec.SessionAffinity != expectedAffinity {
 		return true
 	}
 

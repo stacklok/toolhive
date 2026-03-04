@@ -1,0 +1,619 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package e2e_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/stacklok/toolhive/test/e2e"
+)
+
+// Response/request structs mirroring pkg/api/v1/skills_types.go and pkg/skills types.
+
+type skillListResponse struct {
+	Skills []installedSkillResponse `json:"skills"`
+}
+
+type installedSkillResponse struct {
+	Metadata    skillMetadataResponse `json:"metadata"`
+	Scope       string                `json:"scope"`
+	ProjectRoot string                `json:"project_root,omitempty"`
+	Reference   string                `json:"reference,omitempty"`
+	Tag         string                `json:"tag,omitempty"`
+	Digest      string                `json:"digest,omitempty"`
+	Status      string                `json:"status"`
+	InstalledAt time.Time             `json:"installed_at"`
+	Clients     []string              `json:"clients,omitempty"`
+}
+
+type skillMetadataResponse struct {
+	Name        string   `json:"name"`
+	Version     string   `json:"version"`
+	Description string   `json:"description"`
+	Author      string   `json:"author"`
+	Tags        []string `json:"tags,omitempty"`
+}
+
+type installSkillRequest struct {
+	Name        string `json:"name"`
+	Version     string `json:"version,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	ProjectRoot string `json:"project_root,omitempty"`
+	Client      string `json:"client,omitempty"`
+	Force       bool   `json:"force,omitempty"`
+}
+
+type installSkillResponse struct {
+	Skill installedSkillResponse `json:"skill"`
+}
+
+type validateSkillRequest struct {
+	Path string `json:"path"`
+}
+
+type validationResultResponse struct {
+	Valid    bool     `json:"valid"`
+	Errors   []string `json:"errors,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+type buildSkillRequest struct {
+	Path string `json:"path"`
+	Tag  string `json:"tag,omitempty"`
+}
+
+type buildResultResponse struct {
+	Reference string `json:"reference"`
+}
+
+type skillInfoResponse struct {
+	Metadata       skillMetadataResponse   `json:"metadata"`
+	InstalledSkill *installedSkillResponse `json:"installed_skill,omitempty"`
+}
+
+// Helper functions
+
+func listSkills(server *e2e.Server) *http.Response {
+	resp, err := server.Get("/api/v1beta/skills")
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+func installSkill(server *e2e.Server, req installSkillRequest) *http.Response {
+	jsonData, err := json.Marshal(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+func uninstallSkill(server *e2e.Server, name string) *http.Response {
+	client := &http.Client{}
+	req, err := http.NewRequest(
+		"DELETE",
+		server.BaseURL()+"/api/v1beta/skills/"+name,
+		nil,
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := client.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+func getSkillInfo(server *e2e.Server, name string) *http.Response {
+	resp, err := server.Get("/api/v1beta/skills/" + name)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+func validateSkill(server *e2e.Server, path string) *http.Response {
+	reqBody := validateSkillRequest{Path: path}
+	jsonData, err := json.Marshal(reqBody)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills/validate",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+func buildSkill(server *e2e.Server, path, tag string) *http.Response {
+	reqBody := buildSkillRequest{Path: path, Tag: tag}
+	jsonData, err := json.Marshal(reqBody)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills/build",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+// createTestSkillDir creates a temporary directory with a valid SKILL.md file.
+// The directory name matches the skill name (validator requirement).
+func createTestSkillDir(skillName, description string) string {
+	parentDir := GinkgoT().TempDir()
+	skillDir := filepath.Join(parentDir, skillName)
+	ExpectWithOffset(1, os.MkdirAll(skillDir, 0o755)).To(Succeed())
+
+	skillMD := fmt.Sprintf(`---
+name: %s
+description: %s
+version: 0.1.0
+---
+
+# %s
+
+This is a test skill.
+`, skillName, description, skillName)
+
+	ExpectWithOffset(1, os.WriteFile(
+		filepath.Join(skillDir, "SKILL.md"),
+		[]byte(skillMD),
+		0o644,
+	)).To(Succeed())
+
+	return skillDir
+}
+
+// Test suite
+
+var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
+	var (
+		config    *e2e.ServerConfig
+		apiServer *e2e.Server
+	)
+
+	BeforeEach(func() {
+		config = e2e.NewServerConfig()
+		apiServer = e2e.StartServer(config)
+	})
+
+	Describe("POST /api/v1beta/skills/validate - Validate a skill", func() {
+		It("should validate a valid skill directory", func() {
+			By("Creating a valid skill directory")
+			skillDir := createTestSkillDir("my-test-skill", "A test skill for validation")
+
+			By("Validating the skill")
+			resp := validateSkill(apiServer, skillDir)
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying the skill is valid")
+			var result validationResultResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Valid).To(BeTrue())
+			Expect(result.Errors).To(BeEmpty())
+		})
+
+		It("should report invalid when SKILL.md is missing", func() {
+			By("Creating an empty directory")
+			emptyDir := GinkgoT().TempDir()
+
+			By("Validating the empty directory")
+			resp := validateSkill(apiServer, emptyDir)
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying the skill is invalid")
+			var result validationResultResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Valid).To(BeFalse())
+			Expect(result.Errors).ToNot(BeEmpty())
+		})
+
+		It("should report invalid when required fields are missing", func() {
+			By("Creating a skill directory with empty frontmatter")
+			parentDir := GinkgoT().TempDir()
+			skillDir := filepath.Join(parentDir, "bad-skill")
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+
+			skillMD := `---
+---
+
+# No metadata
+`
+			Expect(os.WriteFile(
+				filepath.Join(skillDir, "SKILL.md"),
+				[]byte(skillMD),
+				0o644,
+			)).To(Succeed())
+
+			By("Validating the skill")
+			resp := validateSkill(apiServer, skillDir)
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying the skill is invalid with field errors")
+			var result validationResultResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Valid).To(BeFalse())
+			Expect(result.Errors).ToNot(BeEmpty())
+		})
+
+		It("should reject empty path", func() {
+			By("Sending validate request with empty path")
+			resp := validateSkill(apiServer, "")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should reject relative path", func() {
+			By("Sending validate request with relative path")
+			resp := validateSkill(apiServer, "relative/path")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should report invalid for non-existent path", func() {
+			By("Sending validate request with non-existent absolute path")
+			resp := validateSkill(apiServer, "/nonexistent/path/to/skill")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying the skill is invalid")
+			var result validationResultResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Valid).To(BeFalse())
+			Expect(result.Errors).ToNot(BeEmpty())
+		})
+
+		It("should reject path traversal", func() {
+			By("Sending validate request with path traversal")
+			resp := validateSkill(apiServer, "/tmp/../etc")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should reject malformed JSON", func() {
+			By("Sending malformed JSON")
+			resp, err := http.Post(
+				apiServer.BaseURL()+"/api/v1beta/skills/validate",
+				"application/json",
+				bytes.NewBufferString(`{"invalid json`),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Describe("POST /api/v1beta/skills/build - Build a skill", func() {
+		It("should build a valid skill with explicit tag", func() {
+			By("Creating a valid skill directory")
+			skillDir := createTestSkillDir("build-test-skill", "A skill for build testing")
+
+			By("Building the skill with an explicit tag")
+			resp := buildSkill(apiServer, skillDir, "v0.1.0")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying build result has a reference")
+			var result buildResultResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Reference).ToNot(BeEmpty())
+		})
+
+		It("should build a valid skill with default tag", func() {
+			By("Creating a valid skill directory")
+			skillDir := createTestSkillDir("default-tag-skill", "A skill with default tag")
+
+			By("Building the skill without specifying a tag")
+			resp := buildSkill(apiServer, skillDir, "")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying build result has a reference")
+			var result buildResultResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Reference).ToNot(BeEmpty())
+		})
+
+		It("should reject empty path", func() {
+			By("Sending build request with empty path")
+			resp := buildSkill(apiServer, "", "v1.0.0")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should reject malformed JSON", func() {
+			By("Sending malformed JSON")
+			resp, err := http.Post(
+				apiServer.BaseURL()+"/api/v1beta/skills/build",
+				"application/json",
+				bytes.NewBufferString(`{"invalid json`),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Describe("GET /api/v1beta/skills - List skills", func() {
+		It("should return empty list initially", func() {
+			By("Listing skills")
+			resp := listSkills(apiServer)
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying the skills list is empty")
+			var result skillListResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Skills).To(BeEmpty())
+		})
+
+		It("should include installed skills", func() {
+			By("Installing a skill")
+			installResp := installSkill(apiServer, installSkillRequest{Name: "list-test-skill"})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Listing skills")
+			resp := listSkills(apiServer)
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying the installed skill is in the list")
+			var result skillListResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Skills).ToNot(BeEmpty())
+
+			found := false
+			for _, s := range result.Skills {
+				if s.Metadata.Name == "list-test-skill" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "Expected 'list-test-skill' in the skills list")
+		})
+	})
+
+	Describe("POST /api/v1beta/skills - Install a skill", func() {
+		It("should install a skill with pending status", func() {
+			By("Installing a skill by name")
+			resp := installSkill(apiServer, installSkillRequest{Name: "install-test-skill"})
+			defer resp.Body.Close()
+
+			By("Verifying response status is 201 Created")
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Verifying the skill has pending status")
+			var result installSkillResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Skill.Status).To(Equal("pending"))
+			Expect(result.Skill.Metadata.Name).To(Equal("install-test-skill"))
+			Expect(result.Skill.InstalledAt).ToNot(BeZero(), "InstalledAt should be a valid timestamp")
+
+			By("Verifying Location header is set")
+			Expect(resp.Header.Get("Location")).To(Equal("/api/v1beta/skills/install-test-skill"))
+		})
+
+		It("should reject empty name", func() {
+			By("Attempting to install with empty name")
+			resp := installSkill(apiServer, installSkillRequest{Name: ""})
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should reject invalid name", func() {
+			By("Attempting to install with invalid name")
+			resp := installSkill(apiServer, installSkillRequest{Name: "INVALID!"})
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should reject duplicate install", func() {
+			By("Installing a skill")
+			resp := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Attempting to install the same skill again")
+			resp2 := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
+			defer resp2.Body.Close()
+
+			By("Verifying response status is 409 Conflict")
+			Expect(resp2.StatusCode).To(Equal(http.StatusConflict))
+		})
+
+		It("should reject malformed JSON", func() {
+			By("Sending malformed JSON")
+			resp, err := http.Post(
+				apiServer.BaseURL()+"/api/v1beta/skills",
+				"application/json",
+				bytes.NewBufferString(`{"invalid json`),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Describe("GET /api/v1beta/skills/{name} - Get skill info", func() {
+		It("should return info for an installed skill", func() {
+			By("Installing a skill")
+			installResp := installSkill(apiServer, installSkillRequest{Name: "info-test-skill"})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Getting skill info")
+			resp := getSkillInfo(apiServer, "info-test-skill")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 200 OK")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Verifying skill info")
+			var result skillInfoResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Metadata.Name).To(Equal("info-test-skill"))
+		})
+
+		It("should return 404 for non-existent skill", func() {
+			By("Getting info for a skill that doesn't exist")
+			resp := getSkillInfo(apiServer, "no-such-skill")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 404 Not Found")
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("should return 400 for invalid name", func() {
+			By("Getting info with invalid name")
+			resp := getSkillInfo(apiServer, "INVALID!")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Describe("DELETE /api/v1beta/skills/{name} - Uninstall a skill", func() {
+		It("should uninstall an installed skill", func() {
+			By("Installing a skill")
+			installResp := installSkill(apiServer, installSkillRequest{Name: "uninstall-test"})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Uninstalling the skill")
+			resp := uninstallSkill(apiServer, "uninstall-test")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 204 No Content")
+			Expect(resp.StatusCode).To(Equal(http.StatusNoContent))
+
+			By("Verifying skill is no longer available")
+			infoResp := getSkillInfo(apiServer, "uninstall-test")
+			defer infoResp.Body.Close()
+			Expect(infoResp.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("should return 404 for non-existent skill", func() {
+			By("Attempting to uninstall a skill that doesn't exist")
+			resp := uninstallSkill(apiServer, "no-such-skill")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 404 Not Found")
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("should return 400 for invalid name", func() {
+			By("Attempting to uninstall with invalid name")
+			resp := uninstallSkill(apiServer, "INVALID!")
+			defer resp.Body.Close()
+
+			By("Verifying response status is 400 Bad Request")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Describe("Full lifecycle integration", func() {
+		It("should support install → list → info → uninstall → list → info", func() {
+			skillName := "lifecycle-test"
+
+			By("Installing the skill")
+			installResp := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Listing skills — should contain the skill")
+			listResp := listSkills(apiServer)
+			defer listResp.Body.Close()
+			Expect(listResp.StatusCode).To(Equal(http.StatusOK))
+			var listResult skillListResponse
+			Expect(json.NewDecoder(listResp.Body).Decode(&listResult)).To(Succeed())
+			found := false
+			for _, s := range listResult.Skills {
+				if s.Metadata.Name == skillName {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "Expected skill in list after install")
+
+			By("Getting skill info — should return 200")
+			infoResp := getSkillInfo(apiServer, skillName)
+			defer infoResp.Body.Close()
+			Expect(infoResp.StatusCode).To(Equal(http.StatusOK))
+			var infoResult skillInfoResponse
+			Expect(json.NewDecoder(infoResp.Body).Decode(&infoResult)).To(Succeed())
+			Expect(infoResult.Metadata.Name).To(Equal(skillName))
+
+			By("Uninstalling the skill")
+			deleteResp := uninstallSkill(apiServer, skillName)
+			defer deleteResp.Body.Close()
+			Expect(deleteResp.StatusCode).To(Equal(http.StatusNoContent))
+
+			By("Listing skills — should be empty")
+			listResp2 := listSkills(apiServer)
+			defer listResp2.Body.Close()
+			Expect(listResp2.StatusCode).To(Equal(http.StatusOK))
+			var listResult2 skillListResponse
+			Expect(json.NewDecoder(listResp2.Body).Decode(&listResult2)).To(Succeed())
+			for _, s := range listResult2.Skills {
+				Expect(s.Metadata.Name).ToNot(Equal(skillName), "Skill should not appear after uninstall")
+			}
+
+			By("Getting skill info — should return 404")
+			infoResp2 := getSkillInfo(apiServer, skillName)
+			defer infoResp2.Body.Close()
+			Expect(infoResp2.StatusCode).To(Equal(http.StatusNotFound))
+		})
+	})
+})

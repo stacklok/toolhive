@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"testing"
 	"time"
 
@@ -19,20 +20,26 @@ import (
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
-// newTestServer creates a Server with mock dependencies, avoiding the need for
-// a real container runtime.
+// newTestServer creates a Server for testing. On macOS, where a container
+// runtime may not be available, it uses mock dependencies. On other platforms
+// it uses the real New() constructor with an actual container runtime.
 func newTestServer(t *testing.T, cfg *Config) *Server {
 	t.Helper()
-	ctrl := gomock.NewController(t)
-	t.Cleanup(func() { ctrl.Finish() })
+	if runtime.GOOS == "darwin" {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(func() { ctrl.Finish() })
 
-	handler := &Handler{
-		ctx:              context.Background(),
-		workloadManager:  workloadsmocks.NewMockManager(ctrl),
-		registryProvider: registrymocks.NewMockProvider(ctrl),
-		configProvider:   config.NewDefaultProvider(),
+		handler := &Handler{
+			ctx:              context.Background(),
+			workloadManager:  workloadsmocks.NewMockManager(ctrl),
+			registryProvider: registrymocks.NewMockProvider(ctrl),
+			configProvider:   config.NewDefaultProvider(),
+		}
+		return newServerWithHandler(context.Background(), cfg, handler)
 	}
-	return newServerWithHandler(context.Background(), cfg, handler)
+	s, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+	return s
 }
 
 func TestNew(t *testing.T) {

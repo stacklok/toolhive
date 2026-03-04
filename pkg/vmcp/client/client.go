@@ -522,7 +522,6 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 //nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
-	_ *auth.Identity, // Caller validation happens at session level, not HTTP transport level
 	target *vmcp.BackendTarget,
 	toolName string,
 	arguments map[string]any,
@@ -630,7 +629,6 @@ func (h *httpBackendClient) CallTool(
 // Returns the complete resource result including _meta field.
 func (h *httpBackendClient) ReadResource(
 	ctx context.Context,
-	_ *auth.Identity, // Caller validation happens at session level, not HTTP transport level
 	target *vmcp.BackendTarget,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
@@ -687,7 +685,6 @@ func (h *httpBackendClient) ReadResource(
 // Returns the complete prompt result including _meta field.
 func (h *httpBackendClient) GetPrompt(
 	ctx context.Context,
-	_ *auth.Identity, // Caller validation happens at session level, not HTTP transport level
 	target *vmcp.BackendTarget,
 	name string,
 	arguments map[string]any,

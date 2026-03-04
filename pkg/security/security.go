@@ -14,10 +14,11 @@ import "crypto/subtle"
 // the hash values being compared.
 //
 // Implementation details:
-//   - Uses subtle.ConstantTimeCompare which is only constant-time for equal-length inputs
-//   - Normalizes both hashes to a fixed-length representation before comparison
-//   - Performs constant-time length check to maintain "string equality" semantics
-//   - Uses stack-allocated arrays to avoid per-comparison heap allocations
+//   - Uses subtle.ConstantTimeEq for constant-time length checks
+//   - Uses subtle.ConstantTimeCompare for constant-time content comparison
+//   - Enforces exact length matching: both inputs must be exactly normalizedLen bytes
+//   - Special case: empty strings are allowed only when both are empty (for anonymous sessions)
+//   - No normalization/padding: inputs longer or shorter than normalizedLen are rejected
 //
 // Parameters:
 //   - hashA: First hash string to compare (typically hex-encoded SHA256, 64 bytes)
@@ -35,19 +36,31 @@ import "crypto/subtle"
 //	    // Hashes match
 //	}
 func ConstantTimeHashCompare(hashA, hashB string, normalizedLen int) bool {
-	// Normalize both hashes to fixed-length arrays
-	normalizedA := make([]byte, normalizedLen)
-	normalizedB := make([]byte, normalizedLen)
-	copy(normalizedA, hashA)
-	copy(normalizedB, hashB)
+	lenA := len(hashA)
+	lenB := len(hashB)
 
-	// Compare the normalized arrays in constant time
-	cmp := subtle.ConstantTimeCompare(normalizedA, normalizedB)
-
-	// Perform constant-time length check
+	// Check conditions in constant-time:
+	// 1. Both empty (special case for anonymous sessions)
 	// G115: Safe conversion - string lengths are well within int32 range for hash values.
-	lengthEq := subtle.ConstantTimeEq(int32(len(hashA)), int32(len(hashB))) //nolint:gosec
+	bothEmpty := subtle.ConstantTimeEq(int32(lenA), 0) & subtle.ConstantTimeEq(int32(lenB), 0) //nolint:gosec
 
-	// Both content and length must match
-	return (cmp & lengthEq) == 1
+	// 2. Both have the expected length (prevents truncation attacks where inputs
+	// longer than normalizedLen could match on prefix alone)
+	lengthAOk := subtle.ConstantTimeEq(int32(lenA), int32(normalizedLen)) //nolint:gosec
+	lengthBOk := subtle.ConstantTimeEq(int32(lenB), int32(normalizedLen)) //nolint:gosec
+	bothCorrectLen := lengthAOk & lengthBOk
+
+	// Fast path: both empty (anonymous case) - no allocation needed
+	if bothEmpty == 1 {
+		return true
+	}
+
+	// Fast path: both correct length - compare directly without normalization
+	// This avoids allocating and copying into fixed-size arrays
+	if bothCorrectLen == 1 {
+		return subtle.ConstantTimeCompare([]byte(hashA), []byte(hashB)) == 1
+	}
+
+	// Invalid case: lengths don't match or are incorrect
+	return false
 }

@@ -62,11 +62,11 @@ func TestConstantTimeHashCompare(t *testing.T) {
 			want:          false,
 		},
 		{
-			name:          "short identical strings",
+			name:          "short identical strings (length mismatch)",
 			hashA:         "abc123",
 			hashB:         "abc123",
 			normalizedLen: 64,
-			want:          true,
+			want:          false, // Lengths don't match normalizedLen - security fix
 		},
 		{
 			name:          "short different strings",
@@ -155,11 +155,25 @@ func TestConstantTimeHashCompare_DifferentNormalizedLengths(t *testing.T) {
 			want:          true,
 		},
 		{
-			name:          "short strings with small normalized length",
+			name:          "short strings with small normalized length (length mismatch)",
 			hashA:         "abc",
 			hashB:         "abc",
 			normalizedLen: 10,
-			want:          true,
+			want:          false, // Lengths don't match normalizedLen - security fix
+		},
+		{
+			name:          "truncation attack: same prefix, different suffix",
+			hashA:         "abc" + "x000000000000000000000000000000000000000000000000000000000000000" + "foo",
+			hashB:         "abc" + "x000000000000000000000000000000000000000000000000000000000000000" + "bar",
+			normalizedLen: 64,
+			want:          false, // Prevented: lengths > normalizedLen should not match on prefix
+		},
+		{
+			name:          "truncation attack: both longer than normalized length, same prefix",
+			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3" + "extra",
+			hashB:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3" + "different",
+			normalizedLen: 64,
+			want:          false, // Prevented: must reject inputs longer than normalizedLen
 		},
 	}
 

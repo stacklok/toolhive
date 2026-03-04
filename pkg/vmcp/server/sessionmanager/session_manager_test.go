@@ -17,6 +17,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -929,6 +930,72 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 		// The meta must have been forwarded to CallTool.
 		require.NotNil(t, fakeSess.lastCallMeta, "meta should be forwarded to CallTool")
 		assert.Equal(t, "tok-1", fakeSess.lastCallMeta["progressToken"])
+	})
+
+	t.Run("handler terminates session on authorization errors", func(t *testing.T) {
+		t.Parallel()
+
+		// Test both ErrUnauthorizedCaller and ErrNilCaller
+		testCases := []struct {
+			name        string
+			authError   error
+			expectError string
+		}{
+			{
+				name:        "ErrUnauthorizedCaller",
+				authError:   sessiontypes.ErrUnauthorizedCaller,
+				expectError: "Unauthorized",
+			},
+			{
+				name:        "ErrNilCaller",
+				authError:   sessiontypes.ErrNilCaller,
+				expectError: "Unauthorized",
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				tools := []vmcp.Tool{{Name: "auth-tool", Description: "requires authorization"}}
+				factory := newFakeFactory(tools)
+				registry := newFakeRegistry()
+				sm, _ := newTestVMCPSessionManager(t, factory, registry)
+
+				sessionID := sm.Generate()
+				_, err := sm.CreateSession(context.Background(), sessionID)
+				require.NoError(t, err)
+
+				// Configure the fake session to return an authorization error
+				fakeSess := factory.createdSessions[sessionID]
+				require.NotNil(t, fakeSess)
+				fakeSess.callToolErr = tc.authError
+
+				adaptedTools, err := sm.GetAdaptedTools(sessionID)
+				require.NoError(t, err)
+				require.Len(t, adaptedTools, 1)
+
+				// Call the tool - should return an error result
+				req := newCallToolRequest("auth-tool", map[string]any{})
+				result, handlerErr := adaptedTools[0].Handler(context.Background(), req)
+				require.NoError(t, handlerErr, "handler should not return Go error")
+				require.NotNil(t, result)
+
+				// Verify error result contains "Unauthorized"
+				assert.True(t, result.IsError, "result should indicate error")
+				require.Len(t, result.Content, 1, "result should have content")
+				textContent, ok := result.Content[0].(mcp.TextContent)
+				require.True(t, ok, "expected TextContent")
+				assert.Contains(t, textContent.Text, tc.expectError)
+
+				// Verify session was closed
+				assert.True(t, fakeSess.closed, "session should be closed after auth failure")
+
+				// Verify subsequent GetAdaptedTools fails (session no longer exists)
+				_, err = sm.GetAdaptedTools(sessionID)
+				assert.Error(t, err, "GetAdaptedTools should fail after session termination")
+			})
+		}
 	})
 }
 

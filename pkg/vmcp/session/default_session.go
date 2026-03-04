@@ -7,8 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
-	"sync"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/security"
@@ -73,9 +73,11 @@ type defaultMultiSession struct {
 
 	// Token binding fields: enforce that subsequent requests come from the same
 	// identity that created the session.
-	boundTokenHash string       // SHA256 hash of creator's token (empty for anonymous)
-	allowAnonymous bool         // Whether to allow nil caller
-	mu             sync.RWMutex // Protects token binding fields
+	// These fields are immutable after session creation (no mutex needed).
+	boundTokenHash string // HMAC-SHA256 hash of creator's token (empty for anonymous)
+	tokenSalt      []byte // Random salt used for HMAC (empty for anonymous)
+	hmacSecret     []byte // Server-managed secret for HMAC-SHA256
+	allowAnonymous bool   // Whether to allow nil caller
 }
 
 // Tools returns a snapshot copy of the tools available in this session.
@@ -110,28 +112,52 @@ func (s *defaultMultiSession) BackendSessions() map[string]string {
 // Returns nil if validation succeeds, or an error if:
 //   - The session requires a bound identity but caller is nil (ErrNilCaller)
 //   - The caller's token hash doesn't match the session owner (ErrUnauthorizedCaller)
+//   - An anonymous session receives a caller with a non-empty token (ErrUnauthorizedCaller)
 //
-// For anonymous sessions (allowAnonymous=true, boundTokenHash=""), validation always succeeds.
+// For anonymous sessions (allowAnonymous=true, boundTokenHash=""), validation succeeds
+// only when the caller is nil or has an empty token (prevents session upgrade attacks).
 func (s *defaultMultiSession) validateCaller(caller *auth.Identity) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	// No lock needed - token binding fields are immutable after session creation
 
-	// Anonymous sessions: no validation needed
+	// Anonymous sessions: reject callers that present tokens
 	if s.allowAnonymous && s.boundTokenHash == "" {
+		// Prevent session upgrade attack: anonymous sessions cannot accept tokens
+		if caller != nil && caller.Token != "" {
+			slog.Warn("token validation failed: session upgrade attack prevented",
+				"reason", "token_presented_to_anonymous_session",
+			)
+			return sessiontypes.ErrUnauthorizedCaller
+		}
 		return nil
 	}
 
 	// Bound sessions require a caller
 	if caller == nil {
+		slog.Warn("token validation failed: nil caller for bound session",
+			"reason", "nil_caller",
+		)
 		return sessiontypes.ErrNilCaller
 	}
 
-	// Compute caller's token hash
-	callerHash := HashToken(caller.Token)
+	// Defensive check: bound sessions must have a non-empty token hash.
+	// This prevents misconfigured sessions from accepting empty tokens.
+	// Scenario: if boundTokenHash="" and caller.Token="", both would hash to "",
+	// and ConstantTimeHashCompare would return true (both empty case).
+	if s.boundTokenHash == "" {
+		slog.Error("token validation failed: bound session has empty token hash",
+			"reason", "misconfigured_session",
+		)
+		return sessiontypes.ErrSessionOwnerUnknown
+	}
+
+	// Compute caller's token hash using the same HMAC secret and salt
+	callerHash := HashToken(caller.Token, s.hmacSecret, s.tokenSalt)
 
 	// Constant-time comparison to prevent timing attacks
-	const sha256HexLen = 64
-	if !security.ConstantTimeHashCompare(s.boundTokenHash, callerHash, sha256HexLen) {
+	if !security.ConstantTimeHashCompare(s.boundTokenHash, callerHash, SHA256HexLen) {
+		slog.Warn("token validation failed: token hash mismatch",
+			"reason", "token_hash_mismatch",
+		)
 		return sessiontypes.ErrUnauthorizedCaller
 	}
 
@@ -187,7 +213,7 @@ func (s *defaultMultiSession) CallTool(
 		return nil, err
 	}
 	defer done()
-	return conn.CallTool(ctx, caller, toolName, arguments, meta)
+	return conn.CallTool(ctx, toolName, arguments, meta)
 }
 
 // ReadResource retrieves the resource identified by uri.
@@ -206,7 +232,7 @@ func (s *defaultMultiSession) ReadResource(
 		return nil, err
 	}
 	defer done()
-	return conn.ReadResource(ctx, caller, uri)
+	return conn.ReadResource(ctx, uri)
 }
 
 // GetPrompt retrieves the named prompt from the appropriate backend.
@@ -228,7 +254,7 @@ func (s *defaultMultiSession) GetPrompt(
 		return nil, err
 	}
 	defer done()
-	return conn.GetPrompt(ctx, caller, name, arguments)
+	return conn.GetPrompt(ctx, name, arguments)
 }
 
 // Close releases all resources. CloseAndDrain blocks until in-flight

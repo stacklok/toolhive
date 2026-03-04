@@ -52,7 +52,7 @@ func TestMetaPreservation_CallTool(t *testing.T) {
 	defer cancel()
 
 	// Call tool through vMCP backend client
-	result, err := backendClient.CallTool(ctx, nil, target, "test_tool_with_meta", map[string]any{
+	result, err := backendClient.CallTool(ctx, target, "test_tool_with_meta", map[string]any{
 		"input": "test-value",
 	}, nil)
 
@@ -98,7 +98,7 @@ func TestMetaPreservation_CallTool_NoMeta(t *testing.T) {
 	defer cancel()
 
 	// Call tool that doesn't return _meta
-	result, err := backendClient.CallTool(ctx, nil, target, "test_tool_no_meta", map[string]any{
+	result, err := backendClient.CallTool(ctx, target, "test_tool_no_meta", map[string]any{
 		"input": "test-value",
 	}, nil)
 
@@ -145,7 +145,7 @@ func TestMetaPreservation_CallTool_Error(t *testing.T) {
 	defer cancel()
 
 	// Call tool that returns an error with _meta
-	result, err := backendClient.CallTool(ctx, nil, target, "test_tool_error", map[string]any{
+	result, err := backendClient.CallTool(ctx, target, "test_tool_error", map[string]any{
 		"input": "trigger-error",
 	}, nil)
 
@@ -192,7 +192,7 @@ func TestMetaPreservation_GetPrompt(t *testing.T) {
 	defer cancel()
 
 	// Get prompt through vMCP backend client
-	result, err := backendClient.GetPrompt(ctx, nil, target, "test_prompt_with_meta", map[string]any{
+	result, err := backendClient.GetPrompt(ctx, target, "test_prompt_with_meta", map[string]any{
 		"name": "World",
 	})
 
@@ -246,7 +246,7 @@ func TestMetaPreservation_ReadResource(t *testing.T) {
 	defer cancel()
 
 	// Read resource through vMCP backend client
-	result, err := backendClient.ReadResource(ctx, nil, target, "test://resource")
+	result, err := backendClient.ReadResource(ctx, target, "test://resource")
 
 	require.NoError(t, err)
 	require.NotNil(t, result)

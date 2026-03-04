@@ -80,7 +80,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_Accept(t *testing.T) {
 		IsError:           false,
 		Meta:              nil,
 	}
-	te.Backend.EXPECT().CallTool(gomock.Any(), gomock.Any(), deployTarget, "deploy_tool", map[string]any{
+	te.Backend.EXPECT().CallTool(gomock.Any(), deployTarget, "deploy_tool", map[string]any{
 		"env": "production",
 	}, gomock.Any()).Return(deployResult, nil)
 

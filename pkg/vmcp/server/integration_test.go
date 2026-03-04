@@ -293,7 +293,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	// Mock CallTool for tool execution
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), "test_tool", gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), "test_tool", gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{"result": "success"},
 			Content:           []vmcp.Content{},
@@ -627,7 +627,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{
 				"result": "Sunny, 72°F",
@@ -637,7 +637,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
-		ReadResource(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ResourceReadResult{
 			Contents: []byte(`{"temp": 72, "condition": "sunny"}`),
 			MimeType: "application/json",
@@ -1098,7 +1098,7 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 	// Use MinTimes(1) to verify the backend client is actually called during tool execution.
 	// If the tool call doesn't reach the backend client, this will cause a test failure.
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{"result": "found"},
 			Content:           []vmcp.Content{},

@@ -95,11 +95,8 @@ func (c *mcpSession) SessionID() string { return c.backendSessionID }
 func (c *mcpSession) Close() error { return c.client.Close() }
 
 // CallTool invokes a named tool on this backend.
-// The caller parameter identifies the requesting user/service. Validation
-// happens at the MultiSession level; this method accepts it for API consistency.
 func (c *mcpSession) CallTool(
 	ctx context.Context,
-	_ *auth.Identity,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
@@ -141,11 +138,8 @@ func (c *mcpSession) CallTool(
 }
 
 // ReadResource reads a resource from this backend.
-// The caller parameter identifies the requesting user/service. Validation
-// happens at the MultiSession level; this method accepts it for API consistency.
 func (c *mcpSession) ReadResource(
 	ctx context.Context,
-	_ *auth.Identity,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
 	backendURI := c.target.GetBackendCapabilityName(uri)
@@ -170,11 +164,8 @@ func (c *mcpSession) ReadResource(
 }
 
 // GetPrompt retrieves a prompt from this backend.
-// The caller parameter identifies the requesting user/service. Validation
-// happens at the MultiSession level; this method accepts it for API consistency.
 func (c *mcpSession) GetPrompt(
 	ctx context.Context,
-	_ *auth.Identity,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {

@@ -27,31 +27,31 @@ import (
 
 // mockConnectedBackend is an in-process internalbk.Session for testing.
 type mockConnectedBackend struct {
-	callToolFunc     func(ctx context.Context, caller *auth.Identity, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
-	readResourceFunc func(ctx context.Context, caller *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
-	getPromptFunc    func(ctx context.Context, caller *auth.Identity, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
+	callToolFunc     func(ctx context.Context, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
+	readResourceFunc func(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
+	getPromptFunc    func(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
 	sessID           string
 	closeCalled      atomic.Bool
 	closeErr         error
 }
 
-func (m *mockConnectedBackend) CallTool(ctx context.Context, caller *auth.Identity, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
+func (m *mockConnectedBackend) CallTool(ctx context.Context, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
 	if m.callToolFunc != nil {
-		return m.callToolFunc(ctx, caller, toolName, arguments, meta)
+		return m.callToolFunc(ctx, toolName, arguments, meta)
 	}
 	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "ok"}}}, nil
 }
 
-func (m *mockConnectedBackend) ReadResource(ctx context.Context, caller *auth.Identity, uri string) (*vmcp.ResourceReadResult, error) {
+func (m *mockConnectedBackend) ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error) {
 	if m.readResourceFunc != nil {
-		return m.readResourceFunc(ctx, caller, uri)
+		return m.readResourceFunc(ctx, uri)
 	}
 	return &vmcp.ResourceReadResult{Contents: []byte("data"), MimeType: "text/plain"}, nil
 }
 
-func (m *mockConnectedBackend) GetPrompt(ctx context.Context, caller *auth.Identity, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
+func (m *mockConnectedBackend) GetPrompt(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
 	if m.getPromptFunc != nil {
-		return m.getPromptFunc(ctx, caller, name, arguments)
+		return m.getPromptFunc(ctx, name, arguments)
 	}
 	return &vmcp.PromptGetResult{Messages: "hello"}, nil
 }
@@ -149,7 +149,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 	tests := []struct {
 		name        string
 		toolName    string
-		mockFn      func(ctx context.Context, caller *auth.Identity, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
+		mockFn      func(ctx context.Context, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error)
 		wantErr     bool
 		wantErrIs   error
 		wantContent string
@@ -157,7 +157,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 		{
 			name:     "successful tool call",
 			toolName: "search",
-			mockFn: func(_ context.Context, _ *auth.Identity, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+			mockFn: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
 				return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "result"}}}, nil
 			},
 			wantContent: "result",
@@ -171,7 +171,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 		{
 			name:     "backend returns error",
 			toolName: "search",
-			mockFn: func(_ context.Context, _ *auth.Identity, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+			mockFn: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
 				return nil, errors.New("backend boom")
 			},
 			wantErr: true,
@@ -213,7 +213,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 	tests := []struct {
 		name      string
 		uri       string
-		mockFn    func(ctx context.Context, caller *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
+		mockFn    func(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
 		wantErr   bool
 		wantErrIs error
 		wantData  string
@@ -221,7 +221,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 		{
 			name: "successful read",
 			uri:  "file://readme",
-			mockFn: func(_ context.Context, _ *auth.Identity, _ string) (*vmcp.ResourceReadResult, error) {
+			mockFn: func(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
 				return &vmcp.ResourceReadResult{Contents: []byte("hello"), MimeType: "text/plain"}, nil
 			},
 			wantData: "hello",
@@ -235,7 +235,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 		{
 			name: "backend returns error",
 			uri:  "file://readme",
-			mockFn: func(_ context.Context, _ *auth.Identity, _ string) (*vmcp.ResourceReadResult, error) {
+			mockFn: func(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
 				return nil, errors.New("backend boom")
 			},
 			wantErr: true,
@@ -277,7 +277,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 	tests := []struct {
 		name      string
 		prompt    string
-		mockFn    func(ctx context.Context, caller *auth.Identity, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
+		mockFn    func(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
 		wantErr   bool
 		wantErrIs error
 		wantMsg   string
@@ -285,7 +285,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 		{
 			name:   "successful get",
 			prompt: "greet",
-			mockFn: func(_ context.Context, _ *auth.Identity, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+			mockFn: func(_ context.Context, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
 				return &vmcp.PromptGetResult{Messages: "hi there"}, nil
 			},
 			wantMsg: "hi there",
@@ -299,7 +299,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 		{
 			name:   "backend error is propagated",
 			prompt: "greet",
-			mockFn: func(_ context.Context, _ *auth.Identity, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+			mockFn: func(_ context.Context, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
 				return nil, errors.New("backend unavailable")
 			},
 			wantErr: true,
@@ -364,7 +364,7 @@ func TestDefaultSession_Close(t *testing.T) {
 		callRelease := make(chan struct{})
 
 		mock := &mockConnectedBackend{
-			callToolFunc: func(_ context.Context, _ *auth.Identity, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
 				close(callInProgress)
 				<-callRelease
 				return &vmcp.ToolCallResult{}, nil

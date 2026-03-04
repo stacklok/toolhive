@@ -1069,8 +1069,10 @@ func (d *DefaultManager) restartRemoteWorkload(
 	return d.startWorkload(ctx, name, mcpRunner, foreground)
 }
 
-// maybeSetupRemoteWorkload is the startup steps for a remote workload.
-// A runner may not be returned if the workload is already running and supervised.
+// maybeSetupRemoteWorkload performs startup steps for a remote workload before it is run.
+// It checks workload status, runs cleanup when needed (all states except Starting),
+// loads the runner config from state, and sets status to Starting.
+// Returns (nil, nil) if the workload is already running and supervised.
 func (d *DefaultManager) maybeSetupRemoteWorkload(
 	ctx context.Context,
 	name string,
@@ -1087,27 +1089,28 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 
 	// If workload is already running, check if the supervisor process is healthy
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		// Check if the supervisor process is actually alive
-		supervisorAlive := d.isSupervisorProcessAlive(ctx, runConfig.BaseName)
-
-		if supervisorAlive {
-			// Workload is running and healthy - preserve old behavior (no-op)
+		if d.isSupervisorProcessAlive(ctx, runConfig.BaseName) {
 			slog.Debug("remote workload is already running", "workload", name)
 			return nil, nil
 		}
+		slog.Debug("remote workload is running but supervisor is dead, cleaning up before restart", "workload", name)
 	}
 
-	// Unified restart flow for all states (Running+dead, Unauthenticated, Unhealthy, Error, etc.)
-	// Stop proxy first so status accurately reflects reality, then clean up before loading new config
-	d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
-	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
-		slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
-	}
-	if err := removeClientConfigurations(name, false); err != nil {
-		slog.Warn("failed to remove client configurations", "error", err)
-	}
-	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
-		slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
+	// Run cleanup (Stopping → stop proxy → remove client configs → Stopped) for all
+	// known workload states except Starting. Skip when workload not found (first-time start)
+	// or status is Starting (parent set this before spawning the child process).
+	needsCleanup := err == nil && workload.Status != rt.WorkloadStatusStarting
+	if needsCleanup {
+		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
+			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
+		}
+		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
+		if err := removeClientConfigurations(name, false); err != nil {
+			slog.Warn("failed to remove client configurations", "error", err)
+		}
+		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
+			slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
+		}
 	}
 
 	// Load runner configuration from state

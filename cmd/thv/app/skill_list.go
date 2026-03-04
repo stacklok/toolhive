@@ -30,7 +30,6 @@ var skillListCmd = &cobra.Command{
 	Long:    `List all currently installed skills and their status.`,
 	PreRunE: chainPreRunE(
 		validateSkillScope(&skillListScope),
-		validateGroupFlag(),
 		ValidateFormat(&skillListFormat),
 		validateGroupFlag(),
 	),

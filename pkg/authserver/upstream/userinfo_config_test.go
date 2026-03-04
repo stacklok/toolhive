@@ -160,6 +160,35 @@ func TestUserInfoConfig_Validate(t *testing.T) {
 	}
 }
 
+// TestUserInfoConfig_Validate_InsecureDisableURLValidation verifies that
+// INSECURE_DISABLE_URL_VALIDATION=true bypasses the HTTP non-localhost check.
+// Not parallel because t.Setenv modifies process-global state.
+func TestUserInfoConfig_Validate_InsecureDisableURLValidation(t *testing.T) {
+	httpNonLocalhost := &UserInfoConfig{EndpointURL: "http://example.com/userinfo"}
+
+	t.Run("allowed when env var is true", func(t *testing.T) {
+		t.Setenv("INSECURE_DISABLE_URL_VALIDATION", "true")
+		assert.NoError(t, httpNonLocalhost.Validate())
+	})
+
+	t.Run("allowed when env var is TRUE (case insensitive)", func(t *testing.T) {
+		t.Setenv("INSECURE_DISABLE_URL_VALIDATION", "TRUE")
+		assert.NoError(t, httpNonLocalhost.Validate())
+	})
+
+	t.Run("rejected when env var is false", func(t *testing.T) {
+		t.Setenv("INSECURE_DISABLE_URL_VALIDATION", "false")
+		err := httpNonLocalhost.Validate()
+		assert.ErrorContains(t, err, "endpoint_url with http scheme requires loopback address")
+	})
+
+	t.Run("other validations still apply when env var is true", func(t *testing.T) {
+		t.Setenv("INSECURE_DISABLE_URL_VALIDATION", "true")
+		err := (&UserInfoConfig{EndpointURL: "ftp://example.com/userinfo"}).Validate()
+		assert.ErrorContains(t, err, "endpoint_url must use http or https scheme")
+	})
+}
+
 func TestResolveField(t *testing.T) {
 	t.Parallel()
 

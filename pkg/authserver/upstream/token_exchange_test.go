@@ -5,28 +5,27 @@ package upstream
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestExtractTokensFromResponse(t *testing.T) {
+func TestRewriteTokenResponse(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		body        string
-		mapping     *TokenResponseMapping
-		wantErr     bool
-		errContains string
-		check       func(t *testing.T, tokens *Tokens)
+		name    string
+		body    string
+		mapping *TokenResponseMapping
+		check   func(t *testing.T, result map[string]any)
 	}{
 		{
-			name: "govslack nested access token",
+			name: "govslack nested access token extracted to top level",
 			body: `{
 				"ok": true,
 				"authed_user": {
@@ -41,31 +40,17 @@ func TestExtractTokensFromResponse(t *testing.T) {
 				TokenTypePath:   "authed_user.token_type",
 				ScopePath:       "authed_user.scope",
 			},
-			check: func(t *testing.T, tokens *Tokens) {
+			check: func(t *testing.T, result map[string]any) {
 				t.Helper()
-				assert.Equal(t, "xoxp-secret-token", tokens.AccessToken)
+				assert.Equal(t, "xoxp-secret-token", result["access_token"])
+				assert.Equal(t, "user", result["token_type"])
+				assert.Equal(t, "channels:history channels:read", result["scope"])
+				// Original fields preserved
+				assert.Equal(t, true, result["ok"])
 			},
 		},
 		{
-			name: "standard top-level fields with custom mapping",
-			body: `{
-				"access_token": "standard-token",
-				"token_type": "Bearer",
-				"expires_in": 3600,
-				"refresh_token": "refresh-123"
-			}`,
-			mapping: &TokenResponseMapping{
-				AccessTokenPath: "access_token",
-			},
-			check: func(t *testing.T, tokens *Tokens) {
-				t.Helper()
-				assert.Equal(t, "standard-token", tokens.AccessToken)
-				assert.Equal(t, "refresh-123", tokens.RefreshToken)
-				assert.WithinDuration(t, time.Now().Add(time.Hour), tokens.ExpiresAt, 5*time.Second)
-			},
-		},
-		{
-			name: "all fields nested",
+			name: "all fields nested under custom paths",
 			body: `{
 				"data": {
 					"token": "nested-token",
@@ -80,86 +65,47 @@ func TestExtractTokensFromResponse(t *testing.T) {
 				RefreshTokenPath: "data.refresh",
 				ExpiresInPath:    "data.ttl",
 			},
-			check: func(t *testing.T, tokens *Tokens) {
+			check: func(t *testing.T, result map[string]any) {
 				t.Helper()
-				assert.Equal(t, "nested-token", tokens.AccessToken)
-				assert.Equal(t, "nested-refresh", tokens.RefreshToken)
-				assert.WithinDuration(t, time.Now().Add(2*time.Hour), tokens.ExpiresAt, 5*time.Second)
+				assert.Equal(t, "nested-token", result["access_token"])
+				assert.Equal(t, "bearer", result["token_type"])
+				assert.Equal(t, "nested-refresh", result["refresh_token"])
+				assert.Equal(t, float64(7200), result["expires_in"])
 			},
 		},
 		{
-			name: "missing access token at path",
-			body: `{"other_field": "value"}`,
+			name: "default token type added when missing",
+			body: `{"custom_token": "tok"}`,
 			mapping: &TokenResponseMapping{
-				AccessTokenPath: "authed_user.access_token",
+				AccessTokenPath: "custom_token",
 			},
-			wantErr:     true,
-			errContains: "missing access_token at path: authed_user.access_token",
+			check: func(t *testing.T, result map[string]any) {
+				t.Helper()
+				assert.Equal(t, "tok", result["access_token"])
+				assert.Equal(t, "Bearer", result["token_type"])
+			},
 		},
 		{
-			name: "empty access token at path",
-			body: `{"authed_user": {"access_token": ""}}`,
-			mapping: &TokenResponseMapping{
-				AccessTokenPath: "authed_user.access_token",
-			},
-			wantErr:     true,
-			errContains: "missing access_token at path",
-		},
-		{
-			name: "default token type when not specified",
-			body: `{"access_token": "tok"}`,
+			name: "existing top-level fields preserved when mapping paths are empty",
+			body: `{"access_token": "original", "refresh_token": "orig-refresh", "expires_in": 3600}`,
 			mapping: &TokenResponseMapping{
 				AccessTokenPath: "access_token",
 			},
-			check: func(t *testing.T, tokens *Tokens) {
+			check: func(t *testing.T, result map[string]any) {
 				t.Helper()
-				assert.Equal(t, "tok", tokens.AccessToken)
-				// token_type defaults to Bearer, no error
+				assert.Equal(t, "original", result["access_token"])
+				assert.Equal(t, "orig-refresh", result["refresh_token"])
+				assert.Equal(t, float64(3600), result["expires_in"])
 			},
 		},
 		{
-			name: "default expiration when missing",
-			body: `{"access_token": "tok", "token_type": "Bearer"}`,
+			name: "invalid JSON returns body unchanged",
+			body: `not json`,
 			mapping: &TokenResponseMapping{
 				AccessTokenPath: "access_token",
 			},
-			check: func(t *testing.T, tokens *Tokens) {
+			check: func(t *testing.T, _ map[string]any) {
 				t.Helper()
-				// Default: 1 hour from now
-				assert.WithinDuration(t, time.Now().Add(time.Hour), tokens.ExpiresAt, 5*time.Second)
-			},
-		},
-		{
-			name: "id token extracted from standard path",
-			body: `{
-				"authed_user": {"access_token": "tok"},
-				"id_token": "eyJhbGciOiJSUzI1NiJ9.test"
-			}`,
-			mapping: &TokenResponseMapping{
-				AccessTokenPath: "authed_user.access_token",
-			},
-			check: func(t *testing.T, tokens *Tokens) {
-				t.Helper()
-				assert.Equal(t, "tok", tokens.AccessToken)
-				assert.Equal(t, "eyJhbGciOiJSUzI1NiJ9.test", tokens.IDToken)
-			},
-		},
-		{
-			name:        "nil mapping returns error",
-			body:        `{"access_token": "tok"}`,
-			mapping:     nil,
-			wantErr:     true,
-			errContains: "token response mapping is required",
-		},
-		{
-			name: "user token type accepted (govslack)",
-			body: `{"access_token": "tok", "token_type": "user"}`,
-			mapping: &TokenResponseMapping{
-				AccessTokenPath: "access_token",
-			},
-			check: func(t *testing.T, tokens *Tokens) {
-				t.Helper()
-				assert.Equal(t, "tok", tokens.AccessToken)
 			},
 		},
 	}
@@ -168,40 +114,31 @@ func TestExtractTokensFromResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tokens, err := extractTokensFromResponse([]byte(tt.body), tt.mapping)
+			result := rewriteTokenResponse([]byte(tt.body), tt.mapping)
 
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errContains)
+			var parsed map[string]any
+			if err := json.Unmarshal(result, &parsed); err != nil {
+				assert.Equal(t, tt.body, string(result))
+				if tt.check != nil {
+					tt.check(t, nil)
+				}
 				return
 			}
 
-			require.NoError(t, err)
-			require.NotNil(t, tokens)
 			if tt.check != nil {
-				tt.check(t, tokens)
+				tt.check(t, parsed)
 			}
 		})
 	}
 }
 
-func TestCustomExchangeCodeForTokens_Integration(t *testing.T) {
+func TestTokenResponseRewriter_TokenEndpoint(t *testing.T) {
 	t.Parallel()
 
-	// Mock GovSlack token endpoint
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodPost, r.Method)
-		require.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
-
-		err := r.ParseForm()
-		require.NoError(t, err)
-		require.Equal(t, "authorization_code", r.Form.Get("grant_type"))
-		require.Equal(t, "test-code", r.Form.Get("code"))
-
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := map[string]any{
 			"ok": true,
 			"authed_user": map[string]any{
-				"id":           "U1234",
 				"access_token": "xoxp-user-token",
 				"token_type":   "user",
 				"scope":        "channels:read",
@@ -209,111 +146,102 @@ func TestCustomExchangeCodeForTokens_Integration(t *testing.T) {
 			"refresh_token": "xoxe-refresh",
 			"expires_in":    43200,
 		}
-
 		w.Header().Set("Content-Type", "application/json")
-		err = json.NewEncoder(w).Encode(resp)
-		require.NoError(t, err)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer tokenServer.Close()
 
-	provider := &BaseOAuth2Provider{
-		config: &OAuth2Config{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     "test-client",
-				ClientSecret: "test-secret",
-				RedirectURI:  "http://localhost/callback",
-			},
-			TokenEndpoint: tokenServer.URL,
-			TokenResponseMapping: &TokenResponseMapping{
-				AccessTokenPath:  "authed_user.access_token",
-				TokenTypePath:    "authed_user.token_type",
-				RefreshTokenPath: "refresh_token",
-				ExpiresInPath:    "expires_in",
-			},
-		},
-		httpClient: http.DefaultClient,
+	mapping := &TokenResponseMapping{
+		AccessTokenPath: "authed_user.access_token",
+		TokenTypePath:   "authed_user.token_type",
+		ScopePath:       "authed_user.scope",
 	}
 
-	tokens, err := provider.customExchangeCodeForTokens(t.Context(), "test-code", "")
+	client := wrapHTTPClientWithMapping(http.DefaultClient, mapping, tokenServer.URL)
+
+	req, err := http.NewRequest("POST", tokenServer.URL, strings.NewReader("grant_type=authorization_code"))
 	require.NoError(t, err)
 
-	assert.Equal(t, "xoxp-user-token", tokens.AccessToken)
-	assert.Equal(t, "xoxe-refresh", tokens.RefreshToken)
-	assert.WithinDuration(t, time.Now().Add(12*time.Hour), tokens.ExpiresAt, 5*time.Second)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+
+	assert.Equal(t, "xoxp-user-token", parsed["access_token"])
+	assert.Equal(t, "user", parsed["token_type"])
+	assert.Equal(t, "channels:read", parsed["scope"])
+	assert.Equal(t, "xoxe-refresh", parsed["refresh_token"])
+	assert.Equal(t, float64(43200), parsed["expires_in"])
 }
 
-func TestCustomRefreshTokens_Integration(t *testing.T) {
+func TestTokenResponseRewriter_NonTokenEndpoint(t *testing.T) {
 	t.Parallel()
 
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		err := r.ParseForm()
-		require.NoError(t, err)
-		require.Equal(t, "refresh_token", r.Form.Get("grant_type"))
-		require.Equal(t, "old-refresh", r.Form.Get("refresh_token"))
-
-		resp := map[string]any{
-			"authed_user": map[string]any{
-				"access_token": "new-access-token",
-				"token_type":   "user",
-			},
-			"refresh_token": "new-refresh",
-			"expires_in":    3600,
-		}
-
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		err = json.NewEncoder(w).Encode(resp)
-		require.NoError(t, err)
+		_, _ = w.Write([]byte(`{"user_id": "U1234", "user": "testuser"}`))
 	}))
-	defer tokenServer.Close()
+	defer server.Close()
 
-	provider := &BaseOAuth2Provider{
-		config: &OAuth2Config{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     "test-client",
-				ClientSecret: "test-secret",
-			},
-			TokenEndpoint: tokenServer.URL,
-			TokenResponseMapping: &TokenResponseMapping{
-				AccessTokenPath:  "authed_user.access_token",
-				TokenTypePath:    "authed_user.token_type",
-				RefreshTokenPath: "refresh_token",
-			},
-		},
-		httpClient: http.DefaultClient,
-	}
+	mapping := &TokenResponseMapping{AccessTokenPath: "authed_user.access_token"}
+	// Token URL points elsewhere, so this server's responses should pass through unchanged
+	client := wrapHTTPClientWithMapping(http.DefaultClient, mapping, "https://other.example.com/token")
 
-	tokens, err := provider.customRefreshTokens(t.Context(), "old-refresh")
+	req, err := http.NewRequest("GET", server.URL, nil)
 	require.NoError(t, err)
 
-	assert.Equal(t, "new-access-token", tokens.AccessToken)
-	assert.Equal(t, "new-refresh", tokens.RefreshToken)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+
+	assert.Equal(t, "U1234", parsed["user_id"])
+	_, hasAccessToken := parsed["access_token"]
+	assert.False(t, hasAccessToken)
 }
 
-func TestCustomTokenRequest_ServerError(t *testing.T) {
+func TestWrapHTTPClientWithMapping_NilMapping(t *testing.T) {
+	t.Parallel()
+
+	original := &http.Client{}
+	result := wrapHTTPClientWithMapping(original, nil, "https://example.com/token")
+	assert.Same(t, original, result)
+}
+
+func TestTokenResponseRewriter_ErrorResponse(t *testing.T) {
 	t.Parallel()
 
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": "invalid_grant"}`))
+		_, _ = w.Write([]byte(`{"error": "invalid_grant"}`))
 	}))
 	defer tokenServer.Close()
 
-	provider := &BaseOAuth2Provider{
-		config: &OAuth2Config{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID: "test-client",
-			},
-			TokenEndpoint: tokenServer.URL,
-			TokenResponseMapping: &TokenResponseMapping{
-				AccessTokenPath: "access_token",
-			},
-		},
-		httpClient: http.DefaultClient,
-	}
+	mapping := &TokenResponseMapping{AccessTokenPath: "authed_user.access_token"}
+	client := wrapHTTPClientWithMapping(http.DefaultClient, mapping, tokenServer.URL)
 
-	_, err := provider.customExchangeCodeForTokens(t.Context(), "bad-code", "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "token request failed with status 400")
+	req, err := http.NewRequest("POST", tokenServer.URL, strings.NewReader("grant_type=authorization_code"))
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	assert.Equal(t, "invalid_grant", parsed["error"])
 }
 
 func TestPathOrDefault(t *testing.T) {
@@ -331,41 +259,20 @@ func TestOAuth2Config_Validate_TokenResponseMapping(t *testing.T) {
 		mapping *TokenResponseMapping
 		wantErr bool
 	}{
-		{
-			name:    "nil mapping is valid",
-			mapping: nil,
-			wantErr: false,
-		},
-		{
-			name: "valid mapping with access token path",
-			mapping: &TokenResponseMapping{
-				AccessTokenPath: "authed_user.access_token",
-			},
-			wantErr: false,
-		},
-		{
-			name: "missing access token path",
-			mapping: &TokenResponseMapping{
-				TokenTypePath: "authed_user.token_type",
-			},
-			wantErr: true,
-		},
+		{name: "nil mapping is valid", mapping: nil, wantErr: false},
+		{name: "valid mapping", mapping: &TokenResponseMapping{AccessTokenPath: "authed_user.access_token"}, wantErr: false},
+		{name: "missing access token path", mapping: &TokenResponseMapping{TokenTypePath: "t"}, wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
 			cfg := &OAuth2Config{
-				CommonOAuthConfig: CommonOAuthConfig{
-					ClientID:    "test",
-					RedirectURI: "http://localhost/callback",
-				},
+				CommonOAuthConfig:     CommonOAuthConfig{ClientID: "test", RedirectURI: "http://localhost/callback"},
 				AuthorizationEndpoint: "https://example.com/authorize",
 				TokenEndpoint:         "https://example.com/token",
 				TokenResponseMapping:  tt.mapping,
 			}
-
 			err := cfg.Validate()
 			if tt.wantErr {
 				require.Error(t, err)

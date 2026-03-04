@@ -2175,6 +2175,7 @@ _Appears in:_
 | `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  | Optional: \{\} <br /> |
+| `tokenResponseMapping` _[api.v1alpha1.TokenResponseMapping](#apiv1alpha1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.OIDCConfigRef
@@ -2766,6 +2767,28 @@ _Appears in:_
 | `accessTokenLifespan` _string_ | AccessTokenLifespan is the duration that access tokens are valid.<br />Format: Go duration string (e.g., "1h", "30m", "24h").<br />If empty, defaults to 1 hour. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `refreshTokenLifespan` _string_ | RefreshTokenLifespan is the duration that refresh tokens are valid.<br />Format: Go duration string (e.g., "168h", "7d" as "168h").<br />If empty, defaults to 7 days (168h). |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `authCodeLifespan` _string_ | AuthCodeLifespan is the duration that authorization codes are valid.<br />Format: Go duration string (e.g., "10m", "5m").<br />If empty, defaults to 10 minutes. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.TokenResponseMapping
+
+
+
+TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
+using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
+the access token under paths like "authed_user.access_token".
+
+
+
+_Appears in:_
+- [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `accessTokenPath` _string_ | AccessTokenPath is the dot-notation path to the access token in the response.<br />Example: "authed_user.access_token" |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `tokenTypePath` _string_ | TokenTypePath is the dot-notation path to the token type in the response.<br />If not specified, defaults to "token_type". |  | Optional: \{\} <br /> |
+| `scopePath` _string_ | ScopePath is the dot-notation path to the scope string in the response.<br />If not specified, defaults to "scope". |  | Optional: \{\} <br /> |
+| `refreshTokenPath` _string_ | RefreshTokenPath is the dot-notation path to the refresh token in the response.<br />If not specified, defaults to "refresh_token". |  | Optional: \{\} <br /> |
+| `expiresInPath` _string_ | ExpiresInPath is the dot-notation path to the expires_in value (in seconds).<br />If not specified, defaults to "expires_in". |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.ToolConfigRef

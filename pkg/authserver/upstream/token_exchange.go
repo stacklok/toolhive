@@ -4,156 +4,134 @@
 package upstream
 
 import (
-	"context"
-	"errors"
-	"fmt"
+	"bytes"
+	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
-	"time"
 
 	"github.com/tidwall/gjson"
 )
 
-// customExchangeCodeForTokens performs the token exchange HTTP call directly,
-// bypassing golang.org/x/oauth2, and extracts fields using the configured mapping.
-// This supports providers like GovSlack that nest token fields under non-standard paths.
-func (p *BaseOAuth2Provider) customExchangeCodeForTokens(
-	ctx context.Context, code, codeVerifier string,
-) (*Tokens, error) {
-	// Build form data per RFC 6749 Section 4.1.3
-	data := url.Values{
-		"grant_type":   {"authorization_code"},
-		"code":         {code},
-		"redirect_uri": {p.config.RedirectURI},
-		"client_id":    {p.config.ClientID},
-	}
-	if p.config.ClientSecret != "" {
-		data.Set("client_secret", p.config.ClientSecret)
-	}
-	if codeVerifier != "" {
-		data.Set("code_verifier", codeVerifier)
-	}
-
-	tokens, err := p.doCustomTokenRequest(ctx, data)
-	if err != nil {
-		return nil, err
-	}
-
-	slog.Info("authorization code exchange successful (custom mapping)",
-		"has_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
-	)
-
-	return tokens, nil
+// tokenResponseRewriter is an http.RoundTripper that normalizes non-standard
+// OAuth token responses before the golang.org/x/oauth2 library parses them.
+//
+// Some providers (e.g., GovSlack) nest token fields under non-standard paths
+// like "authed_user.access_token" instead of the top-level "access_token".
+// This RoundTripper intercepts the response, extracts fields using gjson
+// dot-notation paths, and rewrites the response body with standard top-level
+// field names so the oauth2 library can parse them normally.
+type tokenResponseRewriter struct {
+	base     http.RoundTripper
+	mapping  *TokenResponseMapping
+	tokenURL string
 }
 
-// customRefreshTokens performs a refresh token request directly,
-// bypassing golang.org/x/oauth2, and extracts fields using the configured mapping.
-func (p *BaseOAuth2Provider) customRefreshTokens(
-	ctx context.Context, refreshToken string,
-) (*Tokens, error) {
-	// Build form data per RFC 6749 Section 6
-	data := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {p.config.ClientID},
-	}
-	if p.config.ClientSecret != "" {
-		data.Set("client_secret", p.config.ClientSecret)
-	}
-
-	tokens, err := p.doCustomTokenRequest(ctx, data)
+// RoundTrip intercepts HTTP responses from the token endpoint and rewrites
+// the JSON body to place mapped fields at the top level. Non-token-endpoint
+// requests (e.g., userInfo) pass through unchanged.
+func (t *tokenResponseRewriter) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
 	if err != nil {
-		return nil, err
+		return resp, err
 	}
 
-	slog.Info("token refresh successful (custom mapping)",
-		"has_new_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
-	)
-
-	return tokens, nil
-}
-
-// doCustomTokenRequest makes the HTTP POST to the token endpoint and extracts
-// fields from the response using the configured gjson paths.
-func (p *BaseOAuth2Provider) doCustomTokenRequest(
-	ctx context.Context, data url.Values,
-) (*Tokens, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		p.config.TokenEndpoint, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := p.httpClient.Do(req) //nolint:gosec // G704: URL is from provider config
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token response: %w", err)
+	// Only rewrite responses from the token endpoint
+	if req.URL.String() != t.tokenURL {
+		return resp, nil
 	}
 
+	// Only rewrite successful responses (errors should pass through for proper error handling)
 	if resp.StatusCode != http.StatusOK {
-		//nolint:gosec // G706: status code is an integer
-		slog.Debug("custom token request failed", "status", resp.StatusCode)
-		return nil, fmt.Errorf("token request failed with status %d", resp.StatusCode)
+		return resp, nil
 	}
 
-	return extractTokensFromResponse(body, p.config.TokenResponseMapping)
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	rewritten := rewriteTokenResponse(body, t.mapping)
+
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", "")
+	return resp, nil
 }
 
-// extractTokensFromResponse extracts token fields from raw JSON using gjson paths.
-func extractTokensFromResponse(body []byte, mapping *TokenResponseMapping) (*Tokens, error) {
+// rewriteTokenResponse extracts fields from the raw JSON using gjson paths
+// and produces a new JSON object with standard OAuth 2.0 top-level field names.
+// Fields that already exist at the top level and aren't overridden by the
+// mapping are preserved.
+func rewriteTokenResponse(body []byte, mapping *TokenResponseMapping) []byte {
+	// Start with the original response to preserve any extra fields
+	var original map[string]any
+	if err := json.Unmarshal(body, &original); err != nil {
+		// If we can't parse, return as-is and let oauth2 library handle the error
+		return body
+	}
+
+	// Extract and set mapped fields at the top level
+	if v := gjson.GetBytes(body, mapping.AccessTokenPath); v.Exists() {
+		original["access_token"] = v.String()
+	}
+
+	if path := pathOrDefault(mapping.TokenTypePath, ""); path != "" {
+		if v := gjson.GetBytes(body, path); v.Exists() {
+			original["token_type"] = v.String()
+		}
+	}
+	// Default token_type to "Bearer" if not present
+	if _, ok := original["token_type"]; !ok {
+		original["token_type"] = "Bearer"
+	}
+
+	if path := pathOrDefault(mapping.RefreshTokenPath, ""); path != "" {
+		if v := gjson.GetBytes(body, path); v.Exists() {
+			original["refresh_token"] = v.String()
+		}
+	}
+
+	if path := pathOrDefault(mapping.ExpiresInPath, ""); path != "" {
+		if v := gjson.GetBytes(body, path); v.Exists() && v.Int() > 0 {
+			original["expires_in"] = v.Int()
+		}
+	}
+
+	if path := pathOrDefault(mapping.ScopePath, ""); path != "" {
+		if v := gjson.GetBytes(body, path); v.Exists() {
+			original["scope"] = v.String()
+		}
+	}
+
+	rewritten, err := json.Marshal(original)
+	if err != nil {
+		return body
+	}
+	return rewritten
+}
+
+// wrapHTTPClientWithMapping wraps an HTTP client's transport with a
+// tokenResponseRewriter when a TokenResponseMapping is configured.
+// Returns the original client unchanged if mapping is nil.
+func wrapHTTPClientWithMapping(client *http.Client, mapping *TokenResponseMapping, tokenURL string) *http.Client {
 	if mapping == nil {
-		return nil, errors.New("token response mapping is required")
+		return client
 	}
 
-	// Required: access_token
-	accessToken := gjson.GetBytes(body, mapping.AccessTokenPath).String()
-	if accessToken == "" {
-		return nil, fmt.Errorf("token response missing access_token at path: %s", mapping.AccessTokenPath)
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
 	}
 
-	// Token type (default path: "token_type")
-	tokenTypePath := pathOrDefault(mapping.TokenTypePath, "token_type")
-	tokenType := gjson.GetBytes(body, tokenTypePath).String()
-	if tokenType == "" {
-		tokenType = "Bearer" // Default per RFC 6749
+	// Create a shallow copy to avoid mutating the original client
+	wrapped := *client
+	wrapped.Transport = &tokenResponseRewriter{
+		base:     base,
+		mapping:  mapping,
+		tokenURL: tokenURL,
 	}
-	if !strings.EqualFold(tokenType, "bearer") && !strings.EqualFold(tokenType, "user") {
-		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", tokenType)
-	}
-
-	// Refresh token (default path: "refresh_token")
-	refreshTokenPath := pathOrDefault(mapping.RefreshTokenPath, "refresh_token")
-	refreshToken := gjson.GetBytes(body, refreshTokenPath).String()
-
-	// Expires in (default path: "expires_in")
-	expiresInPath := pathOrDefault(mapping.ExpiresInPath, "expires_in")
-	expiresAt := time.Now().Add(defaultTokenExpiration)
-	expiresInResult := gjson.GetBytes(body, expiresInPath)
-	if expiresInResult.Exists() && expiresInResult.Int() > 0 {
-		expiresAt = time.Now().Add(time.Duration(expiresInResult.Int()) * time.Second)
-	}
-
-	// Extract ID token from standard location (not mapped — OIDC only)
-	idToken := gjson.GetBytes(body, "id_token").String()
-
-	return &Tokens{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		IDToken:      idToken,
-		ExpiresAt:    expiresAt,
-	}, nil
+	return &wrapped
 }
 
 // pathOrDefault returns the path if non-empty, otherwise returns the default.

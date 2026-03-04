@@ -420,16 +420,13 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 	slog.Info("exchanging authorization code for tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 		"has_pkce_verifier", codeVerifier != "",
-		"custom_mapping", p.config.TokenResponseMapping != nil,
 	)
 
-	// If custom token response mapping is configured, bypass oauth2 library
-	if p.config.TokenResponseMapping != nil {
-		return p.customExchangeCodeForTokens(ctx, code, codeVerifier)
-	}
-
-	// Inject our custom HTTP client into the context for oauth2 to use
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
+	// Wrap HTTP client with token response rewriter if mapping is configured.
+	// This normalizes non-standard responses (e.g., GovSlack's nested fields)
+	// before the oauth2 library parses them, keeping the standard exchange flow.
+	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	// Build exchange options
 	var opts []oauth2.AuthCodeOption
@@ -465,13 +462,9 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		"token_endpoint", p.config.TokenEndpoint,
 	)
 
-	// If custom token response mapping is configured, bypass oauth2 library
-	if p.config.TokenResponseMapping != nil {
-		return p.customRefreshTokens(ctx, refreshToken)
-	}
-
-	// Inject our custom HTTP client into the context for oauth2 to use
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
+	// Wrap HTTP client with token response rewriter if mapping is configured.
+	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	// Create an expired token with the refresh token to trigger refresh
 	expiredToken := &oauth2.Token{

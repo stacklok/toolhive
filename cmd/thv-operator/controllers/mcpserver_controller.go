@@ -1456,6 +1456,8 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 }
 
 // finalizeMCPServer performs the finalizer logic for the MCPServer
+//
+//nolint:gocyclo
 func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	// Update the MCPServer status
@@ -1478,16 +1480,28 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 		return fmt.Errorf("failed to get StatefulSet %s: %w", m.Name, err)
 	}
 
-	// Step 3: Attempt to delete associated service by name
+	// Step 3: Attempt to delete associated services by name
 	svc := &corev1.Service{}
-	serviceName := fmt.Sprintf("mcp-%s-headless", m.Name)
-	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: m.Namespace}, svc)
+	headlessSvcName := fmt.Sprintf("mcp-%s-headless", m.Name)
+	err = r.Get(ctx, types.NamespacedName{Name: headlessSvcName, Namespace: m.Namespace}, svc)
 	if err == nil {
 		if delErr := r.Delete(ctx, svc); delErr != nil && !errors.IsNotFound(delErr) {
-			return fmt.Errorf("failed to delete Service %s: %w", serviceName, delErr)
+			return fmt.Errorf("failed to delete Service %s: %w", headlessSvcName, delErr)
 		}
 	} else if !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to check Service %s: %w", serviceName, err)
+		return fmt.Errorf("failed to check Service %s: %w", headlessSvcName, err)
+	}
+
+	// Delete the MCP ClusterIP service with session affinity
+	mcpSvc := &corev1.Service{}
+	mcpSvcName := fmt.Sprintf("mcp-%s", m.Name)
+	err = r.Get(ctx, types.NamespacedName{Name: mcpSvcName, Namespace: m.Namespace}, mcpSvc)
+	if err == nil {
+		if delErr := r.Delete(ctx, mcpSvc); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete Service %s: %w", mcpSvcName, delErr)
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check Service %s: %w", mcpSvcName, err)
 	}
 
 	// Step 4: Delete associated RunConfig ConfigMap

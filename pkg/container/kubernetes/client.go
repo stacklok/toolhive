@@ -46,6 +46,8 @@ const (
 	mcpContainerName = "mcp"
 	// defaultNamespace is the default Kubernetes namespace
 	defaultNamespace = "default"
+	// serviceFieldManager is the field manager name for server-side apply operations
+	serviceFieldManager = "toolhive-container-manager"
 )
 
 // RuntimeName is the name identifier for the Kubernetes runtime
@@ -328,6 +330,8 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 }
 
 // DeployWorkload implements runtime.Runtime.
+//
+//nolint:gocyclo
 func (c *Client) DeployWorkload(ctx context.Context,
 	image string,
 	containerName string,
@@ -407,7 +411,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 			WithTemplate(podTemplateSpec))
 
 	// Apply the statefulset using server-side apply
-	fieldManager := "toolhive-container-manager"
+	fieldManager := serviceFieldManager
 	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
 		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
 			FieldManager: fieldManager,
@@ -421,10 +425,16 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	slog.Info("applied statefulset", "name", createdStatefulSet.Name)
 
 	if transportTypeRequiresHeadlessService(transportType) && options != nil {
-		// Create a headless service for SSE transport
+		// Create a headless service for DNS discovery
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create headless service: %w", err)
+		}
+
+		// Create a regular ClusterIP service with session affinity for the proxy-runner target
+		err = c.createMCPService(ctx, containerName, namespace, containerLabels, options)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create MCP service: %w", err)
 		}
 	}
 
@@ -933,7 +943,7 @@ func (c *Client) createHeadlessService(
 			WithClusterIP("None")) // "None" makes it a headless service
 
 	// Apply the service using server-side apply
-	fieldManager := "toolhive-container-manager"
+	fieldManager := serviceFieldManager
 	_, err = c.client.CoreV1().Services(namespace).
 		Apply(ctx, serviceApply, metav1.ApplyOptions{
 			FieldManager: fieldManager,
@@ -946,6 +956,59 @@ func (c *Client) createHeadlessService(
 
 	slog.Info("created headless service for HTTP transport", "name", containerName)
 
+	return nil
+}
+
+// createMCPService creates a regular ClusterIP service with SessionAffinity for the MCP server StatefulSet.
+// This service provides load balancing with client-IP-based session stickiness, which the proxy-runner
+// uses as its target host. The headless service is retained for DNS discovery purposes.
+func (c *Client) createMCPService(
+	ctx context.Context,
+	containerName string,
+	namespace string,
+	labels map[string]string,
+	options *runtime.DeployWorkloadOptions,
+) error {
+	// Create service ports from the container ports
+	servicePorts, err := createServicePorts(options)
+	if err != nil {
+		return err
+	}
+
+	// If no ports were configured, don't create a service
+	if len(servicePorts) == 0 {
+		slog.Info("no ports configured for MCP transport, skipping service creation")
+		return nil
+	}
+
+	svcName := fmt.Sprintf("mcp-%s", containerName)
+
+	// Create the service apply configuration with SessionAffinity
+	serviceApply := corev1apply.Service(svcName, namespace).
+		WithLabels(labels).
+		WithSpec(corev1apply.ServiceSpec().
+			WithSelector(map[string]string{
+				"app": containerName,
+			}).
+			WithPorts(servicePorts...).
+			WithType(corev1.ServiceTypeClusterIP).
+			WithSessionAffinity(corev1.ServiceAffinityClientIP))
+
+	// Apply the service using server-side apply
+	fieldManager := serviceFieldManager
+	_, err = c.client.CoreV1().Services(namespace).
+		Apply(ctx, serviceApply, metav1.ApplyOptions{
+			FieldManager: fieldManager,
+			Force:        true,
+		})
+
+	if err != nil {
+		return fmt.Errorf("failed to apply MCP service: %w", err)
+	}
+
+	slog.Info("created MCP service with session affinity", "name", svcName)
+
+	// TODO: rename SSEHeadlessServiceName to MCPServiceName
 	options.SSEHeadlessServiceName = svcName
 	return nil
 }

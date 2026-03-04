@@ -47,19 +47,21 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 //	@Param			scope	query		string	false	"Filter by scope (user or project)"	Enums(user, project)
 //	@Param			client	query		string	false	"Filter by client app"
 //	@Param			project_root	query	string	false	"Filter by project root path"
+//	@Param			group	query		string	false	"Filter by group name"
 //	@Success		200		{object}	skillListResponse
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/skills [get]
 func (s *SkillsRoutes) listSkills(w http.ResponseWriter, r *http.Request) error {
 	scope := skills.Scope(r.URL.Query().Get("scope"))
 	projectRoot := r.URL.Query().Get("project_root")
-
 	client := r.URL.Query().Get("client")
+	group := r.URL.Query().Get("group")
 
 	result, err := s.skillService.List(r.Context(), skills.ListOptions{
 		Scope:       scope,
 		ClientApp:   client,
 		ProjectRoot: projectRoot,
+		Group:       group,
 	})
 	if err != nil {
 		return err
@@ -99,6 +101,7 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 		ProjectRoot: req.ProjectRoot,
 		Client:      req.Client,
 		Force:       req.Force,
+		Group:       req.Group,
 	})
 	if err != nil {
 		return err

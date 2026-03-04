@@ -205,7 +205,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		if err != nil {
 			return nil, err
 		}
-		return result, s.registerSkillInGroups(ctx, opts.Groups, opts.Name)
+		return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
 	}
 
 	// Plain skill name — validate and proceed with existing flow.
@@ -222,14 +222,14 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		if err != nil {
 			return nil, err
 		}
-		return result, s.registerSkillInGroups(ctx, opts.Groups, opts.Name)
+		return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
 	}
 
 	result, err := s.installWithExtraction(ctx, opts, scope)
 	if err != nil {
 		return nil, err
 	}
-	return result, s.registerSkillInGroups(ctx, opts.Groups, opts.Name)
+	return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
 }
 
 // Uninstall removes an installed skill and cleans up files for all clients.
@@ -807,12 +807,12 @@ func defaultScope(s skills.Scope) skills.Scope {
 	return s
 }
 
-// registerSkillInGroups adds the skill to each requested group when a group
-// manager is configured. It is a no-op when groupNames is empty or the manager
+// registerSkillInGroup adds the skill to the requested group when a group
+// manager is configured. It is a no-op when groupName is empty or the manager
 // is nil (group support is optional).
-func (s *service) registerSkillInGroups(ctx context.Context, groupNames []string, skillName string) error {
-	if len(groupNames) == 0 || s.groupManager == nil {
+func (s *service) registerSkillInGroup(ctx context.Context, groupName string, skillName string) error {
+	if groupName == "" || s.groupManager == nil {
 		return nil
 	}
-	return groups.AddSkillToGroups(ctx, s.groupManager, groupNames, skillName)
+	return groups.AddSkillToGroup(ctx, s.groupManager, groupName, skillName)
 }

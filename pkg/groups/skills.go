@@ -9,23 +9,25 @@ import (
 	"slices"
 )
 
-// AddSkillToGroups adds skillName to the Skills slice of each named group.
+// AddSkillToGroup adds skillName to the Skills slice of the named group.
 // Groups that do not exist return an error. Duplicate skill names are skipped.
-func AddSkillToGroups(ctx context.Context, mgr Manager, groupNames []string, skillName string) error {
-	for _, groupName := range groupNames {
-		group, err := mgr.Get(ctx, groupName)
-		if err != nil {
-			return fmt.Errorf("getting group %q: %w", groupName, err)
-		}
+// Empty groupName is a no-op.
+func AddSkillToGroup(ctx context.Context, mgr Manager, groupName string, skillName string) error {
+	if groupName == "" {
+		return nil
+	}
+	group, err := mgr.Get(ctx, groupName)
+	if err != nil {
+		return fmt.Errorf("getting group %q: %w", groupName, err)
+	}
 
-		if slices.Contains(group.Skills, skillName) {
-			continue
-		}
+	if slices.Contains(group.Skills, skillName) {
+		return nil
+	}
 
-		group.Skills = append(group.Skills, skillName)
-		if err := mgr.Update(ctx, group); err != nil {
-			return fmt.Errorf("updating group %q: %w", groupName, err)
-		}
+	group.Skills = append(group.Skills, skillName)
+	if err := mgr.Update(ctx, group); err != nil {
+		return fmt.Errorf("updating group %q: %w", groupName, err)
 	}
 	return nil
 }

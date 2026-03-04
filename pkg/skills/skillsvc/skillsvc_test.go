@@ -51,9 +51,11 @@ func tempDir(t *testing.T) string {
 
 func makeProjectRoot(t *testing.T) string {
 	t.Helper()
-	projectRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, ".git"), 0o755))
-	return projectRoot
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(resolved, ".git"), 0o755))
+	return resolved
 }
 
 func TestList(t *testing.T) {
@@ -1647,7 +1649,7 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 	}{
 		{
 			name: "install with group registers skill",
-			opts: skills.InstallOptions{Name: "my-skill", Groups: []string{"mygroup"}},
+			opts: skills.InstallOptions{Name: "my-skill", Group: "mygroup"},
 			setupStoreMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 			},
@@ -1669,7 +1671,7 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 		},
 		{
 			name: "group registration error propagates",
-			opts: skills.InstallOptions{Name: "my-skill", Groups: []string{"badgroup"}},
+			opts: skills.InstallOptions{Name: "my-skill", Group: "badgroup"},
 			setupStoreMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 			},

@@ -20,16 +20,16 @@ func TestAddSkillToGroups(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		groupNames []string
-		skillName  string
-		setupMock  func(*groupmocks.MockManager)
-		wantErr    string
+		name      string
+		groupName string
+		skillName string
+		setupMock func(*groupmocks.MockManager)
+		wantErr   string
 	}{
 		{
-			name:       "adds skill to one group",
-			groupNames: []string{"mygroup"},
-			skillName:  "my-skill",
+			name:      "adds skill to one group",
+			groupName: "mygroup",
+			skillName: "my-skill",
 			setupMock: func(m *groupmocks.MockManager) {
 				m.EXPECT().Get(gomock.Any(), "mygroup").
 					Return(&Group{Name: "mygroup", Skills: []string{}}, nil)
@@ -38,9 +38,9 @@ func TestAddSkillToGroups(t *testing.T) {
 			},
 		},
 		{
-			name:       "skips duplicate skill",
-			groupNames: []string{"mygroup"},
-			skillName:  "my-skill",
+			name:      "skips duplicate skill",
+			groupName: "mygroup",
+			skillName: "my-skill",
 			setupMock: func(m *groupmocks.MockManager) {
 				// Already has the skill — no Update call expected.
 				m.EXPECT().Get(gomock.Any(), "mygroup").
@@ -48,30 +48,15 @@ func TestAddSkillToGroups(t *testing.T) {
 			},
 		},
 		{
-			name:       "adds skill to multiple groups",
-			groupNames: []string{"group-a", "group-b"},
-			skillName:  "my-skill",
-			setupMock: func(m *groupmocks.MockManager) {
-				m.EXPECT().Get(gomock.Any(), "group-a").
-					Return(&Group{Name: "group-a", Skills: []string{}}, nil)
-				m.EXPECT().Update(gomock.Any(), &Group{Name: "group-a", Skills: []string{"my-skill"}}).
-					Return(nil)
-				m.EXPECT().Get(gomock.Any(), "group-b").
-					Return(&Group{Name: "group-b", Skills: []string{}}, nil)
-				m.EXPECT().Update(gomock.Any(), &Group{Name: "group-b", Skills: []string{"my-skill"}}).
-					Return(nil)
-			},
+			name:      "no-op when group names is empty",
+			groupName: "",
+			skillName: "my-skill",
+			setupMock: func(_ *groupmocks.MockManager) {},
 		},
 		{
-			name:       "no-op when group names is empty",
-			groupNames: []string{},
-			skillName:  "my-skill",
-			setupMock:  func(_ *groupmocks.MockManager) {},
-		},
-		{
-			name:       "returns error when group not found",
-			groupNames: []string{"nonexistent"},
-			skillName:  "my-skill",
+			name:      "returns error when group not found",
+			groupName: "nonexistent",
+			skillName: "my-skill",
 			setupMock: func(m *groupmocks.MockManager) {
 				m.EXPECT().Get(gomock.Any(), "nonexistent").
 					Return(nil, errors.New("group not found"))
@@ -79,9 +64,9 @@ func TestAddSkillToGroups(t *testing.T) {
 			wantErr: "getting group",
 		},
 		{
-			name:       "returns error when Update fails",
-			groupNames: []string{"mygroup"},
-			skillName:  "my-skill",
+			name:      "returns error when Update fails",
+			groupName: "mygroup",
+			skillName: "my-skill",
 			setupMock: func(m *groupmocks.MockManager) {
 				m.EXPECT().Get(gomock.Any(), "mygroup").
 					Return(&Group{Name: "mygroup", Skills: []string{}}, nil)
@@ -100,7 +85,7 @@ func TestAddSkillToGroups(t *testing.T) {
 			mgr := groupmocks.NewMockManager(ctrl)
 			tt.setupMock(mgr)
 
-			err := AddSkillToGroups(context.Background(), mgr, tt.groupNames, tt.skillName)
+			err := AddSkillToGroup(context.Background(), mgr, tt.groupName, tt.skillName)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

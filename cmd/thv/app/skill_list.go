@@ -44,7 +44,6 @@ func init() {
 	AddFormatFlag(skillListCmd, &skillListFormat)
 	AddGroupFlag(skillListCmd, &skillListGroup, false)
 	skillListCmd.Flags().StringVar(&skillListProjectRoot, "project-root", "", "Project root path for project-scoped skills")
-	skillListCmd.Flags().StringVar(&skillListGroup, "group", "", "Filter by group")
 }
 
 func skillListCmdFunc(cmd *cobra.Command, _ []string) error {

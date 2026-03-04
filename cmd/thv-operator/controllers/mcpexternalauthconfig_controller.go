@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -114,33 +115,17 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return r.handleConfigHashChange(ctx, externalAuthConfig, configHash)
 	}
 
-	// Always find and update referencing servers, even when hash hasn't changed.
-	// This ensures ReferencingServers is updated when MCPServers are created or deleted.
-	referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing MCPServers")
-		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
-	}
-
-	serverNames := make([]string, 0, len(referencingServers))
-	for _, server := range referencingServers {
-		serverNames = append(serverNames, server.Name)
-	}
-
-	referencingServersChanged := !stringSlicesEqual(externalAuthConfig.Status.ReferencingServers, serverNames)
-	if referencingServersChanged {
-		externalAuthConfig.Status.ReferencingServers = serverNames
-		conditionChanged = true
-	}
-
+	// Update condition if it changed (even without hash change)
 	if conditionChanged {
 		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
-			logger.Error(err, "Failed to update MCPExternalAuthConfig status")
+			logger.Error(err, "Failed to update MCPExternalAuthConfig status after condition change")
 			return ctrl.Result{}, err
 		}
 	}
 
-	return ctrl.Result{}, nil
+	// Even when hash hasn't changed, update referencing servers list.
+	// This ensures ReferencingServers is updated when MCPServers are created or deleted.
+	return r.updateReferencingServers(ctx, externalAuthConfig)
 }
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
@@ -296,17 +281,33 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 		Complete(r)
 }
 
-// stringSlicesEqual reports whether two string slices contain the same elements in the same order.
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
+// updateReferencingServers finds referencing MCPServers and updates the status if the list changed
+func (r *MCPExternalAuthConfigReconciler) updateReferencingServers(
+	ctx context.Context,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) (ctrl.Result, error) {
+	referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
+	if err != nil {
+		logger := log.FromContext(ctx)
+		logger.Error(err, "Failed to find referencing MCPServers")
+		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+
+	serverNames := make([]string, 0, len(referencingServers))
+	for _, server := range referencingServers {
+		serverNames = append(serverNames, server.Name)
+	}
+
+	if !slices.Equal(externalAuthConfig.Status.ReferencingServers, serverNames) {
+		externalAuthConfig.Status.ReferencingServers = serverNames
+		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
+			logger := log.FromContext(ctx)
+			logger.Error(err, "Failed to update MCPExternalAuthConfig status")
+			return ctrl.Result{}, err
 		}
 	}
-	return true
+
+	return ctrl.Result{}, nil
 }
 
 // GetExternalAuthConfigForMCPServer retrieves the MCPExternalAuthConfig referenced by an MCPServer.

@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -159,7 +160,7 @@ func (r *ToolConfigReconciler) updateReferencingServers(
 		serverNames = append(serverNames, server.Name)
 	}
 
-	if !stringSlicesEqual(toolConfig.Status.ReferencingServers, serverNames) {
+	if !slices.Equal(toolConfig.Status.ReferencingServers, serverNames) {
 		toolConfig.Status.ReferencingServers = serverNames
 		if err := r.Status().Update(ctx, toolConfig); err != nil {
 			logger := log.FromContext(ctx)

@@ -845,7 +845,8 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			Labels:    labelsForVirtualMCPServer(baseVmcp.Name),
 		},
 		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeClusterIP,
+			Type:            corev1.ServiceTypeClusterIP,
+			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
 				Port: vmcpDefaultPort,
 			}},
@@ -889,6 +890,16 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			service: func() *corev1.Service {
 				s := baseService.DeepCopy()
 				s.Spec.Ports[0].Port = 9999
+				return s
+			}(),
+			vmcp:        baseVmcp.DeepCopy(),
+			needsUpdate: true,
+		},
+		{
+			name: "session affinity missing",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.SessionAffinity = ""
 				return s
 			}(),
 			vmcp:        baseVmcp.DeepCopy(),

@@ -860,6 +860,7 @@ func (r *VirtualMCPServerReconciler) ensureService(
 		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.Type = newService.Spec.Type
+		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
 		service.Labels = newService.Labels
 		service.Annotations = newService.Annotations
 
@@ -1088,6 +1089,11 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		expectedServiceType = corev1.ServiceType(vmcp.Spec.ServiceType)
 	}
 	if service.Spec.Type != expectedServiceType {
+		return true
+	}
+
+	// Check if session affinity has drifted
+	if service.Spec.SessionAffinity != corev1.ServiceAffinityClientIP {
 		return true
 	}
 

@@ -311,6 +311,7 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 	assert.Equal(t, vmcpServiceName(vmcp.Name), service.Name)
 	assert.Equal(t, vmcp.Namespace, service.Namespace)
 	assert.Equal(t, corev1.ServiceTypeClusterIP, service.Spec.Type)
+	assert.Equal(t, corev1.ServiceAffinityClientIP, service.Spec.SessionAffinity)
 
 	// Verify labels
 	expectedLabels := labelsForVirtualMCPServer(vmcp.Name)

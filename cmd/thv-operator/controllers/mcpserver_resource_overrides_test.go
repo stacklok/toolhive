@@ -354,6 +354,7 @@ func TestResourceOverrides(t *testing.T) {
 
 			assert.Equal(t, tt.expectedServiceLabels, service.Labels)
 			assert.Equal(t, tt.expectedServiceAnns, service.Annotations)
+			assert.Equal(t, corev1.ServiceAffinityClientIP, service.Spec.SessionAffinity)
 
 			// For test cases with environment variables, verify they are set correctly
 			if tt.name == "with proxy environment variables" || tt.name == "with both metadata overrides and proxy environment variables" || tt.name == "with debug logging via TOOLHIVE_DEBUG env var" {

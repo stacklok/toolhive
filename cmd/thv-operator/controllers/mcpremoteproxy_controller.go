@@ -304,6 +304,7 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Service object")
 		}
 		service.Spec.Ports = newService.Spec.Ports
+		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
 		service.Labels = newService.Labels
 		service.Annotations = newService.Annotations
 
@@ -808,6 +809,11 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1alpha1.MCPRemoteProxy) bool {
 	// Check if port has changed
 	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != int32(proxy.GetProxyPort()) {
+		return true
+	}
+
+	// Check if session affinity has drifted
+	if service.Spec.SessionAffinity != corev1.ServiceAffinityClientIP {
 		return true
 	}
 

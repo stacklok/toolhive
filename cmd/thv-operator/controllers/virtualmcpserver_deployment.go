@@ -613,8 +613,9 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 			Annotations: serviceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Type:     serviceType,
-			Selector: ls,
+			Type:            serviceType,
+			Selector:        ls,
+			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
 				Port:       vmcpDefaultPort,
 				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),

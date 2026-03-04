@@ -61,6 +61,12 @@ jobs:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup docker (missing on MacOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install docker
+          colima start
+
       # Run tests with all dependencies already cached
       - name: Run tests with coverage
         run: task test-coverage

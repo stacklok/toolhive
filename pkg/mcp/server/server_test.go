@@ -128,12 +128,12 @@ func TestServer_GetAddress(t *testing.T) {
 
 func TestServer_StartAndShutdown(t *testing.T) {
 	t.Parallel()
-	config := &Config{
+	cfg := &Config{
 		Host: "127.0.0.1",
 		Port: "0", // Use port 0 to let the system assign a free port
 	}
 
-	server := newTestServer(t, config)
+	server := newTestServer(t, cfg)
 	require.NotNil(t, server)
 
 	// Start server in a goroutine

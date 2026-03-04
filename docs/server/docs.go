@@ -1826,6 +1826,10 @@ const docTemplate = `{
                         "description": "Force allows overwriting unmanaged skill directories",
                         "type": "boolean"
                     },
+                    "group": {
+                        "description": "Group is the group name to add the skill to after installation",
+                        "type": "string"
+                    },
                     "name": {
                         "description": "Name or OCI reference of the skill to install",
                         "type": "string"
@@ -3547,6 +3551,14 @@ const docTemplate = `{
                         "description": "Filter by project root path",
                         "in": "query",
                         "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by group name",
+                        "in": "query",
+                        "name": "group",
                         "schema": {
                             "type": "string"
                         }

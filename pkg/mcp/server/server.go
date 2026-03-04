@@ -39,6 +39,19 @@ type Server struct {
 
 // New creates a new ToolHive MCP server
 func New(ctx context.Context, config *Config) (*Server, error) {
+	// Create ToolHive handler
+	handler, err := NewHandler(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ToolHive handler: %w", err)
+	}
+
+	return newServerWithHandler(ctx, config, handler), nil
+}
+
+// newServerWithHandler creates a new Server with a pre-built handler. This is
+// package-private and intended for use in tests where handler dependencies can
+// be injected without a real container runtime.
+func newServerWithHandler(ctx context.Context, config *Config, handler *Handler) *Server {
 	// Create the MCP server
 	versionInfo := versions.GetVersionInfo()
 	mcpServer := server.NewMCPServer(
@@ -47,12 +60,6 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 		server.WithToolCapabilities(false),
 		server.WithLogging(),
 	)
-
-	// Create ToolHive handler
-	handler, err := NewHandler(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ToolHive handler: %w", err)
-	}
 
 	// Register tools
 	registerTools(mcpServer, handler)
@@ -79,7 +86,7 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 		mcpServer:  mcpServer,
 		httpServer: httpServer,
 		handler:    handler,
-	}, nil
+	}
 }
 
 // Start starts the MCP server

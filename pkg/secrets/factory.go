@@ -241,7 +241,7 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 		if err != nil {
 			// Decryption failed - don't store the password in keyring
 			// This allows the user to retry with the correct password
-			return nil, err
+			return nil, fmt.Errorf("failed to create provider: %w", err)
 		}
 
 		// Only store password in keyring after successful validation (decryption)

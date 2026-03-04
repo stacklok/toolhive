@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -112,16 +113,19 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	hashChanged := externalAuthConfig.Status.ConfigHash != configHash
 	if hashChanged {
 		return r.handleConfigHashChange(ctx, externalAuthConfig, configHash)
-	} else if conditionChanged {
-		// Hash hasn't changed, but condition did change - need to update status
+	}
+
+	// Update condition if it changed (even without hash change)
+	if conditionChanged {
 		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
-			logger := log.FromContext(ctx)
 			logger.Error(err, "Failed to update MCPExternalAuthConfig status after condition change")
 			return ctrl.Result{}, err
 		}
 	}
 
-	return ctrl.Result{}, nil
+	// Even when hash hasn't changed, update referencing servers list.
+	// This ensures ReferencingServers is updated when MCPServers are created or deleted.
+	return r.updateReferencingServers(ctx, externalAuthConfig)
 }
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
@@ -156,6 +160,7 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	for _, server := range referencingServers {
 		serverNames = append(serverNames, server.Name)
 	}
+	slices.Sort(serverNames)
 	externalAuthConfig.Status.ReferencingServers = serverNames
 
 	// Update the MCPExternalAuthConfig status
@@ -247,41 +252,64 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
-	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+	// Create a handler that maps MCPServer changes to MCPExternalAuthConfig reconciliation requests.
+	// When an MCPServer is created, updated, or deleted, we reconcile the MCPExternalAuthConfig
+	// it references so that the ReferencingServers status field stays up to date.
+	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
+		func(_ context.Context, obj client.Object) []reconcile.Request {
+			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
 			if !ok {
 				return nil
 			}
 
-			// Find all MCPServers that reference this MCPExternalAuthConfig
-			mcpServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
-			if err != nil {
-				log.FromContext(ctx).Error(err, "Failed to find referencing MCPServers")
+			if mcpServer.Spec.ExternalAuthConfigRef == nil {
 				return nil
 			}
 
-			// Create reconcile requests for each referencing MCPServer
-			requests := make([]reconcile.Request, 0, len(mcpServers))
-			for _, server := range mcpServers {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      server.Name,
-						Namespace: server.Namespace,
-					},
-				})
-			}
-
-			return requests
+			return []reconcile.Request{{
+				NamespacedName: types.NamespacedName{
+					Name:      mcpServer.Spec.ExternalAuthConfigRef.Name,
+					Namespace: mcpServer.Namespace,
+				},
+			}}
 		},
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPExternalAuthConfig{}).
-		// Watch for MCPServers and reconcile the MCPExternalAuthConfig when they change
-		Watches(&mcpv1alpha1.MCPServer{}, externalAuthConfigHandler).
+		// Watch for MCPServers and reconcile the referenced MCPExternalAuthConfig when they change
+		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
 		Complete(r)
+}
+
+// updateReferencingServers finds referencing MCPServers and updates the status if the list changed
+func (r *MCPExternalAuthConfigReconciler) updateReferencingServers(
+	ctx context.Context,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) (ctrl.Result, error) {
+	referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
+	if err != nil {
+		logger := log.FromContext(ctx)
+		logger.Error(err, "Failed to find referencing MCPServers")
+		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
+	}
+
+	serverNames := make([]string, 0, len(referencingServers))
+	for _, server := range referencingServers {
+		serverNames = append(serverNames, server.Name)
+	}
+	slices.Sort(serverNames)
+
+	if !slices.Equal(externalAuthConfig.Status.ReferencingServers, serverNames) {
+		externalAuthConfig.Status.ReferencingServers = serverNames
+		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
+			logger := log.FromContext(ctx)
+			logger.Error(err, "Failed to update MCPExternalAuthConfig status")
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // GetExternalAuthConfigForMCPServer retrieves the MCPExternalAuthConfig referenced by an MCPServer.

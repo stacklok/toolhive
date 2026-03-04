@@ -242,26 +242,26 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		// It("Should update MCPExternalAuthConfig status with referencing server", func() {
-		// 	// Wait for the auth config status to be updated with the referencing server
-		// 	Eventually(func() bool {
-		// 		updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
-		// 		err := k8sClient.Get(ctx, types.NamespacedName{
-		// 			Name:      authConfigName,
-		// 			Namespace: namespace,
-		// 		}, updatedAuthConfig)
-		// 		if err != nil {
-		// 			return false
-		// 		}
-		// 		// Check if the server is in the referencing servers list
-		// 		for _, server := range updatedAuthConfig.Status.ReferencingServers {
-		// 			if server == mcpServerName {
-		// 				return true
-		// 			}
-		// 		}
-		// 		return false
-		// 	}, timeout, interval).Should(BeTrue())
-		// })
+		It("Should update MCPExternalAuthConfig status with referencing server", func() {
+			// Wait for the auth config status to be updated with the referencing server
+			Eventually(func() bool {
+				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      authConfigName,
+					Namespace: namespace,
+				}, updatedAuthConfig)
+				if err != nil {
+					return false
+				}
+				// Check if the server is in the referencing servers list
+				for _, server := range updatedAuthConfig.Status.ReferencingServers {
+					if server == mcpServerName {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
 
 		It("Should create ConfigMap with token exchange configuration", func() {
 			// Wait for ConfigMap to be created

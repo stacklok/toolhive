@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -81,48 +82,92 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	configHash := r.calculateConfigHash(toolConfig.Spec)
 
 	// Check if the hash has changed
-	if toolConfig.Status.ConfigHash != configHash {
-		logger.Info("MCPToolConfig configuration changed", "oldHash", toolConfig.Status.ConfigHash, "newHash", configHash)
+	hashChanged := toolConfig.Status.ConfigHash != configHash
+	if hashChanged {
+		return r.handleConfigHashChange(ctx, toolConfig, configHash)
+	}
 
-		// Update the status with the new hash
-		toolConfig.Status.ConfigHash = configHash
-		toolConfig.Status.ObservedGeneration = toolConfig.Generation
+	// Even when hash hasn't changed, update referencing servers list.
+	// This ensures ReferencingServers is updated when MCPServers are created or deleted.
+	return r.updateReferencingServers(ctx, toolConfig)
+}
 
-		// Find all MCPServers that reference this MCPToolConfig
-		referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
-		if err != nil {
-			logger.Error(err, "Failed to find referencing MCPServers")
-			return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
+// handleConfigHashChange handles the logic when the config hash changes
+func (r *ToolConfigReconciler) handleConfigHashChange(
+	ctx context.Context,
+	toolConfig *mcpv1alpha1.MCPToolConfig,
+	configHash string,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("MCPToolConfig configuration changed", "oldHash", toolConfig.Status.ConfigHash, "newHash", configHash)
+
+	// Update the status with the new hash
+	toolConfig.Status.ConfigHash = configHash
+	toolConfig.Status.ObservedGeneration = toolConfig.Generation
+
+	// Find all MCPServers that reference this MCPToolConfig
+	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
+	if err != nil {
+		logger.Error(err, "Failed to find referencing MCPServers")
+		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
+	}
+
+	// Update the status with the list of referencing servers
+	serverNames := make([]string, 0, len(referencingServers))
+	for _, server := range referencingServers {
+		serverNames = append(serverNames, server.Name)
+	}
+	slices.Sort(serverNames)
+	toolConfig.Status.ReferencingServers = serverNames
+
+	// Update the MCPToolConfig status
+	if err := r.Status().Update(ctx, toolConfig); err != nil {
+		logger.Error(err, "Failed to update MCPToolConfig status")
+		return ctrl.Result{}, err
+	}
+
+	// Trigger reconciliation of all referencing MCPServers
+	for _, server := range referencingServers {
+		logger.Info("Triggering reconciliation of MCPServer due to MCPToolConfig change",
+			"mcpserver", server.Name, "toolconfig", toolConfig.Name)
+
+		if server.Annotations == nil {
+			server.Annotations = make(map[string]string)
 		}
+		server.Annotations["toolhive.stacklok.dev/toolconfig-hash"] = configHash
 
-		// Update the status with the list of referencing servers
-		serverNames := make([]string, 0, len(referencingServers))
-		for _, server := range referencingServers {
-			serverNames = append(serverNames, server.Name)
+		if err := r.Update(ctx, &server); err != nil {
+			logger.Error(err, "Failed to update MCPServer annotation", "mcpserver", server.Name)
 		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// updateReferencingServers finds referencing MCPServers and updates the status if the list changed
+func (r *ToolConfigReconciler) updateReferencingServers(
+	ctx context.Context,
+	toolConfig *mcpv1alpha1.MCPToolConfig,
+) (ctrl.Result, error) {
+	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
+	if err != nil {
+		logger := log.FromContext(ctx)
+		logger.Error(err, "Failed to find referencing MCPServers")
+		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
+	}
+
+	serverNames := make([]string, 0, len(referencingServers))
+	for _, server := range referencingServers {
+		serverNames = append(serverNames, server.Name)
+	}
+	slices.Sort(serverNames)
+
+	if !slices.Equal(toolConfig.Status.ReferencingServers, serverNames) {
 		toolConfig.Status.ReferencingServers = serverNames
-
-		// Update the MCPToolConfig status
 		if err := r.Status().Update(ctx, toolConfig); err != nil {
+			logger := log.FromContext(ctx)
 			logger.Error(err, "Failed to update MCPToolConfig status")
 			return ctrl.Result{}, err
-		}
-
-		// Trigger reconciliation of all referencing MCPServers
-		for _, server := range referencingServers {
-			logger.Info("Triggering reconciliation of MCPServer due to MCPToolConfig change",
-				"mcpserver", server.Name, "toolconfig", toolConfig.Name)
-
-			// Add an annotation to the MCPServer to trigger reconciliation
-			if server.Annotations == nil {
-				server.Annotations = make(map[string]string)
-			}
-			server.Annotations["toolhive.stacklok.dev/toolconfig-hash"] = configHash
-
-			if err := r.Update(ctx, &server); err != nil {
-				logger.Error(err, "Failed to update MCPServer annotation", "mcpserver", server.Name)
-				// Continue with other servers even if one fails
-			}
 		}
 	}
 
@@ -194,33 +239,26 @@ func (r *ToolConfigReconciler) findReferencingMCPServers(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Create a handler that maps MCPToolConfig changes to MCPServer reconciliation requests
+	// Create a handler that maps MCPServer changes to MCPToolConfig reconciliation requests.
+	// When an MCPServer is created/updated/deleted, we need to reconcile the MCPToolConfig
+	// it references so that the ReferencingServers status field stays up to date.
 	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			toolConfig, ok := obj.(*mcpv1alpha1.MCPToolConfig)
+		func(_ context.Context, obj client.Object) []reconcile.Request {
+			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
 			if !ok {
 				return nil
 			}
 
-			// Find all MCPServers that reference this MCPToolConfig
-			mcpServers, err := r.findReferencingMCPServers(ctx, toolConfig)
-			if err != nil {
-				log.FromContext(ctx).Error(err, "Failed to find referencing MCPServers")
+			if mcpServer.Spec.ToolConfigRef == nil {
 				return nil
 			}
 
-			// Create reconcile requests for each referencing MCPServer
-			requests := make([]reconcile.Request, 0, len(mcpServers))
-			for _, server := range mcpServers {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      server.Name,
-						Namespace: server.Namespace,
-					},
-				})
-			}
-
-			return requests
+			return []reconcile.Request{{
+				NamespacedName: types.NamespacedName{
+					Name:      mcpServer.Spec.ToolConfigRef.Name,
+					Namespace: mcpServer.Namespace,
+				},
+			}}
 		},
 	)
 

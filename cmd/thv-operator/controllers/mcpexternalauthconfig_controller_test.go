@@ -251,6 +251,13 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 				assert.NotEmpty(t, updatedConfig.Status.ConfigHash,
 					"MCPExternalAuthConfig status should have config hash")
 			}
+
+			// Check referencing servers in status
+			if tt.existingMCPServer != nil {
+				assert.Contains(t, updatedConfig.Status.ReferencingServers,
+					tt.existingMCPServer.Name,
+					"Status should contain referencing MCPServer")
+			}
 		})
 	}
 }
@@ -691,4 +698,178 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	assert.Equal(t, finalConfig.Status.ConfigHash,
 		updatedServer.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"],
 		"MCPServer should have annotation with new config hash")
+}
+
+func TestMCPExternalAuthConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-config",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "test-client",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "test-secret",
+					Key:  "client-secret",
+				},
+				Audience: "backend-service",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(externalAuthConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      externalAuthConfig.Name,
+			Namespace: externalAuthConfig.Namespace,
+		},
+	}
+
+	// First reconciliation - add finalizer
+	result, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0))
+
+	// Second reconciliation - sets hash, no servers yet
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
+	assert.Empty(t, updatedConfig.Status.ReferencingServers, "No servers should be referencing yet")
+
+	// Now add an MCPServer that references this config (without changing the config spec)
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "new-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "test-config",
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, mcpServer))
+
+	// Reconcile again - hash hasn't changed, but referencing servers should be updated
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.Contains(t, updatedConfig.Status.ReferencingServers, "new-server",
+		"ReferencingServers should be updated even without hash change")
+}
+
+func TestMCPExternalAuthConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-config",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "test-client",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "test-secret",
+					Key:  "client-secret",
+				},
+				Audience: "backend-service",
+			},
+		},
+	}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-to-delete",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "test-config",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(externalAuthConfig, mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      externalAuthConfig.Name,
+			Namespace: externalAuthConfig.Namespace,
+		},
+	}
+
+	// Add finalizer
+	result, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0))
+
+	// Set hash and referencing servers
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.Contains(t, updatedConfig.Status.ReferencingServers, "server-to-delete")
+
+	// Delete the MCPServer
+	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
+
+	// Reconcile again - referencing servers should be empty now
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.Empty(t, updatedConfig.Status.ReferencingServers,
+		"ReferencingServers should be empty after server deletion")
 }

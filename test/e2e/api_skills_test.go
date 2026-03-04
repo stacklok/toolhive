@@ -51,6 +51,7 @@ type installSkillRequest struct {
 	ProjectRoot string `json:"project_root,omitempty"`
 	Client      string `json:"client,omitempty"`
 	Force       bool   `json:"force,omitempty"`
+	Group       string `json:"group,omitempty"`
 }
 
 type installSkillResponse struct {
@@ -85,6 +86,12 @@ type skillInfoResponse struct {
 
 func listSkills(server *e2e.Server) *http.Response {
 	resp, err := server.Get("/api/v1beta/skills")
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+func listSkillsInGroup(server *e2e.Server, group string) *http.Response {
+	resp, err := server.Get("/api/v1beta/skills?group=" + group)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 	return resp
 }
@@ -560,6 +567,113 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 
 			By("Verifying response status is 400 Bad Request")
 			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Describe("Group integration", func() {
+		var groupName string
+
+		BeforeEach(func() {
+			groupName = fmt.Sprintf("skill-group-%d", GinkgoRandomSeed())
+			By("Creating a group for skill tests")
+			resp := createGroup(apiServer, map[string]interface{}{"name": groupName})
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+		})
+
+		AfterEach(func() {
+			deleteGroup(apiServer, groupName)
+		})
+
+		It("should register the skill in the group on install", func() {
+			skillName := "group-install-skill"
+
+			By("Installing a skill into the group")
+			resp := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Verifying the group lists the skill")
+			getResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/groups/%s", groupName))
+			Expect(err).ToNot(HaveOccurred())
+			defer getResp.Body.Close()
+			Expect(getResp.StatusCode).To(Equal(http.StatusOK))
+
+			var grp struct {
+				Name   string   `json:"name"`
+				Skills []string `json:"skills"`
+			}
+			Expect(json.NewDecoder(getResp.Body).Decode(&grp)).To(Succeed())
+			Expect(grp.Skills).To(ContainElement(skillName))
+		})
+
+		It("should filter list by group", func() {
+			skillInGroup := "group-filter-in"
+			skillOutGroup := "group-filter-out"
+
+			By("Installing a skill into the group")
+			r1 := installSkill(apiServer, installSkillRequest{Name: skillInGroup, Group: groupName})
+			defer r1.Body.Close()
+			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Installing a skill without a group")
+			r2 := installSkill(apiServer, installSkillRequest{Name: skillOutGroup})
+			defer r2.Body.Close()
+			Expect(r2.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Listing skills filtered by group")
+			resp := listSkillsInGroup(apiServer, groupName)
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			var result skillListResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+
+			names := make([]string, 0, len(result.Skills))
+			for _, s := range result.Skills {
+				names = append(names, s.Metadata.Name)
+			}
+			Expect(names).To(ContainElement(skillInGroup))
+			Expect(names).NotTo(ContainElement(skillOutGroup))
+		})
+
+		It("should remove the skill from the group on uninstall", func() {
+			skillName := "group-uninstall-skill"
+
+			By("Installing a skill into the group")
+			r1 := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
+			defer r1.Body.Close()
+			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Uninstalling the skill")
+			r2 := uninstallSkill(apiServer, skillName)
+			defer r2.Body.Close()
+			Expect(r2.StatusCode).To(Equal(http.StatusNoContent))
+
+			By("Verifying the group no longer lists the skill")
+			getResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/groups/%s", groupName))
+			Expect(err).ToNot(HaveOccurred())
+			defer getResp.Body.Close()
+			Expect(getResp.StatusCode).To(Equal(http.StatusOK))
+
+			var grp struct {
+				Name   string   `json:"name"`
+				Skills []string `json:"skills"`
+			}
+			Expect(json.NewDecoder(getResp.Body).Decode(&grp)).To(Succeed())
+			Expect(grp.Skills).NotTo(ContainElement(skillName))
+		})
+
+		It("should return error when installing into a non-existent group", func() {
+			By("Attempting to install a skill into a non-existent group")
+			resp := installSkill(apiServer, installSkillRequest{
+				Name:  "group-noexist-skill",
+				Group: "no-such-group-xyz",
+			})
+			defer resp.Body.Close()
+
+			By("Verifying the response indicates failure")
+			Expect(resp.StatusCode).To(BeNumerically(">=", http.StatusBadRequest))
 		})
 	})
 

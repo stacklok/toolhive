@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -104,6 +105,13 @@ func newSQLiteToolStore(
 		semanticDistanceThreshold: semanticThreshold,
 	}
 
+	slog.Debug("optimizer tool store created",
+		"max_tools_to_return", maxTools,
+		"hybrid_semantic_ratio", hybridRatio,
+		"semantic_distance_threshold", semanticThreshold,
+		"semantic_search_enabled", embeddingClient != nil,
+	)
+
 	return store, nil
 }
 
@@ -135,6 +143,8 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 			return fmt.Errorf("failed to upsert tool %s: %w", tool.Tool.Name, err)
 		}
 	}
+
+	slog.Debug("upserted tools into store", "count", len(tools))
 
 	return tx.Commit()
 }
@@ -172,6 +182,7 @@ func (s sqliteToolStore) generateEmbeddings(ctx context.Context, tools []server.
 // Returns matches ranked by relevance.
 func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]types.ToolMatch, error) {
 	if len(allowedTools) == 0 {
+		slog.Debug("search skipped, no allowed tools")
 		return nil, nil
 	}
 
@@ -180,12 +191,14 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 	// FTS5-only path (no embedding client)
 	if s.embeddingClient == nil {
 		if ftsExpr == "" {
+			slog.Debug("search skipped, empty FTS5 expression", "query", query)
 			return nil, nil
 		}
 		results, err := s.searchFTS5(ctx, ftsExpr, allowedTools, s.maxToolsToReturn)
 		if err != nil {
 			return nil, err
 		}
+		slog.Debug("search completed (FTS5-only)", "query", query, "results", len(results), "matched_tools", matchNames(results))
 		return results, nil
 	}
 
@@ -217,6 +230,14 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 	}
 
 	merged := mergeResults(ftsResults, semanticResults, s.maxToolsToReturn)
+
+	slog.Debug("search completed (hybrid)",
+		"query", query,
+		"fts5_results", len(ftsResults),
+		"semantic_results", len(semanticResults),
+		"merged_results", len(merged),
+		"matched_tools", matchNames(merged),
+	)
 
 	return merged, nil
 }
@@ -281,6 +302,14 @@ func (s sqliteToolStore) searchFTS5(
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	slog.Debug("FTS5 search completed",
+		"fts_expression", ftsExpr,
+		"allowed_tools", len(allowedTools),
+		"limit", limit,
+		"results", len(matches),
+		"matched_tools", matchNames(matches),
+	)
 
 	return matches, nil
 }
@@ -375,6 +404,14 @@ func (s sqliteToolStore) searchSemantic(
 		}
 	}
 
+	slog.Debug("semantic search completed",
+		"allowed_tools", len(allowedTools),
+		"limit", limit,
+		"candidates_evaluated", candidatesEvaluated,
+		"results", len(matches),
+		"matched_tools", matchNames(matches),
+	)
+
 	return matches, nil
 }
 
@@ -408,6 +445,15 @@ func mergeResults(fts, semantic []types.ToolMatch, maxResults int) []types.ToolM
 	}
 
 	return merged
+}
+
+// matchNames extracts tool names from a slice of ToolMatch results for logging.
+func matchNames(matches []types.ToolMatch) []string {
+	names := make([]string, len(matches))
+	for i, m := range matches {
+		names[i] = m.Name
+	}
+	return names
 }
 
 // problematicWords contains words that FTS5 interprets as operators or that

@@ -260,6 +260,7 @@ These are automatically converted to container images at runtime.
 - [Workloads Lifecycle](08-workloads-lifecycle.md) - Workload management
 - [Operator Architecture](09-operator-architecture.md) - Kubernetes operator design
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - MCP Gateway and aggregation
+- [Auth Server Storage](11-auth-server-storage.md) - Memory and Redis Sentinel storage backends
 
 ## Getting Started
 

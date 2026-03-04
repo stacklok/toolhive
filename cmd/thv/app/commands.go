@@ -107,6 +107,7 @@ func IsInformationalCommand(args []string) bool {
 		"completion": true,
 		"registry":   true,
 		"mcp":        true,
+		"skill":      true,
 	}
 
 	return informationalCommands[command]

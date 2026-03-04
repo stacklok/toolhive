@@ -52,7 +52,6 @@ rules:
   resources:
   - services
   verbs:
-  - apply
   - create
   - delete
   - get
@@ -77,7 +76,6 @@ rules:
   resources:
   - statefulsets
   verbs:
-  - apply
   - create
   - delete
   - get

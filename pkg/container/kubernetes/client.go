@@ -424,7 +424,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	//nolint:gosec // G706: statefulset name from Kubernetes API response
 	slog.Info("applied statefulset", "name", createdStatefulSet.Name)
 
-	if transportTypeRequiresHeadlessService(transportType) && options != nil {
+	if transportTypeRequiresBackendServices(transportType) && options != nil {
 		// Create a headless service for DNS discovery
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
@@ -898,6 +898,90 @@ func createServicePorts(options *runtime.DeployWorkloadOptions) ([]*corev1apply.
 	return servicePorts, nil
 }
 
+// serviceConfig holds the configuration for creating a Kubernetes service via applyService.
+type serviceConfig struct {
+	// nameSuffix is appended to "mcp-<containerName>" to form the service name.
+	// Use "-headless" for the headless service or "" for the MCP service.
+	nameSuffix string
+	// headless makes the service a headless service (ClusterIP: None).
+	headless bool
+	// sessionAffinity enables ClientIP session affinity with the given timeout.
+	sessionAffinity bool
+	// sessionAffinityTimeoutSeconds sets the timeout for ClientIP session affinity.
+	// Only used when sessionAffinity is true. Kubernetes defaults to 10800s (3h) if unset.
+	sessionAffinityTimeoutSeconds int32
+}
+
+// applyService creates or updates a Kubernetes service using server-side apply.
+func (c *Client) applyService(
+	ctx context.Context,
+	containerName string,
+	namespace string,
+	labels map[string]string,
+	options *runtime.DeployWorkloadOptions,
+	cfg serviceConfig,
+) (string, error) {
+	servicePorts, err := createServicePorts(options)
+	if err != nil {
+		return "", err
+	}
+
+	if len(servicePorts) == 0 {
+		slog.Debug("no ports configured, skipping service creation")
+		return "", nil
+	}
+
+	svcName := fmt.Sprintf("mcp-%s%s", containerName, cfg.nameSuffix)
+
+	// Determine service type based on whether any ports have NodePort set.
+	// Headless services (ClusterIP: None) cannot be NodePort, so skip the
+	// promotion for those — Kubernetes rejects clusterIP=None + type=NodePort.
+	serviceType := corev1.ServiceTypeClusterIP
+	if !cfg.headless {
+		for _, sp := range servicePorts {
+			if sp.NodePort != nil {
+				serviceType = corev1.ServiceTypeNodePort
+				break
+			}
+		}
+	}
+
+	spec := corev1apply.ServiceSpec().
+		WithSelector(map[string]string{
+			"app": containerName,
+		}).
+		WithPorts(servicePorts...).
+		WithType(serviceType)
+
+	if cfg.headless {
+		spec = spec.WithClusterIP("None")
+	}
+
+	if cfg.sessionAffinity {
+		spec = spec.
+			WithSessionAffinity(corev1.ServiceAffinityClientIP).
+			WithSessionAffinityConfig(corev1apply.SessionAffinityConfig().
+				WithClientIP(corev1apply.ClientIPConfig().
+					WithTimeoutSeconds(cfg.sessionAffinityTimeoutSeconds)))
+	}
+
+	serviceApply := corev1apply.Service(svcName, namespace).
+		WithLabels(labels).
+		WithSpec(spec)
+
+	_, err = c.client.CoreV1().Services(namespace).
+		Apply(ctx, serviceApply, metav1.ApplyOptions{
+			FieldManager: serviceFieldManager,
+			Force:        true,
+		})
+	if err != nil {
+		return "", fmt.Errorf("failed to apply service %s: %w", svcName, err)
+	}
+
+	slog.Debug("applied service", "name", svcName)
+	return svcName, nil
+}
+
 // createHeadlessService creates a headless Kubernetes service for the StatefulSet
 func (c *Client) createHeadlessService(
 	ctx context.Context,
@@ -906,58 +990,18 @@ func (c *Client) createHeadlessService(
 	labels map[string]string,
 	options *runtime.DeployWorkloadOptions,
 ) error {
-	// Create service ports from the container ports
-	servicePorts, err := createServicePorts(options)
-	if err != nil {
-		return err
-	}
-
-	// If no ports were configured, don't create a service
-	if len(servicePorts) == 0 {
-		slog.Info("no ports configured for SSE transport, skipping service creation")
-		return nil
-	}
-
-	// Create service type based on whether we have node ports
-	serviceType := corev1.ServiceTypeClusterIP
-	for _, sp := range servicePorts {
-		if sp.NodePort != nil {
-			serviceType = corev1.ServiceTypeNodePort
-			break
-		}
-	}
-
-	// we want to generate a service name that is unique for the headless service
-	// to avoid conflicts with the proxy service
-	svcName := fmt.Sprintf("mcp-%s-headless", containerName)
-
-	// Create the service apply configuration
-	serviceApply := corev1apply.Service(svcName, namespace).
-		WithLabels(labels).
-		WithSpec(corev1apply.ServiceSpec().
-			WithSelector(map[string]string{
-				"app": containerName,
-			}).
-			WithPorts(servicePorts...).
-			WithType(serviceType).
-			WithClusterIP("None")) // "None" makes it a headless service
-
-	// Apply the service using server-side apply
-	fieldManager := serviceFieldManager
-	_, err = c.client.CoreV1().Services(namespace).
-		Apply(ctx, serviceApply, metav1.ApplyOptions{
-			FieldManager: fieldManager,
-			Force:        true,
-		})
-
-	if err != nil {
-		return fmt.Errorf("failed to apply service: %w", err)
-	}
-
-	slog.Info("created headless service for HTTP transport", "name", containerName)
-
-	return nil
+	_, err := c.applyService(ctx, containerName, namespace, labels, options, serviceConfig{
+		nameSuffix: "-headless",
+		headless:   true,
+	})
+	return err
 }
+
+// mcpServiceSessionAffinityTimeout is the timeout in seconds for ClientIP session affinity
+// on the MCP service. This controls how long kube-proxy pins a client IP to the same backend pod.
+// Note: this provides proxy-runner-level stickiness (L4), not per-MCP-session stickiness (L7).
+// True per-session routing would require Mcp-Session-Id-based routing at the proxy layer.
+const mcpServiceSessionAffinityTimeout int32 = 1800
 
 // createMCPService creates a regular ClusterIP service with SessionAffinity for the MCP server StatefulSet.
 // This service provides load balancing with client-IP-based session stickiness, which the proxy-runner
@@ -969,47 +1013,14 @@ func (c *Client) createMCPService(
 	labels map[string]string,
 	options *runtime.DeployWorkloadOptions,
 ) error {
-	// Create service ports from the container ports
-	servicePorts, err := createServicePorts(options)
+	svcName, err := c.applyService(ctx, containerName, namespace, labels, options, serviceConfig{
+		sessionAffinity:               true,
+		sessionAffinityTimeoutSeconds: mcpServiceSessionAffinityTimeout,
+	})
 	if err != nil {
 		return err
 	}
-
-	// If no ports were configured, don't create a service
-	if len(servicePorts) == 0 {
-		slog.Info("no ports configured for MCP transport, skipping service creation")
-		return nil
-	}
-
-	svcName := fmt.Sprintf("mcp-%s", containerName)
-
-	// Create the service apply configuration with SessionAffinity
-	serviceApply := corev1apply.Service(svcName, namespace).
-		WithLabels(labels).
-		WithSpec(corev1apply.ServiceSpec().
-			WithSelector(map[string]string{
-				"app": containerName,
-			}).
-			WithPorts(servicePorts...).
-			WithType(corev1.ServiceTypeClusterIP).
-			WithSessionAffinity(corev1.ServiceAffinityClientIP))
-
-	// Apply the service using server-side apply
-	fieldManager := serviceFieldManager
-	_, err = c.client.CoreV1().Services(namespace).
-		Apply(ctx, serviceApply, metav1.ApplyOptions{
-			FieldManager: fieldManager,
-			Force:        true,
-		})
-
-	if err != nil {
-		return fmt.Errorf("failed to apply MCP service: %w", err)
-	}
-
-	slog.Info("created MCP service with session affinity", "name", svcName)
-
-	// TODO: rename SSEHeadlessServiceName to MCPServiceName
-	options.SSEHeadlessServiceName = svcName
+	options.MCPServiceName = svcName
 	return nil
 }
 
@@ -1030,8 +1041,8 @@ func extractPortMappingsFromPod(pod *corev1.Pod) []runtime.PortMapping {
 	return ports
 }
 
-// transportTypeRequiresHeadlessService returns true if the transport type requires a headless service
-func transportTypeRequiresHeadlessService(transportType string) bool {
+// transportTypeRequiresBackendServices returns true if the transport type requires backend services
+func transportTypeRequiresBackendServices(transportType string) bool {
 	return transportType == string(transtypes.TransportTypeSSE) || transportType == string(transtypes.TransportTypeStreamableHTTP)
 }
 

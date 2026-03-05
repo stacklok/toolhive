@@ -256,9 +256,10 @@ type DeployWorkloadOptions struct {
 	// Only applicable when using Kubernetes runtime
 	K8sPodTemplatePatch string
 
-	// SSEHeadlessServiceName is the name of the Kubernetes service to use for the workload
-	// Only applicable when using Kubernetes runtime and SSE transport
-	SSEHeadlessServiceName string
+	// MCPServiceName is the name of the Kubernetes ClusterIP service used as the
+	// proxy-runner target for MCP server workloads.
+	// Only applicable when using Kubernetes runtime with SSE or streamable-http transport.
+	MCPServiceName string
 
 	// IgnoreConfig contains configuration for ignore patterns and tmpfs overlays
 	// Used to filter bind mount contents by hiding sensitive files

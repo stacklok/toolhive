@@ -4,4 +4,8 @@ metadata:
   name: mcp-st-streamable-http
   namespace: toolhive-system
 spec:
+  type: ClusterIP
   sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 1800

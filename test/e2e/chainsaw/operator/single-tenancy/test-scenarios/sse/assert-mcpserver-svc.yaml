@@ -4,4 +4,8 @@ metadata:
   name: mcp-st-sse
   namespace: toolhive-system
 spec:
+  type: ClusterIP
   sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 1800

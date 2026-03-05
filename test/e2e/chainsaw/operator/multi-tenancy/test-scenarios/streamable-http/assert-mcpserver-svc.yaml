@@ -4,4 +4,8 @@ metadata:
   name: mcp-yardstick
   namespace: test-namespace
 spec:
+  type: ClusterIP
   sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 1800

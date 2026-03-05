@@ -3,6 +3,7 @@
 A Go tool that wraps Kubernetes CRD YAML files with Helm template conditionals for:
 - **Feature flags** (`crds.install.server`, `crds.install.registry`, `crds.install.virtualMcp`)
 - **Resource policy annotations** (`crds.keep` → `helm.sh/resource-policy: keep`)
+- **Helm ownership annotation** (`meta.helm.sh/release-namespace: toolhive-system`)
 
 ## Why This Tool?
 
@@ -51,6 +52,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
+    meta.helm.sh/release-namespace: toolhive-system
     {{- if .Values.crds.keep }}
     helm.sh/resource-policy: keep
     {{- end }}
@@ -69,6 +71,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
+    meta.helm.sh/release-namespace: toolhive-system
     {{- if .Values.crds.keep }}
     helm.sh/resource-policy: keep
     {{- end }}
@@ -106,7 +109,7 @@ The tool uses embedded template files in the `templates/` directory:
 |------|---------|
 | `header.tpl` | Opening conditional with `__FEATURE_CONDITION__` placeholder |
 | `footer.tpl` | Closing `{{- end }}` |
-| `keep-annotation.tpl` | Conditional `helm.sh/resource-policy: keep` annotation |
+| `keep-annotation.tpl` | Helm ownership annotations and conditional `helm.sh/resource-policy: keep` annotation |
 
 ## Adding New CRD Groups
 

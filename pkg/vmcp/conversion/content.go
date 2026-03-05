@@ -22,6 +22,7 @@ const (
 	contentTypeImage    = "image"
 	contentTypeAudio    = "audio"
 	contentTypeResource = "resource"
+	contentTypeLink     = "resource_link"
 )
 
 // ConvertMCPContent converts a single mcp.Content item to vmcp.Content.
@@ -45,6 +46,15 @@ func ConvertMCPContent(content mcp.Content) vmcp.Content {
 		}
 		slog.Debug("Embedded resource has unknown resource contents type", "type", fmt.Sprintf("%T", res.Resource))
 		return vmcp.Content{Type: "resource"}
+	}
+	if link, ok := content.(mcp.ResourceLink); ok {
+		return vmcp.Content{
+			Type:        contentTypeLink,
+			URI:         link.URI,
+			Name:        link.Name,
+			Description: link.Description,
+			MimeType:    link.MIMEType,
+		}
 	}
 	slog.Debug("Encountered unknown MCP content type", "type", fmt.Sprintf("%T", content))
 	return vmcp.Content{Type: "unknown"}
@@ -94,6 +104,9 @@ func ToMCPContent(content vmcp.Content) mcp.Content {
 			MIMEType: content.MimeType,
 			Text:     "",
 		})
+	case contentTypeLink:
+		// Reconstruct a ResourceLink from vmcp.Content fields.
+		return mcp.NewResourceLink(content.URI, content.Name, content.Description, content.MimeType)
 	default:
 		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
 		return mcp.NewTextContent("")

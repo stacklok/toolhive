@@ -210,6 +210,22 @@ func TestConvertMCPContent(t *testing.T) {
 			}),
 			want: vmcp.Content{Type: "resource", Text: "content only"},
 		},
+		{
+			name:  "resource_link with all fields",
+			input: mcp.NewResourceLink("file://doc.pdf", "My Doc", "A PDF document", "application/pdf"),
+			want: vmcp.Content{
+				Type:        "resource_link",
+				URI:         "file://doc.pdf",
+				Name:        "My Doc",
+				Description: "A PDF document",
+				MimeType:    "application/pdf",
+			},
+		},
+		{
+			name:  "resource_link with empty optional fields",
+			input: mcp.NewResourceLink("file://x", "X", "", ""),
+			want:  vmcp.Content{Type: "resource_link", URI: "file://x", Name: "X"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -784,6 +800,24 @@ func TestToMCPContent(t *testing.T) {
 			input:    vmcp.Content{Type: "custom-type"},
 			wantType: "mcp.TextContent",
 		},
+		{
+			name: "resource_link content all fields",
+			input: vmcp.Content{
+				Type:        "resource_link",
+				URI:         "file://doc.pdf",
+				Name:        "My Doc",
+				Description: "A PDF document",
+				MimeType:    "application/pdf",
+			},
+			wantType: "mcp.ResourceLink",
+			wantURI:  "file://doc.pdf",
+			wantMime: "application/pdf",
+		},
+		{
+			name:     "resource_link with empty fields",
+			input:    vmcp.Content{Type: "resource_link"},
+			wantType: "mcp.ResourceLink",
+		},
 	}
 
 	for _, tt := range tests {
@@ -824,6 +858,13 @@ func TestToMCPContent(t *testing.T) {
 					assert.Equal(t, tt.wantURI, blobRes.URI)
 					assert.Equal(t, tt.wantMime, blobRes.MIMEType)
 				}
+			case "mcp.ResourceLink":
+				link, ok := result.(mcp.ResourceLink)
+				require.True(t, ok, "expected ResourceLink")
+				assert.Equal(t, tt.wantURI, link.URI)
+				assert.Equal(t, tt.wantMime, link.MIMEType)
+				assert.Equal(t, tt.input.Name, link.Name)
+				assert.Equal(t, tt.input.Description, link.Description)
 			default:
 				t.Errorf("unexpected wantType: %s", tt.wantType)
 			}
@@ -890,6 +931,49 @@ func TestResourceContentRoundTrip(t *testing.T) {
 				assert.Equal(t, initialBlob.MIMEType, finalBlob.MIMEType, "MIMEType should be preserved")
 				assert.Equal(t, initialBlob.Blob, finalBlob.Blob, "Blob should be preserved")
 			}
+		})
+	}
+}
+
+func TestResourceLinkRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		initial mcp.ResourceLink
+	}{
+		{
+			name:    "resource_link with all fields preserved",
+			initial: mcp.NewResourceLink("file://doc.pdf", "My Doc", "A PDF document", "application/pdf"),
+		},
+		{
+			name:    "resource_link with empty optional fields preserved",
+			initial: mcp.NewResourceLink("file://x", "X", "", ""),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Convert mcp.ResourceLink → vmcp.Content
+			vmcpContent := conversion.ConvertMCPContent(tt.initial)
+
+			assert.Equal(t, "resource_link", vmcpContent.Type)
+			assert.Equal(t, tt.initial.URI, vmcpContent.URI)
+			assert.Equal(t, tt.initial.Name, vmcpContent.Name)
+			assert.Equal(t, tt.initial.Description, vmcpContent.Description)
+			assert.Equal(t, tt.initial.MIMEType, vmcpContent.MimeType)
+
+			// Convert vmcp.Content → mcp.Content
+			mcpContent := conversion.ToMCPContent(vmcpContent)
+
+			finalLink, ok := mcpContent.(mcp.ResourceLink)
+			require.True(t, ok, "round-trip result should be ResourceLink, got %T", mcpContent)
+			assert.Equal(t, tt.initial.URI, finalLink.URI, "URI should be preserved")
+			assert.Equal(t, tt.initial.Name, finalLink.Name, "Name should be preserved")
+			assert.Equal(t, tt.initial.Description, finalLink.Description, "Description should be preserved")
+			assert.Equal(t, tt.initial.MIMEType, finalLink.MIMEType, "MIMEType should be preserved")
 		})
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
+	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -425,14 +426,23 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	slog.Info("applied statefulset", "name", createdStatefulSet.Name)
 
 	if transportTypeRequiresBackendServices(transportType) && options != nil {
+		stsOwner := &metav1.OwnerReference{
+			APIVersion:         appsv1.SchemeGroupVersion.String(),
+			Kind:               "StatefulSet",
+			Name:               createdStatefulSet.Name,
+			UID:                createdStatefulSet.UID,
+			BlockOwnerDeletion: ptr.To(true),
+			Controller:         ptr.To(true),
+		}
+
 		// Create a headless service for DNS discovery
-		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
+		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options, stsOwner)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create headless service: %w", err)
 		}
 
 		// Create a regular ClusterIP service with session affinity for the proxy-runner target
-		err = c.createMCPService(ctx, containerName, namespace, containerLabels, options)
+		err = c.createMCPService(ctx, containerName, namespace, containerLabels, options, stsOwner)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create MCP service: %w", err)
 		}
@@ -913,6 +923,8 @@ type serviceConfig struct {
 }
 
 // applyService creates or updates a Kubernetes service using server-side apply.
+// If owner is non-nil, it is set as an owner reference so Kubernetes garbage-collects
+// the service when the owner is deleted.
 func (c *Client) applyService(
 	ctx context.Context,
 	containerName string,
@@ -920,6 +932,7 @@ func (c *Client) applyService(
 	labels map[string]string,
 	options *runtime.DeployWorkloadOptions,
 	cfg serviceConfig,
+	owner *metav1.OwnerReference,
 ) (string, error) {
 	servicePorts, err := createServicePorts(options)
 	if err != nil {
@@ -969,6 +982,16 @@ func (c *Client) applyService(
 		WithLabels(labels).
 		WithSpec(spec)
 
+	if owner != nil {
+		serviceApply = serviceApply.WithOwnerReferences(metav1apply.OwnerReference().
+			WithAPIVersion(owner.APIVersion).
+			WithKind(owner.Kind).
+			WithName(owner.Name).
+			WithUID(owner.UID).
+			WithBlockOwnerDeletion(true).
+			WithController(true))
+	}
+
 	_, err = c.client.CoreV1().Services(namespace).
 		Apply(ctx, serviceApply, metav1.ApplyOptions{
 			FieldManager: serviceFieldManager,
@@ -989,11 +1012,12 @@ func (c *Client) createHeadlessService(
 	namespace string,
 	labels map[string]string,
 	options *runtime.DeployWorkloadOptions,
+	owner *metav1.OwnerReference,
 ) error {
 	_, err := c.applyService(ctx, containerName, namespace, labels, options, serviceConfig{
 		nameSuffix: "-headless",
 		headless:   true,
-	})
+	}, owner)
 	return err
 }
 
@@ -1012,11 +1036,12 @@ func (c *Client) createMCPService(
 	namespace string,
 	labels map[string]string,
 	options *runtime.DeployWorkloadOptions,
+	owner *metav1.OwnerReference,
 ) error {
 	svcName, err := c.applyService(ctx, containerName, namespace, labels, options, serviceConfig{
 		sessionAffinity:               true,
 		sessionAffinityTimeoutSeconds: mcpServiceSessionAffinityTimeout,
-	})
+	}, owner)
 	if err != nil {
 		return err
 	}

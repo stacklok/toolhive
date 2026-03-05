@@ -17,8 +17,9 @@ func TestWaitForExit_AlreadyExited(t *testing.T) {
 	t.Parallel()
 
 	// Use a PID that does not exist - FindProcess returns false immediately
-	ctx := context.Background()
-	err := WaitForExit(ctx, 999999999, 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := WaitForExit(ctx, 999999999)
 	require.NoError(t, err)
 }
 
@@ -30,7 +31,7 @@ func TestWaitForExit_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := WaitForExit(ctx, os.Getpid(), time.Second)
+	err := WaitForExit(ctx, os.Getpid())
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }

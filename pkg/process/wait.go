@@ -10,10 +10,10 @@ import (
 
 // WaitForExit waits for the process with the given PID to exit.
 // It polls FindProcess every 50ms until the process is no longer running
-// or the context is cancelled or the timeout is reached.
-// Returns nil when the process has exited, or an error on timeout/context cancellation.
-func WaitForExit(ctx context.Context, pid int, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+// or the context is cancelled. Callers should use context.WithTimeout to
+// impose a deadline.
+// Returns nil when the process has exited, or an error on context cancellation.
+func WaitForExit(ctx context.Context, pid int) error {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -30,9 +30,6 @@ func WaitForExit(ctx context.Context, pid int, timeout time.Duration) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return context.DeadlineExceeded
-			}
 		}
 	}
 }

@@ -890,6 +890,17 @@ func (*DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *ru
 		return
 	}
 
+	isWorkloadProxy, err := process.IsToolHiveProxyForWorkload(portPID, runConfig.BaseName)
+	if err != nil {
+		slog.Debug("could not verify process identity, skipping kill", "port", runConfig.Port, "pid", portPID, "error", err)
+		return
+	}
+	if !isWorkloadProxy {
+		slog.Debug("process on port is not this workload's ToolHive proxy, skipping kill",
+			"port", runConfig.Port, "pid", portPID, "workload", runConfig.BaseName)
+		return
+	}
+
 	slog.Debug("killing process holding proxy port", "port", runConfig.Port, "pid", portPID)
 	if err := process.KillProcess(portPID); err != nil {
 		slog.Warn("failed to kill process holding port", "port", runConfig.Port, "pid", portPID, "error", err)
@@ -898,7 +909,7 @@ func (*DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *ru
 
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := process.WaitForExit(waitCtx, portPID, 5*time.Second); err != nil {
+	if err := process.WaitForExit(waitCtx, portPID); err != nil {
 		slog.Warn("timeout waiting for process to exit", "pid", portPID, "error", err)
 	}
 }

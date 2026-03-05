@@ -11,6 +11,9 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"sort"
+
+	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
 
 const (
@@ -176,4 +179,40 @@ func ValidateCallbackPort(callbackPort int, clientID string) error {
 // IsPreRegisteredClient determines if the OAuth client is pre-registered (has client ID)
 func IsPreRegisteredClient(clientID string) bool {
 	return clientID != ""
+}
+
+// GetProcessOnPort returns the PID of the process listening on the given TCP port.
+// Returns 0 if the port is free or if the holder cannot be determined.
+// Uses gopsutil which provides cross-platform support (Linux: /proc, Windows: GetExtendedTcpTable,
+// Darwin/FreeBSD: lsof).
+func GetProcessOnPort(port int) (int, error) {
+	if port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("invalid port %d", port)
+	}
+
+	conns, err := gopsutilnet.Connections("tcp")
+	if err != nil {
+		return 0, fmt.Errorf("failed to get TCP connections: %w", err)
+	}
+
+	port32 := uint32(port) //nolint:gosec // G115 - port validated in [1, 65535]
+	var pids []int
+	for _, c := range conns {
+		if c.Laddr.Port != port32 {
+			continue
+		}
+		if c.Status != "LISTEN" {
+			continue
+		}
+		if c.Pid > 0 {
+			pids = append(pids, int(c.Pid))
+		}
+	}
+
+	if len(pids) == 0 {
+		return 0, nil
+	}
+
+	sort.Ints(pids)
+	return pids[0], nil
 }

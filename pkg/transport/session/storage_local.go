@@ -6,6 +6,8 @@ package session
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -66,9 +68,12 @@ func (s *LocalStorage) Delete(_ context.Context, id string) error {
 
 // DeleteExpired removes all sessions that haven't been updated since the given time.
 func (s *LocalStorage) DeleteExpired(ctx context.Context, before time.Time) error {
-	var toDelete []string
+	var toDelete []struct {
+		id      string
+		session Session
+	}
 
-	// First pass: collect IDs of expired sessions
+	// First pass: collect expired sessions
 	s.sessions.Range(func(key, val any) bool {
 		// Check for context cancellation
 		select {
@@ -80,16 +85,44 @@ func (s *LocalStorage) DeleteExpired(ctx context.Context, before time.Time) erro
 		if session, ok := val.(Session); ok {
 			if session.UpdatedAt().Before(before) {
 				if id, ok := key.(string); ok {
-					toDelete = append(toDelete, id)
+					toDelete = append(toDelete, struct {
+						id      string
+						session Session
+					}{id, session})
 				}
 			}
 		}
 		return true
 	})
 
-	// Second pass: delete expired sessions
-	for _, id := range toDelete {
-		s.sessions.Delete(id)
+	// Second pass: close and delete expired sessions
+	for _, item := range toDelete {
+		// Check for context cancellation before processing each session
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Re-check expiration and use CompareAndDelete to handle race conditions:
+		// - Session may have been touched via Manager.Get().Touch() and is no longer expired
+		// - Session may have been replaced via Store/UpsertSession with a new object
+		// Only proceed if the stored value is still the same session object and still expired
+		if item.session.UpdatedAt().Before(before) {
+			// CompareAndDelete ensures we only delete if the value hasn't been replaced
+			if deleted := s.sessions.CompareAndDelete(item.id, item.session); deleted {
+				// Successfully deleted - now close if implements io.Closer
+				if closer, ok := item.session.(io.Closer); ok {
+					if err := closer.Close(); err != nil {
+						slog.Warn("failed to close session during cleanup",
+							"session_id", item.id,
+							"error", err)
+					}
+				}
+			}
+			// If CompareAndDelete returned false, the session was already replaced/deleted - skip it
+		}
+		// If re-check shows session is no longer expired (was touched), skip it
 	}
 
 	return nil

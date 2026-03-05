@@ -194,12 +194,10 @@ func GetProcessOnPort(port int) (int, error) {
 		return 0, fmt.Errorf("failed to get TCP connections: %w", err)
 	}
 
-	port32 := uint32(port) //nolint:gosec // G115 - port validated in [1, 65535]
 	for _, c := range conns {
-		if c.Laddr.Port != port32 || c.Status != "LISTEN" || c.Pid <= 0 {
-			continue
+		if c.Laddr.Port == uint32(port) && c.Status == "LISTEN" && c.Pid > 0 { //nolint:gosec // G115 - port validated in [1, 65535]
+			return int(c.Pid), nil
 		}
-		return int(c.Pid), nil
 	}
 	return 0, nil
 }

@@ -5,6 +5,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,6 +30,10 @@ import (
 )
 
 const (
+	// podTemplateSpecHashAnnotation tracks the SHA256 hash of the user-provided PodTemplateSpec.
+	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
+	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
+
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
 
@@ -533,10 +539,17 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
 func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
-	_ *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
+
+	// Store hash of user-provided PodTemplateSpec to detect changes without
+	// comparing full rendered templates (which include K8s-defaulted fields).
+	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
+		h := sha256.Sum256(vmcp.Spec.PodTemplateSpec.Raw)
+		deploymentAnnotations[podTemplateSpecHashAnnotation] = hex.EncodeToString(h[:])
+	}
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 

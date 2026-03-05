@@ -5,9 +5,6 @@ package session
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -23,14 +20,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
 )
 
 const (
 	defaultMaxBackendInitConcurrency = 10
 	defaultBackendInitTimeout        = 30 * time.Second
-
-	// SHA256HexLen is the length of a hex-encoded SHA256 hash (32 bytes = 64 hex characters)
-	SHA256HexLen = 64
 
 	// MetadataKeyIdentitySubject is the transport-session metadata key that
 	// holds the subject claim of the authenticated caller (identity.Subject).
@@ -280,44 +275,6 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 	return rt, tools, resources, prompts
 }
 
-// GenerateSalt generates a cryptographically secure random salt for token hashing.
-// Returns 16 bytes of random data from crypto/rand.
-//
-// Each session should have a unique salt to provide additional entropy and prevent
-// attacks that work across multiple sessions.
-func GenerateSalt() ([]byte, error) {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, fmt.Errorf("failed to generate salt: %w", err)
-	}
-	return salt, nil
-}
-
-// HashToken returns the hex-encoded HMAC-SHA256 hash of a raw bearer token string.
-// Uses HMAC with a server-managed secret and per-session salt to prevent offline
-// attacks if session storage is compromised.
-//
-// For empty tokens (anonymous sessions) it returns the empty string, which is
-// the sentinel value used to identify sessions created without credentials.
-// The raw token is never stored — only the hash.
-//
-// Parameters:
-//   - token: The bearer token to hash
-//   - secret: Server-managed HMAC secret (should be 32+ bytes)
-//   - salt: Per-session random salt (typically 16 bytes)
-//
-// Security: Uses HMAC-SHA256 instead of plain SHA256 to prevent rainbow table
-// attacks and offline brute force if session state leaks from Redis/Valkey.
-func HashToken(token string, secret, salt []byte) string {
-	if token == "" {
-		return ""
-	}
-	h := hmac.New(sha256.New, secret)
-	h.Write(salt)
-	h.Write([]byte(token))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 // ShouldAllowAnonymous determines if a session should allow anonymous access
 // based on the creator's identity. Sessions without an identity (nil) or with
 // an empty token are anonymous; sessions with a non-empty bearer token are
@@ -397,12 +354,12 @@ func (f *defaultMultiSessionFactory) computeTokenBinding(
 ) (boundTokenHash string, tokenSalt []byte, err error) {
 	if !allowAnonymous && identity != nil && identity.Token != "" {
 		// Generate unique salt for this session
-		tokenSalt, err = GenerateSalt()
+		tokenSalt, err = security.GenerateSalt()
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to generate token salt: %w", err)
 		}
 		// Compute HMAC-SHA256 hash with server secret and per-session salt
-		boundTokenHash = HashToken(identity.Token, f.hmacSecret, tokenSalt)
+		boundTokenHash = security.HashToken(identity.Token, f.hmacSecret, tokenSalt)
 	}
 	return boundTokenHash, tokenSalt, nil
 }
@@ -493,10 +450,11 @@ func (f *defaultMultiSessionFactory) makeSession(
 		transportSess.SetMetadata(MetadataKeyIdentitySubject, identity.Subject)
 	}
 
-	// Compute token hash and salt for session-level binding security.
-	// Token hash and salt are stored in TWO places for different purposes:
-	// 1. Struct fields (boundTokenHash, tokenSalt): Fast runtime validation in validateCaller()
-	// 2. Session metadata (MetadataKeyTokenHash, MetadataKeyTokenSalt): Persistence/auditing
+	// Compute token hash and salt once for session-level binding security.
+	// These values are used in TWO places:
+	// 1. Passed to HijackPreventionDecorator for runtime validation in validateCaller()
+	// 2. Stored in session metadata for persistence, auditing, and backward compatibility
+	// Computing once ensures consistency between validation and stored metadata.
 	boundTokenHash, tokenSalt, err := f.computeTokenBinding(identity, allowAnonymous)
 	if err != nil {
 		return nil, err
@@ -509,7 +467,8 @@ func (f *defaultMultiSessionFactory) makeSession(
 
 	populateBackendMetadata(transportSess, results)
 
-	return &defaultMultiSession{
+	// Create the base session without token binding
+	baseSession := &defaultMultiSession{
 		Session:         transportSess,
 		connections:     connections,
 		routingTable:    routingTable,
@@ -518,9 +477,18 @@ func (f *defaultMultiSessionFactory) makeSession(
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
 		queue:           newAdmissionQueue(),
-		boundTokenHash:  boundTokenHash,
-		tokenSalt:       tokenSalt,
-		hmacSecret:      f.hmacSecret,
-		allowAnonymous:  allowAnonymous,
-	}, nil
+	}
+
+	// Wrap with HijackPreventionDecorator for token binding validation
+	// The decorator adds validation logic without modifying the core session
+	// Pass the already-computed hash and salt to ensure consistency with metadata
+	decorated := NewHijackPreventionDecorator(
+		baseSession,
+		allowAnonymous,
+		f.hmacSecret,
+		boundTokenHash,
+		tokenSalt,
+	)
+
+	return decorated, nil
 }

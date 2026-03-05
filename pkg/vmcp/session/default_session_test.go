@@ -105,9 +105,6 @@ func buildTestSession(
 		prompts:         prompts,
 		backendSessions: map[string]string{backendID: "backend-session-abc"},
 		queue:           newAdmissionQueue(),
-		// Test sessions allow anonymous access (no token binding)
-		allowAnonymous: true,
-		boundTokenHash: "",
 	}
 }
 
@@ -456,9 +453,6 @@ func TestDefaultSession_ErrNoBackendClient(t *testing.T) {
 		prompts:         []vmcp.Prompt{{Name: "greet", BackendID: "b1"}},
 		backendSessions: map[string]string{},
 		queue:           newAdmissionQueue(),
-		// Test session allows anonymous access (no token binding)
-		allowAnonymous: true,
-		boundTokenHash: "",
 	}
 	defer func() { _ = sess.Close() }()
 

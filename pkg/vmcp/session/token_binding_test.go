@@ -17,6 +17,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	internalbk "github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
@@ -68,7 +69,7 @@ func TestHashToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, HashToken(tt.token, testSecret, testTokenSalt))
+			assert.Equal(t, tt.want, security.HashToken(tt.token, testSecret, testTokenSalt))
 		})
 	}
 }
@@ -211,28 +212,28 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 		{
 			name:           "bound session with nil caller",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
 			caller:         nil,
 			wantErr:        sessiontypes.ErrNilCaller,
 		},
 		{
 			name:           "bound session with matching token",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
 			caller:         &auth.Identity{Subject: "user", Token: "correct-token"},
 			wantErr:        nil, // Should succeed
 		},
 		{
 			name:           "bound session with wrong token",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
 			caller:         &auth.Identity{Subject: "user", Token: "wrong-token"},
 			wantErr:        sessiontypes.ErrUnauthorizedCaller,
 		},
 		{
 			name:           "bound session with empty token in identity",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
 			caller:         &auth.Identity{Subject: "user", Token: ""},
 			wantErr:        sessiontypes.ErrUnauthorizedCaller,
 		},
@@ -263,17 +264,22 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a minimal session with the test configuration
-			sess := &defaultMultiSession{
-				Session:        transportsession.NewStreamableSession("test-session"),
+			// Create a base session
+			baseSession := &defaultMultiSession{
+				Session: transportsession.NewStreamableSession("test-session"),
+			}
+
+			// Wrap with decorator that has the test configuration
+			decorator := &HijackPreventionDecorator{
+				MultiSession:   baseSession,
 				allowAnonymous: tt.allowAnonymous,
 				boundTokenHash: tt.boundTokenHash,
 				tokenSalt:      testTokenSalt,
 				hmacSecret:     testSecret,
 			}
 
-			// Test validateCaller directly
-			err := sess.validateCaller(tt.caller)
+			// Test validateCaller directly on the decorator
+			err := decorator.validateCaller(tt.caller)
 
 			if tt.wantErr != nil {
 				require.Error(t, err)
@@ -289,28 +295,35 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 func TestConcurrentValidation(t *testing.T) {
 	t.Parallel()
 
-	sess := &defaultMultiSession{
-		Session:        transportsession.NewStreamableSession("test-session"),
+	baseSession := &defaultMultiSession{
+		Session: transportsession.NewStreamableSession("test-session"),
+	}
+
+	decorator := &HijackPreventionDecorator{
+		MultiSession:   baseSession,
 		allowAnonymous: false,
-		boundTokenHash: HashToken("test-token", testSecret, testTokenSalt),
+		boundTokenHash: security.HashToken("test-token", testSecret, testTokenSalt),
 		tokenSalt:      testTokenSalt,
 		hmacSecret:     testSecret,
 	}
 
 	// Run validation concurrently from multiple goroutines
-	done := make(chan bool)
-	for i := 0; i < 10; i++ {
+	// Collect errors in channel to avoid race conditions with testify assertions
+	const numGoroutines = 10
+	errChan := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
 		go func() {
 			caller := &auth.Identity{Subject: "user", Token: "test-token"}
-			err := sess.validateCaller(caller)
-			assert.NoError(t, err)
-			done <- true
+			err := decorator.validateCaller(caller)
+			errChan <- err
 		}()
 	}
 
-	// Wait for all goroutines
-	for i := 0; i < 10; i++ {
-		<-done
+	// Wait for all goroutines and assert in main goroutine (thread-safe)
+	for i := 0; i < numGoroutines; i++ {
+		err := <-errChan
+		assert.NoError(t, err, "concurrent validation should succeed")
 	}
 }
 
@@ -480,14 +493,14 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 
 	// Both sessions should still be able to validate the original token
 	// (proving the factory used the original secret, not the modified one)
-	multiSess1, ok := sess1.(*defaultMultiSession)
-	require.True(t, ok, "session should be defaultMultiSession")
-	err = multiSess1.validateCaller(identity)
+	decorator1, ok := sess1.(*HijackPreventionDecorator)
+	require.True(t, ok, "session should be HijackPreventionDecorator")
+	err = decorator1.validateCaller(identity)
 	assert.NoError(t, err, "first session should validate original token despite external modification")
 
-	multiSess2, ok := sess2.(*defaultMultiSession)
-	require.True(t, ok, "session should be defaultMultiSession")
-	err = multiSess2.validateCaller(identity)
+	decorator2, ok := sess2.(*HijackPreventionDecorator)
+	require.True(t, ok, "session should be HijackPreventionDecorator")
+	err = decorator2.validateCaller(identity)
 	assert.NoError(t, err, "second session should validate original token despite external modification")
 }
 

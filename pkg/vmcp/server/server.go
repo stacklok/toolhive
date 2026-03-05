@@ -1114,7 +1114,6 @@ func (s *Server) handleSessionRegistration(
 
 	vmcpSess.SetRoutingTable(caps.RoutingTable)
 	vmcpSess.SetTools(caps.Tools)
-
 	slog.Debug("routing table and tools stored in VMCPSession",
 		"session_id", sessionID,
 		"tool_count", len(caps.RoutingTable.Tools),

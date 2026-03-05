@@ -7,15 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/security"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
-	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // Compile-time assertions: defaultMultiSession must implement both interfaces.
@@ -70,14 +67,6 @@ type defaultMultiSession struct {
 	backendSessions map[string]string
 
 	queue AdmissionQueue
-
-	// Token binding fields: enforce that subsequent requests come from the same
-	// identity that created the session.
-	// These fields are immutable after session creation (no mutex needed).
-	boundTokenHash string // HMAC-SHA256 hash of creator's token (empty for anonymous)
-	tokenSalt      []byte // Random salt used for HMAC (empty for anonymous)
-	hmacSecret     []byte // Server-managed secret for HMAC-SHA256
-	allowAnonymous bool   // Whether to allow nil caller
 }
 
 // Tools returns a snapshot copy of the tools available in this session.
@@ -106,62 +95,6 @@ func (s *defaultMultiSession) BackendSessions() map[string]string {
 	result := make(map[string]string, len(s.backendSessions))
 	maps.Copy(result, s.backendSessions)
 	return result
-}
-
-// validateCaller checks if the provided caller identity matches the session owner.
-// Returns nil if validation succeeds, or an error if:
-//   - The session requires a bound identity but caller is nil (ErrNilCaller)
-//   - The caller's token hash doesn't match the session owner (ErrUnauthorizedCaller)
-//   - An anonymous session receives a caller with a non-empty token (ErrUnauthorizedCaller)
-//
-// For anonymous sessions (allowAnonymous=true, boundTokenHash=""), validation succeeds
-// only when the caller is nil or has an empty token (prevents session upgrade attacks).
-func (s *defaultMultiSession) validateCaller(caller *auth.Identity) error {
-	// No lock needed - token binding fields are immutable after session creation
-
-	// Anonymous sessions: reject callers that present tokens
-	if s.allowAnonymous && s.boundTokenHash == "" {
-		// Prevent session upgrade attack: anonymous sessions cannot accept tokens
-		if caller != nil && caller.Token != "" {
-			slog.Warn("token validation failed: session upgrade attack prevented",
-				"reason", "token_presented_to_anonymous_session",
-			)
-			return sessiontypes.ErrUnauthorizedCaller
-		}
-		return nil
-	}
-
-	// Bound sessions require a caller
-	if caller == nil {
-		slog.Warn("token validation failed: nil caller for bound session",
-			"reason", "nil_caller",
-		)
-		return sessiontypes.ErrNilCaller
-	}
-
-	// Defensive check: bound sessions must have a non-empty token hash.
-	// This prevents misconfigured sessions from accepting empty tokens.
-	// Scenario: if boundTokenHash="" and caller.Token="", both would hash to "",
-	// and ConstantTimeHashCompare would return true (both empty case).
-	if s.boundTokenHash == "" {
-		slog.Error("token validation failed: bound session has empty token hash",
-			"reason", "misconfigured_session",
-		)
-		return sessiontypes.ErrSessionOwnerUnknown
-	}
-
-	// Compute caller's token hash using the same HMAC secret and salt
-	callerHash := HashToken(caller.Token, s.hmacSecret, s.tokenSalt)
-
-	// Constant-time comparison to prevent timing attacks
-	if !security.ConstantTimeHashCompare(s.boundTokenHash, callerHash, SHA256HexLen) {
-		slog.Warn("token validation failed: token hash mismatch",
-			"reason", "token_hash_mismatch",
-		)
-		return sessiontypes.ErrUnauthorizedCaller
-	}
-
-	return nil
 }
 
 // lookupBackend resolves capName against table, admits the request via the
@@ -194,20 +127,15 @@ func (s *defaultMultiSession) lookupBackend(
 }
 
 // CallTool invokes toolName on the appropriate backend.
-// The caller parameter identifies the requesting user/service and is validated
-// against the session owner's identity before proceeding.
+// The caller parameter is accepted for interface compatibility but validation
+// is performed by the HijackPreventionDecorator wrapper when enabled.
 func (s *defaultMultiSession) CallTool(
 	ctx context.Context,
-	caller *auth.Identity,
+	_ *auth.Identity,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	// Validate caller identity
-	if err := s.validateCaller(caller); err != nil {
-		return nil, err
-	}
-
 	conn, done, err := s.lookupBackend(toolName, s.routingTable.Tools, ErrToolNotFound)
 	if err != nil {
 		return nil, err
@@ -217,16 +145,11 @@ func (s *defaultMultiSession) CallTool(
 }
 
 // ReadResource retrieves the resource identified by uri.
-// The caller parameter identifies the requesting user/service and is validated
-// against the session owner's identity before proceeding.
+// The caller parameter is accepted for interface compatibility but validation
+// is performed by the HijackPreventionDecorator wrapper when enabled.
 func (s *defaultMultiSession) ReadResource(
-	ctx context.Context, caller *auth.Identity, uri string,
+	ctx context.Context, _ *auth.Identity, uri string,
 ) (*vmcp.ResourceReadResult, error) {
-	// Validate caller identity
-	if err := s.validateCaller(caller); err != nil {
-		return nil, err
-	}
-
 	conn, done, err := s.lookupBackend(uri, s.routingTable.Resources, ErrResourceNotFound)
 	if err != nil {
 		return nil, err
@@ -236,19 +159,14 @@ func (s *defaultMultiSession) ReadResource(
 }
 
 // GetPrompt retrieves the named prompt from the appropriate backend.
-// The caller parameter identifies the requesting user/service and is validated
-// against the session owner's identity before proceeding.
+// The caller parameter is accepted for interface compatibility but validation
+// is performed by the HijackPreventionDecorator wrapper when enabled.
 func (s *defaultMultiSession) GetPrompt(
 	ctx context.Context,
-	caller *auth.Identity,
+	_ *auth.Identity,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	// Validate caller identity
-	if err := s.validateCaller(caller); err != nil {
-		return nil, err
-	}
-
 	conn, done, err := s.lookupBackend(name, s.routingTable.Prompts, ErrPromptNotFound)
 	if err != nil {
 		return nil, err

@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
 )
 
 // ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ func (f *v2FakeMultiSessionFactory) MakeSession(
 	if identity != nil && identity.Token != "" && !allowAnonymous {
 		testSecret := []byte("integration-test-secret")
 		testSalt := []byte("test-salt-123456")
-		tokenHash := vmcpsession.HashToken(identity.Token, testSecret, testSalt)
+		tokenHash := security.HashToken(identity.Token, testSecret, testSalt)
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, tokenHash)
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenSalt, hex.EncodeToString(testSalt))
 	} else {
@@ -145,7 +146,7 @@ func (f *v2FakeMultiSessionFactory) MakeSessionWithID(
 		// Use a test HMAC secret and salt for integration tests
 		testSecret := []byte("integration-test-secret")
 		testSalt := []byte("test-salt-123456") // 16 bytes
-		tokenHash := vmcpsession.HashToken(identity.Token, testSecret, testSalt)
+		tokenHash := security.HashToken(identity.Token, testSecret, testSalt)
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, tokenHash)
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenSalt, hex.EncodeToString(testSalt))
 	} else {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -287,6 +288,53 @@ func discoverBackends(
 	return backends, backendClient, outgoingRegistry, nil
 }
 
+// createSessionFactory creates a MultiSessionFactory with HMAC-SHA256 token binding.
+// The HMAC secret is read from the VMCP_SESSION_HMAC_SECRET environment variable.
+//
+// Behavior:
+//   - If VMCP_SESSION_HMAC_SECRET is set: validates length and creates factory with the secret
+//   - If running in Kubernetes without secret: returns error (production safety requirement)
+//   - Otherwise: logs warning and creates factory with default insecure secret
+//
+// Returns an error only when running in Kubernetes without a secret (fail-fast for production).
+func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcpsession.MultiSessionFactory, error) {
+	const (
+		envKey                  = "VMCP_SESSION_HMAC_SECRET"
+		minRecommendedSecretLen = 32
+	)
+
+	hmacSecret := os.Getenv(envKey)
+
+	if hmacSecret != "" {
+		// Validate secret length (warn if too short, but still use it)
+		if secretLen := len(hmacSecret); secretLen < minRecommendedSecretLen {
+			// G706: Safe - only logging integer length, not the secret itself
+			slog.Warn( //nolint:gosec
+				"HMAC secret is shorter than recommended length - consider using a longer secret",
+				"actual_length", secretLen,
+				"recommended_length", minRecommendedSecretLen,
+			)
+		}
+		slog.Info("using HMAC secret from VMCP_SESSION_HMAC_SECRET environment variable for session token binding")
+		return vmcpsession.NewSessionFactory(
+			outgoingRegistry,
+			vmcpsession.WithHMACSecret([]byte(hmacSecret)),
+		), nil
+	}
+
+	// No secret provided - check if we're in Kubernetes (production environment)
+	if runtime.IsKubernetesRuntime() {
+		return nil, fmt.Errorf(
+			"VMCP_SESSION_HMAC_SECRET environment variable is required when running in Kubernetes. " +
+				"Generate a secure secret with: openssl rand -base64 32",
+		)
+	}
+
+	// Development mode: use default insecure secret with warning
+	slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
+	return vmcpsession.NewSessionFactory(outgoingRegistry), nil
+}
+
 // runServe implements the serve command logic
 //
 //nolint:gocyclo // Complexity from server initialization and configuration is acceptable
@@ -474,31 +522,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
-	// Create session factory for SessionManagementV2 with HMAC-SHA256 token binding
-	// The HMAC secret should be provided via VMCP_SESSION_HMAC_SECRET environment variable.
-	// If not set, a default insecure secret is used (NOT recommended for production).
-	const minRecommendedSecretLen = 32
+	// Create session factory only when SessionManagementV2 is enabled
 	var sessionFactory vmcpsession.MultiSessionFactory
-	hmacSecretEnv := os.Getenv("VMCP_SESSION_HMAC_SECRET")
-	if hmacSecretEnv != "" {
-		// Validate secret length
-		secretLen := len(hmacSecretEnv)
-		if secretLen < minRecommendedSecretLen {
-			// G706: Safe - only logging integer length, not the secret itself
-			slog.Warn( //nolint:gosec
-				"HMAC secret is shorter than recommended length - consider using a longer secret",
-				"actual_length", secretLen,
-				"recommended_length", minRecommendedSecretLen,
-			)
+	if cfg.Operational.SessionManagementV2 {
+		sessionFactory, err = createSessionFactory(outgoingRegistry)
+		if err != nil {
+			return err
 		}
-		slog.Info("using HMAC secret from VMCP_SESSION_HMAC_SECRET environment variable for session token binding")
-		sessionFactory = vmcpsession.NewSessionFactory(
-			outgoingRegistry,
-			vmcpsession.WithHMACSecret([]byte(hmacSecretEnv)),
-		)
-	} else {
-		slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
-		sessionFactory = vmcpsession.NewSessionFactory(outgoingRegistry)
 	}
 
 	serverCfg := &vmcpserver.Config{
@@ -516,6 +546,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
+		SessionManagementV2:     cfg.Operational.SessionManagementV2,
 		SessionFactory:          sessionFactory,
 	}
 

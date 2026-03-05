@@ -237,7 +237,7 @@ spec:
               key: hmac-secret
 ```
 
-**Note**: If `VMCP_SESSION_HMAC_SECRET` is not set, a default insecure secret is used. This is acceptable for development/testing but **NOT recommended for production**.
+**Note**: Kubernetes deployments **require** `VMCP_SESSION_HMAC_SECRET` to be set (the server will fail to start without it). For non-Kubernetes environments (local development/testing), a default insecure secret is used as a fallback, but this is **NOT recommended for production**.
 
 ## Tool Aggregation & Conflict Resolution
 

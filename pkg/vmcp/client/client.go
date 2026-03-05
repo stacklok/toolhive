@@ -628,9 +628,7 @@ func (h *httpBackendClient) CallTool(
 // ReadResource retrieves a resource from the backend MCP server.
 // Returns the complete resource result including _meta field.
 func (h *httpBackendClient) ReadResource(
-	ctx context.Context,
-	target *vmcp.BackendTarget,
-	uri string,
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (*vmcp.ResourceReadResult, error) {
 	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
 

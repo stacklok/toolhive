@@ -23,10 +23,13 @@ import (
 type Caller interface {
 	// CallTool invokes toolName on the backend.
 	//
-	// caller identifies the requesting user/service. For bound sessions, the
-	// caller identity must match the session creator. For anonymous sessions,
-	// caller may be nil. Returns ErrUnauthorizedCaller if the caller identity
-	// does not match the session owner.
+	// caller identifies the requesting user/service. For bound sessions, caller
+	// must be non-nil and its identity must match the session creator. For
+	// anonymous sessions, caller may be nil.
+	//
+	// Returns:
+	//   - ErrNilCaller if caller is nil for a bound session
+	//   - ErrUnauthorizedCaller if the caller identity does not match the session owner
 	//
 	// arguments contains the tool input parameters.
 	// meta contains protocol-level metadata (_meta) forwarded from the client.
@@ -40,14 +43,24 @@ type Caller interface {
 
 	// ReadResource retrieves the resource identified by uri from the backend.
 	//
-	// caller identifies the requesting user/service. Returns ErrUnauthorizedCaller
-	// if the caller identity does not match the session owner.
+	// caller identifies the requesting user/service. For bound sessions, caller
+	// must be non-nil and its identity must match the session creator. For
+	// anonymous sessions, caller may be nil.
+	//
+	// Returns:
+	//   - ErrNilCaller if caller is nil for a bound session
+	//   - ErrUnauthorizedCaller if the caller identity does not match the session owner
 	ReadResource(ctx context.Context, caller *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
 
 	// GetPrompt retrieves the named prompt from the backend.
 	//
-	// caller identifies the requesting user/service. Returns ErrUnauthorizedCaller
-	// if the caller identity does not match the session owner.
+	// caller identifies the requesting user/service. For bound sessions, caller
+	// must be non-nil and its identity must match the session creator. For
+	// anonymous sessions, caller may be nil.
+	//
+	// Returns:
+	//   - ErrNilCaller if caller is nil for a bound session
+	//   - ErrUnauthorizedCaller if the caller identity does not match the session owner
 	//
 	// arguments contains the prompt input parameters.
 	GetPrompt(

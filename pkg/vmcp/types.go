@@ -480,11 +480,7 @@ type BackendClient interface {
 	// The meta parameter contains _meta fields from the client request that should be forwarded to the backend.
 	// Returns the complete tool result including _meta field from the backend response.
 	CallTool(
-		ctx context.Context,
-		target *BackendTarget,
-		toolName string,
-		arguments map[string]any,
-		meta map[string]any,
+		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
 	) (*ToolCallResult, error)
 
 	// ReadResource retrieves a resource from the backend MCP server.
@@ -493,12 +489,7 @@ type BackendClient interface {
 
 	// GetPrompt retrieves a prompt from the backend MCP server.
 	// Returns the complete prompt result including _meta field.
-	GetPrompt(
-		ctx context.Context,
-		target *BackendTarget,
-		name string,
-		arguments map[string]any,
-	) (*PromptGetResult, error)
+	GetPrompt(ctx context.Context, target *BackendTarget, name string, arguments map[string]any) (*PromptGetResult, error)
 
 	// ListCapabilities queries a backend for its capabilities.
 	// Returns tools, resources, and prompts exposed by the backend.

@@ -111,7 +111,7 @@ curl -X POST \
 
 ### Optional Fields
 
-- `spec.image`: Container image (default: `ghcr.io/huggingface/text-embeddings-inference:latest`)
+- `spec.image`: Container image (default: `ghcr.io/huggingface/text-embeddings-inference:cpu-latest`). Images must be from [HuggingFace Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference).
 - `spec.port`: Service port (default: 8080)
 - `spec.replicas`: Number of replicas (default: 1)
 - `spec.args`: Additional arguments for the embedding server

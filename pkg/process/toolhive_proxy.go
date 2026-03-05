@@ -28,13 +28,6 @@ func containsThvBinary(s string) bool {
 		strings.HasSuffix(lower, " "+toolHiveBinaryName)
 }
 
-// IsToolHiveProxy returns true if the given PID belongs to a ToolHive proxy process.
-// Prefer IsToolHiveProxyForWorkload when the workload name is known to avoid
-// accidentally killing another workload's proxy.
-func IsToolHiveProxy(pid int) (bool, error) {
-	return IsToolHiveProxyForWorkload(pid, "")
-}
-
 // IsToolHiveProxyForWorkload returns true if the given PID belongs to the ToolHive
 // proxy for the specified workload, so it is safe to kill when freeing a port.
 // Returns false if the process is not that workload's proxy or if identity cannot

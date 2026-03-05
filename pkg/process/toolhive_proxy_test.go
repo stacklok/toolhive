@@ -10,22 +10,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsToolHiveProxy_InvalidPID(t *testing.T) {
+func TestIsToolHiveProxyForWorkload_InvalidPID(t *testing.T) {
 	t.Parallel()
-	isToolHive, err := IsToolHiveProxy(0)
+	isToolHive, err := IsToolHiveProxyForWorkload(0, "")
 	require.NoError(t, err)
 	assert.False(t, isToolHive)
 
-	isToolHive, err = IsToolHiveProxy(-1)
+	isToolHive, err = IsToolHiveProxyForWorkload(-1, "")
 	require.NoError(t, err)
 	assert.False(t, isToolHive)
 }
 
-func TestIsToolHiveProxy_NonToolHiveProcess(t *testing.T) {
+func TestIsToolHiveProxyForWorkload_NonToolHiveProcess(t *testing.T) {
 	t.Parallel()
 	// Use a very high PID that almost certainly doesn't exist.
-	// IsToolHiveProxy should return false (fail-safe: don't kill unknown processes).
-	isToolHive, err := IsToolHiveProxy(999999999)
+	// IsToolHiveProxyForWorkload should return false (fail-safe: don't kill unknown processes).
+	isToolHive, err := IsToolHiveProxyForWorkload(999999999, "")
 	if err != nil {
 		// Process may not exist; either way we must not report it as ToolHive
 		assert.False(t, isToolHive)

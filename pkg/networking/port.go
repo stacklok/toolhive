@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
-	"sort"
 
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
@@ -196,23 +195,11 @@ func GetProcessOnPort(port int) (int, error) {
 	}
 
 	port32 := uint32(port) //nolint:gosec // G115 - port validated in [1, 65535]
-	var pids []int
 	for _, c := range conns {
-		if c.Laddr.Port != port32 {
+		if c.Laddr.Port != port32 || c.Status != "LISTEN" || c.Pid <= 0 {
 			continue
 		}
-		if c.Status != "LISTEN" {
-			continue
-		}
-		if c.Pid > 0 {
-			pids = append(pids, int(c.Pid))
-		}
+		return int(c.Pid), nil
 	}
-
-	if len(pids) == 0 {
-		return 0, nil
-	}
-
-	sort.Ints(pids)
-	return pids[0], nil
+	return 0, nil
 }

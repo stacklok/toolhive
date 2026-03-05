@@ -7,8 +7,6 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"maps"
 	"reflect"
@@ -1046,8 +1044,12 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	// Compare hash of the raw PodTemplateSpec input against the stored annotation.
 	// Avoids comparing full rendered templates which always differ due to
 	// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.).
-	h := sha256.Sum256(vmcp.Spec.PodTemplateSpec.Raw)
-	expectedHash := hex.EncodeToString(h[:])
+	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
+	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		// If we can't hash, assume update is needed
+		return true
+	}
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
 }
 

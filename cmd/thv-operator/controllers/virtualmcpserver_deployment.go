@@ -5,8 +5,6 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -546,9 +544,12 @@ func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 
 	// Store hash of user-provided PodTemplateSpec to detect changes without
 	// comparing full rendered templates (which include K8s-defaulted fields).
+	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
 	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
-		h := sha256.Sum256(vmcp.Spec.PodTemplateSpec.Raw)
-		deploymentAnnotations[podTemplateSpecHashAnnotation] = hex.EncodeToString(h[:])
+		hash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
+		if err == nil {
+			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
+		}
 	}
 
 	// TODO: Add support for ResourceOverrides if needed in the future

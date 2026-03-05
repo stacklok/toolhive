@@ -5,8 +5,6 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"testing"
 
@@ -20,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -193,9 +192,11 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 		},
 	})
 
-	hashOf := func(raw []byte) string {
-		h := sha256.Sum256(raw)
-		return hex.EncodeToString(h[:])
+	hashOf := func(t *testing.T, raw []byte) string {
+		t.Helper()
+		h, err := checksum.HashRawJSON(raw)
+		require.NoError(t, err)
+		return h
 	}
 
 	tests := []struct {
@@ -206,19 +207,19 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 	}{
 		{
 			name:               "matching hash - no update needed",
-			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(ssdRaw.Raw)},
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
 			newPodTemplateSpec: ssdRaw,
 			expectUpdate:       false,
 		},
 		{
 			name:               "node selector changed - update needed",
-			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(ssdRaw.Raw)},
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
 			newPodTemplateSpec: nvmeRaw,
 			expectUpdate:       true,
 		},
 		{
 			name:               "priority class added - update needed",
-			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(ssdRaw.Raw)},
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
 			newPodTemplateSpec: ssdWithPriorityRaw,
 			expectUpdate:       true,
 		},
@@ -230,7 +231,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 		},
 		{
 			name:               "PodTemplateSpec removed but annotation exists - update needed",
-			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(ssdRaw.Raw)},
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
 			newPodTemplateSpec: nil,
 			expectUpdate:       true,
 		},
@@ -248,7 +249,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 		},
 		{
 			name:               "K8s defaults on deployment do not cause spurious update",
-			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(ssdRaw.Raw)},
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
 			newPodTemplateSpec: ssdRaw,
 			expectUpdate:       false,
 		},

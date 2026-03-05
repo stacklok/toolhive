@@ -715,20 +715,20 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 			Expect(r3.StatusCode).To(Equal(http.StatusCreated))
 		})
 
-		It("should allow overwrite with force flag", func() {
-			skillName := "overwrite-force"
+		It("should still reject duplicate DB record even with force flag", func() {
+			skillName := "overwrite-force-dup"
 
 			By("Installing the skill for the first time")
 			r1 := installSkill(apiServer, installSkillRequest{Name: skillName})
 			defer r1.Body.Close()
 			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
 
-			By("Force-installing the same skill again")
+			By("Force-installing the same skill again (force is for filesystem conflicts, not DB duplicates)")
 			r2 := installSkill(apiServer, installSkillRequest{Name: skillName, Force: true})
 			defer r2.Body.Close()
 
-			By("Verifying force install succeeds")
-			Expect(r2.StatusCode).To(Equal(http.StatusCreated))
+			By("Verifying response is still 409 Conflict (DB record exists)")
+			Expect(r2.StatusCode).To(Equal(http.StatusConflict))
 		})
 	})
 

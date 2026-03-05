@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,10 +27,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
-
-// ociTagRegexp matches valid OCI tag strings per the distribution spec.
-// Reference: https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#pulling-manifests
-var ociTagRegexp = regexp.MustCompile(`^[\w][\w.-]{0,127}$`)
 
 // Option configures the skill service.
 type Option func(*service)
@@ -780,11 +775,14 @@ func validateLocalPath(path string) error {
 	return nil
 }
 
-// validateOCITag checks that a tag conforms to the OCI distribution spec format.
+// validateOCITag checks that a tag conforms to the OCI distribution spec format
+// using go-containerregistry's reference parser rather than a hand-rolled regex.
 func validateOCITag(tag string) error {
-	if !ociTagRegexp.MatchString(tag) {
+	// Construct a minimal valid reference with the tag so the library
+	// validates the tag portion per the distribution spec.
+	if _, err := nameref.NewTag("dummy.invalid/repo:"+tag, nameref.StrictValidation); err != nil {
 		return httperr.WithCode(
-			fmt.Errorf("invalid OCI tag %q: must match %s", tag, ociTagRegexp.String()),
+			fmt.Errorf("invalid OCI tag %q: %w", tag, err),
 			http.StatusBadRequest,
 		)
 	}

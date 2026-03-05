@@ -9,13 +9,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"os"
-	"strconv"
-	"strings"
-
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	"log/slog"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"

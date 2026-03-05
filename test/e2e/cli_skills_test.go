@@ -16,7 +16,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Skills CLI", Label("cli", "skills", "e2e"), func() {
+var _ = Describe("Skills CLI", Label("api", "cli", "skills", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server

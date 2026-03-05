@@ -15,6 +15,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
@@ -856,8 +857,14 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 
 			// Verify owner reference on headless service
 			require.Len(t, headlessSvc.OwnerReferences, 1)
+			assert.Equal(t, "apps/v1", headlessSvc.OwnerReferences[0].APIVersion)
 			assert.Equal(t, "StatefulSet", headlessSvc.OwnerReferences[0].Kind)
 			assert.Equal(t, containerName, headlessSvc.OwnerReferences[0].Name)
+			assert.Equal(t, k8stypes.UID("test-uid-123"), headlessSvc.OwnerReferences[0].UID)
+			require.NotNil(t, headlessSvc.OwnerReferences[0].Controller)
+			assert.True(t, *headlessSvc.OwnerReferences[0].Controller)
+			require.NotNil(t, headlessSvc.OwnerReferences[0].BlockOwnerDeletion)
+			assert.True(t, *headlessSvc.OwnerReferences[0].BlockOwnerDeletion)
 
 			// Verify the MCP ClusterIP service was created
 			mcpSvc, err := clientset.CoreV1().Services("default").Get(
@@ -870,8 +877,14 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 
 			// Verify owner reference on MCP service
 			require.Len(t, mcpSvc.OwnerReferences, 1)
+			assert.Equal(t, "apps/v1", mcpSvc.OwnerReferences[0].APIVersion)
 			assert.Equal(t, "StatefulSet", mcpSvc.OwnerReferences[0].Kind)
 			assert.Equal(t, containerName, mcpSvc.OwnerReferences[0].Name)
+			assert.Equal(t, k8stypes.UID("test-uid-123"), mcpSvc.OwnerReferences[0].UID)
+			require.NotNil(t, mcpSvc.OwnerReferences[0].Controller)
+			assert.True(t, *mcpSvc.OwnerReferences[0].Controller)
+			require.NotNil(t, mcpSvc.OwnerReferences[0].BlockOwnerDeletion)
+			assert.True(t, *mcpSvc.OwnerReferences[0].BlockOwnerDeletion)
 
 			// Verify MCPServiceName was set on options
 			assert.Equal(t, "mcp-"+containerName, options.MCPServiceName)

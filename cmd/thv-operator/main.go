@@ -9,12 +9,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
+	// to ensure that exec-entrypoint and run can make use of them.
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -68,8 +70,10 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.Parse()
 
-	// Note: controller-runtime logger is initialized using the default logger
-	// The operator does not use debug mode from viper, so we use the default level
+	// Initialize the controller-runtime logger. Without this call, controller-runtime
+	// uses a no-op logger by default and ALL operator log output is silently discarded.
+	// Bridge to slog for consistency with the rest of the ToolHive codebase.
+	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
 	options := ctrl.Options{
 		Scheme:                 scheme,

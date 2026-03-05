@@ -677,6 +677,86 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		})
 	})
 
+	Describe("Overwrite protection", func() {
+		It("should reject install over existing skill without force", func() {
+			skillName := "overwrite-noflag"
+
+			By("Installing the skill for the first time")
+			resp := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Uninstalling via API so the DB record is gone but leave the concept of a conflict test")
+			// Instead we test duplicate detection: installing the same name again
+			// should return 409 Conflict (the DB record still exists).
+			resp2 := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer resp2.Body.Close()
+
+			By("Verifying response status is 409 Conflict")
+			Expect(resp2.StatusCode).To(Equal(http.StatusConflict))
+		})
+
+		It("should allow reinstall after uninstall", func() {
+			skillName := "overwrite-reinstall"
+
+			By("Installing the skill")
+			r1 := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer r1.Body.Close()
+			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Uninstalling the skill")
+			r2 := uninstallSkill(apiServer, skillName)
+			defer r2.Body.Close()
+			Expect(r2.StatusCode).To(Equal(http.StatusNoContent))
+
+			By("Re-installing the skill (should succeed since DB record was removed)")
+			r3 := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer r3.Body.Close()
+			Expect(r3.StatusCode).To(Equal(http.StatusCreated))
+		})
+
+		It("should still reject duplicate DB record even with force flag", func() {
+			skillName := "overwrite-force-dup"
+
+			By("Installing the skill for the first time")
+			r1 := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer r1.Body.Close()
+			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Force-installing the same skill again (force is for filesystem conflicts, not DB duplicates)")
+			r2 := installSkill(apiServer, installSkillRequest{Name: skillName, Force: true})
+			defer r2.Body.Close()
+
+			By("Verifying response is still 409 Conflict (DB record exists)")
+			Expect(r2.StatusCode).To(Equal(http.StatusConflict))
+		})
+	})
+
+	Describe("Build and validate lifecycle", func() {
+		It("should build, then validate, the same skill directory", func() {
+			skillName := "build-validate-lifecycle"
+
+			By("Creating a valid skill directory")
+			skillDir := createTestSkillDir(skillName, "A skill for build-validate lifecycle")
+
+			By("Validating the skill")
+			vResp := validateSkill(apiServer, skillDir)
+			defer vResp.Body.Close()
+			Expect(vResp.StatusCode).To(Equal(http.StatusOK))
+			var vResult validationResultResponse
+			Expect(json.NewDecoder(vResp.Body).Decode(&vResult)).To(Succeed())
+			Expect(vResult.Valid).To(BeTrue())
+
+			By("Building the skill")
+			bResp := buildSkill(apiServer, skillDir, "v0.1.0")
+			defer bResp.Body.Close()
+			Expect(bResp.StatusCode).To(Equal(http.StatusOK))
+			var bResult buildResultResponse
+			Expect(json.NewDecoder(bResp.Body).Decode(&bResult)).To(Succeed())
+			Expect(bResult.Reference).ToNot(BeEmpty())
+		})
+	})
+
 	Describe("Full lifecycle integration", func() {
 		It("should support install → list → info → uninstall → list → info", func() {
 			skillName := "lifecycle-test"

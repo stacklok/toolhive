@@ -186,7 +186,7 @@ func IsPreRegisteredClient(clientID string) bool {
 // Uses gopsutil which provides cross-platform support (Linux: /proc, Windows: GetExtendedTcpTable,
 // Darwin/FreeBSD: lsof).
 func GetProcessOnPort(port int) (int, error) {
-	if port <= 0 || port > 65535 {
+	if port <= 0 || port > MaxPort {
 		return 0, fmt.Errorf("invalid port %d", port)
 	}
 

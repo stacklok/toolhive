@@ -9,12 +9,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
+	// to ensure that exec-entrypoint and run can make use of them.
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -24,7 +26,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
 	"sigs.k8s.io/controller-runtime/pkg/webhook"                      // Import for webhook
 
@@ -71,7 +72,8 @@ func main() {
 
 	// Initialize the controller-runtime logger. Without this call, controller-runtime
 	// uses a no-op logger by default and ALL operator log output is silently discarded.
-	ctrl.SetLogger(zap.New())
+	// Bridge to slog for consistency with the rest of the ToolHive codebase.
+	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
 	options := ctrl.Options{
 		Scheme:                 scheme,

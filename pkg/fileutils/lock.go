@@ -13,7 +13,7 @@ import (
 
 const (
 	// DefaultLockTimeout is the maximum time to wait for a file lock.
-	DefaultLockTimeout = 1 * time.Second
+	DefaultLockTimeout = 5 * time.Second
 
 	// defaultLockRetryInterval is the interval between lock acquisition attempts.
 	defaultLockRetryInterval = 100 * time.Millisecond

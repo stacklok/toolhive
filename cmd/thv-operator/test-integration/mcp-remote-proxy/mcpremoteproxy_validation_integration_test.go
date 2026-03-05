@@ -81,30 +81,4 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 		})
 	})
 
-	Context("Cedar Policy Syntax Validation", func() {
-		It("should set ConfigurationValid=False when Cedar policy has invalid syntax", func() {
-			By("creating an MCPRemoteProxy with invalid Cedar policy")
-			proxy := proxyHelper.NewRemoteProxyBuilder("test-bad-cedar").
-				WithInlineAuthzConfig([]string{"not valid cedar policy syntax"}).
-				Create(proxyHelper)
-
-			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
-
-			By("verifying the ConfigurationValid condition is False with AuthzPolicySyntaxInvalid reason")
-			statusHelper.WaitForConditionReason(
-				proxy.Name,
-				mcpv1alpha1.ConditionTypeConfigurationValid,
-				mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid,
-				MediumTimeout,
-			)
-
-			condition, err := proxyHelper.GetRemoteProxyCondition(
-				proxy.Name, mcpv1alpha1.ConditionTypeConfigurationValid,
-			)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Message).To(ContainSubstring("invalid syntax"))
-		})
-	})
 })

@@ -361,23 +361,6 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		return err
 	}
 
-	// Validate inline Cedar policy syntax
-	if err := r.validateAuthzPolicySyntax(proxy); err != nil {
-		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err.Error())
-		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err.Error())
-		return err
-	}
-
-	// Validate authz ConfigMap reference exists
-	if err := r.validateAuthzConfigMapRef(ctx, proxy); err != nil {
-		return err
-	}
-
-	// Validate header secret references exist
-	if err := r.validateHeaderSecretRefs(ctx, proxy); err != nil {
-		return err
-	}
-
 	// All validations passed
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 		Type:               mcpv1alpha1.ConditionTypeConfigurationValid,
@@ -423,79 +406,6 @@ func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRem
 			return validation.ValidateOIDCIssuerURL(oidcConfig.Kubernetes.Issuer, false)
 		}
 	}
-	return nil
-}
-
-// validateAuthzPolicySyntax validates inline Cedar authorization policy syntax.
-func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	if proxy.Spec.AuthzConfig == nil ||
-		proxy.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
-		proxy.Spec.AuthzConfig.Inline == nil {
-		return nil
-	}
-	return validation.ValidateCedarPolicySyntax(proxy.Spec.AuthzConfig.Inline.Policies)
-}
-
-// validateAuthzConfigMapRef validates that a referenced authz ConfigMap exists and contains the expected key.
-func (r *MCPRemoteProxyReconciler) validateAuthzConfigMapRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	if proxy.Spec.AuthzConfig == nil ||
-		proxy.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeConfigMap ||
-		proxy.Spec.AuthzConfig.ConfigMap == nil {
-		return nil
-	}
-
-	cmRef := proxy.Spec.AuthzConfig.ConfigMap
-	cm := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: cmRef.Name, Namespace: proxy.Namespace}, cm)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			msg := fmt.Sprintf("Authorization ConfigMap %q not found in namespace %q", cmRef.Name, proxy.Namespace)
-			r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, msg)
-			setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, msg)
-			return fmt.Errorf("%s", msg)
-		}
-		return fmt.Errorf("failed to fetch authorization ConfigMap %q: %w", cmRef.Name, err)
-	}
-
-	// Check that the expected key exists
-	key := cmRef.Key
-	if key == "" {
-		key = "authz.json"
-	}
-	if _, ok := cm.Data[key]; !ok {
-		msg := fmt.Sprintf("Authorization ConfigMap %q is missing key %q", cmRef.Name, key)
-		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapKeyMissing, msg)
-		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapKeyMissing, msg)
-		return fmt.Errorf("%s", msg)
-	}
-
-	return nil
-}
-
-// validateHeaderSecretRefs validates that secrets referenced in headerForward exist.
-func (r *MCPRemoteProxyReconciler) validateHeaderSecretRefs(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	if proxy.Spec.HeaderForward == nil {
-		return nil
-	}
-
-	for _, headerRef := range proxy.Spec.HeaderForward.AddHeadersFromSecret {
-		if headerRef.ValueSecretRef == nil {
-			continue
-		}
-		secret := &corev1.Secret{}
-		err := r.Get(ctx, types.NamespacedName{Name: headerRef.ValueSecretRef.Name, Namespace: proxy.Namespace}, secret)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				msg := fmt.Sprintf("Secret %q referenced in headerForward for header %q not found in namespace %q",
-					headerRef.ValueSecretRef.Name, headerRef.HeaderName, proxy.Namespace)
-				r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, msg)
-				setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, msg)
-				return fmt.Errorf("%s", msg)
-			}
-			return fmt.Errorf("failed to fetch secret %q: %w", headerRef.ValueSecretRef.Name, err)
-		}
-	}
-
 	return nil
 }
 

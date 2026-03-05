@@ -142,33 +142,6 @@ func (rb *RemoteProxyBuilder) WithInlineOIDCConfig(issuer, audience string, inse
 	return rb
 }
 
-// WithInlineAuthzConfig sets an inline authz config with Cedar policies
-func (rb *RemoteProxyBuilder) WithInlineAuthzConfig(policies []string) *RemoteProxyBuilder {
-	rb.proxy.Spec.AuthzConfig = &mcpv1alpha1.AuthzConfigRef{
-		Type: mcpv1alpha1.AuthzConfigTypeInline,
-		Inline: &mcpv1alpha1.InlineAuthzConfig{
-			Policies: policies,
-		},
-	}
-	return rb
-}
-
-// WithHeaderForwardFromSecret sets a header forward config that references a secret
-func (rb *RemoteProxyBuilder) WithHeaderForwardFromSecret(headerName, secretName, secretKey string) *RemoteProxyBuilder {
-	rb.proxy.Spec.HeaderForward = &mcpv1alpha1.HeaderForwardConfig{
-		AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
-			{
-				HeaderName: headerName,
-				ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
-					Name: secretName,
-					Key:  secretKey,
-				},
-			},
-		},
-	}
-	return rb
-}
-
 // Create builds and creates the MCPRemoteProxy in the cluster
 func (rb *RemoteProxyBuilder) Create(h *MCPRemoteProxyTestHelper) *mcpv1alpha1.MCPRemoteProxy {
 	proxy := rb.proxy.DeepCopy()

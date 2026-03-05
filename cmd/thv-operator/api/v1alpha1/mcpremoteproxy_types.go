@@ -268,18 +268,6 @@ const (
 
 	// ConditionReasonOIDCIssuerInvalid indicates the OIDC issuer URL is malformed
 	ConditionReasonOIDCIssuerInvalid = "OIDCIssuerInvalid"
-
-	// ConditionReasonAuthzPolicySyntaxInvalid indicates a Cedar policy has invalid syntax
-	ConditionReasonAuthzPolicySyntaxInvalid = "AuthzPolicySyntaxInvalid"
-
-	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authorization ConfigMap was not found
-	ConditionReasonAuthzConfigMapNotFound = "AuthzConfigMapNotFound"
-
-	// ConditionReasonAuthzConfigMapKeyMissing indicates the referenced authorization ConfigMap is missing the expected key
-	ConditionReasonAuthzConfigMapKeyMissing = "AuthzConfigMapKeyMissing"
-
-	// ConditionReasonHeaderSecretNotFound indicates a secret referenced in headerForward was not found
-	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"
 )
 
 //+kubebuilder:object:root=true

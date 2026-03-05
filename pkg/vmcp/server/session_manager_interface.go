@@ -8,6 +8,7 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -30,4 +31,9 @@ type SessionManager interface {
 	// handlers. This enables session-scoped routing: each tool call goes through the
 	// session's backend connections rather than the global router.
 	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
+
+	// ListActiveSessions returns backend-centric usage statistics for all active vMCP sessions.
+	// Used by the /status endpoint to expose operational visibility without leaking session identifiers.
+	// Returns (activeCount, backendUsage map). Returns (0, empty map) if no sessions exist.
+	ListActiveSessions() (int, map[string]sessionmanager.BackendUsage)
 }

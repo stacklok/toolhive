@@ -216,13 +216,29 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
-	// Without layer data, fall back to creating a pending record.
+	// Without layer data, check the local OCI store for a matching tag
+	// before falling back to a pending record. This enables the
+	// build → install workflow where `thv skill build` tags the artifact
+	// with the skill name and a subsequent `thv skill install <name>`
+	// resolves it locally.
 	if len(opts.LayerData) == 0 {
-		result, err := s.installPending(ctx, opts, scope)
-		if err != nil {
-			return nil, err
+		resolved := false
+		if s.ociStore != nil {
+			var resolveErr error
+			// Pass pointer to hydrate opts with layer data, digest, and version.
+			resolved, resolveErr = s.resolveFromLocalStore(ctx, &opts)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
 		}
-		return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+		if !resolved {
+			result, err := s.installPending(ctx, opts, scope)
+			if err != nil {
+				return nil, err
+			}
+			return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+		}
+		// resolved: opts hydrated, fall through to installWithExtraction
 	}
 
 	result, err := s.installWithExtraction(ctx, opts, scope)
@@ -500,6 +516,55 @@ func (s *service) installFromOCI(
 	defer unlock()
 
 	return s.installWithExtraction(ctx, opts, scope)
+}
+
+// resolveFromLocalStore attempts to resolve a skill name as a tag in the local
+// OCI store. On success it hydrates opts with layer data, digest, and version
+// from the artifact. Returns (true, nil) when resolved, (false, nil) when the
+// tag is not found, or (false, err) on validation/extraction failure.
+func (s *service) resolveFromLocalStore(ctx context.Context, opts *skills.InstallOptions) (bool, error) {
+	d, err := s.ociStore.Resolve(ctx, opts.Name)
+	if err != nil {
+		// Tag not found in the local store — not an error, just unresolved.
+		slog.Debug("skill name not found in local OCI store", "name", opts.Name, "error", err)
+		return false, nil
+	}
+
+	layerData, skillConfig, err := s.extractOCIContent(ctx, d)
+	if err != nil {
+		return false, err
+	}
+
+	if err := skills.ValidateSkillName(skillConfig.Name); err != nil {
+		return false, httperr.WithCode(
+			fmt.Errorf("local artifact contains invalid skill name: %w", err),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// Supply-chain defense: the skill name declared inside the artifact must
+	// match the tag used to install it. A mismatch could indicate a
+	// tampered or mis-tagged artifact.
+	if skillConfig.Name != opts.Name {
+		return false, httperr.WithCode(
+			fmt.Errorf(
+				"skill name %q in local artifact does not match install name %q",
+				skillConfig.Name, opts.Name,
+			),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	opts.LayerData = layerData
+	opts.Digest = d.String()
+	if opts.Reference == "" {
+		opts.Reference = opts.Name
+	}
+	if opts.Version == "" && skillConfig.Version != "" {
+		opts.Version = skillConfig.Version
+	}
+
+	return true, nil
 }
 
 // extractOCIContent navigates the OCI content graph from a pulled digest,

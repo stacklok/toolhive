@@ -43,7 +43,7 @@ func TestRewriteTokenResponse(t *testing.T) {
 			check: func(t *testing.T, result map[string]any) {
 				t.Helper()
 				assert.Equal(t, "xoxp-secret-token", result["access_token"])
-				assert.Equal(t, "user", result["token_type"])
+				assert.Equal(t, "Bearer", result["token_type"])
 				assert.Equal(t, "channels:history channels:read", result["scope"])
 				// Original fields preserved
 				assert.Equal(t, true, result["ok"])
@@ -68,7 +68,7 @@ func TestRewriteTokenResponse(t *testing.T) {
 			check: func(t *testing.T, result map[string]any) {
 				t.Helper()
 				assert.Equal(t, "nested-token", result["access_token"])
-				assert.Equal(t, "bearer", result["token_type"])
+				assert.Equal(t, "Bearer", result["token_type"])
 				assert.Equal(t, "nested-refresh", result["refresh_token"])
 				assert.Equal(t, float64(7200), result["expires_in"])
 			},
@@ -173,7 +173,7 @@ func TestTokenResponseRewriter_TokenEndpoint(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &parsed))
 
 	assert.Equal(t, "xoxp-user-token", parsed["access_token"])
-	assert.Equal(t, "user", parsed["token_type"])
+	assert.Equal(t, "Bearer", parsed["token_type"])
 	assert.Equal(t, "channels:read", parsed["scope"])
 	assert.Equal(t, "xoxe-refresh", parsed["refresh_token"])
 	assert.Equal(t, float64(43200), parsed["expires_in"])

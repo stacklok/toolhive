@@ -76,15 +76,11 @@ func rewriteTokenResponse(body []byte, mapping *TokenResponseMapping) []byte {
 		original["access_token"] = v.String()
 	}
 
-	if path := pathOrDefault(mapping.TokenTypePath, ""); path != "" {
-		if v := gjson.GetBytes(body, path); v.Exists() {
-			original["token_type"] = v.String()
-		}
-	}
-	// Default token_type to "Bearer" if not present
-	if _, ok := original["token_type"]; !ok {
-		original["token_type"] = "Bearer"
-	}
+	// Always set token_type to "Bearer" for the oauth2 library.
+	// Non-standard providers may use different values (e.g., GovSlack uses "user")
+	// that the oauth2 library rejects. Since we're already using a custom mapping,
+	// the original token_type value is not meaningful for standard validation.
+	original["token_type"] = "Bearer"
 
 	if path := pathOrDefault(mapping.RefreshTokenPath, ""); path != "" {
 		if v := gjson.GetBytes(body, path); v.Exists() {

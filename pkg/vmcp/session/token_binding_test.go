@@ -109,16 +109,16 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		require.NotNil(t, sess)
 
 		// Verify token hash is stored
-		storedHash, present := sess.GetMetadata()[security.MetadataKeyTokenHash]
-		require.True(t, present, "security.MetadataKeyTokenHash must be set")
+		storedHash, present := sess.GetMetadata()[MetadataKeyTokenHash]
+		require.True(t, present, "MetadataKeyTokenHash must be set")
 		assert.NotEmpty(t, storedHash, "Token hash must be non-empty for authenticated session")
 		assert.Len(t, storedHash, 64, "HMAC-SHA256 hex-encoded hash should be 64 characters")
 		// Raw token must never appear in metadata.
 		assert.NotEqual(t, rawToken, storedHash)
 
 		// Verify salt is stored
-		storedSalt, saltPresent := sess.GetMetadata()[security.MetadataKeyTokenSalt]
-		require.True(t, saltPresent, "security.MetadataKeyTokenSalt must be set")
+		storedSalt, saltPresent := sess.GetMetadata()[MetadataKeyTokenSalt]
+		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set")
 		assert.NotEmpty(t, storedSalt, "Salt must be non-empty for authenticated session")
 	})
 
@@ -130,12 +130,12 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
-		storedHash, present := sess.GetMetadata()[security.MetadataKeyTokenHash]
-		require.True(t, present, "security.MetadataKeyTokenHash must be set even for anonymous sessions")
+		storedHash, present := sess.GetMetadata()[MetadataKeyTokenHash]
+		require.True(t, present, "MetadataKeyTokenHash must be set even for anonymous sessions")
 		assert.Empty(t, storedHash, "anonymous session must store empty sentinel")
 
 		// Anonymous sessions should not have salt
-		storedSalt := sess.GetMetadata()[security.MetadataKeyTokenSalt]
+		storedSalt := sess.GetMetadata()[MetadataKeyTokenSalt]
 		assert.Empty(t, storedSalt, "anonymous session should not have salt")
 	})
 
@@ -148,11 +148,11 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
-		storedHash := sess.GetMetadata()[security.MetadataKeyTokenHash]
+		storedHash := sess.GetMetadata()[MetadataKeyTokenHash]
 		assert.Empty(t, storedHash, "empty-token identity must store empty sentinel")
 
 		// Empty token should not have salt
-		storedSalt := sess.GetMetadata()[security.MetadataKeyTokenSalt]
+		storedSalt := sess.GetMetadata()[MetadataKeyTokenSalt]
 		assert.Empty(t, storedSalt, "empty-token identity should not have salt")
 	})
 
@@ -168,14 +168,14 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		require.NotNil(t, sess)
 
 		// Verify token hash
-		storedHash, present := sess.GetMetadata()[security.MetadataKeyTokenHash]
-		require.True(t, present, "security.MetadataKeyTokenHash must be set")
+		storedHash, present := sess.GetMetadata()[MetadataKeyTokenHash]
+		require.True(t, present, "MetadataKeyTokenHash must be set")
 		assert.NotEmpty(t, storedHash, "Token hash must be non-empty")
 		assert.Len(t, storedHash, 64, "HMAC-SHA256 hex-encoded hash should be 64 characters")
 
 		// Verify salt
-		storedSalt, saltPresent := sess.GetMetadata()[security.MetadataKeyTokenSalt]
-		require.True(t, saltPresent, "security.MetadataKeyTokenSalt must be set")
+		storedSalt, saltPresent := sess.GetMetadata()[MetadataKeyTokenSalt]
+		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set")
 		assert.NotEmpty(t, storedSalt, "Salt must be non-empty")
 	})
 }
@@ -283,7 +283,7 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify first session was created successfully
-	hash1 := sess1.GetMetadata()[security.MetadataKeyTokenHash]
+	hash1 := sess1.GetMetadata()[MetadataKeyTokenHash]
 	require.NotEmpty(t, hash1, "first session should have token hash")
 
 	// Maliciously modify the secret slice after passing it to WithHMACSecret
@@ -297,7 +297,7 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify second session was created successfully
-	hash2 := sess2.GetMetadata()[security.MetadataKeyTokenHash]
+	hash2 := sess2.GetMetadata()[MetadataKeyTokenHash]
 	require.NotEmpty(t, hash2, "second session should have token hash")
 
 	// Both sessions should still be able to validate the original token
@@ -335,7 +335,7 @@ func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should still create a valid session with default secret
-		hash := sess.GetMetadata()[security.MetadataKeyTokenHash]
+		hash := sess.GetMetadata()[MetadataKeyTokenHash]
 		assert.NotEmpty(t, hash, "should use default secret, not nil")
 	})
 
@@ -350,7 +350,7 @@ func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should still create a valid session with default secret
-		hash := sess.GetMetadata()[security.MetadataKeyTokenHash]
+		hash := sess.GetMetadata()[MetadataKeyTokenHash]
 		assert.NotEmpty(t, hash, "should use default secret, not empty slice")
 	})
 }

@@ -75,6 +75,25 @@ type Caller interface {
 	Close() error
 }
 
+const (
+	// MetadataKeyTokenHash is the session metadata key that holds the HMAC-SHA256
+	// hash of the bearer token used to create the session. For authenticated sessions
+	// this is hex(HMAC-SHA256(bearerToken)). For anonymous sessions this is the empty
+	// string sentinel. The raw token is never stored — only the hash.
+	//
+	// This constant is the single source of truth used by the session factory and
+	// security layer to store and validate token binding metadata.
+	MetadataKeyTokenHash = "vmcp.token.hash" //nolint:gosec // This is a metadata key name, not a credential.
+
+	// MetadataKeyTokenSalt is the session metadata key that holds the hex-encoded
+	// random salt used for HMAC-SHA256 token hashing. Each session has a unique salt
+	// to prevent attacks across multiple sessions.
+	//
+	// This constant is the single source of truth used by the session factory and
+	// security layer to store and validate token binding metadata.
+	MetadataKeyTokenSalt = "vmcp.token.salt" //nolint:gosec // This is a metadata key name, not a credential.
+)
+
 // Token binding errors returned by Caller methods when caller identity
 // validation fails.
 var (

@@ -4,6 +4,7 @@
 package session
 
 import (
+	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -57,4 +58,37 @@ type MultiSession interface {
 	// backend MCP server and is used to correlate vMCP sessions with backend
 	// sessions for debugging and auditing.
 	BackendSessions() map[string]string
+}
+
+const (
+	// MetadataKeyTokenHash is the session metadata key that holds the HMAC-SHA256
+	// hash of the bearer token used to create the session. For authenticated sessions
+	// this is hex(HMAC-SHA256(bearerToken)). For anonymous sessions this is the empty
+	// string sentinel. The raw token is never stored — only the hash.
+	//
+	// Re-exported from types package for convenience.
+	MetadataKeyTokenHash = sessiontypes.MetadataKeyTokenHash
+
+	// MetadataKeyTokenSalt is the session metadata key that holds the hex-encoded
+	// random salt used for HMAC-SHA256 token hashing. Each session has a unique salt
+	// to prevent attacks across multiple sessions.
+	//
+	// Re-exported from types package for convenience.
+	MetadataKeyTokenSalt = sessiontypes.MetadataKeyTokenSalt
+)
+
+// ShouldAllowAnonymous determines if a session should allow anonymous access
+// based on the creator's identity. This is session business logic that decides
+// whether a session is bound to a specific identity or allows anonymous access.
+//
+// Sessions without an identity (nil) or with an empty token are treated as
+// anonymous and will accept requests from any caller. Sessions with a non-empty
+// bearer token are bound to that token and will reject requests from different
+// callers.
+//
+// This function is used by both the session factory (to determine how to create
+// the session) and the security layer (to validate requests against the session's
+// access policy).
+func ShouldAllowAnonymous(identity *auth.Identity) bool {
+	return identity == nil || identity.Token == ""
 }

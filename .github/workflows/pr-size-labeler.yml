@@ -38,9 +38,11 @@ jobs:
       - name: Determine size label
         id: size
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_RESULT: ${{ steps.pr.outputs.result }}
         with:
           script: |
-            const changes = ${{ steps.pr.outputs.result }};
+            const changes = JSON.parse(process.env.PR_RESULT);
             const total = changes.total;
 
             let sizeLabel = '';

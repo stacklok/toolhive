@@ -535,17 +535,17 @@ func TestMergeResults(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		fts        []types.ToolMatch
-		semantic   []types.ToolMatch
+		fts        []mcp.Tool
+		semantic   []mcp.Tool
 		maxResults int
 		wantNames  []string // expected names in order (semantic first, then FTS5)
 	}{
 		{
 			name: "deduplicates keeping semantic entry",
-			fts: []types.ToolMatch{
+			fts: []mcp.Tool{
 				{Name: "tool_a", Description: "A"},
 			},
-			semantic: []types.ToolMatch{
+			semantic: []mcp.Tool{
 				{Name: "tool_a", Description: "A"},
 			},
 			maxResults: 10,
@@ -553,10 +553,10 @@ func TestMergeResults(t *testing.T) {
 		},
 		{
 			name: "semantic results come first",
-			fts: []types.ToolMatch{
+			fts: []mcp.Tool{
 				{Name: "tool_a", Description: "A"},
 			},
-			semantic: []types.ToolMatch{
+			semantic: []mcp.Tool{
 				{Name: "tool_b", Description: "B"},
 			},
 			maxResults: 10,
@@ -564,11 +564,11 @@ func TestMergeResults(t *testing.T) {
 		},
 		{
 			name: "preserves order within each group",
-			fts: []types.ToolMatch{
+			fts: []mcp.Tool{
 				{Name: "tool_c", Description: "C"},
 				{Name: "tool_a", Description: "A"},
 			},
-			semantic: []types.ToolMatch{
+			semantic: []mcp.Tool{
 				{Name: "tool_b", Description: "B"},
 			},
 			maxResults: 10,
@@ -576,12 +576,12 @@ func TestMergeResults(t *testing.T) {
 		},
 		{
 			name: "truncates to maxResults",
-			fts: []types.ToolMatch{
+			fts: []mcp.Tool{
 				{Name: "tool_a", Description: "A"},
 				{Name: "tool_b", Description: "B"},
 				{Name: "tool_c", Description: "C"},
 			},
-			semantic: []types.ToolMatch{
+			semantic: []mcp.Tool{
 				{Name: "tool_d", Description: "D"},
 				{Name: "tool_e", Description: "E"},
 			},
@@ -597,12 +597,12 @@ func TestMergeResults(t *testing.T) {
 		},
 		{
 			name: "dedup with truncate combined",
-			fts: []types.ToolMatch{
+			fts: []mcp.Tool{
 				{Name: "dup", Description: "D"},
 				{Name: "best", Description: "B"},
 				{Name: "worst", Description: "W"},
 			},
-			semantic: []types.ToolMatch{
+			semantic: []mcp.Tool{
 				{Name: "dup", Description: "D"},
 				{Name: "mid", Description: "M"},
 			},

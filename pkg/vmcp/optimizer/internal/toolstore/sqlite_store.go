@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"golang.org/x/sync/errgroup"
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
@@ -180,7 +181,7 @@ func (s sqliteToolStore) generateEmbeddings(ctx context.Context, tools []server.
 // The allowedTools parameter limits results to only tools with names in the given set.
 // If allowedTools is empty, no results are returned (empty = no access).
 // Returns matches ranked by relevance.
-func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]types.ToolMatch, error) {
+func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
 	if len(allowedTools) == 0 {
 		slog.Debug("search skipped, no allowed tools")
 		return nil, nil
@@ -207,7 +208,7 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	var ftsResults []types.ToolMatch
+	var ftsResults []mcp.Tool
 	if ftsExpr != "" && ftsLimit > 0 {
 		g.Go(func() error {
 			var err error
@@ -216,7 +217,7 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 		})
 	}
 
-	var semanticResults []types.ToolMatch
+	var semanticResults []mcp.Tool
 	if semanticLimit > 0 {
 		g.Go(func() error {
 			var err error
@@ -266,7 +267,7 @@ func (s sqliteToolStore) Close() error {
 // parameterized ? value, never interpolated into SQL.
 func (s sqliteToolStore) searchFTS5(
 	ctx context.Context, ftsExpr string, allowedTools []string, limit int,
-) ([]types.ToolMatch, error) {
+) ([]mcp.Tool, error) {
 	allowedJSON, err := json.Marshal(allowedTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal allowed tools: %w", err)
@@ -286,14 +287,14 @@ func (s sqliteToolStore) searchFTS5(
 	}
 	defer func() { _ = rows.Close() }()
 
-	var matches []types.ToolMatch
+	var matches []mcp.Tool
 	for rows.Next() {
 		var name, description string
 		var rank float64
 		if err := rows.Scan(&name, &description, &rank); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		matches = append(matches, types.ToolMatch{
+		matches = append(matches, mcp.Tool{
 			Name:        name,
 			Description: description,
 		})
@@ -328,7 +329,7 @@ func (s sqliteToolStore) searchFTS5(
 //nolint:unparam // limit kept for API consistency with searchFTS5
 func (s sqliteToolStore) searchSemantic(
 	ctx context.Context, query string, allowedTools []string, limit int,
-) ([]types.ToolMatch, error) {
+) ([]mcp.Tool, error) {
 	queryVec, err := s.embeddingClient.Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to embed query: %w", err)
@@ -396,9 +397,9 @@ func (s sqliteToolStore) searchSemantic(
 		ranked = ranked[:limit]
 	}
 
-	matches := make([]types.ToolMatch, len(ranked))
+	matches := make([]mcp.Tool, len(ranked))
 	for i, r := range ranked {
-		matches[i] = types.ToolMatch{
+		matches[i] = mcp.Tool{
 			Name:        r.name,
 			Description: r.description,
 		}
@@ -418,9 +419,9 @@ func (s sqliteToolStore) searchSemantic(
 // mergeResults combines semantic and FTS5 results, deduplicating by name.
 // Semantic results are listed first (preserving their distance-based order),
 // followed by FTS5 results not already present, and truncated to maxResults.
-func mergeResults(fts, semantic []types.ToolMatch, maxResults int) []types.ToolMatch {
+func mergeResults(fts, semantic []mcp.Tool, maxResults int) []mcp.Tool {
 	seen := make(map[string]struct{}, len(fts)+len(semantic))
-	merged := make([]types.ToolMatch, 0, len(fts)+len(semantic))
+	merged := make([]mcp.Tool, 0, len(fts)+len(semantic))
 
 	// Semantic results first.
 	for _, m := range semantic {
@@ -448,7 +449,7 @@ func mergeResults(fts, semantic []types.ToolMatch, maxResults int) []types.ToolM
 }
 
 // matchNames extracts tool names from a slice of ToolMatch results for logging.
-func matchNames(matches []types.ToolMatch) []string {
+func matchNames(matches []mcp.Tool) []string {
 	names := make([]string, len(matches))
 	for i, m := range matches {
 		names[i] = m.Name

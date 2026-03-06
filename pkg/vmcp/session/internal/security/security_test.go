@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 )
 
 const (
@@ -269,4 +270,44 @@ func TestHashToken_NoCollisions(t *testing.T) {
 	}
 
 	assert.Len(t, seen, 1000, "should have 1000 unique hashes")
+}
+
+// TestShouldAllowAnonymous_EdgeCases tests the ShouldAllowAnonymous helper.
+func TestShouldAllowAnonymous_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		identity *auth.Identity
+		want     bool
+	}{
+		{
+			name:     "nil identity",
+			identity: nil,
+			want:     true,
+		},
+		{
+			name:     "non-nil identity with token",
+			identity: &auth.Identity{Subject: "user", Token: "token"},
+			want:     false,
+		},
+		{
+			name:     "non-nil identity with empty token",
+			identity: &auth.Identity{Subject: "user", Token: ""},
+			want:     true, // Empty token is treated as anonymous
+		},
+		{
+			name:     "non-nil identity with empty subject",
+			identity: &auth.Identity{Subject: "", Token: "token"},
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := security.ShouldAllowAnonymous(tt.identity)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

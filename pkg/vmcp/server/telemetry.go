@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -196,12 +197,21 @@ func (t telemetryBackendClient) record(
 }
 
 func (t telemetryBackendClient) CallTool(
-	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	toolName string,
+	arguments map[string]any,
+	meta map[string]any,
 ) (_ *vmcp.ToolCallResult, retErr error) {
-	ctx, done := t.record(ctx, target, "call_tool", toolName, &retErr,
+	attrs := []attribute.KeyValue{
 		attribute.String("tool_name", toolName),        // backward compat
 		attribute.String("gen_ai.tool.name", toolName), // OTEL spec
-	)
+	}
+	// Check if caller is authenticated (extract from context)
+	if caller, _ := auth.IdentityFromContext(ctx); caller != nil && caller.Subject != "" {
+		attrs = append(attrs, attribute.Bool("auth.authenticated", true))
+	}
+	ctx, done := t.record(ctx, target, "call_tool", toolName, &retErr, attrs...)
 	defer done()
 	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
 }
@@ -211,10 +221,15 @@ func (t telemetryBackendClient) ReadResource(
 ) (_ *vmcp.ResourceReadResult, retErr error) {
 	// Use empty targetName to avoid unbounded URI cardinality in span names.
 	// The URI is captured in span attributes instead.
-	ctx, done := t.record(ctx, target, "read_resource", "", &retErr,
+	attrs := []attribute.KeyValue{
 		attribute.String("resource_uri", uri),     // backward compat
 		attribute.String("mcp.resource.uri", uri), // OTEL spec
-	)
+	}
+	// Check if caller is authenticated (extract from context)
+	if caller, _ := auth.IdentityFromContext(ctx); caller != nil && caller.Subject != "" {
+		attrs = append(attrs, attribute.Bool("auth.authenticated", true))
+	}
+	ctx, done := t.record(ctx, target, "read_resource", "", &retErr, attrs...)
 	defer done()
 	return t.backendClient.ReadResource(ctx, target, uri)
 }
@@ -222,10 +237,15 @@ func (t telemetryBackendClient) ReadResource(
 func (t telemetryBackendClient) GetPrompt(
 	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
 ) (_ *vmcp.PromptGetResult, retErr error) {
-	ctx, done := t.record(ctx, target, "get_prompt", name, &retErr,
+	attrs := []attribute.KeyValue{
 		attribute.String("prompt_name", name),        // backward compat
 		attribute.String("gen_ai.prompt.name", name), // OTEL spec
-	)
+	}
+	// Check if caller is authenticated (extract from context)
+	if caller, _ := auth.IdentityFromContext(ctx); caller != nil && caller.Subject != "" {
+		attrs = append(attrs, attribute.Bool("auth.authenticated", true))
+	}
+	ctx, done := t.record(ctx, target, "get_prompt", name, &retErr, attrs...)
 	defer done()
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)
 }

@@ -135,6 +135,7 @@ var _ = BeforeSuite(func() {
 	err = (&controllers.MCPRemoteProxyReconciler{
 		Client:           k8sManager.GetClient(),
 		Scheme:           k8sManager.GetScheme(),
+		Recorder:         k8sManager.GetEventRecorderFor("mcpremoteproxy-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())

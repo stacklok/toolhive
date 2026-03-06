@@ -262,6 +262,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	if err := (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("mcpremoteproxy-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)

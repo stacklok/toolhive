@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -80,6 +81,75 @@ func TestValidateCABundleSource(t *testing.T) {
 				}
 			} else {
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateOIDCIssuerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		issuer        string
+		allowInsecure bool
+		wantErr       bool
+		errContains   string
+	}{
+		{
+			name:          "empty issuer is valid",
+			issuer:        "",
+			allowInsecure: false,
+			wantErr:       false,
+		},
+		{
+			name:          "HTTPS issuer is valid",
+			issuer:        "https://accounts.example.com",
+			allowInsecure: false,
+			wantErr:       false,
+		},
+		{
+			name:          "HTTP issuer with allowInsecure true is valid",
+			issuer:        "http://dev.example.com",
+			allowInsecure: true,
+			wantErr:       false,
+		},
+		{
+			name:          "HTTP issuer with allowInsecure false is an error",
+			issuer:        "http://dev.example.com",
+			allowInsecure: false,
+			wantErr:       true,
+			errContains:   "HTTP scheme",
+		},
+		{
+			name:          "malformed URL without scheme is an error",
+			issuer:        "not-a-url",
+			allowInsecure: false,
+			wantErr:       true,
+			errContains:   "malformed",
+		},
+		{
+			name:          "unsupported scheme is an error",
+			issuer:        "ftp://example.com",
+			allowInsecure: false,
+			wantErr:       true,
+			errContains:   "unsupported scheme",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validation.ValidateOIDCIssuerURL(tt.issuer, tt.allowInsecure)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					require.Contains(t, err.Error(), tt.errContains)
+				}
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

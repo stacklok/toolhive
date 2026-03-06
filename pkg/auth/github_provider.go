@@ -127,6 +127,7 @@ func (*GitHubProvider) CanHandle(introspectURL string) bool {
 // IntrospectToken introspects a GitHub OAuth token and returns JWT claims
 // This calls GitHub's token validation API to verify the token and extract user information
 func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt.MapClaims, error) {
+	//nolint:gosec // G706 - baseURL is a configured GitHub API endpoint
 	slog.Debug("using GitHub token validation provider", "url", g.baseURL)
 
 	// Apply rate limiting to prevent DoS and respect GitHub API limits
@@ -142,6 +143,7 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	}
 
 	// Create POST request
+	//nolint:gosec // G704 - URL is configured GitHub API endpoint
 	req, err := http.NewRequestWithContext(ctx, "POST", g.baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GitHub validation request: %w", err)

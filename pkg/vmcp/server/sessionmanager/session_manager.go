@@ -165,7 +165,7 @@ func (sm *Manager) CreateSession(
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
 	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
 	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
-	allowAnonymous := identity == nil || identity.Token == ""
+	allowAnonymous := vmcpsession.ShouldAllowAnonymous(identity)
 	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, allowAnonymous, backends)
 	if err != nil {
 		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)

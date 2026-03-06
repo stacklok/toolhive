@@ -27,29 +27,14 @@ const (
 	// SHA256HexLen is the length of a hex-encoded SHA256 hash (32 bytes = 64 hex characters)
 	SHA256HexLen = 64
 
-	// MetadataKeyTokenHash is the transport-session metadata key that holds
-	// the HMAC-SHA256 hash of the bearer token used to create the session.
-	// For authenticated sessions this is hex(HMAC-SHA256(bearerToken)).
-	// For anonymous sessions (no bearer token) this is the empty string sentinel.
-	// The raw token is never stored — only the hash.
-	MetadataKeyTokenHash = "vmcp.token.hash" //nolint:gosec // This is a metadata key name, not a credential.
+	// MetadataKeyTokenHash is the session metadata key for the token hash.
+	// Imported from types package to ensure consistency across all packages.
+	MetadataKeyTokenHash = sessiontypes.MetadataKeyTokenHash
 
-	// MetadataKeyTokenSalt is the transport-session metadata key that holds
-	// the hex-encoded random salt used for HMAC-SHA256 token hashing.
-	// Each session has a unique salt to prevent attacks across multiple sessions.
-	MetadataKeyTokenSalt = "vmcp.token.salt" //nolint:gosec // This is a metadata key name, not a credential.
+	// MetadataKeyTokenSalt is the session metadata key for the token salt.
+	// Imported from types package to ensure consistency across all packages.
+	MetadataKeyTokenSalt = sessiontypes.MetadataKeyTokenSalt
 )
-
-// ShouldAllowAnonymous determines if a session should allow anonymous access
-// based on the creator's identity. Sessions without an identity (nil) or with
-// an empty token are anonymous; sessions with a non-empty bearer token are
-// bound to that token.
-//
-// This helper consolidates the anonymous session logic and aligns with the
-// validation logic in PreventSessionHijacking.
-func ShouldAllowAnonymous(identity *auth.Identity) bool {
-	return identity == nil || identity.Token == ""
-}
 
 // GenerateSalt generates a cryptographically secure random salt for token hashing.
 // Returns 16 bytes of random data from crypto/rand.
@@ -290,16 +275,33 @@ func (d *HijackPreventionDecorator) GetPrompt(
 // that HijackPreventionDecorator delegates to (see struct definition for full list).
 // The return type is concrete to eliminate the need for runtime casts at call sites.
 //
-// Returns an error if salt generation fails.
+// Returns an error if:
+//   - session doesn't implement SessionMetadataWriter interface
+//   - salt generation fails
 func PreventSessionHijacking(
 	session interface{},
 	hmacSecret []byte,
 	identity *auth.Identity,
 	allowAnonymous bool,
 ) (*HijackPreventionDecorator, error) {
-	// Cast session to SessionMetadataWriter to access SetMetadata.
-	// The caller must ensure the session implements this interface.
-	metadataWriter := session.(SessionMetadataWriter)
+	// Validate upfront that session implements critical interfaces.
+	// This provides fail-fast behavior for security-critical operations
+	// instead of panics at runtime.
+
+	// Required for metadata persistence
+	metadataWriter, ok := session.(SessionMetadataWriter)
+	if !ok {
+		return nil, fmt.Errorf("session must implement SessionMetadataWriter interface, got %T", session)
+	}
+
+	// Required for security-critical operations (CallTool/ReadResource/GetPrompt)
+	if _, ok := session.(HijackableSession); !ok {
+		return nil, fmt.Errorf("session must implement HijackableSession interface (CallTool/ReadResource/GetPrompt), got %T", session)
+	}
+
+	// Note: Pass-through methods (ID, Type, CreatedAt, etc.) are validated by the
+	// type system when the decorator is used. We don't validate them here to keep
+	// the constructor simple and allow minimal mocks for testing.
 
 	var boundTokenHash string
 	var tokenSalt []byte

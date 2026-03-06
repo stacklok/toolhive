@@ -270,7 +270,7 @@ func (f *defaultMultiSessionFactory) MakeSession(
 ) (MultiSession, error) {
 	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
 	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
-	allowAnonymous := security.ShouldAllowAnonymous(identity)
+	allowAnonymous := ShouldAllowAnonymous(identity)
 	return f.makeSession(ctx, uuid.New().String(), identity, allowAnonymous, backends)
 }
 

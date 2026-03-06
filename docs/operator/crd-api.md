@@ -2785,7 +2785,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `accessTokenPath` _string_ | AccessTokenPath is the dot-notation path to the access token in the response.<br />Example: "authed_user.access_token" |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `tokenTypePath` _string_ | TokenTypePath is the dot-notation path to the token type in the response.<br />If not specified, defaults to "token_type". |  | Optional: \{\} <br /> |
 | `scopePath` _string_ | ScopePath is the dot-notation path to the scope string in the response.<br />If not specified, defaults to "scope". |  | Optional: \{\} <br /> |
 | `refreshTokenPath` _string_ | RefreshTokenPath is the dot-notation path to the refresh token in the response.<br />If not specified, defaults to "refresh_token". |  | Optional: \{\} <br /> |
 | `expiresInPath` _string_ | ExpiresInPath is the dot-notation path to the expires_in value (in seconds).<br />If not specified, defaults to "expires_in". |  | Optional: \{\} <br /> |

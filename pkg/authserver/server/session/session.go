@@ -31,6 +31,16 @@ import (
 // serialized session data.
 type Factory func(subject, idpSessionID, clientID string) fosite.Session
 
+// UserClaims holds optional user profile claims from the upstream IDP.
+// Using a struct avoids parameter-ordering mistakes in function signatures
+// that accept multiple string parameters.
+type UserClaims struct {
+	// Name is the user's display name (OIDC "name" claim).
+	Name string
+	// Email is the user's email address (OIDC "email" claim).
+	Email string
+}
+
 // UpstreamSession is an interface for sessions that support IDP linking and JWT claims.
 // It embeds oauth2.JWTSessionContainer (which includes fosite.Session, GetJWTClaims,
 // and GetJWTHeader) and adds IDP session tracking.
@@ -49,6 +59,14 @@ const TokenSessionIDClaimKey = "tsid"
 // ClientIDClaimKey is the JWT claim key for the OAuth client ID.
 // This identifies which client was issued the token.
 const ClientIDClaimKey = "client_id"
+
+// NameClaimKey is the JWT claim key for the user's display name.
+// Per OIDC Core Section 5.1.
+const NameClaimKey = "name"
+
+// EmailClaimKey is the JWT claim key for the user's email address.
+// Per OIDC Core Section 5.1.
+const EmailClaimKey = "email"
 
 // Session extends fosite's JWT session with an IDP session reference.
 // This allows the authorization server to link issued tokens to
@@ -72,7 +90,7 @@ type Session struct {
 }
 
 // New creates a new Session with the given subject, IDP session ID, client ID, and
-// optional user profile claims (name, email).
+// optional user profile claims.
 //
 // Parameters:
 //   - subject: The OAuth subject (user identifier). May be empty for placeholder sessions.
@@ -81,10 +99,8 @@ type Session struct {
 //     upstream IDP tokens.
 //   - clientID: The OAuth client ID. When provided, it will be included in the JWT
 //     claims as "client_id" for binding verification per RFC 9068.
-//   - name: The user's display name from the upstream IDP (optional). Included as
-//     the "name" claim in the JWT per OIDC Core Section 5.1.
-//   - email: The user's email from the upstream IDP (optional). Included as
-//     the "email" claim in the JWT per OIDC Core Section 5.1.
+//   - claims: Optional user profile claims (name, email) from the upstream IDP.
+//     Included in the JWT per OIDC Core Section 5.1.
 //
 // ClientID handling:
 //   - For token issuance (authorize handler): Pass the client ID to ensure RFC 9068
@@ -97,7 +113,7 @@ type Session struct {
 // Note: The remaining RFC 9068 required claims (iss, aud, exp, iat, jti) are
 // populated by Fosite during token generation. This session only initializes
 // custom claims that are not part of Fosite's standard JWT handling.
-func New(subject, idpSessionID, clientID, name, email string) *Session {
+func New(subject, idpSessionID, clientID string, claims UserClaims) *Session {
 	// Initialize the Extra map for JWT claims
 	claimsExtra := make(map[string]any)
 
@@ -114,11 +130,11 @@ func New(subject, idpSessionID, clientID, name, email string) *Session {
 	}
 
 	// Add user profile claims per OIDC Core Section 5.1
-	if name != "" {
-		claimsExtra["name"] = name
+	if claims.Name != "" {
+		claimsExtra[NameClaimKey] = claims.Name
 	}
-	if email != "" {
-		claimsExtra["email"] = email
+	if claims.Email != "" {
+		claimsExtra[EmailClaimKey] = claims.Email
 	}
 
 	return &Session{

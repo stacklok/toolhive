@@ -22,7 +22,7 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// 2. Retrieve the stored authorize session from storage (created in CallbackHandler)
 	// 3. Use the stored session's claims (subject, tsid, client_id) for token generation
 	// This session object is only used as a deserialization template.
-	sess := session.New("", "", "", "", "")
+	sess := session.New("", "", "", session.UserClaims{})
 
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)

@@ -45,7 +45,7 @@ func (t *tokenResponseRewriter) RoundTrip(req *http.Request) (*http.Response, er
 		return resp, nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	_ = resp.Body.Close()
 	if err != nil {
 		return nil, err
@@ -55,7 +55,7 @@ func (t *tokenResponseRewriter) RoundTrip(req *http.Request) (*http.Response, er
 
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
 	resp.ContentLength = int64(len(rewritten))
-	resp.Header.Set("Content-Length", "")
+	resp.Header.Del("Content-Length")
 	return resp, nil
 }
 
@@ -82,19 +82,19 @@ func rewriteTokenResponse(body []byte, mapping *TokenResponseMapping) []byte {
 	// the original token_type value is not meaningful for standard validation.
 	original["token_type"] = "Bearer"
 
-	if path := pathOrDefault(mapping.RefreshTokenPath, ""); path != "" {
+	if path := pathOrDefault(mapping.RefreshTokenPath, "refresh_token"); path != "" {
 		if v := gjson.GetBytes(body, path); v.Exists() {
 			original["refresh_token"] = v.String()
 		}
 	}
 
-	if path := pathOrDefault(mapping.ExpiresInPath, ""); path != "" {
+	if path := pathOrDefault(mapping.ExpiresInPath, "expires_in"); path != "" {
 		if v := gjson.GetBytes(body, path); v.Exists() && v.Int() > 0 {
 			original["expires_in"] = v.Int()
 		}
 	}
 
-	if path := pathOrDefault(mapping.ScopePath, ""); path != "" {
+	if path := pathOrDefault(mapping.ScopePath, "scope"); path != "" {
 		if v := gjson.GetBytes(body, path); v.Exists() {
 			original["scope"] = v.String()
 		}

@@ -211,9 +211,6 @@ type TokenResponseMappingRunConfig struct {
 	// AccessTokenPath is the dot-notation path to the access token (required).
 	AccessTokenPath string `json:"access_token_path" yaml:"access_token_path"`
 
-	// TokenTypePath is the dot-notation path to the token type. Defaults to "token_type".
-	TokenTypePath string `json:"token_type_path,omitempty" yaml:"token_type_path,omitempty"`
-
 	// ScopePath is the dot-notation path to the scope. Defaults to "scope".
 	ScopePath string `json:"scope_path,omitempty" yaml:"scope_path,omitempty"`
 

@@ -271,7 +271,11 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 		Email string `json:"email"`
 	}
 	// Best-effort: if claims extraction fails, we still have the subject
-	_ = validatedToken.Claims(&idClaims)
+	if err := validatedToken.Claims(&idClaims); err != nil {
+		slog.Warn("failed to extract optional claims from ID token",
+			"error", err,
+		)
+	}
 
 	return &Identity{
 		Tokens:  tokens,

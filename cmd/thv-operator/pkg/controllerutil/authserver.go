@@ -523,7 +523,6 @@ func buildUpstreamRunConfig(
 				m := provider.OAuth2Config.TokenResponseMapping
 				config.OAuth2Config.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
 					AccessTokenPath:  m.AccessTokenPath,
-					TokenTypePath:    m.TokenTypePath,
 					ScopePath:        m.ScopePath,
 					RefreshTokenPath: m.RefreshTokenPath,
 					ExpiresInPath:    m.ExpiresInPath,

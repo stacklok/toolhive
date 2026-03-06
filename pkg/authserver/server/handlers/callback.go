@@ -165,7 +165,10 @@ func (h *Handler) writeAuthorizationResponse(
 	}
 
 	// Create the session with IDP session reference, client ID, and user profile claims
-	sess := session.New(subject, sessionID, pending.ClientID, name, email)
+	sess := session.New(subject, sessionID, pending.ClientID, session.UserClaims{
+		Name:  name,
+		Email: email,
+	})
 
 	// Set expiration times
 	now := time.Now()

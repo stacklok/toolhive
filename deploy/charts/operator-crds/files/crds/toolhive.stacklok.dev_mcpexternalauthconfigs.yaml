@@ -470,11 +470,6 @@ spec:
                                     ScopePath is the dot-notation path to the scope string in the response.
                                     If not specified, defaults to "scope".
                                   type: string
-                                tokenTypePath:
-                                  description: |-
-                                    TokenTypePath is the dot-notation path to the token type in the response.
-                                    If not specified, defaults to "token_type".
-                                  type: string
                               required:
                               - accessTokenPath
                               type: object

@@ -61,14 +61,14 @@ func newRedisTestRequester(id string, client fosite.Client) fosite.Requester {
 		RequestedAudience: fosite.Arguments{},
 		GrantedAudience:   fosite.Arguments{},
 		Form:              make(url.Values),
-		Session:           session.New("test-subject", "", "", "", ""),
+		Session:           session.New("test-subject", "", "", session.UserClaims{}),
 	}
 }
 
 // newRedisTestRequesterWithExpiration creates a fosite.Request with a real session.Session
 // and a specific expiration time for the given token type.
 func newRedisTestRequesterWithExpiration(id string, client fosite.Client, tokenType fosite.TokenType, expiresAt time.Time) fosite.Requester {
-	sess := session.New("test-subject", "", "", "", "")
+	sess := session.New("test-subject", "", "", session.UserClaims{})
 	sess.SetExpiresAt(tokenType, expiresAt)
 	return &fosite.Request{
 		ID:                id,
@@ -383,7 +383,7 @@ func TestRedisStorage_SessionRoundTrip(t *testing.T) {
 			require.NoError(t, s.RegisterClient(ctx, client))
 
 			// Create a session with JWT claims and upstream session ID
-			sess := session.New("user-123", "upstream-session-456", "test-client", "", "")
+			sess := session.New("user-123", "upstream-session-456", "test-client", session.UserClaims{})
 			request := &fosite.Request{
 				ID:             "req-jwt",
 				RequestedAt:    time.Now(),

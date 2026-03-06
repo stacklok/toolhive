@@ -37,7 +37,6 @@ func TestRewriteTokenResponse(t *testing.T) {
 			}`,
 			mapping: &TokenResponseMapping{
 				AccessTokenPath: "authed_user.access_token",
-				TokenTypePath:   "authed_user.token_type",
 				ScopePath:       "authed_user.scope",
 			},
 			check: func(t *testing.T, result map[string]any) {
@@ -61,7 +60,6 @@ func TestRewriteTokenResponse(t *testing.T) {
 			}`,
 			mapping: &TokenResponseMapping{
 				AccessTokenPath:  "data.token",
-				TokenTypePath:    "data.type",
 				RefreshTokenPath: "data.refresh",
 				ExpiresInPath:    "data.ttl",
 			},
@@ -153,7 +151,6 @@ func TestTokenResponseRewriter_TokenEndpoint(t *testing.T) {
 
 	mapping := &TokenResponseMapping{
 		AccessTokenPath: "authed_user.access_token",
-		TokenTypePath:   "authed_user.token_type",
 		ScopePath:       "authed_user.scope",
 	}
 
@@ -261,7 +258,7 @@ func TestOAuth2Config_Validate_TokenResponseMapping(t *testing.T) {
 	}{
 		{name: "nil mapping is valid", mapping: nil, wantErr: false},
 		{name: "valid mapping", mapping: &TokenResponseMapping{AccessTokenPath: "authed_user.access_token"}, wantErr: false},
-		{name: "missing access token path", mapping: &TokenResponseMapping{TokenTypePath: "t"}, wantErr: true},
+		{name: "missing access token path", mapping: &TokenResponseMapping{ScopePath: "scope"}, wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -841,7 +841,7 @@ func TestIntegration_SessionRoundTrip(t *testing.T) {
 		client := testClient()
 		require.NoError(t, s.RegisterClient(ctx, client))
 
-		sess := session.New("user-rt", "upstream-sess-rt", "test-client-id", "", "")
+		sess := session.New("user-rt", "upstream-sess-rt", "test-client-id", session.UserClaims{})
 		request := &fosite.Request{
 			ID:             "req-rt-jwt",
 			RequestedAt:    time.Now(),

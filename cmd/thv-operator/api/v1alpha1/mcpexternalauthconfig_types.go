@@ -351,11 +351,6 @@ type TokenResponseMapping struct {
 	// +kubebuilder:validation:MinLength=1
 	AccessTokenPath string `json:"accessTokenPath"`
 
-	// TokenTypePath is the dot-notation path to the token type in the response.
-	// If not specified, defaults to "token_type".
-	// +optional
-	TokenTypePath string `json:"tokenTypePath,omitempty"`
-
 	// ScopePath is the dot-notation path to the scope string in the response.
 	// If not specified, defaults to "scope".
 	// +optional

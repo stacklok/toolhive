@@ -341,7 +341,6 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 	if oauth2.TokenResponseMapping != nil {
 		cfg.TokenResponseMapping = &upstream.TokenResponseMapping{
 			AccessTokenPath:  oauth2.TokenResponseMapping.AccessTokenPath,
-			TokenTypePath:    oauth2.TokenResponseMapping.TokenTypePath,
 			ScopePath:        oauth2.TokenResponseMapping.ScopePath,
 			RefreshTokenPath: oauth2.TokenResponseMapping.RefreshTokenPath,
 			ExpiresInPath:    oauth2.TokenResponseMapping.ExpiresInPath,

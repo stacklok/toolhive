@@ -150,9 +150,6 @@ type TokenResponseMapping struct {
 	// AccessTokenPath is the gjson path to the access token (required).
 	AccessTokenPath string
 
-	// TokenTypePath is the gjson path to the token type. Defaults to "token_type".
-	TokenTypePath string
-
 	// ScopePath is the gjson path to the scope. Defaults to "scope".
 	ScopePath string
 

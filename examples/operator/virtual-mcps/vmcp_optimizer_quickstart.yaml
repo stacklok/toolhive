@@ -14,10 +14,15 @@
 #
 # This example creates:
 # 1. An MCPGroup to organize backends
-# 2. A yardstick MCPServer backend
-# 3. A fetch MCPServer backend (URL fetching)
-# 4. An EmbeddingServer for the optimizer (using all default values)
-# 5. A VirtualMCPServer with optimizer auto-configured via embeddingServerRef
+# 2. Multiple MCPServer backends covering popular MCP servers:
+#    - yardstick (unit conversion)
+#    - fetch (URL content fetching)
+#    - github (GitHub API)
+#    - memory (knowledge graph-based persistent memory)
+#    - puppeteer (browser automation)
+#    - osv (OSV vulnerability database)
+# 3. An EmbeddingServer for the optimizer (using all default values)
+# 4. A VirtualMCPServer with optimizer auto-configured via embeddingServerRef
 #
 # Apple Silicon (ARM64) Note:
 #   The embedding server image (ghcr.io/huggingface/text-embeddings-inference:cpu-latest)
@@ -26,8 +31,21 @@
 #     kind load docker-image ghcr.io/huggingface/text-embeddings-inference:cpu-latest --name toolhive
 #   ARM64 support is tracked in: https://github.com/huggingface/text-embeddings-inference/pull/827
 #
+# Prerequisites - Create secrets for MCP servers that need them:
+#
+#   # GitHub Personal Access Token (for github MCP server)
+#   # Option 1: From environment variable (recommended - avoids token in shell history)
+#   kubectl create secret generic github-token \
+#     --from-literal=token="$GITHUB_TOKEN"
+#
+#   # Option 2: From a file
+#   echo -n "ghp_YOUR_TOKEN" > /tmp/github-token.txt
+#   kubectl create secret generic github-token \
+#     --from-file=token=/tmp/github-token.txt
+#   rm /tmp/github-token.txt
+#
 # Usage:
-#   kubectl apply -f vmcp_optimizer_example.yaml
+#   kubectl apply -f vmcp_optimizer_quickstart.yaml
 
 ---
 # Step 1: Create MCPGroup
@@ -40,7 +58,7 @@ spec:
   description: Backend services for optimizer-enabled VirtualMCPServer
 
 ---
-# Step 2: Create MCPServer backend - yardstick
+# Step 2a: MCPServer backend - yardstick (unit conversion)
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -49,8 +67,11 @@ metadata:
 spec:
   groupRef: optimizer-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
-  transport: stdio
+  transport: streamable-http
   proxyPort: 8080
+  env:
+  - name: TRANSPORT
+    value: streamable-http
   resources:
     limits:
       cpu: "100m"
@@ -60,7 +81,7 @@ spec:
       memory: "64Mi"
 
 ---
-# Step 3: Create MCPServer backend - fetch (URL content fetching)
+# Step 2b: MCPServer backend - fetch (URL content fetching)
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -81,7 +102,94 @@ spec:
       memory: "64Mi"
 
 ---
-# Step 4: Create EmbeddingServer for the optimizer
+# Step 2c: MCPServer backend - github (GitHub API interaction)
+# Requires a Kubernetes Secret named "github-token" with key "token"
+# containing a GitHub Personal Access Token:
+#   kubectl create secret generic github-token --from-literal=token=ghp_YOUR_TOKEN
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/github/github-mcp-server
+  transport: stdio
+  proxyPort: 8080
+  secrets:
+    - name: github-token
+      key: token
+      targetEnvName: GITHUB_PERSONAL_ACCESS_TOKEN
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+---
+# Step 2d: MCPServer backend - memory (knowledge graph-based persistent memory)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: memory
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: docker.io/mcp/memory
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 2e: MCPServer backend - puppeteer (browser automation and web scraping)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: puppeteer
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: docker.io/mcp/puppeteer
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+
+---
+# Step 2f: MCPServer backend - osv (OSV vulnerability database)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: osv
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/osv-mcp/server:0.0.7
+  transport: streamable-http
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 3: Create EmbeddingServer for the optimizer
 # All fields use kubebuilder defaults:
 #   model: BAAI/bge-small-en-v1.5
 #   image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
@@ -96,7 +204,7 @@ metadata:
 spec: {}
 
 ---
-# Step 5: Create VirtualMCPServer with optimizer auto-configured
+# Step 4: Create VirtualMCPServer with optimizer auto-configured
 # Note: No explicit "optimizer" config is needed. The operator detects that
 # embeddingServerRef is set, auto-populates the optimizer with default values,
 # resolves the EmbeddingServer URL, and emits an "OptimizerAutoConfigured" event.

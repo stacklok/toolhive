@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -19,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -29,12 +31,14 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
 type MCPRemoteProxyReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
+	Recorder         record.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
@@ -43,7 +47,7 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -346,6 +350,62 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		}
 	}
 
+	// Validate OIDC issuer URL scheme
+	if err := r.validateOIDCIssuerURL(proxy); err != nil {
+		reason := mcpv1alpha1.ConditionReasonOIDCIssuerInvalid
+		if strings.Contains(err.Error(), "HTTP scheme") {
+			reason = mcpv1alpha1.ConditionReasonOIDCIssuerInsecure
+		}
+		r.recordValidationEvent(proxy, reason, err.Error())
+		setConfigurationInvalidCondition(proxy, reason, err.Error())
+		return err
+	}
+
+	// All validations passed
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeConfigurationValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonConfigurationValid,
+		Message:            "All configuration validations passed",
+		ObservedGeneration: proxy.Generation,
+	})
+
+	return nil
+}
+
+// recordValidationEvent emits a Warning event for a validation failure.
+func (r *MCPRemoteProxyReconciler) recordValidationEvent(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Event(proxy, corev1.EventTypeWarning, reason, message)
+	}
+}
+
+// setConfigurationInvalidCondition sets the ConfigurationValid condition to False.
+func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeConfigurationValid,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: proxy.Generation,
+	})
+}
+
+// validateOIDCIssuerURL validates the OIDC issuer URL scheme.
+func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	oidcConfig := proxy.Spec.OIDCConfig
+
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		if oidcConfig.Inline != nil {
+			return validation.ValidateOIDCIssuerURL(oidcConfig.Inline.Issuer, oidcConfig.Inline.InsecureAllowHTTP)
+		}
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		if oidcConfig.Kubernetes != nil && oidcConfig.Kubernetes.Issuer != "" {
+			// Kubernetes OIDC issuers must always use HTTPS
+			return validation.ValidateOIDCIssuerURL(oidcConfig.Kubernetes.Issuer, false)
+		}
+	}
 	return nil
 }
 

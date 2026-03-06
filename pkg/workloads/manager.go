@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -868,6 +869,51 @@ func (d *DefaultManager) stopProxyIfNeeded(ctx context.Context, name, baseName s
 	}
 }
 
+// freePortHolderIfNeeded kills the process holding the proxy port if it is in use.
+// This ensures the port is free before the child attempts to bind, preventing
+// "address already in use" errors on restart.
+func (*DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *runner.RunConfig) {
+	if runConfig == nil || runConfig.Port <= 0 {
+		return
+	}
+
+	if networking.IsAvailable(runConfig.Port) {
+		return
+	}
+
+	portPID, err := networking.GetProcessOnPort(runConfig.Port)
+	if err != nil {
+		slog.Warn("failed to get process on port", "port", runConfig.Port, "error", err)
+		return
+	}
+	if portPID <= 0 {
+		return
+	}
+
+	isWorkloadProxy, err := process.IsToolHiveProxyForWorkload(portPID, runConfig.BaseName)
+	if err != nil {
+		slog.Debug("could not verify process identity, skipping kill", "port", runConfig.Port, "pid", portPID, "error", err)
+		return
+	}
+	if !isWorkloadProxy {
+		slog.Debug("process on port is not this workload's ToolHive proxy, skipping kill",
+			"port", runConfig.Port, "pid", portPID, "workload", runConfig.BaseName)
+		return
+	}
+
+	slog.Debug("killing process holding proxy port", "port", runConfig.Port, "pid", portPID)
+	if err := process.KillProcess(portPID); err != nil {
+		slog.Warn("failed to kill process holding port", "port", runConfig.Port, "pid", portPID, "error", err)
+		return
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := process.WaitForExit(waitCtx, portPID); err != nil {
+		slog.Warn("timeout waiting for process to exit", "pid", portPID, "error", err)
+	}
+}
+
 // removeContainer removes the container from the runtime
 func (d *DefaultManager) removeContainer(ctx context.Context, name string) error {
 	slog.Debug("removing container", "workload", name)
@@ -1123,6 +1169,10 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
 		slog.Warn("Failed to set workload status to starting", "workload", name, "error", err)
 	}
+
+	// Ensure port is free before spawning. Kill the process holding the port if bound.
+	// This prevents "address already in use" when the new child tries to bind.
+	d.freePortHolderIfNeeded(ctx, mcpRunner.Config)
 
 	slog.Debug("loaded configuration from state", "workload", runConfig.BaseName)
 	return mcpRunner, nil

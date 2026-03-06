@@ -7,7 +7,9 @@
 package backend
 
 import (
-	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
+	"context"
+
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // Session abstracts a persistent, initialised MCP connection to a single
@@ -17,9 +19,35 @@ import (
 // Each Session is bound to exactly one backend at creation time — callers do
 // not need to pass a routing target to individual method calls.
 //
+// Caller validation happens at the MultiSession level, not here. These methods
+// perform the actual I/O operations without authentication checks.
+//
 // Implementations must be safe for concurrent use.
 type Session interface {
-	sessiontypes.Caller
+	// CallTool invokes toolName on the backend.
+	// arguments contains the tool input parameters.
+	// meta contains protocol-level metadata (_meta) forwarded from the client.
+	CallTool(
+		ctx context.Context,
+		toolName string,
+		arguments map[string]any,
+		meta map[string]any,
+	) (*vmcp.ToolCallResult, error)
+
+	// ReadResource retrieves the resource identified by uri from the backend.
+	ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
+
+	// GetPrompt retrieves the named prompt from the backend.
+	// arguments contains the prompt input parameters.
+	GetPrompt(
+		ctx context.Context,
+		name string,
+		arguments map[string]any,
+	) (*vmcp.PromptGetResult, error)
+
+	// Close releases all resources held by this session. Implementations must
+	// be idempotent: calling Close multiple times returns nil.
+	Close() error
 
 	// SessionID returns the backend-assigned session ID (if any).
 	// Returns "" if the backend did not assign a session ID.

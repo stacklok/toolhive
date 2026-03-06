@@ -26,6 +26,7 @@ jobs:
       - name: Run Trivy vulnerability scanner in repo mode
         uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
         with:
+          version: 'v0.69.3'
           scan-type: 'fs'
           scan-ref: '.'
           format: 'sarif'
@@ -47,6 +48,7 @@ jobs:
       - name: Run Trivy configuration scanner
         uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
         with:
+          version: 'v0.69.3'
           scan-type: 'config'
           scan-ref: './deploy/charts'
           format: 'sarif'

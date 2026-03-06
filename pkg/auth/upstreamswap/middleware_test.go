@@ -99,7 +99,7 @@ func TestMiddleware_NoIdentity(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var nextCalled bool
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -131,7 +131,7 @@ func TestMiddleware_NoTsidClaim(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var nextCalled bool
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -166,7 +166,7 @@ func TestMiddleware_StorageUnavailable(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var nextCalled bool
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -222,7 +222,7 @@ func TestMiddleware_ClientAttributableStorageErrors_Returns401(t *testing.T) {
 			}
 
 			cfg := &Config{}
-			middleware := createMiddlewareFunc(cfg, storageGetter)
+			middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 			var nextCalled bool
 			nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -268,7 +268,7 @@ func TestMiddleware_StorageError(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var nextCalled bool
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -319,7 +319,7 @@ func TestMiddleware_SuccessfulSwap_AccessToken(t *testing.T) {
 	cfg := &Config{
 		HeaderStrategy: HeaderStrategyReplace,
 	}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var capturedAuthHeader string
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -369,7 +369,7 @@ func TestMiddleware_CustomHeader(t *testing.T) {
 		HeaderStrategy:   HeaderStrategyCustom,
 		CustomHeaderName: "X-Upstream-Token",
 	}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var capturedCustomHeader string
 	var capturedAuthHeader string
@@ -422,7 +422,7 @@ func TestMiddleware_ExpiredTokens_Returns401(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var nextCalled bool
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -473,7 +473,7 @@ func TestMiddleware_EmptySelectedToken(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var nextCalled bool
 	var capturedAuthHeader string
@@ -563,7 +563,7 @@ func TestMiddlewareWithContext(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	// Test that context is properly passed through
 	var receivedCtx context.Context
@@ -677,6 +677,9 @@ func TestCreateMiddleware(t *testing.T) {
 				mockRunner.EXPECT().GetUpstreamTokenStorage().Return(func() storage.UpstreamTokenStorage {
 					return nil // Storage availability is checked at request time
 				})
+				mockRunner.EXPECT().GetUpstreamTokenRefresher().Return(func() storage.UpstreamTokenRefresher {
+					return nil // Refresher availability is checked at request time
+				})
 				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
 					_, ok := mw.(*Middleware)
 					assert.True(t, ok, "Expected middleware to be of type *upstreamswap.Middleware")
@@ -738,7 +741,7 @@ func TestMiddleware_TsidClaimWrongType(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, nil)
 
 	var nextCalled bool
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {

@@ -6,6 +6,7 @@
 package upstreamswap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,10 @@ type MiddlewareParams struct {
 // This allows lazy access to the storage, which may not be available at middleware creation time.
 type StorageGetter func() storage.UpstreamTokenStorage
 
+// RefresherGetter is a function that returns an upstream token refresher.
+// This allows lazy access to the refresher, which may not be available at middleware creation time.
+type RefresherGetter func() storage.UpstreamTokenRefresher
+
 // Middleware wraps the upstream swap middleware functionality.
 type Middleware struct {
 	middleware types.MiddlewareFunction
@@ -81,12 +86,13 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("invalid upstream swap configuration: %w", err)
 	}
 
-	// Get storage getter from runner.
-	// The storage getter is a lazy accessor that checks storage availability at request time,
-	// so it's always non-nil. Actual storage availability is verified when processing requests.
+	// Get storage getter and refresher getter from runner.
+	// These are lazy accessors that check availability at request time,
+	// so they're always non-nil. Actual availability is verified when processing requests.
 	storageGetter := runner.GetUpstreamTokenStorage()
+	refresherGetter := runner.GetUpstreamTokenRefresher()
 
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, storageGetter, refresherGetter)
 
 	upstreamSwapMw := &Middleware{
 		middleware: middleware,
@@ -141,7 +147,7 @@ func createCustomInjector(headerName string) injectionFunc {
 }
 
 // createMiddlewareFunc creates the actual middleware function.
-func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.MiddlewareFunction {
+func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter, refresherGetter RefresherGetter) types.MiddlewareFunction {
 	// Determine injection strategy at startup time
 	strategy := cfg.HeaderStrategy
 	if strategy == "" {
@@ -188,13 +194,13 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 				return
 			}
 
-			// 4. Lookup upstream tokens
-			tokens, err := stor.GetUpstreamTokens(r.Context(), tsid)
+			// 4. Lookup upstream tokens, refreshing if expired
+			tokens, err := getOrRefreshUpstreamTokens(r.Context(), stor, tsid, refresherGetter)
 			if err != nil {
 				slog.Warn("Failed to get upstream tokens",
 					"middleware", "upstreamswap", "error", err)
-				// Token is expired, was not found, or failed binding validation
-				// (e.g., subject/client mismatch). All three are client-attributable
+				// Token is expired (refresh failed), was not found, or failed binding
+				// validation (e.g., subject/client mismatch). All three are client-attributable
 				// errors that require the caller to re-authenticate with the upstream IdP.
 				if errors.Is(err, storage.ErrExpired) ||
 					errors.Is(err, storage.ErrNotFound) ||
@@ -204,16 +210,6 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 				}
 				// Other storage errors: fail closed to avoid bypassing the token swap
 				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
-				return
-			}
-
-			// 5. Check if expired
-			// Defense in depth: some storage implementations may return tokens
-			// without checking expiry (the interface does not require it).
-			if tokens.IsExpired(time.Now()) {
-				slog.Warn("Upstream tokens expired",
-					"middleware", "upstreamswap")
-				writeUpstreamAuthRequired(w)
 				return
 			}
 
@@ -232,4 +228,72 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// getOrRefreshUpstreamTokens retrieves upstream tokens from storage, automatically
+// refreshing them if expired and a refresh token is available.
+func getOrRefreshUpstreamTokens(
+	ctx context.Context,
+	stor storage.UpstreamTokenStorage,
+	sessionID string,
+	refresherGetter RefresherGetter,
+) (*storage.UpstreamTokens, error) {
+	tokens, err := stor.GetUpstreamTokens(ctx, sessionID)
+	if err != nil {
+		// ErrExpired returns tokens (including refresh token) alongside the error.
+		// Attempt a refresh before giving up.
+		if errors.Is(err, storage.ErrExpired) && tokens != nil {
+			if refreshed := tryRefreshUpstreamTokens(ctx, sessionID, tokens, refresherGetter); refreshed != nil {
+				return refreshed, nil
+			}
+		}
+		return nil, err
+	}
+
+	// Defense in depth: some storage implementations may return tokens
+	// without checking expiry (the interface does not require it).
+	if tokens.IsExpired(time.Now()) {
+		if refreshed := tryRefreshUpstreamTokens(ctx, sessionID, tokens, refresherGetter); refreshed != nil {
+			return refreshed, nil
+		}
+		return nil, storage.ErrExpired
+	}
+
+	return tokens, nil
+}
+
+// tryRefreshUpstreamTokens attempts to refresh expired upstream tokens using the
+// configured refresher. Returns the refreshed tokens on success, or nil on failure.
+func tryRefreshUpstreamTokens(
+	ctx context.Context,
+	sessionID string,
+	expired *storage.UpstreamTokens,
+	refresherGetter RefresherGetter,
+) *storage.UpstreamTokens {
+	if expired.RefreshToken == "" {
+		slog.Debug("No refresh token available, cannot refresh upstream tokens",
+			"middleware", "upstreamswap")
+		return nil
+	}
+
+	if refresherGetter == nil {
+		return nil
+	}
+	refresher := refresherGetter()
+	if refresher == nil {
+		slog.Debug("Token refresher unavailable, cannot refresh upstream tokens",
+			"middleware", "upstreamswap")
+		return nil
+	}
+
+	refreshed, err := refresher.RefreshAndStore(ctx, sessionID, expired)
+	if err != nil {
+		slog.Warn("Upstream token refresh failed",
+			"middleware", "upstreamswap", "error", err)
+		return nil
+	}
+
+	slog.Debug("Successfully refreshed upstream tokens",
+		"middleware", "upstreamswap")
+	return refreshed
 }

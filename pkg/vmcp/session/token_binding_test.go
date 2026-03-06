@@ -8,16 +8,16 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	internalbk "github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
@@ -181,197 +181,6 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Caller validation
-// ---------------------------------------------------------------------------
-
-// TestValidateCaller_EdgeCases tests edge cases in caller validation logic.
-func TestValidateCaller_EdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		allowAnonymous bool
-		boundTokenHash string
-		caller         *auth.Identity
-		wantErr        error
-	}{
-		{
-			name:           "anonymous session with nil caller",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         nil,
-			wantErr:        nil, // Should succeed
-		},
-		{
-			name:           "anonymous session rejects caller with token",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         &auth.Identity{Subject: "user", Token: "token"},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller, // Prevent session upgrade attack
-		},
-		{
-			name:           "bound session with nil caller",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         nil,
-			wantErr:        sessiontypes.ErrNilCaller,
-		},
-		{
-			name:           "bound session with matching token",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: "correct-token"},
-			wantErr:        nil, // Should succeed
-		},
-		{
-			name:           "bound session with wrong token",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: "wrong-token"},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller,
-		},
-		{
-			name:           "bound session with empty token in identity",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: ""},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller,
-		},
-		{
-			name:           "anonymous session accepts caller with empty token",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         &auth.Identity{Subject: "user", Token: ""},
-			wantErr:        nil, // Empty token is equivalent to no token
-		},
-		{
-			name:           "misconfigured bound session with empty hash rejects empty token",
-			allowAnonymous: false,
-			boundTokenHash: "", // Misconfiguration: bound but no hash
-			caller:         &auth.Identity{Subject: "user", Token: ""},
-			wantErr:        sessiontypes.ErrSessionOwnerUnknown, // Fail closed
-		},
-		{
-			name:           "misconfigured bound session with empty hash rejects nil caller",
-			allowAnonymous: false,
-			boundTokenHash: "", // Misconfiguration: bound but no hash
-			caller:         nil,
-			wantErr:        sessiontypes.ErrNilCaller, // Nil check happens first
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create a base session
-			baseSession := &defaultMultiSession{
-				Session: transportsession.NewStreamableSession("test-session"),
-			}
-
-			// Wrap with decorator that has the test configuration
-			decorator := &HijackPreventionDecorator{
-				MultiSession:   baseSession,
-				allowAnonymous: tt.allowAnonymous,
-				boundTokenHash: tt.boundTokenHash,
-				tokenSalt:      testTokenSalt,
-				hmacSecret:     testSecret,
-			}
-
-			// Test validateCaller directly on the decorator
-			err := decorator.validateCaller(tt.caller)
-
-			if tt.wantErr != nil {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, tt.wantErr)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
-}
-
-// TestConcurrentValidation tests that validateCaller is safe for concurrent use.
-func TestConcurrentValidation(t *testing.T) {
-	t.Parallel()
-
-	baseSession := &defaultMultiSession{
-		Session: transportsession.NewStreamableSession("test-session"),
-	}
-
-	decorator := &HijackPreventionDecorator{
-		MultiSession:   baseSession,
-		allowAnonymous: false,
-		boundTokenHash: security.HashToken("test-token", testSecret, testTokenSalt),
-		tokenSalt:      testTokenSalt,
-		hmacSecret:     testSecret,
-	}
-
-	// Run validation concurrently from multiple goroutines
-	// Collect errors in channel to avoid race conditions with testify assertions
-	const numGoroutines = 10
-	errChan := make(chan error, numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func() {
-			caller := &auth.Identity{Subject: "user", Token: "test-token"}
-			err := decorator.validateCaller(caller)
-			errChan <- err
-		}()
-	}
-
-	// Wait for all goroutines and assert in main goroutine (thread-safe)
-	for i := 0; i < numGoroutines; i++ {
-		err := <-errChan
-		assert.NoError(t, err, "concurrent validation should succeed")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ShouldAllowAnonymous helper
-// ---------------------------------------------------------------------------
-
-// TestShouldAllowAnonymous_EdgeCases tests the ShouldAllowAnonymous helper.
-func TestShouldAllowAnonymous_EdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		identity *auth.Identity
-		want     bool
-	}{
-		{
-			name:     "nil identity",
-			identity: nil,
-			want:     true,
-		},
-		{
-			name:     "non-nil identity with token",
-			identity: &auth.Identity{Subject: "user", Token: "token"},
-			want:     false,
-		},
-		{
-			name:     "non-nil identity with empty token",
-			identity: &auth.Identity{Subject: "user", Token: ""},
-			want:     true, // Empty token is treated as anonymous
-		},
-		{
-			name:     "non-nil identity with empty subject",
-			identity: &auth.Identity{Subject: "", Token: "token"},
-			want:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := ShouldAllowAnonymous(tt.identity)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // MakeSessionWithID validation
 // ---------------------------------------------------------------------------
 
@@ -492,16 +301,22 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 	require.NotEmpty(t, hash2, "second session should have token hash")
 
 	// Both sessions should still be able to validate the original token
-	// (proving the factory used the original secret, not the modified one)
-	decorator1, ok := sess1.(*HijackPreventionDecorator)
-	require.True(t, ok, "session should be HijackPreventionDecorator")
-	err = decorator1.validateCaller(identity)
-	assert.NoError(t, err, "first session should validate original token despite external modification")
+	// (proving the factory used the original secret, not the modified one).
+	// We verify this by calling a session method that requires authentication.
+	ctx := context.Background()
 
-	decorator2, ok := sess2.(*HijackPreventionDecorator)
-	require.True(t, ok, "session should be HijackPreventionDecorator")
-	err = decorator2.validateCaller(identity)
-	assert.NoError(t, err, "second session should validate original token despite external modification")
+	// First session should accept the original token and fail with ErrToolNotFound,
+	// not an auth error (which would indicate the secret was corrupted)
+	_, err = sess1.CallTool(ctx, identity, "nonexistent-tool", nil, nil)
+	assert.ErrorIs(t, err, ErrToolNotFound, "should fail with tool not found error")
+	assert.False(t, errors.Is(err, sessiontypes.ErrUnauthorizedCaller),
+		"should not be an auth error (would indicate corrupted secret)")
+
+	// Second session should also accept the original token and fail with ErrToolNotFound
+	_, err = sess2.CallTool(ctx, identity, "nonexistent-tool", nil, nil)
+	assert.ErrorIs(t, err, ErrToolNotFound, "should fail with tool not found error")
+	assert.False(t, errors.Is(err, sessiontypes.ErrUnauthorizedCaller),
+		"should not be an auth error (would indicate corrupted secret)")
 }
 
 // TestWithHMACSecret_RejectsEmptySecret verifies that WithHMACSecret rejects

@@ -723,6 +723,11 @@ func configureRemoteAuth(runFlags *RunFlags, serverMetadata regtypes.ServerMetad
 		}
 
 		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
+
+		// Use registry proxy port for remote servers if CLI flag is not set
+		if remoteServerMetadata.ProxyPort > 0 {
+			opts = append(opts, runner.WithRegistryProxyPort(remoteServerMetadata.ProxyPort))
+		}
 	}
 
 	if runFlags.RemoteURL != "" {

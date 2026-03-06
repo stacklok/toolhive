@@ -559,6 +559,12 @@ func buildRunnerConfig(
 		imageMetadata = md
 	}
 
+	// Extract registry proxy port from remote server metadata
+	var registryProxyPort int
+	if remoteMd, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteMd != nil {
+		registryProxyPort = remoteMd.ProxyPort
+	}
+
 	// Build default options
 	opts := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(rt),
@@ -602,6 +608,11 @@ func buildRunnerConfig(
 		return nil, err
 	}
 	opts = append(opts, remoteHeaderOpts...)
+
+	// Use registry proxy port for remote servers if CLI flag is not set
+	if registryProxyPort > 0 {
+		opts = append(opts, runner.WithRegistryProxyPort(registryProxyPort))
+	}
 
 	// Configure runtime options
 	runtimeOpts := configureRuntimeOptions(runFlags)
@@ -723,11 +734,6 @@ func configureRemoteAuth(runFlags *RunFlags, serverMetadata regtypes.ServerMetad
 		}
 
 		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
-
-		// Use registry proxy port for remote servers if CLI flag is not set
-		if remoteServerMetadata.ProxyPort > 0 {
-			opts = append(opts, runner.WithRegistryProxyPort(remoteServerMetadata.ProxyPort))
-		}
 	}
 
 	if runFlags.RemoteURL != "" {

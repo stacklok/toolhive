@@ -178,47 +178,79 @@ func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 
 func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 	t.Parallel()
+
+	ssdRaw := podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{NodeSelector: map[string]string{"disktype": "ssd"}},
+	})
+	nvmeRaw := podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{NodeSelector: map[string]string{"disktype": "nvme"}},
+	})
+	ssdWithPriorityRaw := podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			NodeSelector:      map[string]string{"disktype": "ssd"},
+			PriorityClassName: "high-priority",
+		},
+	})
+
+	hashOf := func(t *testing.T, raw []byte) string {
+		t.Helper()
+		h, err := checksum.HashRawJSON(raw)
+		require.NoError(t, err)
+		return h
+	}
+
 	tests := []struct {
-		name                string
-		existingPodTemplate corev1.PodTemplateSpec
-		newPodTemplateSpec  *runtime.RawExtension
-		expectUpdate        bool
+		name               string
+		deployAnnotations  map[string]string
+		newPodTemplateSpec *runtime.RawExtension
+		expectUpdate       bool
 	}{
 		{
-			name: "node selector changed - update needed",
-			existingPodTemplate: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					NodeSelector: map[string]string{"disktype": "ssd"},
-				},
-			},
-			newPodTemplateSpec: podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					NodeSelector: map[string]string{"disktype": "nvme"},
-				},
-			}),
-			expectUpdate: true,
+			name:               "matching hash - no update needed",
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
+			newPodTemplateSpec: ssdRaw,
+			expectUpdate:       false,
 		},
 		{
-			name: "priority class added - update needed",
-			existingPodTemplate: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					NodeSelector: map[string]string{"disktype": "ssd"},
-				},
-			},
-			newPodTemplateSpec: podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					NodeSelector:      map[string]string{"disktype": "ssd"},
-					PriorityClassName: "high-priority",
-				},
-			}),
-			expectUpdate: true,
+			name:               "node selector changed - update needed",
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
+			newPodTemplateSpec: nvmeRaw,
+			expectUpdate:       true,
 		},
 		{
-			name: "no PodTemplateSpec - no update needed",
-			existingPodTemplate: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{},
-			},
+			name:               "priority class added - update needed",
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
+			newPodTemplateSpec: ssdWithPriorityRaw,
+			expectUpdate:       true,
+		},
+		{
+			name:               "no PodTemplateSpec and no previous annotation - no update needed",
+			deployAnnotations:  map[string]string{},
 			newPodTemplateSpec: nil,
+			expectUpdate:       false,
+		},
+		{
+			name:               "PodTemplateSpec removed but annotation exists - update needed",
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
+			newPodTemplateSpec: nil,
+			expectUpdate:       true,
+		},
+		{
+			name:               "PodTemplateSpec added but no previous annotation - update needed",
+			deployAnnotations:  map[string]string{},
+			newPodTemplateSpec: ssdRaw,
+			expectUpdate:       true,
+		},
+		{
+			name:               "nil deployment annotations - update needed",
+			deployAnnotations:  nil,
+			newPodTemplateSpec: ssdRaw,
+			expectUpdate:       true,
+		},
+		{
+			name:               "K8s defaults on deployment do not cause spurious update",
+			deployAnnotations:  map[string]string{podTemplateSpecHashAnnotation: hashOf(t, ssdRaw.Raw)},
+			newPodTemplateSpec: ssdRaw,
 			expectUpdate:       false,
 		},
 	}
@@ -226,80 +258,30 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Create scheme
-			scheme := runtime.NewScheme()
-			_ = mcpv1alpha1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
-			_ = appsv1.AddToScheme(scheme)
 
-			namespace := testPodTemplateNamespace
-			vmcpName := testPodTemplateVmcpName
-			groupName := testPodTemplateGroupName
-
-			// Create MCPGroup (required for deployment generation)
-			mcpGroup := &mcpv1alpha1.MCPGroup{
+			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      groupName,
-					Namespace: namespace,
-				},
-				Status: mcpv1alpha1.MCPGroupStatus{
-					Phase: mcpv1alpha1.MCPGroupPhaseReady,
+					Name:        testPodTemplateVmcpName,
+					Namespace:   testPodTemplateNamespace,
+					Annotations: tt.deployAnnotations,
 				},
 			}
 
-			// Create VirtualMCPServer with initial PodTemplateSpec
-			initialVmcp := &mcpv1alpha1.VirtualMCPServer{
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
+					Name:      testPodTemplateVmcpName,
+					Namespace: testPodTemplateNamespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:          vmcpconfig.Config{Group: groupName},
-					PodTemplateSpec: podTemplateSpecToRawExtension(t, &tt.existingPodTemplate),
-				},
-			}
-
-			// Create configmap for checksum
-			configMap := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpConfigMapName(vmcpName),
-					Namespace: namespace,
-					Annotations: map[string]string{
-						checksum.ContentChecksumAnnotation: "test-checksum",
-					},
-				},
-			}
-
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(mcpGroup, initialVmcp, configMap).
-				Build()
-
-			reconciler := &VirtualMCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
-
-			// Generate existing deployment using the reconciler (this ensures we have a real deployment structure)
-			existingDeployment := reconciler.deploymentForVirtualMCPServer(context.Background(), initialVmcp, "test-checksum", []workloads.TypedWorkload{})
-			assert.NotNil(t, existingDeployment, "Should generate existing deployment")
-
-			// Create VirtualMCPServer with new PodTemplateSpec
-			newVmcp := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:          vmcpconfig.Config{Group: groupName},
+					Config:          vmcpconfig.Config{Group: testPodTemplateGroupName},
 					PodTemplateSpec: tt.newPodTemplateSpec,
 				},
 			}
 
-			// Check if update is needed
-			needsUpdate := reconciler.podTemplateSpecNeedsUpdate(context.Background(), existingDeployment, newVmcp, []workloads.TypedWorkload{})
-			assert.Equal(t, tt.expectUpdate, needsUpdate,
-				"PodTemplateSpec update detection should match expected value")
+			reconciler := &VirtualMCPServerReconciler{}
+			needsUpdate := reconciler.podTemplateSpecNeedsUpdate(
+				context.Background(), deployment, vmcp, nil)
+			assert.Equal(t, tt.expectUpdate, needsUpdate)
 		})
 	}
 }

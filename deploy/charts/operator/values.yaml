@@ -126,6 +126,10 @@ operator:
     # -- List of namespaces that the operator is allowed to have permissions to manage.
     # Only used if scope is set to "namespace".
     allowedNamespaces: []
+    # -- Disable per-workload RBAC management (ServiceAccount, Role, RoleBinding).
+    # When true, the operator will not create RBAC resources for workloads.
+    # Use this when RBAC is managed externally (e.g., via per-workload Helm charts).
+    disableWorkloadRBAC: false
 
   # -- Service account configuration for the operator
   serviceAccount:

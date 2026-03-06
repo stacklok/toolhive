@@ -83,9 +83,10 @@ type AuthConfigError struct {
 // may not have owner references (StatefulSet, headless Service, RunConfig ConfigMap).
 type VirtualMCPServerReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
-	PlatformDetector *ctrlutil.SharedPlatformDetector
+	Scheme              *runtime.Scheme
+	Recorder            record.EventRecorder
+	PlatformDetector    *ctrlutil.SharedPlatformDetector
+	DisableWorkloadRBAC bool
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
@@ -630,6 +631,10 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
+	if r.DisableWorkloadRBAC {
+		return nil
+	}
+
 	// If a service account is specified, we don't need to create one
 	if vmcp.Spec.ServiceAccount != nil {
 		return nil

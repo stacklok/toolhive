@@ -10,7 +10,6 @@ rules:
   - configmaps
   - persistentvolumeclaims
   - secrets
-  - serviceaccounts
   - services
   verbs:
   - create
@@ -20,6 +19,20 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - watch
+{{- if not .Values.operator.rbac.disableWorkloadRBAC }}
+  - create
+  - delete
+  - patch
+  - update
+{{- end }}
 - apiGroups:
   - ""
   resources:
@@ -82,6 +95,7 @@ rules:
   - get
   - list
   - watch
+{{- if not .Values.operator.rbac.disableWorkloadRBAC }}
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
@@ -95,6 +109,7 @@ rules:
   - patch
   - update
   - watch
+{{- end }}
 - apiGroups:
   - toolhive.stacklok.dev
   resources:

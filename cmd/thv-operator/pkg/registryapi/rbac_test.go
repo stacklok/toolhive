@@ -201,6 +201,33 @@ func TestEnsureRBACResources(t *testing.T) {
 	}
 }
 
+func TestReconcileAPIService_DisableWorkloadRBAC(t *testing.T) {
+	t.Parallel()
+
+	mcpRegistry := createTestMCPRegistry()
+	c := fake.NewClientBuilder().WithScheme(createTestScheme()).Build()
+	m := &manager{
+		client:              c,
+		scheme:              createTestScheme(),
+		disableWorkloadRBAC: true,
+	}
+
+	// ensureRBACResources is called within ReconcileAPIService, but we test
+	// the guard directly since ReconcileAPIService has other dependencies.
+	// Verify that ensureRBACResources returns nil immediately.
+	err := m.ensureRBACResources(t.Context(), mcpRegistry)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	resourceName := GetServiceAccountName(mcpRegistry)
+	sa := &corev1.ServiceAccount{}
+	err = c.Get(t.Context(), types.NamespacedName{
+		Name:      resourceName,
+		Namespace: mcpRegistry.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when workload RBAC is disabled")
+}
+
 func TestRegistryAPIRBACRules(t *testing.T) {
 	t.Parallel()
 

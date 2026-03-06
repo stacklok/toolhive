@@ -1,0 +1,3 @@
+operator:
+  rbac:
+    disableWorkloadRBAC: true

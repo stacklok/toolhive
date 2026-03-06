@@ -6,7 +6,6 @@ package server_test
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -29,7 +28,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,53 +105,25 @@ func newV2FakeFactory(tools []vmcp.Tool) *v2FakeMultiSessionFactory {
 }
 
 func (f *v2FakeMultiSessionFactory) MakeSession(
-	_ context.Context, identity *auth.Identity, _ []*vmcp.Backend,
+	_ context.Context, _ *auth.Identity, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	baseSession := transportsession.NewStreamableSession("auto-id")
-
-	// Populate token hash metadata to match real session factory behavior.
-	allowAnonymous := vmcpsession.ShouldAllowAnonymous(identity)
-	if identity != nil && identity.Token != "" && !allowAnonymous {
-		testSecret := []byte("integration-test-secret")
-		testSalt := []byte("test-salt-123456")
-		tokenHash := security.HashToken(identity.Token, testSecret, testSalt)
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, tokenHash)
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenSalt, hex.EncodeToString(testSalt))
-	} else {
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "")
-	}
-
 	sess := newV2FakeMultiSession(baseSession, f.tools)
 	f.lastCreatedSession = sess
 	return sess, nil
 }
 
 func (f *v2FakeMultiSessionFactory) MakeSessionWithID(
-	_ context.Context, id string, identity *auth.Identity, allowAnonymous bool, _ []*vmcp.Backend,
+	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
 	f.makeWithIDCalled.Store(true)
 	if f.err != nil {
 		return nil, f.err
 	}
 	baseSession := transportsession.NewStreamableSession(id)
-
-	// Populate token hash metadata to match real session factory behavior.
-	// This allows integration tests to verify that hashes (not raw tokens) are stored.
-	if identity != nil && identity.Token != "" && !allowAnonymous {
-		// Use a test HMAC secret and salt for integration tests
-		testSecret := []byte("integration-test-secret")
-		testSalt := []byte("test-salt-123456") // 16 bytes
-		tokenHash := security.HashToken(identity.Token, testSecret, testSalt)
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, tokenHash)
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenSalt, hex.EncodeToString(testSalt))
-	} else {
-		// Anonymous session
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "")
-	}
-
 	sess := newV2FakeMultiSession(baseSession, f.tools)
 	f.lastCreatedSession = sess
 	return sess, nil

@@ -381,8 +381,68 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		})
 	})
 
+	Describe("Build then install from local store", func() {
+		AfterEach(func() {
+			// Clean up any skills installed by these tests so they don't
+			// leak into other specs (e.g. "should return empty list initially").
+			for _, name := range []string{"local-build-skill", "tagged-build-skill"} {
+				resp := uninstallSkill(apiServer, name)
+				resp.Body.Close()
+				// Ignore 404 — the skill may not have been installed if the test failed early.
+			}
+		})
+
+		It("should install a locally built skill with installed status", func() {
+			By("Creating a valid skill directory")
+			skillDir := createTestSkillDir("local-build-skill", "A skill for local build-then-install")
+
+			By("Building the skill (tags with skill name by default)")
+			buildResp := buildSkill(apiServer, skillDir, "")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing by plain skill name")
+			installResp := installSkill(apiServer, installSkillRequest{Name: "local-build-skill"})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Verifying the skill is installed (not pending)")
+			var result installSkillResponse
+			Expect(json.NewDecoder(installResp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Skill.Status).To(Equal("installed"))
+			Expect(result.Skill.Digest).ToNot(BeEmpty())
+			Expect(result.Skill.Metadata.Version).To(Equal("0.1.0"))
+		})
+
+		It("should install with explicit build tag matching skill name", func() {
+			By("Creating a valid skill directory")
+			skillDir := createTestSkillDir("tagged-build-skill", "A skill with explicit tag")
+
+			By("Building the skill with explicit tag matching skill name")
+			buildResp := buildSkill(apiServer, skillDir, "tagged-build-skill")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing by plain skill name")
+			installResp := installSkill(apiServer, installSkillRequest{Name: "tagged-build-skill"})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Verifying the skill is installed (not pending)")
+			var result installSkillResponse
+			Expect(json.NewDecoder(installResp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Skill.Status).To(Equal("installed"))
+			Expect(result.Skill.Digest).ToNot(BeEmpty())
+		})
+	})
+
 	Describe("GET /api/v1beta/skills - List skills", func() {
-		It("should return empty list initially", func() {
+		AfterEach(func() {
+			resp := uninstallSkill(apiServer, "list-test-skill")
+			resp.Body.Close()
+		})
+
+		It("should return a valid list response", func() {
 			By("Listing skills")
 			resp := listSkills(apiServer)
 			defer resp.Body.Close()
@@ -390,10 +450,13 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 			By("Verifying response status is 200 OK")
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
-			By("Verifying the skills list is empty")
+			By("Verifying the response decodes to a valid skills list")
 			var result skillListResponse
 			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
-			Expect(result.Skills).To(BeEmpty())
+			// We only check that the response is valid JSON with a skills array.
+			// Other tests may run first and install skills, so the list is not
+			// guaranteed to be empty.
+			Expect(result.Skills).ToNot(BeNil())
 		})
 
 		It("should include installed skills", func() {
@@ -426,6 +489,13 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 	})
 
 	Describe("POST /api/v1beta/skills - Install a skill", func() {
+		AfterEach(func() {
+			for _, name := range []string{"install-test-skill", "dup-test-skill"} {
+				resp := uninstallSkill(apiServer, name)
+				resp.Body.Close()
+			}
+		})
+
 		It("should install a skill with pending status", func() {
 			By("Installing a skill by name")
 			resp := installSkill(apiServer, installSkillRequest{Name: "install-test-skill"})
@@ -493,6 +563,11 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 	})
 
 	Describe("GET /api/v1beta/skills/{name} - Get skill info", func() {
+		AfterEach(func() {
+			resp := uninstallSkill(apiServer, "info-test-skill")
+			resp.Body.Close()
+		})
+
 		It("should return info for an installed skill", func() {
 			By("Installing a skill")
 			installResp := installSkill(apiServer, installSkillRequest{Name: "info-test-skill"})
@@ -582,6 +657,13 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		})
 
 		AfterEach(func() {
+			for _, name := range []string{
+				"group-install-skill", "group-filter-in", "group-filter-out",
+				"group-uninstall-skill", "group-noexist-skill",
+			} {
+				resp := uninstallSkill(apiServer, name)
+				resp.Body.Close()
+			}
 			deleteGroup(apiServer, groupName)
 		})
 
@@ -714,7 +796,7 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 			defer deleteResp.Body.Close()
 			Expect(deleteResp.StatusCode).To(Equal(http.StatusNoContent))
 
-			By("Listing skills — should be empty")
+			By("Listing skills — should not contain the uninstalled skill")
 			listResp2 := listSkills(apiServer)
 			defer listResp2.Body.Close()
 			Expect(listResp2.StatusCode).To(Equal(http.StatusOK))

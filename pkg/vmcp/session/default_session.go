@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
@@ -126,8 +127,11 @@ func (s *defaultMultiSession) lookupBackend(
 }
 
 // CallTool invokes toolName on the appropriate backend.
+// The caller parameter is accepted for interface compatibility but validation
+// is performed by the HijackPreventionDecorator wrapper when enabled.
 func (s *defaultMultiSession) CallTool(
 	ctx context.Context,
+	_ *auth.Identity,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
@@ -141,7 +145,11 @@ func (s *defaultMultiSession) CallTool(
 }
 
 // ReadResource retrieves the resource identified by uri.
-func (s *defaultMultiSession) ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error) {
+// The caller parameter is accepted for interface compatibility but validation
+// is performed by the HijackPreventionDecorator wrapper when enabled.
+func (s *defaultMultiSession) ReadResource(
+	ctx context.Context, _ *auth.Identity, uri string,
+) (*vmcp.ResourceReadResult, error) {
 	conn, done, err := s.lookupBackend(uri, s.routingTable.Resources, ErrResourceNotFound)
 	if err != nil {
 		return nil, err
@@ -151,8 +159,11 @@ func (s *defaultMultiSession) ReadResource(ctx context.Context, uri string) (*vm
 }
 
 // GetPrompt retrieves the named prompt from the appropriate backend.
+// The caller parameter is accepted for interface compatibility but validation
+// is performed by the HijackPreventionDecorator wrapper when enabled.
 func (s *defaultMultiSession) GetPrompt(
 	ctx context.Context,
+	_ *auth.Identity,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {

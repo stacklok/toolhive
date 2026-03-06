@@ -5,6 +5,7 @@ package validation
 
 import (
 	"fmt"
+	"net/url"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
@@ -49,5 +50,36 @@ func ValidateCABundleSource(ref *mcpv1alpha1.CABundleSource) error {
 		return fmt.Errorf("configMapRef.name %q is too long (%d chars); maximum is %d characters to fit in Kubernetes volume name",
 			ref.ConfigMapRef.Name, len(ref.ConfigMapRef.Name), maxConfigMapNameForCABundle)
 	}
+	return nil
+}
+
+// ValidateOIDCIssuerURL validates that an OIDC issuer URL is well-formed and uses HTTPS.
+// If allowInsecure is true, HTTP scheme is permitted (for development/testing only).
+// Returns nil if the issuer is empty (nothing to validate).
+func ValidateOIDCIssuerURL(issuer string, allowInsecure bool) error {
+	if issuer == "" {
+		return nil
+	}
+
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return fmt.Errorf("OIDC issuer URL %q is malformed: %w", issuer, err)
+	}
+
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("OIDC issuer URL %q is malformed: missing scheme or host", issuer)
+	}
+
+	if u.Scheme == "http" && !allowInsecure {
+		return fmt.Errorf(
+			"OIDC issuer URL %q uses HTTP scheme, which is insecure; "+
+				"use HTTPS or set insecureAllowHTTP: true for development only", issuer,
+		)
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("OIDC issuer URL %q has unsupported scheme %q; must be http or https", issuer, u.Scheme)
+	}
+
 	return nil
 }

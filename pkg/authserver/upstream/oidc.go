@@ -265,9 +265,23 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
 	)
 
+	// Extract optional standard claims (name, email) from ID token
+	var idClaims struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	// Best-effort: if claims extraction fails, we still have the subject
+	if err := validatedToken.Claims(&idClaims); err != nil {
+		slog.Warn("failed to extract optional claims from ID token",
+			"error", err,
+		)
+	}
+
 	return &Identity{
 		Tokens:  tokens,
 		Subject: validatedToken.Subject,
+		Name:    idClaims.Name,
+		Email:   idClaims.Email,
 	}, nil
 }
 

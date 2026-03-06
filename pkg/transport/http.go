@@ -247,6 +247,11 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Determine target URI
 	var targetURI string
 
+	// remoteBasePath holds the path component from the remote URL (e.g., "/v2" from
+	// "https://mcp.asana.com/v2/mcp"). This must be prepended to incoming request
+	// paths so they reach the correct endpoint on the remote server.
+	var remoteBasePath string
+
 	if t.remoteURL != "" {
 		// For remote MCP servers, construct target URI from remote URL
 		remoteURL, err := url.Parse(t.remoteURL)
@@ -257,9 +262,14 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			Scheme: remoteURL.Scheme,
 			Host:   remoteURL.Host,
 		}).String()
+
+		// Extract the path prefix that needs to be prepended to incoming requests.
+		// The target URI only has scheme+host, so without this the remote path is lost.
+		remoteBasePath = remoteURL.Path
+
 		//nolint:gosec // G706: logging proxy port and remote URL from config
 		slog.Debug("setting up transparent proxy to forward to remote URL",
-			"port", t.proxyPort, "target", targetURI)
+			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath)
 	} else {
 		if t.containerName == "" {
 			return transporterrors.ErrContainerNameNotSet
@@ -296,8 +306,14 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Determine whether to enable health checks based on workload type
 	enableHealthCheck := shouldEnableHealthCheck(isRemote)
 
+	// Build proxy options
+	var proxyOptions []transparent.Option
+	if remoteBasePath != "" {
+		proxyOptions = append(proxyOptions, transparent.WithRemoteBasePath(remoteBasePath))
+	}
+
 	// Create the transparent proxy
-	t.proxy = transparent.NewTransparentProxy(
+	t.proxy = transparent.NewTransparentProxyWithOptions(
 		t.host,
 		t.proxyPort,
 		targetURI,
@@ -311,7 +327,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		t.onUnauthorizedResponse,
 		t.endpointPrefix,
 		t.trustProxyHeaders,
-		middlewares...)
+		middlewares,
+		proxyOptions...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

@@ -101,6 +101,13 @@ type TransparentProxy struct {
 	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
 	endpointPrefix string
 
+	// remoteBasePath is the path prefix from the remote URL that must be prepended
+	// to incoming request paths before forwarding. For example, if the remote URL is
+	// https://mcp.asana.com/v2/mcp and a client sends to /mcp, the proxy must
+	// forward to /v2/mcp. Without this, the path prefix is lost because the target
+	// URI only contains the scheme and host.
+	remoteBasePath string
+
 	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
 	trustProxyHeaders bool
 
@@ -162,6 +169,15 @@ func withHealthCheckRetryDelay(delay time.Duration) Option {
 	}
 }
 
+// WithRemoteBasePath sets the base path prefix from the remote URL.
+// When set, incoming request paths are rewritten to include this prefix
+// before forwarding to the remote server.
+func WithRemoteBasePath(basePath string) Option {
+	return func(p *TransparentProxy) {
+		p.remoteBasePath = basePath
+	}
+}
+
 // withHealthCheckPingTimeout sets the health check ping timeout.
 // This is primarily useful for testing with shorter timeouts.
 // Ignores non-positive timeouts; default will be used.
@@ -204,7 +220,7 @@ func NewTransparentProxy(
 	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
-	return newTransparentProxyWithOptions(
+	return NewTransparentProxyWithOptions(
 		host,
 		port,
 		targetURI,
@@ -234,8 +250,8 @@ func getHealthCheckInterval() time.Duration {
 	return DefaultHealthCheckInterval
 }
 
-// newTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
-func newTransparentProxyWithOptions(
+// NewTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
+func NewTransparentProxyWithOptions(
 	host string,
 	port int,
 	targetURI string,
@@ -457,10 +473,20 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Store the original director
 	originalDirector := proxy.Director
 
-	// Override director to inject trace propagation headers
+	// Override director to handle remote base path rewriting and trace propagation
 	proxy.Director = func(req *http.Request) {
-		// Apply original director logic first
+		// Apply original director logic first (rewrites scheme + host)
 		originalDirector(req)
+
+		// Rewrite path to the remote server's path when configured.
+		// When the remote URL has a path (e.g., /v2/mcp), the target URI only
+		// contains the scheme+host. The client sends to /mcp (default MCP
+		// endpoint) but the remote server expects /v2/mcp. We replace the
+		// request path with the remote server's configured path.
+		if p.remoteBasePath != "" {
+			req.URL.Path = p.remoteBasePath
+			req.URL.RawPath = ""
+		}
 
 		// Inject OpenTelemetry trace propagation headers for downstream tracing
 		if req.Context() != nil {

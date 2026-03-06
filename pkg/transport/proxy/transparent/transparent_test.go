@@ -1029,7 +1029,7 @@ func setupRemoteProxyTest(t *testing.T, serverURL string, callback types.HealthC
 func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback types.HealthCheckFailedCallback, timeout time.Duration) (*TransparentProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 
-	proxy := newTransparentProxyWithOptions(
+	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1",
 		0,
 		serverURL,
@@ -1780,7 +1780,7 @@ func TestTransparentProxy_IsRunningDoesNotBlockDuringStop(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	proxy := newTransparentProxyWithOptions(
+	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, backend.URL,
 		nil, nil, nil,
 		false, // no health check
@@ -1863,7 +1863,7 @@ func TestTransparentProxy_StopForcesCloseAfterTimeout(t *testing.T) {
 		backend.Close()
 	}()
 
-	proxy := newTransparentProxyWithOptions(
+	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, backend.URL,
 		nil, nil, nil,
 		false, // no health check
@@ -1904,7 +1904,7 @@ func TestTransparentProxy_StopForcesCloseAfterTimeout(t *testing.T) {
 func TestTransparentProxy_ServerHasIdleTimeout(t *testing.T) {
 	t.Parallel()
 
-	proxy := newTransparentProxyWithOptions(
+	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, "http://localhost:9999",
 		nil, nil, nil,
 		false, false, "sse", nil, nil, "", false, nil,

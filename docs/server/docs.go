@@ -146,6 +146,9 @@ const docTemplate = `{
                         "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
                         "type": "string"
                     },
+                    "token_response_mapping": {
+                        "$ref": "#/components/schemas/authserver.TokenResponseMappingRunConfig"
+                    },
                     "userinfo": {
                         "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
                     }
@@ -279,6 +282,28 @@ const docTemplate = `{
                     },
                     "refresh_token_lifespan": {
                         "description": "RefreshTokenLifespan is the duration that refresh tokens are valid.\nIf empty, defaults to 7 days (168h).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TokenResponseMappingRunConfig": {
+                "description": "TokenResponseMapping configures custom field extraction from non-standard token responses.\nWhen set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using\nthe configured dot-notation paths.",
+                "properties": {
+                    "access_token_path": {
+                        "description": "AccessTokenPath is the dot-notation path to the access token (required).",
+                        "type": "string"
+                    },
+                    "expires_in_path": {
+                        "description": "ExpiresInPath is the dot-notation path to the expires_in value. Defaults to \"expires_in\".",
+                        "type": "string"
+                    },
+                    "refresh_token_path": {
+                        "description": "RefreshTokenPath is the dot-notation path to the refresh token. Defaults to \"refresh_token\".",
+                        "type": "string"
+                    },
+                    "scope_path": {
+                        "description": "ScopePath is the dot-notation path to the scope. Defaults to \"scope\".",
                         "type": "string"
                     }
                 },

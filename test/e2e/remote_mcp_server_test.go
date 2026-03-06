@@ -31,6 +31,7 @@ type WorkloadInfo struct {
 
 var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
+	var mockServer *e2e.MockMCPServer
 
 	BeforeEach(func() {
 		config = e2e.NewTestConfig()
@@ -38,6 +39,15 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 		// Check if thv binary is available
 		err := e2e.CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
+
+		// Start a local mock MCP server to avoid external dependency on mcp-spec
+		mockServer = e2e.NewMockMCPServer()
+	})
+
+	AfterEach(func() {
+		if mockServer != nil {
+			mockServer.Close()
+		}
 	})
 
 	Describe("Running remote MCP server from registry", func() {
@@ -60,11 +70,11 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				By("Starting the mcp-spec remote MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"mcp-spec").ExpectSuccess()
+					mockServer.URL()).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
-				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
 
 				By("Verifying the server appears in the list with correct attributes")
 				stdout, _ := e2e.NewTHVCommand(config, "list", "--format", "json").ExpectSuccess()
@@ -93,10 +103,10 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				By("Starting the mcp-spec remote MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"mcp-spec").ExpectSuccess()
+					mockServer.URL()).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Verifying server has remote=true in JSON output")
@@ -121,10 +131,10 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				By("Starting the mcp-spec remote MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"mcp-spec").ExpectSuccess()
+					mockServer.URL()).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -133,7 +143,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				Expect(serverURL).To(ContainSubstring("http"), "URL should be HTTP-based")
 
 				By("Waiting for MCP server to be ready")
-				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 30*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "MCP server should be ready for protocol operations")
 			})
 
@@ -141,10 +151,10 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				By("Starting the mcp-spec remote MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"mcp-spec").ExpectSuccess()
+					mockServer.URL()).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -152,7 +162,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Waiting for MCP server to be ready")
-				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 30*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "MCP server should be ready for protocol operations")
 
 				By("Creating MCP client and initializing connection")
@@ -190,10 +200,10 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				By("Starting the mcp-spec remote MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"mcp-spec").ExpectSuccess()
+					mockServer.URL()).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -201,7 +211,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Waiting for MCP server to be ready")
-				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Creating MCP client and initializing connection")
@@ -236,8 +246,8 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"mcp-spec").ExpectSuccess()
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+					mockServer.URL()).ExpectSuccess()
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -267,7 +277,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Verifying endpoint is accessible again")
@@ -309,10 +319,10 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				By("Starting remote MCP server with explicit URL")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"https://modelcontextprotocol.io/mcp").ExpectSuccess()
+					mockServer.URL()).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Verifying the server is marked as remote")
@@ -336,7 +346,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				serverURL, err := e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred())
 
-				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 30*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Testing MCP protocol operations")

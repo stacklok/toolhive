@@ -519,6 +519,15 @@ func buildUpstreamRunConfig(
 			if provider.OAuth2Config.UserInfo != nil {
 				config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)
 			}
+			if provider.OAuth2Config.TokenResponseMapping != nil {
+				m := provider.OAuth2Config.TokenResponseMapping
+				config.OAuth2Config.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
+					AccessTokenPath:  m.AccessTokenPath,
+					ScopePath:        m.ScopePath,
+					RefreshTokenPath: m.RefreshTokenPath,
+					ExpiresInPath:    m.ExpiresInPath,
+				}
+			}
 		}
 	}
 

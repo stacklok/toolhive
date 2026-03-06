@@ -151,8 +151,10 @@ func NewRedisStorageWithClient(client redis.UniversalClient, keyPrefix string) *
 }
 
 // defaultSessionFactory creates session prototypes for deserialization.
+// Name and email are empty because they are preserved in the JWT Extra map
+// from the serialized session data during deserialization.
 func defaultSessionFactory(subject, idpSessionID, clientID string) fosite.Session {
-	return session.New(subject, idpSessionID, clientID)
+	return session.New(subject, idpSessionID, clientID, session.UserClaims{})
 }
 
 func validateConfig(cfg *RedisConfig) error {

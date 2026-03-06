@@ -7,7 +7,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -1022,51 +1021,37 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
-// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed
-// This method compares the current deployment against a freshly generated deployment
-// that includes the PodTemplateSpec customizations.
-func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed.
+// Instead of comparing full rendered templates (which always differ due to Kubernetes-defaulted
+// fields like terminationGracePeriodSeconds, dnsPolicy, etc.), this compares a SHA256 hash of
+// the raw PodTemplateSpec input stored as a deployment annotation.
+func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	typedWorkloads []workloads.TypedWorkload,
+	_ []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
 	}
 
-	// If no PodTemplateSpec is provided, no update needed
+	// If no PodTemplateSpec is provided, update is only needed if one was previously applied
 	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
-		return false
+		_, hadPrevious := deployment.Annotations[podTemplateSpecHashAnnotation]
+		return hadPrevious
 	}
 
-	// Get the vmcp config checksum
-	vmcpConfigChecksum, err := r.getVmcpConfigChecksum(ctx, vmcp)
+	// Compare hash of the raw PodTemplateSpec input against the stored annotation.
+	// Avoids comparing full rendered templates which always differ due to
+	// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.).
+	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
+	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
 	if err != nil {
-		// If we can't get the checksum, assume update is needed
+		// If we can't hash, assume update is needed
+		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
 		return true
 	}
-
-	// Generate a fresh deployment with PodTemplateSpec applied
-	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
-	if expectedDeployment == nil {
-		// If we can't generate expected deployment, assume update is needed
-		return true
-	}
-
-	// Compare the pod template specs
-	currentJSON, err := json.Marshal(deployment.Spec.Template)
-	if err != nil {
-		return true
-	}
-
-	expectedJSON, err := json.Marshal(expectedDeployment.Spec.Template)
-	if err != nil {
-		return true
-	}
-
-	// If the JSON representations differ, an update is needed
-	return string(currentJSON) != string(expectedJSON)
+	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

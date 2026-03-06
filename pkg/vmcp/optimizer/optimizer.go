@@ -113,16 +113,11 @@ type FindToolInput struct {
 // FindToolOutput contains the results of a tool search.
 type FindToolOutput struct {
 	// Tools contains the matching tools, ranked by relevance.
-	Tools []ToolMatch `json:"tools"`
+	Tools []mcp.Tool `json:"tools"`
 
 	// TokenMetrics provides information about token savings from using the optimizer.
 	TokenMetrics TokenMetrics `json:"token_metrics"`
 }
-
-// ToolMatch represents a tool that matched the search criteria.
-// It is defined in the internal/types package and aliased here so that
-// external consumers continue to use optimizer.ToolMatch.
-type ToolMatch = types.ToolMatch
 
 // TokenMetrics provides information about token usage optimization.
 // It is defined in the internal/tokencounter package and aliased here so that
@@ -248,6 +243,15 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 	matches, err := d.store.Search(ctx, input.ToolDescription, d.toolNames)
 	if err != nil {
 		return nil, fmt.Errorf("tool search failed: %w", err)
+	}
+
+	// Enrich each match with the full tool from the in-memory map.
+	// The store only returns Name and Description; replacing with the full
+	// mcp.Tool gives us InputSchema, OutputSchema, Annotations, etc.
+	for i, m := range matches {
+		if tool, ok := d.tools[m.Name]; ok {
+			matches[i] = tool.Tool
+		}
 	}
 
 	matchedNames := make([]string, len(matches))

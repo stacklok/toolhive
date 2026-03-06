@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -179,4 +180,24 @@ func AddRunConfigChecksumToPodTemplate(annotations map[string]string, checksum s
 	}
 
 	return annotations
+}
+
+// HashRawJSON computes a deterministic SHA256 hash of raw JSON bytes.
+// It unmarshals and re-marshals the JSON to ensure consistent key ordering,
+// making the hash stable regardless of the original serialization order.
+// Returns the hex-encoded hash string, or an error if the input is not valid JSON.
+func HashRawJSON(raw []byte) (string, error) {
+	var obj any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return "", fmt.Errorf("failed to unmarshal JSON for hashing: %w", err)
+	}
+
+	// json.Marshal sorts map keys alphabetically, ensuring deterministic output
+	canonical, err := json.Marshal(obj)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-marshal JSON for hashing: %w", err)
+	}
+
+	h := sha256.Sum256(canonical)
+	return hex.EncodeToString(h[:]), nil
 }

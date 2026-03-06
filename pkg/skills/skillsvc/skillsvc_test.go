@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1934,6 +1935,55 @@ func TestUninstallRemovesSkillFromGroups(t *testing.T) {
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateOCITag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		tag     string
+		wantErr bool
+	}{
+		// Valid tags
+		{name: "simple version", tag: "v1.0.0", wantErr: false},
+		{name: "latest", tag: "latest", wantErr: false},
+		{name: "numeric", tag: "123", wantErr: false},
+		{name: "with dots", tag: "1.2.3", wantErr: false},
+		{name: "with hyphens", tag: "my-skill", wantErr: false},
+		{name: "with underscores", tag: "my_skill", wantErr: false},
+		{name: "mixed alphanumeric", tag: "v1.0.0-rc.1", wantErr: false},
+		{name: "uppercase", tag: "MyTag", wantErr: false},
+		{name: "single char", tag: "a", wantErr: false},
+		{name: "max length 128 chars", tag: strings.Repeat("a", 128), wantErr: false},
+		{name: "exceeds max length 129 chars", tag: strings.Repeat("a", 129), wantErr: true},
+
+		// Invalid tags
+		{name: "empty string", tag: "", wantErr: true},
+		{name: "contains space", tag: "invalid tag", wantErr: true},
+		{name: "contains exclamation", tag: "invalid!", wantErr: true},
+		{name: "contains at", tag: "invalid@tag", wantErr: true},
+		{name: "contains hash", tag: "invalid#tag", wantErr: true},
+		{name: "contains slash", tag: "invalid/tag", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateOCITag(tt.tag)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid OCI tag")
+				// Verify it returns a proper HTTP status code.
+				var coded *httperr.CodedError
+				require.ErrorAs(t, err, &coded)
+				assert.Equal(t, http.StatusBadRequest, coded.HTTPCode())
 			} else {
 				require.NoError(t, err)
 			}

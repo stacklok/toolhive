@@ -350,6 +350,13 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		}
 	}
 
+	// Validate remote URL format
+	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL); err != nil {
+		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err.Error())
+		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err.Error())
+		return err
+	}
+
 	// Validate OIDC issuer URL scheme
 	if err := r.validateOIDCIssuerURL(proxy); err != nil {
 		reason := mcpv1alpha1.ConditionReasonOIDCIssuerInvalid
@@ -358,6 +365,25 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		}
 		r.recordValidationEvent(proxy, reason, err.Error())
 		setConfigurationInvalidCondition(proxy, reason, err.Error())
+		return err
+	}
+
+	// Validate JWKS URL format
+	if err := r.validateJWKSURL(proxy); err != nil {
+		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err.Error())
+		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err.Error())
+		return err
+	}
+
+	// Validate inline Cedar policy syntax
+	if err := r.validateAuthzPolicySyntax(proxy); err != nil {
+		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err.Error())
+		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err.Error())
+		return err
+	}
+
+	// Validate Kubernetes resource references (ConfigMaps, Secrets)
+	if err := r.validateK8sRefs(ctx, proxy); err != nil {
 		return err
 	}
 
@@ -406,6 +432,107 @@ func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRem
 			return validation.ValidateOIDCIssuerURL(oidcConfig.Kubernetes.Issuer, false)
 		}
 	}
+	return nil
+}
+
+// validateJWKSURL validates the JWKS URL scheme in the OIDC config.
+func (*MCPRemoteProxyReconciler) validateJWKSURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	oidcConfig := proxy.Spec.OIDCConfig
+
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		if oidcConfig.Inline != nil {
+			return validation.ValidateJWKSURL(oidcConfig.Inline.JWKSURL)
+		}
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		if oidcConfig.Kubernetes != nil {
+			return validation.ValidateJWKSURL(oidcConfig.Kubernetes.JWKSURL)
+		}
+	}
+	return nil
+}
+
+// validateAuthzPolicySyntax validates inline Cedar authorization policy syntax.
+func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) error {
+	if proxy.Spec.AuthzConfig == nil ||
+		proxy.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
+		proxy.Spec.AuthzConfig.Inline == nil {
+		return nil
+	}
+	return validation.ValidateCedarPolicies(proxy.Spec.AuthzConfig.Inline.Policies)
+}
+
+// validateK8sRefs validates that referenced ConfigMaps and Secrets exist.
+func (r *MCPRemoteProxyReconciler) validateK8sRefs(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) error {
+	// Check authz ConfigMap reference
+	if proxy.Spec.AuthzConfig != nil &&
+		proxy.Spec.AuthzConfig.Type == mcpv1alpha1.AuthzConfigTypeConfigMap &&
+		proxy.Spec.AuthzConfig.ConfigMap != nil {
+		cm := &corev1.ConfigMap{}
+		cmName := proxy.Spec.AuthzConfig.ConfigMap.Name
+		err := r.Get(ctx, types.NamespacedName{
+			Name: cmName, Namespace: proxy.Namespace,
+		}, cm)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				msg := fmt.Sprintf(
+					"authorization ConfigMap %q not found in namespace %q",
+					cmName, proxy.Namespace,
+				)
+				r.recordValidationEvent(
+					proxy,
+					mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+					msg,
+				)
+				setConfigurationInvalidCondition(
+					proxy,
+					mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+					msg,
+				)
+				return fmt.Errorf("%s", msg)
+			}
+			return fmt.Errorf("failed to fetch authorization ConfigMap %q: %w", cmName, err)
+		}
+	}
+
+	// Check header Secret references
+	if proxy.Spec.HeaderForward != nil {
+		for _, headerRef := range proxy.Spec.HeaderForward.AddHeadersFromSecret {
+			if headerRef.ValueSecretRef == nil {
+				continue
+			}
+			secret := &corev1.Secret{}
+			secretName := headerRef.ValueSecretRef.Name
+			err := r.Get(ctx, types.NamespacedName{
+				Name: secretName, Namespace: proxy.Namespace,
+			}, secret)
+			if err != nil {
+				if errors.IsNotFound(err) {
+					msg := fmt.Sprintf(
+						"secret %q referenced for header %q not found in namespace %q",
+						secretName, headerRef.HeaderName, proxy.Namespace,
+					)
+					r.recordValidationEvent(
+						proxy,
+						mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+						msg,
+					)
+					setConfigurationInvalidCondition(
+						proxy,
+						mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+						msg,
+					)
+					return fmt.Errorf("%s", msg)
+				}
+				return fmt.Errorf("failed to fetch secret %q: %w", secretName, err)
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -268,6 +268,21 @@ const (
 
 	// ConditionReasonOIDCIssuerInvalid indicates the OIDC issuer URL is malformed
 	ConditionReasonOIDCIssuerInvalid = "OIDCIssuerInvalid"
+
+	// ConditionReasonAuthzPolicySyntaxInvalid indicates an inline Cedar policy has a syntax error
+	ConditionReasonAuthzPolicySyntaxInvalid = "AuthzPolicySyntaxInvalid"
+
+	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authz ConfigMap was not found
+	ConditionReasonAuthzConfigMapNotFound = "AuthzConfigMapNotFound"
+
+	// ConditionReasonHeaderSecretNotFound indicates a referenced header Secret was not found
+	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"
+
+	// ConditionReasonRemoteURLInvalid indicates the remoteURL is malformed or has an invalid scheme
+	ConditionReasonRemoteURLInvalid = "RemoteURLInvalid"
+
+	// ConditionReasonJWKSURLInvalid indicates the JWKS URL is malformed or has an invalid scheme
+	ConditionReasonJWKSURLInvalid = "JWKSURLInvalid"
 )
 
 //+kubebuilder:object:root=true

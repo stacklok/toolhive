@@ -167,8 +167,11 @@ func TestOAuthDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields per RFC 8414
 	assert.Contains(t, metadata.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, metadata.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, metadata.GrantTypesSupported, "client_credentials")
 	assert.Contains(t, metadata.CodeChallengeMethodsSupported, "S256")
 	assert.Contains(t, metadata.TokenEndpointAuthMethodsSupported, "none")
+	assert.Contains(t, metadata.TokenEndpointAuthMethodsSupported, "client_secret_basic")
+	assert.Contains(t, metadata.TokenEndpointAuthMethodsSupported, "client_secret_post")
 }
 
 func TestOAuthDiscoveryHandler_DoesNotContainOIDCFields(t *testing.T) {
@@ -228,8 +231,11 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields
 	assert.Contains(t, discovery.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, discovery.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, discovery.GrantTypesSupported, "client_credentials")
 	assert.Contains(t, discovery.CodeChallengeMethodsSupported, "S256")
 	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "none")
+	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "client_secret_basic")
+	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "client_secret_post")
 }
 
 // TODO: Add tests for TokenHandler once implemented:

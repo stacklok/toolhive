@@ -14,6 +14,7 @@ import (
 	"github.com/ory/fosite/compose"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -27,6 +28,11 @@ const (
 	testAuthRedirectURI = "http://localhost:8080/callback"
 	testAuthIssuer      = "http://test-auth-issuer"
 	testInternalState   = "internal-state-123"
+)
+
+const (
+	testConfidentialClientID     = "test-confidential-client"
+	testConfidentialClientSecret = "test-secret-12345"
 )
 
 // mockIDPProvider implements upstream.OAuth2Provider for testing.
@@ -150,14 +156,28 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 	}
 	storState.clients[testAuthClientID] = testClient
 
-	// Setup mock expectations for GetClient
-	stor.EXPECT().GetClient(gomock.Any(), testAuthClientID).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
+	// Register a confidential test client (for client_credentials)
+	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(testConfidentialClientSecret), bcrypt.DefaultCost)
+	require.NoError(t, err)
+
+	confidentialClient := &fosite.DefaultClient{
+		ID:            testConfidentialClientID,
+		Secret:        hashedSecret,
+		RedirectURIs:  nil,
+		ResponseTypes: nil,
+		GrantTypes:    []string{"client_credentials"},
+		Scopes:        []string{"openid"},
+		Public:        false,
+	}
+	storState.clients[testConfidentialClientID] = confidentialClient
+
+	// Setup mock expectations for GetClient — return any registered client
+	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
 		if c, ok := storState.clients[id]; ok {
 			return c, nil
 		}
 		return nil, fosite.ErrNotFound
 	}).AnyTimes()
-	stor.EXPECT().GetClient(gomock.Any(), gomock.Not(testAuthClientID)).Return(nil, fosite.ErrNotFound).AnyTimes()
 
 	// Setup mock expectations for pending authorization storage
 	stor.EXPECT().StorePendingAuthorization(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
@@ -317,6 +337,7 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
 		compose.OAuth2AuthorizeExplicitFactory,
+		compose.OAuth2ClientCredentialsGrantFactory,
 		compose.OAuth2RefreshTokenGrantFactory,
 		compose.OAuth2PKCEFactory,
 	)

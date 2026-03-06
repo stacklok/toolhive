@@ -38,7 +38,7 @@ func TestTokenHandler_UnsupportedGrantType(t *testing.T) {
 	handler, _, _ := handlerTestSetup(t)
 
 	form := url.Values{
-		"grant_type": {"client_credentials"}, // Not supported
+		"grant_type": {"implicit"}, // Not supported by this server
 	}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -46,7 +46,6 @@ func TestTokenHandler_UnsupportedGrantType(t *testing.T) {
 
 	handler.TokenHandler(rec, req)
 
-	// fosite returns invalid_request for unsupported grant types when the handler isn't registered
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "invalid_request")
 }
@@ -219,6 +218,74 @@ func TestTokenHandler_RouteRegistered(t *testing.T) {
 	// Should not return 404 (route not found) or 405 (method not allowed)
 	require.NotEqual(t, http.StatusNotFound, rec.Code, "POST /oauth/token route should be registered")
 	require.NotEqual(t, http.StatusMethodNotAllowed, rec.Code, "POST method should be allowed")
+}
+
+func TestTokenHandler_ClientCredentials_Success(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {testConfidentialClientID},
+		"client_secret": {testConfidentialClientSecret},
+		"scope":         {"openid"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.TokenHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+
+	body := rec.Body.String()
+	assert.Contains(t, body, "access_token")
+	assert.Contains(t, body, "token_type")
+	assert.Contains(t, body, "expires_in")
+	// client_credentials should NOT return a refresh_token
+	assert.NotContains(t, body, "refresh_token")
+}
+
+func TestTokenHandler_ClientCredentials_WrongSecret(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {testConfidentialClientID},
+		"client_secret": {"wrong-secret"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.TokenHandler(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_client")
+}
+
+func TestTokenHandler_ClientCredentials_WithResource(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {testConfidentialClientID},
+		"client_secret": {testConfidentialClientSecret},
+		"scope":         {"openid"},
+		"resource":      {"https://api.example.com"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.TokenHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+
+	body := rec.Body.String()
+	assert.Contains(t, body, "access_token")
 }
 
 // testPKCEVerifier is a valid PKCE verifier (43-128 characters, URL-safe).

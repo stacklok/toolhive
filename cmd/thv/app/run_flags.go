@@ -559,10 +559,12 @@ func buildRunnerConfig(
 		imageMetadata = md
 	}
 
-	// Extract registry proxy port from remote server metadata
+	// Extract registry proxy port from remote server metadata when CLI flag is not set
 	var registryProxyPort int
-	if remoteMd, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteMd != nil {
-		registryProxyPort = remoteMd.ProxyPort
+	if runFlags.ProxyPort == 0 {
+		if remoteMd, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteMd != nil {
+			registryProxyPort = remoteMd.ProxyPort
+		}
 	}
 
 	// Build default options

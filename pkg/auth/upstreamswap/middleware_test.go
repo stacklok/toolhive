@@ -767,3 +767,248 @@ func TestMiddleware_TsidClaimWrongType(t *testing.T) {
 
 	assert.True(t, nextCalled, "next handler should be called when tsid is wrong type")
 }
+
+func TestMiddleware_ExpiredTokens_RefreshSuccess(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expiredTokens := &storage.UpstreamTokens{
+		AccessToken:  "expired-access-token",
+		RefreshToken: "my-refresh-token",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}
+
+	refreshedTokens := &storage.UpstreamTokens{
+		AccessToken:  "new-access-token",
+		RefreshToken: "new-refresh-token",
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
+	}
+
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().
+		GetUpstreamTokens(gomock.Any(), "session-123").
+		Return(expiredTokens, storage.ErrExpired)
+
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+	mockRefresher.EXPECT().
+		RefreshAndStore(gomock.Any(), "session-123", expiredTokens).
+		Return(refreshedTokens, nil)
+
+	storageGetter := func() storage.UpstreamTokenStorage {
+		return mockStorage
+	}
+	refresherGetter := func() storage.UpstreamTokenRefresher {
+		return mockRefresher
+	}
+
+	cfg := &Config{}
+	middleware := createMiddlewareFunc(cfg, storageGetter, refresherGetter)
+
+	var nextCalled bool
+	var capturedAuthHeader string
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		capturedAuthHeader = r.Header.Get("Authorization")
+	})
+
+	handler := middleware(nextHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	identity := &auth.Identity{
+		Subject: "user123",
+		Claims: map[string]any{
+			"sub":                          "user123",
+			session.TokenSessionIDClaimKey: "session-123",
+		},
+	}
+	ctx := auth.WithIdentity(req.Context(), identity)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.True(t, nextCalled, "next handler should be called after successful refresh")
+	assert.Equal(t, "Bearer new-access-token", capturedAuthHeader)
+}
+
+func TestMiddleware_ExpiredTokens_RefreshFails(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expiredTokens := &storage.UpstreamTokens{
+		AccessToken:  "expired-access-token",
+		RefreshToken: "my-refresh-token",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}
+
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().
+		GetUpstreamTokens(gomock.Any(), "session-123").
+		Return(expiredTokens, storage.ErrExpired)
+
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+	mockRefresher.EXPECT().
+		RefreshAndStore(gomock.Any(), "session-123", expiredTokens).
+		Return(nil, errors.New("refresh failed"))
+
+	storageGetter := func() storage.UpstreamTokenStorage {
+		return mockStorage
+	}
+	refresherGetter := func() storage.UpstreamTokenRefresher {
+		return mockRefresher
+	}
+
+	cfg := &Config{}
+	middleware := createMiddlewareFunc(cfg, storageGetter, refresherGetter)
+
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+	})
+
+	handler := middleware(nextHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	identity := &auth.Identity{
+		Subject: "user123",
+		Claims: map[string]any{
+			"sub":                          "user123",
+			session.TokenSessionIDClaimKey: "session-123",
+		},
+	}
+	ctx := auth.WithIdentity(req.Context(), identity)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.False(t, nextCalled, "next handler should NOT be called when refresh fails")
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
+}
+
+func TestMiddleware_ExpiredTokens_NoRefreshToken(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expiredTokens := &storage.UpstreamTokens{
+		AccessToken:  "expired-access-token",
+		RefreshToken: "", // No refresh token
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}
+
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().
+		GetUpstreamTokens(gomock.Any(), "session-123").
+		Return(expiredTokens, storage.ErrExpired)
+
+	// No refresher mock needed — refresh should not be attempted
+
+	storageGetter := func() storage.UpstreamTokenStorage {
+		return mockStorage
+	}
+	refresherGetter := func() storage.UpstreamTokenRefresher {
+		t.Fatal("refresher getter should not be called when there is no refresh token")
+		return nil
+	}
+
+	cfg := &Config{}
+	middleware := createMiddlewareFunc(cfg, storageGetter, refresherGetter)
+
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+	})
+
+	handler := middleware(nextHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	identity := &auth.Identity{
+		Subject: "user123",
+		Claims: map[string]any{
+			"sub":                          "user123",
+			session.TokenSessionIDClaimKey: "session-123",
+		},
+	}
+	ctx := auth.WithIdentity(req.Context(), identity)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.False(t, nextCalled, "next handler should NOT be called when no refresh token available")
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
+}
+
+func TestMiddleware_DefenseInDepth_ExpiredButNoError_RefreshSuccess(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// Storage returns tokens with ExpiresAt in the past but NO error
+	expiredTokens := &storage.UpstreamTokens{
+		AccessToken:  "expired-access-token",
+		RefreshToken: "my-refresh-token",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}
+
+	refreshedTokens := &storage.UpstreamTokens{
+		AccessToken:  "refreshed-access-token",
+		RefreshToken: "refreshed-refresh-token",
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
+	}
+
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().
+		GetUpstreamTokens(gomock.Any(), "session-123").
+		Return(expiredTokens, nil) // No error, but token is expired
+
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+	mockRefresher.EXPECT().
+		RefreshAndStore(gomock.Any(), "session-123", expiredTokens).
+		Return(refreshedTokens, nil)
+
+	storageGetter := func() storage.UpstreamTokenStorage {
+		return mockStorage
+	}
+	refresherGetter := func() storage.UpstreamTokenRefresher {
+		return mockRefresher
+	}
+
+	cfg := &Config{}
+	middleware := createMiddlewareFunc(cfg, storageGetter, refresherGetter)
+
+	var nextCalled bool
+	var capturedAuthHeader string
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		capturedAuthHeader = r.Header.Get("Authorization")
+	})
+
+	handler := middleware(nextHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	identity := &auth.Identity{
+		Subject: "user123",
+		Claims: map[string]any{
+			"sub":                          "user123",
+			session.TokenSessionIDClaimKey: "session-123",
+		},
+	}
+	ctx := auth.WithIdentity(req.Context(), identity)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.True(t, nextCalled, "next handler should be called after successful defense-in-depth refresh")
+	assert.Equal(t, "Bearer refreshed-access-token", capturedAuthHeader)
+}

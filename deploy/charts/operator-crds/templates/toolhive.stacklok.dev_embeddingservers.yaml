@@ -97,7 +97,9 @@ spec:
                 type: object
               image:
                 default: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-                description: Image is the container image for huggingface-embedding-inference
+                description: |-
+                  Image is the container image for the embedding inference server.
+                  Images must be from HuggingFace Text Embeddings Inference (https://github.com/huggingface/text-embeddings-inference).
                 type: string
               imagePullPolicy:
                 default: IfNotPresent

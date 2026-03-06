@@ -12,15 +12,27 @@ import (
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
 
 // StatusResponse represents the vMCP server's operational status.
 type StatusResponse struct {
 	Backends []BackendStatus `json:"backends"`
+	Sessions *SessionsStatus `json:"sessions,omitempty"` // Only present when sessionManagementV2 enabled
 	Healthy  bool            `json:"healthy"`
 	Version  string          `json:"version"`
 	GroupRef string          `json:"group_ref"`
 }
+
+// SessionsStatus contains information about active vMCP sessions.
+type SessionsStatus struct {
+	ActiveCount  int                                    `json:"active_count"`
+	BackendUsage map[string]sessionmanager.BackendUsage `json:"backend_usage"` // backend_name -> usage stats
+}
+
+// BackendUsage tracks session usage statistics for a specific backend.
+// This provides operational visibility without exposing session identifiers.
+type BackendUsage = sessionmanager.BackendUsage
 
 // BackendStatus represents the status of a single backend MCP server.
 type BackendStatus struct {
@@ -81,12 +93,30 @@ func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 	// Healthy = true if at least one backend is healthy AND there's at least one backend
 	healthy := len(backends) > 0 && hasHealthyBackend
 
-	return StatusResponse{
+	response := StatusResponse{
 		Backends: backendStatuses,
 		Healthy:  healthy,
 		Version:  versions.GetVersionInfo().Version,
 		GroupRef: s.config.GroupRef,
 	}
+
+	// Add session information if sessionManagementV2 is enabled
+	// This provides operational visibility into backend usage patterns without
+	// exposing session identifiers that could be used for session hijacking.
+	if s.config.SessionManagementV2 && s.vmcpSessionMgr != nil {
+		activeCount, backendUsage := s.vmcpSessionMgr.ListActiveSessions()
+		response.Sessions = &SessionsStatus{
+			ActiveCount:  activeCount,
+			BackendUsage: backendUsage,
+		}
+		// #nosec G706 -- structured logging with slog is safe from injection
+		slog.Debug("buildStatusResponse: included session info",
+			"active_sessions", activeCount,
+			"backends", len(backendUsage),
+			"v2_enabled", true)
+	}
+
+	return response
 }
 
 // getAuthType returns the auth type string from the backend auth strategy.

@@ -1026,7 +1026,7 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 // fields like terminationGracePeriodSeconds, dnsPolicy, etc.), this compares a SHA256 hash of
 // the raw PodTemplateSpec input stored as a deployment annotation.
 func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
-	_ context.Context,
+	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	_ []workloads.TypedWorkload,
@@ -1048,6 +1048,7 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
 	if err != nil {
 		// If we can't hash, assume update is needed
+		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
 		return true
 	}
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash

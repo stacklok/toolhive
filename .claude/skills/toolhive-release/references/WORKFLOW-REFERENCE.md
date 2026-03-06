@@ -148,6 +148,12 @@ Detailed documentation of the ToolHive release workflow chain.
 
 ## Troubleshooting
 
+### Reference already exists when creating release PR
+
+If a previous Create Release PR run failed after creating the branch but before opening the PR, the branch (e.g. `release/v0.11.1`) is left behind. The next run fails with "Reference already exists" because releaseo cannot create the same branch again.
+
+**Fix**: The workflow now includes a cleanup step that deletes the target release branch before running releaseo, allowing retries to succeed. Simply re-run the workflow.
+
 ### PR not triggering create-release-tag
 
 - Ensure commit message matches expected pattern: `Release vX.Y.Z`

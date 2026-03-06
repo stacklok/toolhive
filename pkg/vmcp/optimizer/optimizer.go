@@ -104,10 +104,12 @@ type Optimizer interface {
 // FindToolInput contains the parameters for finding tools.
 type FindToolInput struct {
 	// ToolDescription is a natural language description of the tool to find.
-	ToolDescription string `json:"tool_description" description:"Natural language description of the tool to find"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	ToolDescription string `json:"tool_description" description:"Description of the task or capability needed (e.g. 'web search', 'analyze CSV file', 'send an email'). This is used for semantic similarity matching against available tools."`
 
 	// ToolKeywords is an optional list of keywords to narrow the search.
-	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords to narrow search"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords for BM25 text search to narrow results (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Combined with tool_description for hybrid search."`
 }
 
 // FindToolOutput contains the results of a tool search.
@@ -127,10 +129,12 @@ type TokenMetrics = tokencounter.TokenMetrics
 // CallToolInput contains the parameters for calling a tool.
 type CallToolInput struct {
 	// ToolName is the name of the tool to invoke.
-	ToolName string `json:"tool_name" description:"Name of the tool to call"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	ToolName string `json:"tool_name" description:"The name of the tool to execute (obtain this from find_tool results - it is the tool's name field)"`
 
 	// Parameters are the arguments to pass to the tool.
-	Parameters map[string]any `json:"parameters" description:"Parameters to pass to the tool"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	Parameters map[string]any `json:"parameters" description:"Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool."`
 }
 
 // NewOptimizerFactory creates the embedding client and SQLite tool store from

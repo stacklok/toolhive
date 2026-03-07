@@ -47,8 +47,8 @@ type MCPRegistryReconciler struct {
 }
 
 // NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
-func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *MCPRegistryReconciler {
-	registryAPIManager := registryapi.NewManager(k8sClient, scheme)
+func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme, disableWorkloadRBAC bool) *MCPRegistryReconciler {
+	registryAPIManager := registryapi.NewManager(k8sClient, scheme, disableWorkloadRBAC)
 	return &MCPRegistryReconciler{
 		Client:             k8sClient,
 		Scheme:             scheme,

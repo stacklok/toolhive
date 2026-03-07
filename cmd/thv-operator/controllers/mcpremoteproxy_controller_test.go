@@ -1099,6 +1099,50 @@ func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
 }
 
+// TestEnsureRBACResources_DisableWorkloadRBAC_MCPRemoteProxy tests that RBAC creation is skipped
+// when DisableWorkloadRBAC is true.
+func TestEnsureRBACResources_DisableWorkloadRBAC_MCPRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy-disable-rbac",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://mcp.example.com",
+			Port:      8080,
+		},
+	}
+
+	testScheme := createRunConfigTestScheme()
+	_ = rbacv1.AddToScheme(testScheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithRuntimeObjects(proxy).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client:              fakeClient,
+		Scheme:              testScheme,
+		DisableWorkloadRBAC: true,
+	}
+
+	err := reconciler.ensureRBACResources(t.Context(), proxy)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	generatedSAName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: proxy.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when workload RBAC is disabled")
+}
+
 // TestUpdateMCPRemoteProxyStatus tests status update logic
 func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 	t.Parallel()

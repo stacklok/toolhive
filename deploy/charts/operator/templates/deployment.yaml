@@ -64,6 +64,8 @@ spec:
             value: {{ .Values.operator.features.registry | quote }}
           - name: ENABLE_VMCP
             value: {{ .Values.operator.features.virtualMCP | quote }}
+          - name: DISABLE_WORKLOAD_RBAC
+            value: {{ .Values.operator.rbac.disableWorkloadRBAC | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"

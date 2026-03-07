@@ -630,6 +630,52 @@ func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) 
 	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
 }
 
+// TestVirtualMCPServerEnsureRBACResources_DisableWorkloadRBAC tests that RBAC creation is skipped
+// when DisableWorkloadRBAC is true.
+func TestVirtualMCPServerEnsureRBACResources_DisableWorkloadRBAC(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp-disable-rbac",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: testGroupName},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:              fakeClient,
+		Scheme:              scheme,
+		DisableWorkloadRBAC: true,
+	}
+
+	err := r.ensureRBACResources(t.Context(), vmcp)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	generatedSAName := vmcpServiceAccountName(vmcp.Name)
+
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when workload RBAC is disabled")
+}
+
 // TestVirtualMCPServerEnsureDeployment tests Deployment creation
 func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	t.Parallel()

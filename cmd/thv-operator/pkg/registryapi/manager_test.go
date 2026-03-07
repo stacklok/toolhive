@@ -46,7 +46,7 @@ func TestNewManager(t *testing.T) {
 			scheme := runtime.NewScheme()
 
 			// Create manager
-			manager := NewManager(nil, scheme)
+			manager := NewManager(nil, scheme, false)
 
 			// Verify manager is created
 			assert.NotNil(t, manager)
@@ -102,7 +102,7 @@ func TestReconcileAPIService(t *testing.T) {
 		}
 
 		// Create manager
-		manager := NewManager(fakeClient, scheme)
+		manager := NewManager(fakeClient, scheme, false)
 		// Execute
 		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
 
@@ -187,7 +187,7 @@ func TestReconcileAPIService(t *testing.T) {
 		}
 
 		// Create manager
-		manager := NewManager(fakeClient, scheme)
+		manager := NewManager(fakeClient, scheme, false)
 		// Execute
 		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
 

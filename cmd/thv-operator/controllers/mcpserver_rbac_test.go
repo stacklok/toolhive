@@ -424,6 +424,23 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	assert.Equal(t, expectedSecrets, mcpServerSA.ImagePullSecrets)
 }
 
+func TestEnsureRBACResources_DisableWorkloadRBAC(t *testing.T) {
+	t.Parallel()
+	tc := setupTest("test-server-disable-rbac", "default")
+	tc.reconciler.DisableWorkloadRBAC = true
+
+	err := tc.ensureRBACResources()
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	sa := &corev1.ServiceAccount{}
+	err = tc.client.Get(t.Context(), types.NamespacedName{
+		Name:      tc.proxyRunnerNameForRBAC,
+		Namespace: tc.mcpServer.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when workload RBAC is disabled")
+}
+
 func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {
 	return &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{

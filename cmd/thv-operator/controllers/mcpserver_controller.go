@@ -46,10 +46,11 @@ import (
 // MCPServerReconciler reconciles a MCPServer object
 type MCPServerReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
-	PlatformDetector *ctrlutil.SharedPlatformDetector
-	ImageValidation  validation.ImageValidation
+	Scheme              *runtime.Scheme
+	Recorder            record.EventRecorder
+	PlatformDetector    *ctrlutil.SharedPlatformDetector
+	ImageValidation     validation.ImageValidation
+	DisableWorkloadRBAC bool
 }
 
 // defaultRBACRules are the default RBAC rules that the
@@ -884,7 +885,12 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 
 	return nil
 }
+
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	if r.DisableWorkloadRBAC {
+		return nil
+	}
+
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 

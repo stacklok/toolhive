@@ -37,9 +37,10 @@ import (
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
 type MCPRemoteProxyReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
-	PlatformDetector *ctrlutil.SharedPlatformDetector
+	Scheme              *runtime.Scheme
+	Recorder            record.EventRecorder
+	PlatformDetector    *ctrlutil.SharedPlatformDetector
+	DisableWorkloadRBAC bool
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch;create;update;patch;delete
@@ -584,6 +585,10 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
 // automatically during operator upgrades.
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	if r.DisableWorkloadRBAC {
+		return nil
+	}
+
 	// If a service account is specified, we don't need to create one
 	if proxy.Spec.ServiceAccount != nil {
 		return nil

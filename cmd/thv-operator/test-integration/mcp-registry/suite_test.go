@@ -114,7 +114,7 @@ var _ = BeforeSuite(func() {
 
 		// Set up MCPRegistry controller
 		By("setting up MCPRegistry controller")
-		err = controllers.NewMCPRegistryReconciler(testMgr.GetClient(), testMgr.GetScheme()).SetupWithManager(testMgr)
+		err = controllers.NewMCPRegistryReconciler(testMgr.GetClient(), testMgr.GetScheme(), false).SetupWithManager(testMgr)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Start the manager in the background

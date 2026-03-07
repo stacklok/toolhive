@@ -21,20 +21,23 @@ import (
 
 // manager implements the Manager interface
 type manager struct {
-	client     client.Client
-	scheme     *runtime.Scheme
-	kubeHelper *kubernetes.Client
+	client              client.Client
+	scheme              *runtime.Scheme
+	kubeHelper          *kubernetes.Client
+	disableWorkloadRBAC bool
 }
 
 // NewManager creates a new registry API manager
 func NewManager(
 	k8sClient client.Client,
 	scheme *runtime.Scheme,
+	disableWorkloadRBAC bool,
 ) Manager {
 	return &manager{
-		client:     k8sClient,
-		scheme:     scheme,
-		kubeHelper: kubernetes.NewClient(k8sClient, scheme),
+		client:              k8sClient,
+		scheme:              scheme,
+		kubeHelper:          kubernetes.NewClient(k8sClient, scheme),
+		disableWorkloadRBAC: disableWorkloadRBAC,
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"maps"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -1040,6 +1042,22 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		source, target, err := mount.Parse()
 		if err != nil {
 			return fmt.Errorf("invalid volume format: %s (%w)", volume, err)
+		}
+
+		// Validate source path exists on the host filesystem (CLI context only).
+		// Skip for Kubernetes operator context where paths are container-relative,
+		// and for resource URIs which are not filesystem paths.
+		if b.buildContext != BuildContextOperator && !strings.HasPrefix(source, "resource://") {
+			absSource := source
+			if !filepath.IsAbs(absSource) {
+				absSource, err = filepath.Abs(absSource)
+				if err != nil {
+					return fmt.Errorf("failed to resolve volume mount source path %q: %w", source, err)
+				}
+			}
+			if _, err := os.Stat(absSource); err != nil {
+				return fmt.Errorf("volume mount source path does not exist: %s", source)
+			}
 		}
 
 		// Check for duplicate mount target

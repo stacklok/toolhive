@@ -70,15 +70,15 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 }
 
 func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.ReverseProxy {
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.Director = func(r *http.Request) {
-		r.URL.Scheme = targetURL.Scheme
-		r.URL.Host = targetURL.Host
-		r.Host = targetURL.Host
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(targetURL)
+			pr.SetXForwarded()
+		},
+		FlushInterval:  -1,
+		Transport:      &tracingTransport{base: http.DefaultTransport, p: p},
+		ModifyResponse: p.modifyResponse,
 	}
-	proxy.FlushInterval = -1
-	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
-	proxy.ModifyResponse = p.modifyResponse
 	return proxy
 }
 
@@ -157,22 +157,18 @@ func TestTracePropagationHeaders(t *testing.T) {
 	targetURL, err := url.Parse(downstream.URL)
 	assert.NoError(t, err)
 
-	// Create reverse proxy with the same director logic as the main code
-	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
-	reverseProxy.FlushInterval = -1
+	// Create reverse proxy with the same rewrite logic as the main code
+	reverseProxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(targetURL)
+			pr.SetXForwarded()
 
-	// Store the original director
-	originalDirector := reverseProxy.Director
-
-	// Override director to inject trace propagation headers (same as main code)
-	reverseProxy.Director = func(req *http.Request) {
-		// Apply original director logic first
-		originalDirector(req)
-
-		// Inject OpenTelemetry trace propagation headers for downstream tracing
-		if req.Context() != nil {
-			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-		}
+			// Inject OpenTelemetry trace propagation headers for downstream tracing
+			if pr.Out.Context() != nil {
+				otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
+			}
+		},
 	}
 
 	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}

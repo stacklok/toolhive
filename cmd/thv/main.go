@@ -84,7 +84,7 @@ func setupSignalHandler() context.Context {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118 - cancel called in signal handler goroutine
 	go func() {
 		<-sigCh
 		slog.Debug("received signal, cleaning up lock files")

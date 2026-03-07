@@ -162,6 +162,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 	var imageURL string
 	var imageMetadata *regtypes.ImageMetadata
 	var serverMetadata regtypes.ServerMetadata
+	var registryProxyPort int
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
@@ -193,6 +194,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 
 		if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteServerMetadata != nil {
+			// Use registry proxy port if not set by request
+			if req.ProxyPort == 0 && remoteServerMetadata.ProxyPort > 0 {
+				registryProxyPort = remoteServerMetadata.ProxyPort
+			}
+
 			if remoteServerMetadata.OAuthConfig != nil {
 				// Default resource: user-provided > registry metadata > derived from remote URL
 				resource := req.OAuthConfig.Resource
@@ -283,6 +289,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 		if len(req.HeaderForward.AddHeadersFromSecret) > 0 {
 			options = append(options, runner.WithHeaderForwardSecrets(req.HeaderForward.AddHeadersFromSecret))
 		}
+	}
+
+	// Use registry proxy port for remote servers if not set by request
+	if registryProxyPort > 0 {
+		options = append(options, runner.WithRegistryProxyPort(registryProxyPort))
 	}
 
 	// Add existing port if provided (for update operations)

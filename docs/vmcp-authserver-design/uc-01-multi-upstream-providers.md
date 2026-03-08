@@ -177,6 +177,8 @@ type PendingAuthorization struct {
 
 Both must be included in defensive copies in `StorePendingAuthorization` and `LoadPendingAuthorization` (memory and Redis).
 
+**Security constraint on `ExistingTSID`**: The server MUST extract the ExistingTSID from the client's authenticated JWT (`tsid` claim), never from a client-supplied parameter (query param, form field, etc.). This prevents a malicious client from supplying another user's TSID and poisoning their session with attacker-controlled upstream tokens. The exact extraction mechanism is defined by UC-06, but this constraint is non-negotiable.
+
 ### 2.4 Authorize Endpoint: Scope-Based Provider Selection
 
 The authorize handler selects the upstream by looking for an `upstream:<name>` scope in the request. If none is found, it falls back to `defaultUpstream`.
@@ -250,7 +252,7 @@ if pending.ExistingTSID != "" {
 }
 ```
 
-This is a best-effort check. If two concurrent requests both pass the check, the second callback overwrites the first's tokens (idempotent -- no data corruption, just an extra browser redirect). Full distributed locking is deferred.
+This is a best-effort check. If two concurrent requests both pass the check, each creates its own `PendingAuthorization` with a distinct `InternalState`, so both callbacks succeed independently. The second callback overwrites the first's tokens at the same `(TSID, providerName)` storage key — this is idempotent (no data corruption, just an extra browser redirect). Full distributed locking is deferred.
 
 ### 2.7 Server Construction Changes
 
@@ -314,7 +316,7 @@ func NewAdapter(
 3. Call `storage.GetUpstreamTokens(ctx, tsid, providerName)`.
 4. On `ErrNotFound` → return `&autherrors.ErrUpstreamTokenNotFound{ProviderName: providerName}`.
 5. Validate binding fields (Section 3.4). Binding is checked BEFORE refresh to prevent an unauthorized caller from triggering a refresh of someone else's token.
-6. If expired → attempt refresh using the upstream provider's `RefreshTokens` method, update storage, return the fresh access token. If refresh fails, return `ErrUpstreamTokenNotFound`.
+6. If expired → look up upstream provider in `a.upstreams[providerName]`. If provider not found (removed from config), return `ErrUpstreamTokenNotFound`. Otherwise, attempt refresh using the provider's `RefreshTokens` method, update storage, return the fresh access token. If refresh fails, return `ErrUpstreamTokenNotFound`.
 7. Return `tokens.AccessToken`.
 
 ### 3.4 Binding Field Validation (Invariant #6)
@@ -356,7 +358,19 @@ if len(c.Upstreams) > 1 {
 
 The rest of `validateUpstreams` (name uniqueness, per-upstream validation) is already multi-upstream-ready.
 
-### 4.2 Provider Name Validation
+### 4.2 CRD Validation: Removing the Multi-Upstream Rejection
+
+In `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`, `validateUpstreamProviders`, remove:
+
+```go
+if len(cfg.UpstreamProviders) > 1 {
+    return fmt.Errorf("currently only one upstream provider is supported (found %d)", len(cfg.UpstreamProviders))
+}
+```
+
+This mirrors the `pkg/authserver/config.go` change (Section 4.1). Both the CRD validation and the runtime config validation must be updated in tandem.
+
+### 4.3 Provider Name Validation
 
 For multi-upstream configs, names MUST be explicitly set (no relying on the `"default"` fallback):
 
@@ -372,11 +386,11 @@ if len(c.Upstreams) > 1 {
 
 For single-upstream, the existing default-to-`"default"` behavior is preserved.
 
-### 4.3 ScopesSupported Auto-Population
+### 4.4 ScopesSupported Auto-Population
 
 When multiple upstreams are configured, automatically add `upstream:<name>` scopes to `ScopesSupported` in `applyDefaults`. This advertises them in the OIDC discovery document for client discovery.
 
-### 4.4 Deprecate `GetUpstream()`
+### 4.5 Deprecate `GetUpstream()`
 
 `Config.GetUpstream()` returns only the first upstream. With multi-upstream, callers should iterate `cfg.Upstreams` directly. Mark `GetUpstream()` as deprecated; new code in `server_impl.go` uses the loop.
 
@@ -406,7 +420,7 @@ When multiple upstreams are configured, automatically add `upstream:<name>` scop
 
 | Test file | What changes |
 |-----------|-------------|
-| `pkg/authserver/integration_test.go` | `setupTestServer` must create upstream providers with `Name()` support; `StoreUpstreamTokens` calls updated; add test case for multi-upstream flow (authorize with `upstream:github` scope, callback stores under `"github"`, token retrieval succeeds) |
+| `pkg/authserver/integration_test.go` | `setupTestServer` must create upstream providers in a map keyed by name; `StoreUpstreamTokens` calls updated; add test case for multi-upstream flow (authorize with `upstream:github` scope, callback stores under `"github"`, token retrieval succeeds) |
 | `pkg/authserver/storage/redis_integration_test.go` | Test multi-provider store/get/delete against real Redis |
 
 ### 5.3 New Tests
@@ -438,3 +452,43 @@ When multiple upstreams are configured, automatically add `upstream:<name>` scop
 | `pkg/authserver/tokensource/tokensource.go` | **NEW** -- `UpstreamTokenSource` adapter |
 | `pkg/auth/upstreamswap/middleware.go` | Add `ProviderName` to config; pass to storage call |
 | `pkg/runner/middleware.go` | `addUpstreamSwapMiddleware` populates `ProviderName` from auth server config |
+| `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go` | Remove `len > 1` upstream rejection in `validateUpstreamProviders` |
+
+---
+
+## 7. Known Limitations
+
+### 7.1 Cleanup Loop vs Refresh Tokens (Pre-existing)
+
+The memory storage cleanup loop uses `timedEntry.expiresAt` (set from `UpstreamTokens.ExpiresAt`, i.e. the **access token** expiry) to determine when to delete entries. This means entries with expired access tokens but valid refresh tokens are deleted before the adapter has a chance to refresh them.
+
+Impact: If the cleanup interval is shorter than the gap between the last access and the next tool call, the adapter gets `ErrNotFound` instead of an expired-but-refreshable token, causing an unnecessary step-up auth prompt.
+
+This is a pre-existing issue in the current single-provider code, not introduced by multi-provider support. Recommended fix (separate from UC-01): use `max(accessToken.ExpiresAt, refreshToken.ExpiresAt)` as the `timedEntry.expiresAt`, or add the refresh token expiry to `UpstreamTokens` and use it for cleanup TTL. Redis storage does not have this issue if TTLs are set to the refresh token lifetime.
+
+### 7.2 Provider Removal: Stale Tokens in Storage
+
+If an upstream provider is removed from the auth server config, tokens stored under that provider name remain in storage but become unreachable through the adapter (no `OAuth2Provider` in the map for refresh). The adapter should return `ErrUpstreamTokenNotFound` for removed providers rather than panicking on nil map lookup. Defensive check:
+
+```go
+provider, ok := a.upstreams[providerName]
+if !ok {
+    return "", &autherrors.ErrUpstreamTokenNotFound{ProviderName: providerName}
+}
+```
+
+Stale tokens will be cleaned up naturally by TTL expiry.
+
+### 7.3 Redis Store Atomicity
+
+The Redis `StoreUpstreamTokens` operation writes both the token key and the session index (`SADD` to the session set). These should ideally be in a single Lua script or `MULTI/EXEC` transaction to prevent partial writes (token stored but index not updated, or vice versa). The current single-provider code has a similar non-atomic pattern. This should be addressed when implementing the Redis storage changes, but is not a design-level concern.
+
+### 7.4 User Identity Migration
+
+The current code stores `providerID = "oauth2"` (from `upstream.Type()`) in `ProviderIdentity` records. After this change, new records will use the configured provider name (e.g., `"github"`). Existing `ProviderIdentity` records with `providerID = "oauth2"` will not match lookups for the new name, causing users to be treated as new and get a new `User` record.
+
+For memory storage, this is a non-issue (ephemeral). For Redis deployments, the same migration considerations from Section 1.3 apply — either a fallback read from `"oauth2"` to the configured name, or a documented breaking change requiring re-authentication.
+
+### 7.5 Token Refresh Race (Deferred)
+
+When multiple concurrent requests need to refresh the same expired upstream token, they may all attempt the refresh simultaneously. This can cause redundant upstream token exchanges and, in the worst case, refresh token invalidation if the upstream IDP uses rotating refresh tokens. Serialization of refresh operations (e.g., via a per-provider mutex) is deferred to separate refresh work.

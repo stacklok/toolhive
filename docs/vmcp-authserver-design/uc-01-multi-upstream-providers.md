@@ -269,7 +269,16 @@ type Server interface {
     Handler() http.Handler
     IDPTokenStorage() storage.UpstreamTokenStorage
     UpstreamProviders() map[string]upstream.OAuth2Provider  // NEW
+    TokenSource() authtypes.UpstreamTokenSource             // NEW — pre-wired adapter
     Close() error
+}
+```
+
+`TokenSource()` returns a pre-wired `UpstreamTokenSource` adapter that knows the default (front-door) provider internally. Callers never need to know which upstream is the default — the AS owns that decision.
+
+```go
+func (s *server) TokenSource() authtypes.UpstreamTokenSource {
+    return tokensource.NewAdapter(s.storage, s.upstreams, s.defaultUpstream)
 }
 ```
 
@@ -297,24 +306,29 @@ Lives under `pkg/authserver/` because it depends on auth server storage and upst
 
 ```go
 type Adapter struct {
-    storage   storage.UpstreamTokenStorage
-    upstreams map[string]upstream.OAuth2Provider  // for token refresh
+    storage         storage.UpstreamTokenStorage
+    upstreams       map[string]upstream.OAuth2Provider  // for token refresh
+    defaultProvider string                              // front-door provider name
 }
 
 func NewAdapter(
     stor storage.UpstreamTokenStorage,
     upstreams map[string]upstream.OAuth2Provider,
+    defaultProvider string,
 ) *Adapter
 ```
+
+The `defaultProvider` is the AS's front-door provider name (first upstream in config order, same as `Handler.defaultUpstream`). It is used when `GetToken` is called with an empty `providerName` — this happens when the `token_exchange` strategy resolves the subject token implicitly (no explicit provider configured on the backend, but AS is present).
 
 ### 3.3 GetToken Contract
 
 `GetToken(ctx context.Context, providerName string) (string, error)`:
 
+0. If `providerName` is empty, substitute `a.defaultProvider`. If still empty after substitution, return `fmt.Errorf("no default upstream provider configured")` (misconfiguration — the AS was started without any upstream providers).
 1. Extract `Identity` from context via `auth.IdentityFromContext`. If absent, return `ErrNoIdentity`.
 2. Extract TSID from `Identity.Claims[session.TokenSessionIDClaimKey]`. If missing, return `ErrNoTSID`.
 3. Call `storage.GetUpstreamTokens(ctx, tsid, providerName)`.
-4. On `ErrNotFound` → return `&autherrors.ErrUpstreamTokenNotFound{ProviderName: providerName}`.
+4. On `ErrNotFound` → return `fmt.Errorf("provider %q: %w", providerName, authtypes.ErrUpstreamTokenNotFound)`.
 5. Validate binding fields (Section 3.4). Binding is checked BEFORE refresh to prevent an unauthorized caller from triggering a refresh of someone else's token.
 6. If expired → look up upstream provider in `a.upstreams[providerName]`. If provider not found (removed from config), return `ErrUpstreamTokenNotFound`. Otherwise, attempt refresh using the provider's `RefreshTokens` method, update storage, return the fresh access token. If refresh fails, return `ErrUpstreamTokenNotFound`.
 7. Return `tokens.AccessToken`.
@@ -441,8 +455,8 @@ When multiple upstreams are configured, automatically add `upstream:<name>` scop
 | `pkg/authserver/storage/redis_keys.go` | Add `redisUpstreamKey` helper |
 | `pkg/authserver/storage/mocks/mock_storage.go` | Regenerate |
 | `pkg/authserver/config.go` | Remove `len > 1` rejection; require explicit names for multi-upstream; auto-populate `upstream:<name>` scopes |
-| `pkg/authserver/server.go` | Add `UpstreamProviders()` to `Server` interface |
-| `pkg/authserver/server_impl.go` | Create all providers in loop; store as map; pass to handler; expose via `UpstreamProviders()` |
+| `pkg/authserver/server.go` | Add `UpstreamProviders()` and `TokenSource()` to `Server` interface |
+| `pkg/authserver/server_impl.go` | Create all providers in loop; store as map; pass to handler; expose via `UpstreamProviders()`; implement `TokenSource()` returning pre-wired adapter |
 | `pkg/authserver/upstream/oauth2.go` | No interface changes (handler owns name mapping) |
 | `pkg/authserver/server/provider.go` | Replace `fosite.ExactScopeStrategy` with `UpstreamAwareScopeStrategy` |
 | `pkg/authserver/server/handlers/handler.go` | Replace `upstream` with `upstreams` map + `defaultUpstream`; update `NewHandler` signature |
@@ -473,7 +487,7 @@ If an upstream provider is removed from the auth server config, tokens stored un
 ```go
 provider, ok := a.upstreams[providerName]
 if !ok {
-    return "", &autherrors.ErrUpstreamTokenNotFound{ProviderName: providerName}
+    return "", fmt.Errorf("provider %q: %w", providerName, authtypes.ErrUpstreamTokenNotFound)
 }
 ```
 

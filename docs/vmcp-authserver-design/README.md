@@ -158,12 +158,12 @@ When the AS is disabled, `identity.Token` holds whatever JWT the client sent (e.
 
 When the AS is enabled, `identity.Token` is always a **TH-JWT** (issued by the embedded AS). The original upstream IDP token is stored in upstream token storage under `(TSID, providerName)`. This is not a problem — it's the architecture:
 
-- **`upstream_inject`** fetches the upstream token by provider name via `UpstreamTokenSource` and injects it directly. No involvement of `identity.Token`.
-- **`token_exchange`** with a provider name configured fetches the upstream token and uses it as `subject_token` for RFC 8693 exchange. When no provider name is configured, it uses `identity.Token` as today (backward compatible).
+- **`upstream_inject`** fetches the upstream token by explicit provider name via `UpstreamTokenSource` and injects it directly. No involvement of `identity.Token`.
+- **`token_exchange`** automatically uses the front-door provider's upstream token as `subject_token` when the AS is configured (i.e., `UpstreamTokenSource` is non-nil). No per-backend provider name needed — there is exactly one internal IDP (the AS), and its front-door upstream token is the right subject. When the AS is not configured, it uses `identity.Token` as today.
 
-The provider name's presence in the backend config is the discriminator — no boolean flag needed. If `UpstreamTokenSource` is available (AS is configured) and the backend specifies a provider, the strategy fetches the upstream token. Otherwise it uses `identity.Token`. See `docs/design/vmcp-embedded-auth-strategy.md` for the `UpstreamTokenSource` interface and strategy details.
+The discriminator is the presence of `UpstreamTokenSource` on the strategy (non-nil means AS is configured), not a per-backend config field. See `docs/design/vmcp-embedded-auth-strategy.md` for the `UpstreamTokenSource` interface and prior art.
 
-**Config validation**: If the AS is the incoming auth provider and a backend uses `token_exchange` without a provider name, emit a warning — the backend will receive a TH-JWT as `subject_token`, which only works if the backend's STS trusts the TH AS.
+**Config validation**: If the AS is the incoming auth provider, `token_exchange` will use the front-door upstream token as subject — ensure the backend's STS trusts that upstream IDP (not the TH AS).
 
 ### The architecture is partially ready for multi-upstream
 
@@ -192,8 +192,9 @@ type UpstreamTokenSource interface {
 }
 ```
 
-- **Producer**: UC-01 (adapter implementation bridging storage to this interface)
+- **Producer**: UC-02 (interface definition in `pkg/vmcp/auth/types/`), UC-01 (adapter implementation in `pkg/authserver/tokensource/`)
 - **Consumers**: UC-02 (strategies use it), UC-05 (nil when no AS), UC-06 (returns C-03 error for missing tokens)
+- **Default provider convention**: When `providerName` is empty (`""`), the adapter resolves it to the AS's front-door provider. This is used by `token_exchange` which does not name a specific provider — it always exchanges the token from the user's initial authentication.
 - **Nil contract**: When no AS is configured, `UpstreamTokenSource` is nil. Strategies that receive nil must not be registered (UC-05). The factory gates registration on non-nil.
 - **Binding enforcement** (Invariant #6): The adapter implementation MUST extract `Identity` from the request context and validate `(UserID, ClientID)` binding fields against the stored `UpstreamTokens` before returning. A valid TSID with mismatched binding fields must return `ErrInvalidBinding`, not the token.
 - **Token refresh**: The adapter MUST handle expired upstream access tokens transparently — refresh using the stored refresh token before returning, or return an error if refresh fails. Callers never manage token lifecycle.
@@ -214,26 +215,27 @@ DeleteUpstreamTokens(ctx context.Context, sessionID string) error  // wipe entir
 - **Front-door guarantee**: The front-door provider's upstream token MUST be stored during the initial OAuth callback (not just during step-up). This ensures backends like Backend 3 (token_exchange with corporate-idp) can retrieve the front-door token immediately after initial authentication.
 - **Migration**: The existing single-provider callers (proxy runner's `upstreamswap` middleware) must be updated to pass a provider name. The upstreamswap middleware currently has no provider concept — it retrieves "the" upstream token by TSID alone. Migration options: (a) configure the middleware with a default provider name, or (b) add a `GetDefaultUpstreamTokens` convenience method. UC-01 must address this.
 
-### C-03: Step-Up Error Type
+### C-03: Step-Up Error Sentinel
 
-A typed error returned by `UpstreamTokenSource.GetToken` when the requested upstream token has not been obtained yet. Distinct from storage failures or misconfigurations.
+A sentinel error returned by `UpstreamTokenSource.GetToken` when the requested upstream token has not been obtained yet. Distinct from storage failures or misconfigurations. Callers use `errors.Is()` to match.
 
 ```go
 // ErrUpstreamTokenNotFound indicates the user has not authenticated with the
 // requested upstream provider. The caller should trigger step-up auth.
-type ErrUpstreamTokenNotFound struct {
-    ProviderName string
-}
+// Callers should check for this error using errors.Is().
+var ErrUpstreamTokenNotFound = errors.New("upstream token not found")
 ```
 
-- **Standalone type**: Defined in a shared errors package (e.g., `pkg/vmcp/auth/errors/`) with no dependency on any UC. This breaks the potential cycle between UC-01 (C-01 adapter returns it) and UC-06 (defines how it's translated to client signals).
-- **Producer**: Standalone definition. UC-06 defines how it is translated to client-facing signals (403 or -32042).
-- **Consumers**: UC-01 (C-01 adapter returns it when storage returns `ErrNotFound` for a provider), UC-02 (strategies propagate it)
-- **Invariant**: This error must NOT contain tokens or session IDs (Invariant #8).
+The adapter wraps it with provider context: `fmt.Errorf("provider %q: %w", name, ErrUpstreamTokenNotFound)`. Strategies wrap further: `fmt.Errorf("upstream_inject: %w", err)`. UC-06 matches with `errors.Is(err, authtypes.ErrUpstreamTokenNotFound)`.
+
+- **Defined in**: `pkg/vmcp/auth/types/types.go` (co-located with `UpstreamTokenSource` interface, leaf package). No dependency on any UC.
+- **Producer**: UC-02 (defines the sentinel in the types package)
+- **Consumers**: UC-01 (adapter returns it wrapped when storage returns `ErrNotFound`), UC-02 (strategies propagate it), UC-06 (translates to client-facing signals)
+- **Invariant**: This error must NOT contain tokens or session IDs (Invariant #8). Provider names are configuration values, not secrets.
 
 ### C-04: Backend Auth Config Shape
 
-The per-backend config types for `upstream_inject` and the enhanced `token_exchange`. The provider name field on `token_exchange` is the discriminator — its presence switches the subject token source from `identity.Token` to `UpstreamTokenSource`.
+The per-backend config types for `upstream_inject` and the enhanced `token_exchange`. `TokenExchangeConfig` is **not modified** — the discriminator for subject token source is the presence of `UpstreamTokenSource` on the strategy (non-nil means AS is configured), not a per-backend config field. When the AS is configured, `token_exchange` automatically uses the front-door provider's upstream token.
 
 ```go
 // New strategy config
@@ -241,11 +243,8 @@ type UpstreamInjectConfig struct {
     ProviderName string `json:"providerName" yaml:"providerName"`
 }
 
-// Enhanced — added UpstreamProviderName field
-type TokenExchangeConfig struct {
-    // ... existing fields unchanged ...
-    UpstreamProviderName string `json:"upstreamProviderName,omitempty" yaml:"upstreamProviderName,omitempty"`
-}
+// TokenExchangeConfig: unchanged. When UpstreamTokenSource is present on the
+// strategy, it resolves the front-door upstream token automatically.
 
 // Extended — added UpstreamInject field
 type BackendAuthStrategy struct {
@@ -264,9 +263,8 @@ Startup-time validation that catches misconfigurations before requests flow. The
 | Rule | Severity | Rationale |
 |------|----------|-----------|
 | `upstream_inject` configured but no AS | Error | Strategy cannot function without `UpstreamTokenSource` |
-| `token_exchange` with `upstreamProviderName` but no AS | Error | Cannot resolve upstream token without AS |
-| Provider name references a provider not in AS config | Error | Typo or config drift |
-| `token_exchange` without `upstreamProviderName` while AS is incoming auth | Warning | TH-JWT as subject_token only works if backend trusts TH AS |
+| `upstream_inject` provider name not in AS upstream config | Error | Typo or config drift |
+| `token_exchange` with AS as incoming auth | Warning | Subject token changes to upstream front-door token; ensure backend STS trusts the upstream IDP |
 
 - **Producer**: UC-05 (defines and implements validation)
 - **Consumers**: UC-03 (validation must not reject existing valid configs)
@@ -308,8 +306,8 @@ A single vMCP deployment supports multiple upstream IDPs. One provider handles p
 
 The front-door upstream provider serves double duty: it drives the incoming auth flow (user authenticates with corporate IDP → gets TH-JWT) and its tokens may also be needed for outgoing auth (exchange corporate token for backend access). Defines the new `upstream_inject` strategy and enhanced `token_exchange`.
 
-**Produces**: C-04 (config shape)
-**Consumes**: C-01 (strategies use `UpstreamTokenSource`), C-03 (strategies return step-up error)
+**Produces**: C-01 (interface definition), C-03 (error sentinel), C-04 (config shape)
+**Consumes**: C-01 (strategies use `UpstreamTokenSource` adapter from UC-01)
 
 ### [UC-03: Backward Compatibility](uc-03-backward-compat.md)
 
@@ -336,8 +334,8 @@ vMCP operates in two modes: with auth server (full upstream token management) an
 
 When a tool call targets a backend whose upstream token hasn't been obtained yet, vMCP must signal the client to perform step-up authentication with a specific provider. Covers the signaling mechanism, timing, and client-side re-authorization flow.
 
-**Produces**: C-03 (step-up error type)
-**Consumes**: C-01 (returns C-03 error), C-06 (step-up reuses AS routing with TSID preservation)
+**Produces**: —
+**Consumes**: C-01 (returns C-03 error), C-03 (translates to client signals), C-06 (step-up reuses AS routing with TSID preservation)
 
 ## Prior Art
 

@@ -15,6 +15,10 @@ const (
 	// TypeRedis uses Redis Sentinel-backed storage for distributed deployments.
 	TypeRedis Type = "redis"
 
+	// AuthTypeACLUser is the Redis ACL user authentication type.
+	// This is currently the only supported auth type for Redis storage.
+	AuthTypeACLUser = "aclUser"
+
 	// DefaultCleanupInterval is how often the background cleanup runs.
 	DefaultCleanupInterval = 5 * time.Minute
 
@@ -59,41 +63,41 @@ type RunConfig struct {
 	Type string `json:"type,omitempty" yaml:"type,omitempty"`
 
 	// RedisConfig is the Redis-specific configuration when Type is "redis".
-	RedisConfig *RedisRunConfig `json:"redisConfig,omitempty" yaml:"redisConfig,omitempty"`
+	RedisConfig *RedisRunConfig `json:"redis_config,omitempty" yaml:"redis_config,omitempty"`
 }
 
 // RedisRunConfig is the serializable Redis configuration for RunConfig.
 // This is designed for Sentinel-only deployments with ACL user authentication.
 type RedisRunConfig struct {
 	// SentinelConfig contains Sentinel-specific configuration.
-	SentinelConfig *SentinelRunConfig `json:"sentinelConfig,omitempty" yaml:"sentinelConfig,omitempty"`
+	SentinelConfig *SentinelRunConfig `json:"sentinel_config,omitempty" yaml:"sentinel_config,omitempty"`
 
 	// AuthType must be "aclUser" - only ACL user authentication is supported.
-	AuthType string `json:"authType" yaml:"authType"`
+	AuthType string `json:"auth_type" yaml:"auth_type"`
 
 	// ACLUserConfig contains ACL user authentication configuration.
-	ACLUserConfig *ACLUserRunConfig `json:"aclUserConfig,omitempty" yaml:"aclUserConfig,omitempty"`
+	ACLUserConfig *ACLUserRunConfig `json:"acl_user_config,omitempty" yaml:"acl_user_config,omitempty"`
 
 	// KeyPrefix for multi-tenancy, typically "thv:auth:{ns}:{name}:".
-	KeyPrefix string `json:"keyPrefix" yaml:"keyPrefix"`
+	KeyPrefix string `json:"key_prefix" yaml:"key_prefix"`
 
 	// DialTimeout is the timeout for establishing connections (e.g., "5s").
-	DialTimeout string `json:"dialTimeout,omitempty" yaml:"dialTimeout,omitempty"`
+	DialTimeout string `json:"dial_timeout,omitempty" yaml:"dial_timeout,omitempty"`
 
 	// ReadTimeout is the timeout for read operations (e.g., "3s").
-	ReadTimeout string `json:"readTimeout,omitempty" yaml:"readTimeout,omitempty"`
+	ReadTimeout string `json:"read_timeout,omitempty" yaml:"read_timeout,omitempty"`
 
 	// WriteTimeout is the timeout for write operations (e.g., "3s").
-	WriteTimeout string `json:"writeTimeout,omitempty" yaml:"writeTimeout,omitempty"`
+	WriteTimeout string `json:"write_timeout,omitempty" yaml:"write_timeout,omitempty"`
 }
 
 // SentinelRunConfig contains Redis Sentinel configuration.
 type SentinelRunConfig struct {
 	// MasterName is the name of the Redis Sentinel master.
-	MasterName string `json:"masterName" yaml:"masterName"`
+	MasterName string `json:"master_name" yaml:"master_name"`
 
 	// SentinelAddrs is the list of Sentinel addresses (host:port).
-	SentinelAddrs []string `json:"sentinelAddrs" yaml:"sentinelAddrs"`
+	SentinelAddrs []string `json:"sentinel_addrs" yaml:"sentinel_addrs"`
 
 	// DB is the Redis database number (default: 0).
 	DB int `json:"db,omitempty" yaml:"db,omitempty"`
@@ -103,8 +107,8 @@ type SentinelRunConfig struct {
 // Credentials are read from environment variables for security.
 type ACLUserRunConfig struct {
 	// UsernameEnvVar is the environment variable containing the Redis username.
-	UsernameEnvVar string `json:"usernameEnvVar" yaml:"usernameEnvVar"`
+	UsernameEnvVar string `json:"username_env_var" yaml:"username_env_var"`
 
 	// PasswordEnvVar is the environment variable containing the Redis password.
-	PasswordEnvVar string `json:"passwordEnvVar" yaml:"passwordEnvVar"`
+	PasswordEnvVar string `json:"password_env_var" yaml:"password_env_var"`
 }

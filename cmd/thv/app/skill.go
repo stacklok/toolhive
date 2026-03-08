@@ -3,7 +3,9 @@
 
 package app
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/spf13/cobra"
+)
 
 // TODO: Remove Hidden flag when skills feature is ready for release.
 var skillCmd = &cobra.Command{

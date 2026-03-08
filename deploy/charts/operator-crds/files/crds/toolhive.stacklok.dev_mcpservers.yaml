@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.phase
       name: Status
       type: string
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
     - jsonPath: .status.url
       name: URL
       type: string
@@ -601,6 +604,16 @@ spec:
                   ServiceAccount is the name of an already existing service account to use by the MCP server.
                   If not specified, a ServiceAccount will be created automatically and used by the MCP server.
                 type: string
+              sessionAffinity:
+                default: ClientIP
+                description: |-
+                  SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+                  MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+                  Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+                enum:
+                - ClientIP
+                - None
+                type: string
               targetPort:
                 description: |-
                   TargetPort is the port that MCP server listens to
@@ -824,7 +837,12 @@ spec:
                 - Running
                 - Failed
                 - Terminating
+                - Stopped
                 type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of ready proxy replicas
+                format: int32
+                type: integer
               toolConfigHash:
                 description: ToolConfigHash stores the hash of the referenced ToolConfig
                   for change detection

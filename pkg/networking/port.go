@@ -13,6 +13,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
 
 const (
@@ -220,4 +222,24 @@ func ParsePortSpec(portSpec string) (string, int, error) {
 	}
 
 	return "", 0, fmt.Errorf("invalid port specification: %s (expected 'hostPort:containerPort' or 'containerPort')", portSpec)
+// GetProcessOnPort returns the PID of the process listening on the given TCP port.
+// Returns 0 if the port is free or if the holder cannot be determined.
+// Uses gopsutil which provides cross-platform support (Linux: /proc, Windows: GetExtendedTcpTable,
+// Darwin/FreeBSD: lsof).
+func GetProcessOnPort(port int) (int, error) {
+	if port <= 0 || port > MaxPort {
+		return 0, fmt.Errorf("invalid port %d", port)
+	}
+
+	conns, err := gopsutilnet.Connections("tcp")
+	if err != nil {
+		return 0, fmt.Errorf("failed to get TCP connections: %w", err)
+	}
+
+	for _, c := range conns {
+		if c.Laddr.Port == uint32(port) && c.Status == "LISTEN" && c.Pid > 0 { //nolint:gosec // G115 - port validated in [1, 65535]
+			return int(c.Pid), nil
+		}
+	}
+	return 0, nil
 }

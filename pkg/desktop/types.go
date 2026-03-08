@@ -21,7 +21,13 @@ type cliSourceMarker struct {
 	Source string `json:"source"`
 
 	// InstallMethod indicates how the CLI was installed.
-	// "symlink" on macOS/Linux, "copy" on Windows.
+	// Supported methods:
+	//   - "symlink": Direct symlink to the CLI binary (macOS/Linux).
+	//   - "copy": Binary copied to a known location (Windows).
+	//   - "flatpak": Wrapper script that runs the binary inside a Flatpak
+	//     sandbox (Linux). Kept as a distinct method because the binary
+	//     lives in a sandboxed filesystem with its own $HOME, even though
+	//     the Go-side validation logic matches "symlink".
 	InstallMethod string `json:"install_method"`
 
 	// CLIVersion is the version of the CLI binary that was installed.
@@ -30,6 +36,16 @@ type cliSourceMarker struct {
 	// SymlinkTarget is the path the symlink points to (macOS/Linux only).
 	// This is the actual binary location inside the Desktop app bundle.
 	SymlinkTarget string `json:"symlink_target,omitempty"`
+
+	// FlatpakTarget is the host-visible path to the CLI binary inside the
+	// Flatpak installation (Linux only, used with install_method "flatpak").
+	// This points to the binary within the Flatpak app's host-visible
+	// directory structure (e.g., ~/.local/share/flatpak/app/<app-id>/.../thv).
+	// The path is accessible from the host filesystem even though the binary
+	// normally runs inside the Flatpak sandbox. When the Flatpak is
+	// uninstalled, this path disappears, which allows the validation logic
+	// to detect that the desktop app is no longer installed.
+	FlatpakTarget string `json:"flatpak_target,omitempty"`
 
 	// CLIChecksum is the SHA256 checksum of the CLI binary (Windows only).
 	// Used for validation when symlinks aren't available.

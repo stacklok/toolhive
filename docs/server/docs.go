@@ -146,6 +146,9 @@ const docTemplate = `{
                         "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
                         "type": "string"
                     },
+                    "token_response_mapping": {
+                        "$ref": "#/components/schemas/authserver.TokenResponseMappingRunConfig"
+                    },
                     "userinfo": {
                         "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
                     }
@@ -227,6 +230,9 @@ const docTemplate = `{
                     "signing_key_config": {
                         "$ref": "#/components/schemas/authserver.SigningKeyRunConfig"
                     },
+                    "storage": {
+                        "$ref": "#/components/schemas/storage.RunConfig"
+                    },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
@@ -276,6 +282,28 @@ const docTemplate = `{
                     },
                     "refresh_token_lifespan": {
                         "description": "RefreshTokenLifespan is the duration that refresh tokens are valid.\nIf empty, defaults to 7 days (168h).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TokenResponseMappingRunConfig": {
+                "description": "TokenResponseMapping configures custom field extraction from non-standard token responses.\nWhen set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using\nthe configured dot-notation paths.",
+                "properties": {
+                    "access_token_path": {
+                        "description": "AccessTokenPath is the dot-notation path to the access token (required).",
+                        "type": "string"
+                    },
+                    "expires_in_path": {
+                        "description": "ExpiresInPath is the dot-notation path to the expires_in value. Defaults to \"expires_in\".",
+                        "type": "string"
+                    },
+                    "refresh_token_path": {
+                        "description": "RefreshTokenPath is the dot-notation path to the refresh token. Defaults to \"refresh_token\".",
+                        "type": "string"
+                    },
+                    "scope_path": {
+                        "description": "ScopePath is the dot-notation path to the scope. Defaults to \"scope\".",
                         "type": "string"
                     }
                 },
@@ -604,6 +632,13 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "skills": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -618,537 +653,6 @@ const docTemplate = `{
                     "printOverlays": {
                         "description": "Whether to print resolved overlay paths for debugging",
                         "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "permissions.InboundNetworkPermissions": {
-                "description": "Inbound defines inbound network permissions",
-                "properties": {
-                    "allow_host": {
-                        "description": "AllowHost is a list of allowed hosts for inbound connections",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "permissions.NetworkPermissions": {
-                "description": "Network defines network permissions",
-                "properties": {
-                    "inbound": {
-                        "$ref": "#/components/schemas/permissions.InboundNetworkPermissions"
-                    },
-                    "mode": {
-                        "description": "Mode specifies the network mode for the container (e.g., \"host\", \"bridge\", \"none\")\nWhen empty, the default container runtime network mode is used",
-                        "type": "string"
-                    },
-                    "outbound": {
-                        "$ref": "#/components/schemas/permissions.OutboundNetworkPermissions"
-                    }
-                },
-                "type": "object"
-            },
-            "permissions.OutboundNetworkPermissions": {
-                "description": "Outbound defines outbound network permissions",
-                "properties": {
-                    "allow_host": {
-                        "description": "AllowHost is a list of allowed hosts",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "allow_port": {
-                        "description": "AllowPort is a list of allowed ports",
-                        "items": {
-                            "type": "integer"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "insecure_allow_all": {
-                        "description": "InsecureAllowAll allows all outbound network connections",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "permissions.Profile": {
-                "description": "PermissionProfile is the permission profile to use",
-                "properties": {
-                    "name": {
-                        "description": "Name is the name of the profile",
-                        "type": "string"
-                    },
-                    "network": {
-                        "$ref": "#/components/schemas/permissions.NetworkPermissions"
-                    },
-                    "privileged": {
-                        "description": "Privileged indicates whether the container should run in privileged mode\nWhen true, the container has access to all host devices and capabilities\nUse with extreme caution as this removes most security isolation",
-                        "type": "boolean"
-                    },
-                    "read": {
-                        "description": "Read is a list of mount declarations that the container can read from\nThese can be in the following formats:\n- A single path: The same path will be mounted from host to container\n- host-path:container-path: Different paths for host and container\n- resource-uri:container-path: Mount a resource identified by URI to a container path",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "write": {
-                        "description": "Write is a list of mount declarations that the container can write to\nThese follow the same format as Read mounts but with write permissions",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "registry.EnvVar": {
-                "properties": {
-                    "default": {
-                        "description": "Default is the value to use if the environment variable is not explicitly provided\nOnly used for non-required variables",
-                        "type": "string"
-                    },
-                    "description": {
-                        "description": "Description is a human-readable explanation of the variable's purpose",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name is the environment variable name (e.g., API_KEY)",
-                        "type": "string"
-                    },
-                    "required": {
-                        "description": "Required indicates whether this environment variable must be provided\nIf true and not provided via command line or secrets, the user will be prompted for a value",
-                        "type": "boolean"
-                    },
-                    "secret": {
-                        "description": "Secret indicates whether this environment variable contains sensitive information\nIf true, the value will be stored as a secret rather than as a plain environment variable",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.Group": {
-                "properties": {
-                    "description": {
-                        "description": "Description is a human-readable description of the group's purpose and functionality",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name is the identifier for the group, used when referencing the group in commands",
-                        "type": "string"
-                    },
-                    "remote_servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                        },
-                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions within this group",
-                        "type": "object"
-                    },
-                    "servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.ImageMetadata"
-                        },
-                        "description": "Servers is a map of server names to their corresponding server definitions within this group",
-                        "type": "object"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.Header": {
-                "properties": {
-                    "choices": {
-                        "description": "Choices provides a list of valid values for the header (optional)",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "default": {
-                        "description": "Default is the value to use if the header is not explicitly provided\nOnly used for non-required headers",
-                        "type": "string"
-                    },
-                    "description": {
-                        "description": "Description is a human-readable explanation of the header's purpose",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name is the header name (e.g., X-API-Key, Authorization)",
-                        "type": "string"
-                    },
-                    "required": {
-                        "description": "Required indicates whether this header must be provided\nIf true and not provided via command line or secrets, the user will be prompted for a value",
-                        "type": "boolean"
-                    },
-                    "secret": {
-                        "description": "Secret indicates whether this header contains sensitive information\nIf true, the value will be stored as a secret rather than as plain text",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.ImageMetadata": {
-                "description": "Container server details (if it's a container server)",
-                "properties": {
-                    "args": {
-                        "description": "Args are the default command-line arguments to pass to the MCP server container.\nThese arguments will be used only if no command-line arguments are provided by the user.\nIf the user provides arguments, they will override these defaults.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "custom_metadata": {
-                        "additionalProperties": {},
-                        "description": "CustomMetadata allows for additional user-defined metadata",
-                        "type": "object"
-                    },
-                    "description": {
-                        "description": "Description is a human-readable description of the server's purpose and functionality",
-                        "type": "string"
-                    },
-                    "docker_tags": {
-                        "description": "DockerTags lists the available Docker tags for this server image",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "env_vars": {
-                        "description": "EnvVars defines environment variables that can be passed to the server",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.EnvVar"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "image": {
-                        "description": "Image is the Docker image reference for the MCP server",
-                        "type": "string"
-                    },
-                    "metadata": {
-                        "$ref": "#/components/schemas/registry.Metadata"
-                    },
-                    "name": {
-                        "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
-                        "type": "string"
-                    },
-                    "overview": {
-                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
-                        "type": "string"
-                    },
-                    "permissions": {
-                        "$ref": "#/components/schemas/permissions.Profile"
-                    },
-                    "provenance": {
-                        "$ref": "#/components/schemas/registry.Provenance"
-                    },
-                    "proxy_port": {
-                        "description": "ProxyPort is the port for the HTTP proxy to listen on (host port)\nIf not specified, a random available port will be assigned",
-                        "type": "integer"
-                    },
-                    "repository_url": {
-                        "description": "RepositoryURL is the URL to the source code repository for the server",
-                        "type": "string"
-                    },
-                    "status": {
-                        "description": "Status indicates whether the server is currently active or deprecated",
-                        "type": "string"
-                    },
-                    "tags": {
-                        "description": "Tags are categorization labels for the server to aid in discovery and filtering",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "target_port": {
-                        "description": "TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)",
-                        "type": "integer"
-                    },
-                    "tier": {
-                        "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
-                        "type": "string"
-                    },
-                    "title": {
-                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
-                        "type": "string"
-                    },
-                    "tools": {
-                        "description": "Tools is a list of tool names provided by this MCP server",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "transport": {
-                        "description": "Transport defines the communication protocol for the server\nFor containers: stdio, sse, or streamable-http\nFor remote servers: sse or streamable-http (stdio not supported)",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.KubernetesMetadata": {
-                "description": "Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster.\nThis field is optional and only populated when:\n- The server is served from ToolHive Registry Server\n- The server was auto-discovered from a Kubernetes deployment\n- The Kubernetes resource has the required registry annotations",
-                "properties": {
-                    "image": {
-                        "description": "Image is the container image used by the Kubernetes workload (applicable to MCPServer)",
-                        "type": "string"
-                    },
-                    "kind": {
-                        "description": "Kind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer, MCPRemoteProxy)",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name is the Kubernetes resource name",
-                        "type": "string"
-                    },
-                    "namespace": {
-                        "description": "Namespace is the Kubernetes namespace where the resource is deployed",
-                        "type": "string"
-                    },
-                    "transport": {
-                        "description": "Transport is the transport type configured for the Kubernetes workload (applicable to MCPServer)",
-                        "type": "string"
-                    },
-                    "uid": {
-                        "description": "UID is the Kubernetes resource UID",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.Metadata": {
-                "description": "Metadata contains additional information about the server such as popularity metrics",
-                "properties": {
-                    "kubernetes": {
-                        "$ref": "#/components/schemas/registry.KubernetesMetadata"
-                    },
-                    "last_updated": {
-                        "description": "LastUpdated is the timestamp when the server was last updated, in RFC3339 format",
-                        "type": "string"
-                    },
-                    "stars": {
-                        "description": "Stars represents the popularity rating or number of stars for the server",
-                        "type": "integer"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.OAuthConfig": {
-                "description": "OAuthConfig provides OAuth/OIDC configuration for authentication to the remote server\nUsed with the thv proxy command's --remote-auth flags",
-                "properties": {
-                    "authorize_url": {
-                        "description": "AuthorizeURL is the OAuth authorization endpoint URL\nUsed for non-OIDC OAuth flows when issuer is not provided",
-                        "type": "string"
-                    },
-                    "callback_port": {
-                        "description": "CallbackPort is the specific port to use for the OAuth callback server\nIf not specified, a random available port will be used",
-                        "type": "integer"
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth client ID for authentication",
-                        "type": "string"
-                    },
-                    "issuer": {
-                        "description": "Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)\nUsed for OIDC discovery to find authorization and token endpoints",
-                        "type": "string"
-                    },
-                    "oauth_params": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "OAuthParams contains additional OAuth parameters to include in the authorization request\nThese are server-specific parameters like \"prompt\", \"response_mode\", etc.",
-                        "type": "object"
-                    },
-                    "resource": {
-                        "description": "Resource is the OAuth 2.0 resource indicator (RFC 8707)",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes are the OAuth scopes to request\nIf not specified, defaults to [\"openid\", \"profile\", \"email\"] for OIDC",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "token_url": {
-                        "description": "TokenURL is the OAuth token endpoint URL\nUsed for non-OIDC OAuth flows when issuer is not provided",
-                        "type": "string"
-                    },
-                    "use_pkce": {
-                        "description": "UsePKCE indicates whether to use PKCE for the OAuth flow\nDefaults to true for enhanced security",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.Provenance": {
-                "description": "Provenance contains verification and signing metadata",
-                "properties": {
-                    "attestation": {
-                        "$ref": "#/components/schemas/registry.VerifiedAttestation"
-                    },
-                    "cert_issuer": {
-                        "type": "string"
-                    },
-                    "repository_ref": {
-                        "type": "string"
-                    },
-                    "repository_uri": {
-                        "type": "string"
-                    },
-                    "runner_environment": {
-                        "type": "string"
-                    },
-                    "signer_identity": {
-                        "type": "string"
-                    },
-                    "sigstore_url": {
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.Registry": {
-                "description": "Full registry data",
-                "properties": {
-                    "groups": {
-                        "description": "Groups is a slice of group definitions containing related MCP servers",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Group"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "last_updated": {
-                        "description": "LastUpdated is the timestamp when the registry was last updated, in RFC3339 format",
-                        "type": "string"
-                    },
-                    "remote_servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                        },
-                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions\nThese are MCP servers accessed via HTTP/HTTPS using the thv proxy command",
-                        "type": "object"
-                    },
-                    "servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.ImageMetadata"
-                        },
-                        "description": "Servers is a map of server names to their corresponding server definitions",
-                        "type": "object"
-                    },
-                    "version": {
-                        "description": "Version is the schema version of the registry",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.RemoteServerMetadata": {
-                "description": "Remote server details (if it's a remote server)",
-                "properties": {
-                    "custom_metadata": {
-                        "additionalProperties": {},
-                        "description": "CustomMetadata allows for additional user-defined metadata",
-                        "type": "object"
-                    },
-                    "description": {
-                        "description": "Description is a human-readable description of the server's purpose and functionality",
-                        "type": "string"
-                    },
-                    "env_vars": {
-                        "description": "EnvVars defines environment variables that can be passed to configure the client\nThese might be needed for client-side configuration when connecting to the remote server",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.EnvVar"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "headers": {
-                        "description": "Headers defines HTTP headers that can be passed to the remote server for authentication\nThese are used with the thv proxy command's authentication features",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Header"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "metadata": {
-                        "$ref": "#/components/schemas/registry.Metadata"
-                    },
-                    "name": {
-                        "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
-                        "type": "string"
-                    },
-                    "oauth_config": {
-                        "$ref": "#/components/schemas/registry.OAuthConfig"
-                    },
-                    "overview": {
-                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
-                        "type": "string"
-                    },
-                    "repository_url": {
-                        "description": "RepositoryURL is the URL to the source code repository for the server",
-                        "type": "string"
-                    },
-                    "status": {
-                        "description": "Status indicates whether the server is currently active or deprecated",
-                        "type": "string"
-                    },
-                    "tags": {
-                        "description": "Tags are categorization labels for the server to aid in discovery and filtering",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "tier": {
-                        "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
-                        "type": "string"
-                    },
-                    "title": {
-                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
-                        "type": "string"
-                    },
-                    "tools": {
-                        "description": "Tools is a list of tool names provided by this MCP server",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "transport": {
-                        "description": "Transport defines the communication protocol for the server\nFor containers: stdio, sse, or streamable-http\nFor remote servers: sse or streamable-http (stdio not supported)",
-                        "type": "string"
-                    },
-                    "url": {
-                        "description": "URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.VerifiedAttestation": {
-                "properties": {
-                    "predicate": {},
-                    "predicate_type": {
-                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -1199,22 +703,6 @@ const docTemplate = `{
                     },
                     "client_secret_file": {
                         "type": "string"
-                    },
-                    "env_vars": {
-                        "description": "Environment variables for the client",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.EnvVar"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "headers": {
-                        "description": "Headers for HTTP requests",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Header"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
                     },
                     "issuer": {
                         "description": "OAuth endpoint configuration (from registry)",
@@ -1382,9 +870,6 @@ const docTemplate = `{
                     },
                     "oidc_config": {
                         "$ref": "#/components/schemas/auth.TokenValidatorConfig"
-                    },
-                    "permission_profile": {
-                        "$ref": "#/components/schemas/permissions.Profile"
                     },
                     "permission_profile_name_or_path": {
                         "description": "PermissionProfileNameOrPath is the name or path of the permission profile",
@@ -1692,6 +1177,87 @@ const docTemplate = `{
                     },
                     "warnings": {
                         "description": "Warnings is a list of non-blocking validation warnings, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "properties": {
+                    "password_env_var": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                        "type": "string"
+                    },
+                    "username_env_var": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "acl_user_config": {
+                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    },
+                    "auth_type": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "type": "string"
+                    },
+                    "dial_timeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
+                        "type": "string"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
+                        "type": "string"
+                    },
+                    "read_timeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
+                        "type": "string"
+                    },
+                    "sentinel_config": {
+                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
+                    },
+                    "write_timeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redis_config": {
+                        "$ref": "#/components/schemas/storage.RedisRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
+                        "type": "integer"
+                    },
+                    "master_name": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
+                        "type": "string"
+                    },
+                    "sentinel_addrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
                         "items": {
                             "type": "string"
                         },
@@ -2071,13 +1637,6 @@ const docTemplate = `{
                     "header_forward": {
                         "$ref": "#/components/schemas/v1.headerForwardConfig"
                     },
-                    "headers": {
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Header"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
                     "host": {
                         "description": "Host to bind to",
                         "type": "string"
@@ -2099,9 +1658,6 @@ const docTemplate = `{
                     },
                     "oidc": {
                         "$ref": "#/components/schemas/v1.oidcOptions"
-                    },
-                    "permission_profile": {
-                        "$ref": "#/components/schemas/permissions.Profile"
                     },
                     "proxy_mode": {
                         "description": "Proxy mode to use",
@@ -2214,9 +1770,6 @@ const docTemplate = `{
                         "description": "Name of the registry",
                         "type": "string"
                     },
-                    "registry": {
-                        "$ref": "#/components/schemas/registry.Registry"
-                    },
                     "server_count": {
                         "description": "Number of servers in the registry",
                         "type": "integer"
@@ -2258,12 +1811,6 @@ const docTemplate = `{
                     "is_remote": {
                         "description": "Indicates if this is a remote server",
                         "type": "boolean"
-                    },
-                    "remote_server": {
-                        "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                    },
-                    "server": {
-                        "$ref": "#/components/schemas/registry.ImageMetadata"
                     }
                 },
                 "type": "object"
@@ -2312,8 +1859,16 @@ const docTemplate = `{
                         "description": "Force allows overwriting unmanaged skill directories",
                         "type": "boolean"
                     },
+                    "group": {
+                        "description": "Group is the group name to add the skill to after installation",
+                        "type": "string"
+                    },
                     "name": {
                         "description": "Name or OCI reference of the skill to install",
+                        "type": "string"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path for project-scoped installs",
                         "type": "string"
                     },
                     "scope": {
@@ -2351,24 +1906,6 @@ const docTemplate = `{
             },
             "v1.listServersResponse": {
                 "description": "Response containing a list of servers",
-                "properties": {
-                    "remote_servers": {
-                        "description": "List of remote servers in the registry (if any)",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "servers": {
-                        "description": "List of container servers in the registry",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.ImageMetadata"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
                 "type": "object"
             },
             "v1.oidcOptions": {
@@ -2646,13 +2183,6 @@ const docTemplate = `{
                     "header_forward": {
                         "$ref": "#/components/schemas/v1.headerForwardConfig"
                     },
-                    "headers": {
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Header"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
                     "host": {
                         "description": "Host to bind to",
                         "type": "string"
@@ -2670,9 +2200,6 @@ const docTemplate = `{
                     },
                     "oidc": {
                         "$ref": "#/components/schemas/v1.oidcOptions"
-                    },
-                    "permission_profile": {
-                        "$ref": "#/components/schemas/permissions.Profile"
                     },
                     "proxy_mode": {
                         "description": "Proxy mode to use",
@@ -4044,6 +3571,30 @@ const docTemplate = `{
                             ],
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "Filter by client app",
+                        "in": "query",
+                        "name": "client",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by project root path",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by group name",
+                        "in": "query",
+                        "name": "group",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -4185,7 +3736,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4193,7 +3744,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Build a skill",
@@ -4236,7 +3797,7 @@ const docTemplate = `{
                         },
                         "description": "No Content"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4244,7 +3805,27 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Push a skill",
@@ -4287,7 +3868,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4295,7 +3876,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Validate a skill",
@@ -4326,6 +3917,14 @@ const docTemplate = `{
                                 "user",
                                 "project"
                             ],
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Project root path for project-scoped skills",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
                             "type": "string"
                         }
                     }
@@ -4398,6 +3997,14 @@ const docTemplate = `{
                                 "user",
                                 "project"
                             ],
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Project root path for project-scoped skills",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
                             "type": "string"
                         }
                     }

@@ -215,7 +215,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(
-		ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+		ctx, r.Client, m.Namespace, m.Name, m.Spec.ExternalAuthConfigRef,
 		resolvedOIDCConfig, &options,
 	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)

@@ -7,23 +7,18 @@ This document outlines the processes for managing MCP (Model Context Protocol) s
 >
 > The ToolHive registry has been migrated to a separate repository for better management and maintenance.
 >
-> **To add or modify MCP servers, please visit: https://github.com/stacklok/toolhive-registry**
+> **To add or modify MCP servers, please visit: https://github.com/stacklok/toolhive-catalog**
 
 ## Adding MCP Servers
 
-**New Process (Current):**
-1. Visit the [toolhive-registry repository](https://github.com/stacklok/toolhive-registry)
+1. Visit the [toolhive-catalog repository](https://github.com/stacklok/toolhive-catalog)
 2. Follow the contribution guidelines in that repository
 3. Submit PR with required server definition files
 4. Automated technical verification and building
 5. Manual review by registry maintainers
 6. Final approval and automatic release
 
-**Legacy Process (Deprecated):**
-1. ~~Submit PR with required registry.json content~~ (No longer used)
-2. ~~Automated technical verification~~
-3. ~~Manual review by registry maintainers~~
-4. ~~Final approval or rejection decision~~
+Once a new release is published to toolhive-catalog, the registry data reaches ToolHive via a Renovate dependency bump of the `github.com/stacklok/toolhive-catalog` Go module (daily cadence).
 
 ## Removing MCP Servers
 1. Automated non-compliance detection

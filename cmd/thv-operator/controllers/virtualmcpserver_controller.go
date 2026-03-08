@@ -7,7 +7,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -97,7 +96,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpcompositetooldefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -776,7 +775,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = newDeployment.Annotations
+		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
@@ -860,6 +859,7 @@ func (r *VirtualMCPServerReconciler) ensureService(
 		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.Type = newService.Spec.Type
+		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
 		service.Labels = newService.Labels
 		service.Annotations = newService.Annotations
 
@@ -1021,51 +1021,37 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
-// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed
-// This method compares the current deployment against a freshly generated deployment
-// that includes the PodTemplateSpec customizations.
-func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed.
+// Instead of comparing full rendered templates (which always differ due to Kubernetes-defaulted
+// fields like terminationGracePeriodSeconds, dnsPolicy, etc.), this compares a SHA256 hash of
+// the raw PodTemplateSpec input stored as a deployment annotation.
+func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	typedWorkloads []workloads.TypedWorkload,
+	_ []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
 	}
 
-	// If no PodTemplateSpec is provided, no update needed
+	// If no PodTemplateSpec is provided, update is only needed if one was previously applied
 	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
-		return false
+		_, hadPrevious := deployment.Annotations[podTemplateSpecHashAnnotation]
+		return hadPrevious
 	}
 
-	// Get the vmcp config checksum
-	vmcpConfigChecksum, err := r.getVmcpConfigChecksum(ctx, vmcp)
+	// Compare hash of the raw PodTemplateSpec input against the stored annotation.
+	// Avoids comparing full rendered templates which always differ due to
+	// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.).
+	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
+	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
 	if err != nil {
-		// If we can't get the checksum, assume update is needed
+		// If we can't hash, assume update is needed
+		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
 		return true
 	}
-
-	// Generate a fresh deployment with PodTemplateSpec applied
-	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
-	if expectedDeployment == nil {
-		// If we can't generate expected deployment, assume update is needed
-		return true
-	}
-
-	// Compare the pod template specs
-	currentJSON, err := json.Marshal(deployment.Spec.Template)
-	if err != nil {
-		return true
-	}
-
-	expectedJSON, err := json.Marshal(expectedDeployment.Spec.Template)
-	if err != nil {
-		return true
-	}
-
-	// If the JSON representations differ, an update is needed
-	return string(currentJSON) != string(expectedJSON)
+	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated
@@ -1088,6 +1074,17 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		expectedServiceType = corev1.ServiceType(vmcp.Spec.ServiceType)
 	}
 	if service.Spec.Type != expectedServiceType {
+		return true
+	}
+
+	// Check if session affinity has drifted from spec
+	expectedAffinity := func() corev1.ServiceAffinity {
+		if vmcp.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(vmcp.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+	if service.Spec.SessionAffinity != expectedAffinity {
 		return true
 	}
 

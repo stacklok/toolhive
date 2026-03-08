@@ -109,8 +109,8 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 		HealthMonitorConfig: &health.MonitorConfig{
 			CheckInterval:      50 * time.Millisecond,
 			UnhealthyThreshold: 1,
-			Timeout:            10 * time.Millisecond,
-			DegradedThreshold:  5 * time.Millisecond,
+			Timeout:            5 * time.Second,
+			DegradedThreshold:  2 * time.Second,
 		},
 	}
 
@@ -143,17 +143,16 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 		t.Fatal("timeout waiting for server to start")
 	}
 
-	// Wait for health checks to run
-	time.Sleep(200 * time.Millisecond)
+	// Poll for expected health status (avoids race between Start() and WaitForInitialHealthChecks())
+	require.Eventually(t, func() bool {
+		status, err := srv.GetBackendHealthStatus("backend-1")
+		return err == nil && status == vmcp.BackendHealthy
+	}, 2*time.Second, 10*time.Millisecond, "backend-1 should become healthy")
 
-	// Test GetBackendHealthStatus
-	status, err := srv.GetBackendHealthStatus("backend-1")
-	assert.NoError(t, err)
-	assert.Equal(t, vmcp.BackendHealthy, status)
-
-	status, err = srv.GetBackendHealthStatus("backend-2")
-	assert.NoError(t, err)
-	assert.Equal(t, vmcp.BackendUnhealthy, status)
+	require.Eventually(t, func() bool {
+		status, err := srv.GetBackendHealthStatus("backend-2")
+		return err == nil && status == vmcp.BackendUnhealthy
+	}, 2*time.Second, 10*time.Millisecond, "backend-2 should become unhealthy")
 
 	// Test GetBackendHealthState
 	state, err := srv.GetBackendHealthState("backend-1")
@@ -173,9 +172,12 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 	assert.Equal(t, 1, summary.Healthy)
 	assert.Equal(t, 1, summary.Unhealthy)
 
-	// Stop server
+	// Stop server cleanly
 	cancel()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // TestServer_HealthMonitoring_StartupFailure verifies graceful degradation when health monitor fails to start.
@@ -292,7 +294,7 @@ func TestServer_HandleBackendHealth_Enabled(t *testing.T) {
 		HealthMonitorConfig: &health.MonitorConfig{
 			CheckInterval:      50 * time.Millisecond,
 			UnhealthyThreshold: 3,
-			Timeout:            10 * time.Millisecond,
+			Timeout:            5 * time.Second,
 		},
 	}
 
@@ -305,13 +307,25 @@ func TestServer_HandleBackendHealth_Enabled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	errCh := make(chan error, 1)
 	go func() {
-		_ = srv.Start(ctx)
+		errCh <- srv.Start(ctx)
 	}()
 
-	// Wait for server and health checks
-	<-srv.Ready()
-	time.Sleep(150 * time.Millisecond)
+	// Wait for server to be ready
+	select {
+	case <-srv.Ready():
+	case err := <-errCh:
+		t.Fatalf("server failed to start: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for server to start")
+	}
+
+	// Poll until backend health is reported as healthy
+	require.Eventually(t, func() bool {
+		status, statusErr := srv.GetBackendHealthStatus("backend-1")
+		return statusErr == nil && status == vmcp.BackendHealthy
+	}, 2*time.Second, 10*time.Millisecond, "backend-1 should become healthy")
 
 	// Create test request
 	req := httptest.NewRequest(http.MethodGet, "/api/backends/health", nil)
@@ -336,8 +350,12 @@ func TestServer_HandleBackendHealth_Enabled(t *testing.T) {
 	assert.Len(t, response.Backends, 1)
 	assert.Contains(t, response.Backends, "backend-1")
 
+	// Stop server cleanly
 	cancel()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // TestServer_Stop_StopsHealthMonitor verifies that Stop() properly cleans up the health monitor.
@@ -370,7 +388,7 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 		HealthMonitorConfig: &health.MonitorConfig{
 			CheckInterval:      50 * time.Millisecond,
 			UnhealthyThreshold: 3,
-			Timeout:            10 * time.Millisecond,
+			Timeout:            5 * time.Second,
 		},
 	}
 
@@ -389,7 +407,12 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 
 	// Wait for server to be ready
 	<-srv.Ready()
-	time.Sleep(100 * time.Millisecond)
+
+	// Poll until health status is available (monitor has started and run initial checks)
+	require.Eventually(t, func() bool {
+		status, statusErr := srv.GetBackendHealthStatus("backend-1")
+		return statusErr == nil && status == vmcp.BackendHealthy
+	}, 2*time.Second, 10*time.Millisecond, "backend-1 should become healthy")
 
 	// Verify health monitor is running
 	srv.healthMonitorMu.RLock()

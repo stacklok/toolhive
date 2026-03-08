@@ -15,6 +15,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -66,6 +67,10 @@ type RunConfig struct {
 	// Per RFC 8707, the "resource" parameter in authorization and token requests is
 	// validated against this list. Required for MCP compliance.
 	AllowedAudiences []string `json:"allowed_audiences" yaml:"allowed_audiences"`
+
+	// Storage configures the storage backend for the auth server.
+	// If nil, defaults to in-memory storage.
+	Storage *storage.RunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.
@@ -192,6 +197,28 @@ type OAuth2UpstreamRunConfig struct {
 
 	// UserInfo contains configuration for fetching user information (required for OAuth2).
 	UserInfo *UserInfoRunConfig `json:"userinfo" yaml:"userinfo"`
+
+	// TokenResponseMapping configures custom field extraction from non-standard token responses.
+	// When set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using
+	// the configured dot-notation paths.
+	//nolint:lll // field tags require full JSON+YAML names
+	TokenResponseMapping *TokenResponseMappingRunConfig `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+}
+
+// TokenResponseMappingRunConfig maps non-standard token response fields to standard fields.
+// Paths support dot-notation for nested JSON fields (e.g., "authed_user.access_token").
+type TokenResponseMappingRunConfig struct {
+	// AccessTokenPath is the dot-notation path to the access token (required).
+	AccessTokenPath string `json:"access_token_path" yaml:"access_token_path"`
+
+	// ScopePath is the dot-notation path to the scope. Defaults to "scope".
+	ScopePath string `json:"scope_path,omitempty" yaml:"scope_path,omitempty"`
+
+	// RefreshTokenPath is the dot-notation path to the refresh token. Defaults to "refresh_token".
+	RefreshTokenPath string `json:"refresh_token_path,omitempty" yaml:"refresh_token_path,omitempty"`
+
+	// ExpiresInPath is the dot-notation path to the expires_in value. Defaults to "expires_in".
+	ExpiresInPath string `json:"expires_in_path,omitempty" yaml:"expires_in_path,omitempty"`
 }
 
 // UserInfoRunConfig contains UserInfo endpoint configuration.

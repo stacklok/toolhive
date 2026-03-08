@@ -11,6 +11,7 @@ rules:
   - persistentvolumeclaims
   - secrets
   - serviceaccounts
+  - services
   verbs:
   - create
   - delete
@@ -48,36 +49,11 @@ rules:
   verbs:
   - get
 - apiGroups:
-  - ""
-  resources:
-  - services
-  verbs:
-  - apply
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - apps
   resources:
   - deployments
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - apps
-  resources:
   - statefulsets
   verbs:
-  - apply
   - create
   - delete
   - get

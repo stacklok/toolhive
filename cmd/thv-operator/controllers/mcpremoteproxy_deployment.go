@@ -350,6 +350,13 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 	// Build service metadata with overrides
 	serviceLabels, serviceAnnotations := r.buildServiceMetadata(ls, proxy)
 
+	sessionAffinity := func() corev1.ServiceAffinity {
+		if proxy.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(proxy.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName,
@@ -358,7 +365,8 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 			Annotations: serviceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: ls,
+			Selector:        ls,
+			SessionAffinity: sessionAffinity,
 			Ports: []corev1.ServicePort{{
 				Port:       int32(proxy.GetProxyPort()),
 				TargetPort: intstr.FromInt(int(proxy.GetProxyPort())),

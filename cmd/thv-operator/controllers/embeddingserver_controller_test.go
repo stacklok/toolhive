@@ -25,6 +25,8 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
+const testNamespaceDefault = "default"
+
 func TestEmbeddingServer_GetPort(t *testing.T) {
 	t.Parallel()
 
@@ -298,7 +300,7 @@ func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {
 				},
 			}
 			embedding.Name = "test-embedding"
-			embedding.Namespace = "default"
+			embedding.Namespace = testNamespaceDefault
 
 			// Note: We're testing the PVC structure creation, not SetControllerReference
 			// which requires a Scheme. In actual reconciliation, the Scheme is set.
@@ -371,7 +373,7 @@ func TestReconcile_NotFound(t *testing.T) {
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{
 			Name:      "non-existent",
-			Namespace: "default",
+			Namespace: testNamespaceDefault,
 		},
 	}
 
@@ -458,7 +460,7 @@ func TestValidateImage(t *testing.T) {
 	}{
 		{
 			name:              "always allow - no validation",
-			embedding:         createTestEmbeddingServer("test", "default", "any-image:latest", "model"),
+			embedding:         createTestEmbeddingServer("test", testNamespaceDefault, "any-image:latest", "model"),
 			imageValidation:   validation.ImageValidationAlwaysAllow,
 			expectError:       false,
 			expectedCondition: metav1.ConditionTrue,
@@ -466,7 +468,7 @@ func TestValidateImage(t *testing.T) {
 		},
 		{
 			name:              "registry enforcing - no registries",
-			embedding:         createTestEmbeddingServer("test", "default", "test-image:latest", "model"),
+			embedding:         createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "model"),
 			imageValidation:   validation.ImageValidationRegistryEnforcing,
 			registries:        []runtime.Object{},
 			expectError:       false,
@@ -546,35 +548,35 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 	}{
 		{
 			name:           "no update needed - identical",
-			embedding:      createTestEmbeddingServer("test", "default", "image:v1", "model1"),
-			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
+			embedding:      createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1"),
+			existingSts:    generateSts(createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")),
 			expectedUpdate: false,
 		},
 		{
 			name:           "update needed - image changed",
-			embedding:      createTestEmbeddingServer("test", "default", "image:v2", "model1"),
-			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
+			embedding:      createTestEmbeddingServer("test", testNamespaceDefault, "image:v2", "model1"),
+			existingSts:    generateSts(createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")),
 			expectedUpdate: true,
 			updateReason:   "image changed",
 		},
 		{
 			name:           "update needed - model changed",
-			embedding:      createTestEmbeddingServer("test", "default", "image:v1", "model2"),
-			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
+			embedding:      createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model2"),
+			existingSts:    generateSts(createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")),
 			expectedUpdate: true,
 			updateReason:   "model changed",
 		},
 		{
 			name: "update needed - port changed",
 			embedding: &mcpv1alpha1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", Generation: 1},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespaceDefault, Generation: 1},
 				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					Image: "image:v1",
 					Model: "model1",
 					Port:  9090,
 				},
 			},
-			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
+			existingSts:    generateSts(createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")),
 			expectedUpdate: true,
 			updateReason:   "port changed",
 		},
@@ -607,7 +609,7 @@ func TestHandleDeletion(t *testing.T) {
 			embedding: &mcpv1alpha1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test",
-					Namespace:  "default",
+					Namespace:  testNamespaceDefault,
 					Finalizers: []string{embeddingFinalizerName},
 				},
 				Spec: mcpv1alpha1.EmbeddingServerSpec{
@@ -624,7 +626,7 @@ func TestHandleDeletion(t *testing.T) {
 			embedding: &mcpv1alpha1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:              "test",
-					Namespace:         "default",
+					Namespace:         testNamespaceDefault,
 					Finalizers:        []string{embeddingFinalizerName},
 					DeletionTimestamp: &metav1.Time{Time: time.Now()},
 				},
@@ -705,7 +707,7 @@ func TestEnsureStatefulSet(t *testing.T) {
 	}{
 		{
 			name:         "create new statefulset",
-			embedding:    createTestEmbeddingServer("test", "default", "image:v1", "model1"),
+			embedding:    createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1"),
 			existingSts:  nil,
 			expectCreate: true,
 			expectDone:   false,
@@ -713,7 +715,7 @@ func TestEnsureStatefulSet(t *testing.T) {
 		{
 			name: "update replicas",
 			embedding: func() *mcpv1alpha1.EmbeddingServer {
-				e := createTestEmbeddingServer("test", "default", "image:v1", "model1")
+				e := createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")
 				replicas := int32(3)
 				e.Spec.Replicas = &replicas
 				return e
@@ -721,7 +723,7 @@ func TestEnsureStatefulSet(t *testing.T) {
 			existingSts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test",
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Replicas: ptr.To(int32(1)),
@@ -805,18 +807,18 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 	}{
 		{
 			name:          "no statefulset - pending",
-			embedding:     createTestEmbeddingServer("test", "default", "image:v1", "model1"),
+			embedding:     createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1"),
 			statefulSet:   nil,
 			expectedPhase: mcpv1alpha1.EmbeddingServerPhasePending,
 			expectedURL:   "http://test.default.svc.cluster.local:8080",
 		},
 		{
 			name:      "statefulset ready",
-			embedding: createTestEmbeddingServer("test", "default", "image:v1", "model1"),
+			embedding: createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1"),
 			statefulSet: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test",
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Status: appsv1.StatefulSetStatus{
 					Replicas:      1,
@@ -828,11 +830,11 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 		},
 		{
 			name:      "statefulset downloading",
-			embedding: createTestEmbeddingServer("test", "default", "image:v1", "model1"),
+			embedding: createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1"),
 			statefulSet: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test",
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Status: appsv1.StatefulSetStatus{
 					Replicas:      1,

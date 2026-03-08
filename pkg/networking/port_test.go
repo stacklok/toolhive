@@ -4,8 +4,10 @@
 package networking_test
 
 import (
+	"net"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -143,4 +145,54 @@ func TestParsePortSpec(t *testing.T) {
 			require.Equal(t, tt.expectedContainer, containerPort, "ParsePortSpec(%s) unexpected container port", tt.portSpec)
 		})
 	}
+}
+
+func TestGetProcessOnPort_InvalidPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		port int
+	}{
+		{"zero port", 0},
+		{"negative port", -1},
+		{"port too large", 65536},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pid, err := networking.GetProcessOnPort(tt.port)
+			require.Error(t, err)
+			assert.Equal(t, 0, pid)
+		})
+	}
+}
+
+func TestGetProcessOnPort_FreePort(t *testing.T) {
+	t.Parallel()
+
+	// Use a port that FindAvailable guarantees is free
+	port := networking.FindAvailable()
+	require.NotZero(t, port, "FindAvailable should find a free port")
+
+	pid, err := networking.GetProcessOnPort(port)
+	require.NoError(t, err)
+	assert.Equal(t, 0, pid)
+}
+
+func TestGetProcessOnPort_PortInUse(t *testing.T) {
+	t.Parallel()
+
+	// Bind to a port, then verify GetProcessOnPort returns our process
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	require.True(t, ok)
+	port := tcpAddr.Port
+
+	pid, err := networking.GetProcessOnPort(port)
+	require.NoError(t, err)
+	assert.NotZero(t, pid, "port is in use, GetProcessOnPort should return the process PID")
 }

@@ -51,11 +51,10 @@ func TestFindToolHandler(t *testing.T) {
 		findToolFunc: func(_ context.Context, input optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
 			require.Equal(t, "read files", input.ToolDescription)
 			return &optimizer.FindToolOutput{
-				Tools: []optimizer.ToolMatch{
+				Tools: []mcp.Tool{
 					{
 						Name:        "read_file",
 						Description: "Read a file",
-						Score:       1.0,
 					},
 				},
 			}, nil

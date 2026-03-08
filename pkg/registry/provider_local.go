@@ -4,16 +4,13 @@
 package registry
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	catalog "github.com/stacklok/toolhive-catalog/pkg/catalog/toolhive"
+	types "github.com/stacklok/toolhive-core/registry/types"
 )
-
-//go:embed data/registry.json
-var embeddedRegistryFS embed.FS
 
 // LocalRegistryProvider provides registry data from embedded JSON files or local files
 type LocalRegistryProvider struct {
@@ -51,11 +48,7 @@ func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
 			return nil, fmt.Errorf("failed to read local registry file %s: %w", p.filePath, err)
 		}
 	} else {
-		// Read from embedded data
-		data, err = embeddedRegistryFS.ReadFile("data/registry.json")
-		if err != nil {
-			return nil, fmt.Errorf("failed to read embedded registry data: %w", err)
-		}
+		data = catalog.Legacy()
 	}
 
 	registry, err := parseRegistryData(data)
@@ -67,11 +60,6 @@ func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
 	for name, server := range registry.Servers {
 		server.Name = name
 	}
-	// Set name field on each remote server based on map key
-	for name, server := range registry.RemoteServers {
-		server.Name = name
-	}
-
 	// Set name field on each remote server based on map key
 	for name, server := range registry.RemoteServers {
 		server.Name = name

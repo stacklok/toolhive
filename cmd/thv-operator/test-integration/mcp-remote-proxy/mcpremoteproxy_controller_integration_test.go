@@ -264,10 +264,8 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 			}, MediumTimeout)
 
 			By("verifying the phase is Pending (since deployment is not ready in envtest)")
-			phase, err := proxyHelper.GetRemoteProxyPhase(proxy.Name)
-			Expect(err).NotTo(HaveOccurred())
 			// In envtest, pods don't actually run so phase will be Pending
-			Expect(phase).To(Equal(mcpv1alpha1.MCPRemoteProxyPhasePending))
+			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhasePending, MediumTimeout)
 		})
 
 		It("should update ObservedGeneration in status", func() {
@@ -420,9 +418,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				hash := proxyHelper.WaitForExternalAuthConfigHash(proxy.Name, MediumTimeout)
 
 				By("verifying phase is Pending (not Failed)")
-				phase, err := proxyHelper.GetRemoteProxyPhase(proxy.Name)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(phase).To(Equal(mcpv1alpha1.MCPRemoteProxyPhasePending))
+				statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhasePending, MediumTimeout)
 
 				By("verifying the ExternalAuthConfigHash is tracked in status")
 				Expect(hash).NotTo(BeEmpty())
@@ -581,9 +577,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				hash := proxyHelper.WaitForToolConfigHash(proxy.Name, MediumTimeout)
 
 				By("verifying phase is Pending (not Failed)")
-				phase, err := proxyHelper.GetRemoteProxyPhase(proxy.Name)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(phase).To(Equal(mcpv1alpha1.MCPRemoteProxyPhasePending))
+				statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhasePending, MediumTimeout)
 
 				By("verifying the ToolConfigHash is tracked in status")
 				Expect(hash).NotTo(BeEmpty())

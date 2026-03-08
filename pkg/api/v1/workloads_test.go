@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -23,7 +24,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/core"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"

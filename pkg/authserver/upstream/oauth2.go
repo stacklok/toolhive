@@ -26,6 +26,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -135,6 +136,28 @@ type OAuth2Config struct {
 	// UserInfo contains configuration for fetching user information (optional).
 	// When nil, the provider does not support UserInfo fetching.
 	UserInfo *UserInfoConfig `json:"userinfo,omitempty" yaml:"userinfo,omitempty"`
+
+	// TokenResponseMapping configures custom field extraction from non-standard token responses.
+	// When set, the provider performs the token exchange HTTP call directly (bypassing
+	// golang.org/x/oauth2) and extracts fields using gjson dot-notation paths.
+	// When nil, standard OAuth 2.0 token response parsing is used.
+	TokenResponseMapping *TokenResponseMapping `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+}
+
+// TokenResponseMapping configures extraction of token fields from non-standard
+// OAuth token endpoint responses using gjson dot-notation paths.
+type TokenResponseMapping struct {
+	// AccessTokenPath is the gjson path to the access token (required).
+	AccessTokenPath string
+
+	// ScopePath is the gjson path to the scope. Defaults to "scope".
+	ScopePath string
+
+	// RefreshTokenPath is the gjson path to the refresh token. Defaults to "refresh_token".
+	RefreshTokenPath string
+
+	// ExpiresInPath is the gjson path to the expires_in value. Defaults to "expires_in".
+	ExpiresInPath string
 }
 
 // Validate checks that OAuth2Config has all required fields.
@@ -154,6 +177,11 @@ func (c *OAuth2Config) Validate() error {
 	if c.UserInfo != nil {
 		if err := c.UserInfo.Validate(); err != nil {
 			return fmt.Errorf("invalid userinfo config: %w", err)
+		}
+	}
+	if c.TokenResponseMapping != nil {
+		if c.TokenResponseMapping.AccessTokenPath == "" {
+			return errors.New("token_response_mapping.access_token_path is required when token_response_mapping is set")
 		}
 	}
 	return c.CommonOAuthConfig.Validate()
@@ -375,6 +403,8 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 	return &Identity{
 		Tokens:  tokens,
 		Subject: userInfo.Subject,
+		Name:    userInfo.Name,
+		Email:   userInfo.Email,
 	}, nil
 }
 
@@ -389,8 +419,11 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 		"has_pkce_verifier", codeVerifier != "",
 	)
 
-	// Inject our custom HTTP client into the context for oauth2 to use
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
+	// Wrap HTTP client with token response rewriter if mapping is configured.
+	// This normalizes non-standard responses (e.g., GovSlack's nested fields)
+	// before the oauth2 library parses them, keeping the standard exchange flow.
+	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	// Build exchange options
 	var opts []oauth2.AuthCodeOption
@@ -426,8 +459,9 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		"token_endpoint", p.config.TokenEndpoint,
 	)
 
-	// Inject our custom HTTP client into the context for oauth2 to use
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
+	// Wrap HTTP client with token response rewriter if mapping is configured.
+	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	// Create an expired token with the refresh token to trigger refresh
 	expiredToken := &oauth2.Token{
@@ -577,11 +611,13 @@ func formatOAuth2Error(err error, prefix string) error {
 }
 
 // newHTTPClientForHost creates an HTTP client configured for the given host.
-// It enables HTTP and private IPs only for localhost (development/testing).
+// It enables HTTP and private IPs only for localhost (development/testing),
+// or when INSECURE_DISABLE_URL_VALIDATION is set (e.g. Kubernetes dev environments).
 func newHTTPClientForHost(host string) (*http.Client, error) {
-	isLocalhost := networking.IsLocalhost(host)
+	allowInsecure := networking.IsLocalhost(host) ||
+		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
 	return networking.NewHttpClientBuilder().
-		WithInsecureAllowHTTP(isLocalhost).
-		WithPrivateIPs(isLocalhost).
+		WithInsecureAllowHTTP(allowInsecure).
+		WithPrivateIPs(allowInsecure).
 		Build()
 }

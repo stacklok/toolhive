@@ -79,7 +79,8 @@ func TestExtract(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			targetDir := filepath.Join(t.TempDir(), "skill-output")
+			realTmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+			targetDir := filepath.Join(realTmpDir, "skill-output")
 
 			if tt.preCreate {
 				require.NoError(t, os.MkdirAll(targetDir, 0750))
@@ -124,7 +125,8 @@ func TestExtract_PermissionsSanitized(t *testing.T) {
 		{Path: "sticky.bin", Content: []byte("data"), Mode: 01755},
 	}
 
-	targetDir := filepath.Join(t.TempDir(), "perms-test")
+	realTmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+	targetDir := filepath.Join(realTmpDir, "perms-test")
 	layerData := makeLayerData(t, files)
 	result, err := Extract(layerData, targetDir, false)
 	require.NoError(t, err)

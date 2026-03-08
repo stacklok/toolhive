@@ -8,8 +8,12 @@ permissions:
 
 jobs:
   test-go-code:
-    name: Test Go Code
-    runs-on: ubuntu-latest
+    name: Test Go Code (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+      fail-fast: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -62,12 +66,15 @@ jobs:
         run: task test-coverage
 
       - name: Upload coverage reports to Codecov with GitHub Action
+        if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: stacklok/toolhive
 
       - name: Upload coverage to Coveralls
+        if: matrix.os == 'ubuntu-latest'
         uses: coverallsapp/github-action@v2
         with:
           file: coverage/coverage.out
+          fail-on-error: false

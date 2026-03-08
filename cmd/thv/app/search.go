@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 var searchCmd = &cobra.Command{

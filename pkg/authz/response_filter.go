@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -272,7 +273,8 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 			nil, // No arguments for the authorization check
 		)
 		if err != nil {
-			// If there's an error checking authorization, skip this tool
+			slog.Warn("Authorization check failed for tool, skipping",
+				"tool", tool.Name, "error", err)
 			continue
 		}
 
@@ -324,7 +326,8 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 			nil, // No arguments for the authorization check
 		)
 		if err != nil {
-			// If there's an error checking authorization, skip this prompt
+			slog.Warn("Authorization check failed for prompt, skipping",
+				"prompt", prompt.Name, "error", err)
 			continue
 		}
 
@@ -376,7 +379,8 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 			nil, // No arguments for the authorization check
 		)
 		if err != nil {
-			// If there's an error checking authorization, skip this resource
+			slog.Warn("Authorization check failed for resource, skipping",
+				"resource", resource.URI, "error", err)
 			continue
 		}
 

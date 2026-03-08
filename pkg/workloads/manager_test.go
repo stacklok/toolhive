@@ -680,14 +680,30 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 				}, nil)
 				// Check if supervisor is alive - return error (supervisor is dead)
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
-				// With dead supervisor, restart proceeds with cleanup and restart
-				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
-				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 			},
-			// Restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
+			expectError: true,
+			errorMsg:    "failed to load state",
+		},
+		{
+			name:         "remote workload unauthenticated stops proxy before restart",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusUnauthenticated,
+				}, nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+			},
 			expectError: true,
 			errorMsg:    "failed to load state",
 		},
@@ -896,15 +912,9 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 			Name:   "test-workload",
 			Status: runtime.WorkloadStatusRunning,
 		}, nil)
-
-		// Check if supervisor is alive - return error (dead supervisor)
 		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(0, errors.New("no PID found"))
-
-		// When supervisor is dead, expect stop logic to be called
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(0, errors.New("no PID found"))
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
-		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(0, errors.New("no PID found"))
-
-		// Allow any subsequent status updates - we don't care about the exact sequence
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 

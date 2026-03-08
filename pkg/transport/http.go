@@ -18,7 +18,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
@@ -81,8 +80,9 @@ type HTTPTransport struct {
 	shutdownCh chan struct{}
 
 	// Container monitor
-	monitor rt.Monitor
-	errorCh <-chan error
+	monitor        rt.Monitor
+	monitorRuntime rt.Runtime // Stored for monitor reconnection on container restart
+	errorCh        <-chan error
 
 	// Container exit error (for determining if restart is needed)
 	containerExitErr error
@@ -247,6 +247,11 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Determine target URI
 	var targetURI string
 
+	// remoteBasePath holds the path component from the remote URL (e.g., "/v2" from
+	// "https://mcp.asana.com/v2/mcp"). This must be prepended to incoming request
+	// paths so they reach the correct endpoint on the remote server.
+	var remoteBasePath string
+
 	if t.remoteURL != "" {
 		// For remote MCP servers, construct target URI from remote URL
 		remoteURL, err := url.Parse(t.remoteURL)
@@ -257,9 +262,14 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			Scheme: remoteURL.Scheme,
 			Host:   remoteURL.Host,
 		}).String()
+
+		// Extract the path prefix that needs to be prepended to incoming requests.
+		// The target URI only has scheme+host, so without this the remote path is lost.
+		remoteBasePath = remoteURL.Path
+
 		//nolint:gosec // G706: logging proxy port and remote URL from config
 		slog.Debug("setting up transparent proxy to forward to remote URL",
-			"port", t.proxyPort, "target", targetURI)
+			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath)
 	} else {
 		if t.containerName == "" {
 			return transporterrors.ErrContainerNameNotSet
@@ -296,8 +306,14 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Determine whether to enable health checks based on workload type
 	enableHealthCheck := shouldEnableHealthCheck(isRemote)
 
+	// Build proxy options
+	var proxyOptions []transparent.Option
+	if remoteBasePath != "" {
+		proxyOptions = append(proxyOptions, transparent.WithRemoteBasePath(remoteBasePath))
+	}
+
 	// Create the transparent proxy
-	t.proxy = transparent.NewTransparentProxy(
+	t.proxy = transparent.NewTransparentProxyWithOptions(
 		t.host,
 		t.proxyPort,
 		targetURI,
@@ -311,7 +327,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		t.onUnauthorizedResponse,
 		t.endpointPrefix,
 		t.trustProxyHeaders,
-		middlewares...)
+		middlewares,
+		proxyOptions...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}
@@ -330,6 +347,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container monitor: %w", err)
 	}
+	t.monitorRuntime = monitorRuntime // Store for reconnection
 	t.monitor = container.NewMonitor(monitorRuntime, t.containerName)
 
 	// Start monitoring the container
@@ -349,8 +367,15 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	// Signal shutdown
-	close(t.shutdownCh)
+	// Signal shutdown (guard against double-close if Stop is called
+	// both from handleContainerExit and externally by the runner)
+	select {
+	case <-t.shutdownCh:
+		// Already closed/stopping
+		return nil
+	default:
+		close(t.shutdownCh)
+	}
 
 	// For remote MCP servers, we don't need container monitoring
 	if t.remoteURL == "" {
@@ -379,39 +404,89 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 }
 
 // handleContainerExit handles container exit events.
+// It loops to support reconnecting the monitor when a container is restarted
+// by Docker (e.g., via restart policy) rather than truly exiting.
 func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
-	select {
-	case <-ctx.Done():
-		return
-	case err := <-t.errorCh:
-		// Store the exit error so runner can check if restart is needed
-		t.exitErrMutex.Lock()
-		t.containerExitErr = err
-		t.exitErrMutex.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.shutdownCh:
+			return
+		case err := <-t.errorCh:
+			t.exitErrMutex.Lock()
+			t.containerExitErr = err
+			t.exitErrMutex.Unlock()
 
-		//nolint:gosec // G706: logging container name from config
-		slog.Warn("container exited", "container", t.containerName, "error", err)
+			if errors.Is(err, rt.ErrContainerRestarted) {
+				//nolint:gosec // G706: logging container name from config
+				slog.Debug("container was restarted by Docker, reconnecting monitor",
+					"container", t.containerName)
+				if reconnectErr := t.reconnectMonitor(ctx); reconnectErr != nil {
+					//nolint:gosec // G706: logging container name from config
+					slog.Error("failed to reconnect monitor, stopping transport",
+						"container", t.containerName, "error", reconnectErr)
+				} else {
+					t.exitErrMutex.Lock()
+					t.containerExitErr = nil
+					t.exitErrMutex.Unlock()
+					continue
+				}
+			}
 
-		// Check if container was removed (not just exited) using typed error
-		if errors.Is(err, docker.ErrContainerRemoved) {
 			//nolint:gosec // G706: logging container name from config
-			slog.Debug("container was removed, stopping proxy and cleaning up",
-				"container", t.containerName)
-		} else {
-			//nolint:gosec // G706: logging container name from config
-			slog.Debug("container exited, will attempt automatic restart",
-				"container", t.containerName)
-		}
+			slog.Warn("container exited", "container", t.containerName, "error", err)
 
-		// Stop the transport when the container exits/removed
-		if stopErr := t.Stop(ctx); stopErr != nil {
-			slog.Error("error stopping transport after container exit", "error", stopErr)
+			// Check if container was removed (not just exited) using typed error
+			if errors.Is(err, rt.ErrContainerRemoved) {
+				//nolint:gosec // G706: logging container name from config
+				slog.Debug("container was removed, stopping proxy and cleaning up",
+					"container", t.containerName)
+			} else {
+				//nolint:gosec // G706: logging container name from config
+				slog.Debug("container exited, will attempt automatic restart",
+					"container", t.containerName)
+			}
+
+			// Stop the transport when the container exits/removed
+			if stopErr := t.Stop(ctx); stopErr != nil {
+				slog.Error("error stopping transport after container exit", "error", stopErr)
+			}
+			return
 		}
 	}
 }
 
+// reconnectMonitor stops the current monitor and starts a new one.
+// This is used when a container is restarted by Docker -- the proxy keeps running
+// but the monitor needs to track the new container start time.
+func (t *HTTPTransport) reconnectMonitor(ctx context.Context) error {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	// Stop the old monitor (safe even if goroutine already returned)
+	if t.monitor != nil {
+		t.monitor.StopMonitoring()
+	}
+
+	// Create a new monitor that records the current (post-restart) start time
+	t.monitor = container.NewMonitor(t.monitorRuntime, t.containerName)
+
+	// Start monitoring — errorCh is reassigned here, which is safe because
+	// handleContainerExit (the only reader) runs on the same goroutine and
+	// will see the new channel when it re-enters the select after continue.
+	var err error
+	t.errorCh, err = t.monitor.StartMonitoring(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to restart container monitoring: %w", err)
+	}
+
+	return nil
+}
+
 // ShouldRestart returns true if the container exited and should be restarted.
-// Returns false if the container was removed (intentionally deleted).
+// Returns false if the container was removed (intentionally deleted) or
+// restarted by Docker (already running, no ToolHive restart needed).
 func (t *HTTPTransport) ShouldRestart() bool {
 	t.exitErrMutex.Lock()
 	defer t.exitErrMutex.Unlock()
@@ -420,8 +495,9 @@ func (t *HTTPTransport) ShouldRestart() bool {
 		return false // No exit error, normal shutdown
 	}
 
-	// Don't restart if container was removed (use typed error check)
-	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
+	// Don't restart if container was removed or restarted by Docker (use typed error check)
+	return !errors.Is(t.containerExitErr, rt.ErrContainerRemoved) &&
+		!errors.Is(t.containerExitErr, rt.ErrContainerRestarted)
 }
 
 // IsRunning checks if the transport is currently running.

@@ -32,9 +32,9 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/k8s"
-	"github.com/stacklok/toolhive/pkg/permissions"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 

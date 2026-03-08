@@ -13,13 +13,13 @@ import (
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive-core/httperr"
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
-	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/registry"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -73,7 +73,7 @@ func GetMCPServer(
 		slog.Debug("Attempting to retrieve MCP server from protocol scheme",
 			"server_or_image", serverOrImage)
 		var err error
-		imageToUse, imageMetadata, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager, runtimeOverride)
+		imageToUse, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager, runtimeOverride)
 		if err != nil {
 			return "", nil, err
 		}
@@ -124,32 +124,34 @@ func GetMCPServer(
 		return "", nil, fmt.Errorf("failed to retrieve or pull image: %w", err)
 	}
 
-	return imageToUse, imageMetadata, nil
+	// Guard against returning a typed nil pointer as a ServerMetadata interface.
+	// A nil *ImageMetadata wrapped in a non-nil interface would cause callers
+	// checking "serverMetadata != nil" to proceed and panic on method calls.
+	if imageMetadata != nil {
+		return imageToUse, imageMetadata, nil
+	}
+	return imageToUse, nil, nil
 }
 
-// handleProtocolScheme handles the protocol scheme case
+// handleProtocolScheme handles the protocol scheme case.
+// Protocol schemes (npx://, uvx://, go://) don't have registry metadata,
+// so this only returns the generated image name.
 func handleProtocolScheme(
 	ctx context.Context,
 	serverOrImage string,
 	rawCACertPath string,
 	imageManager images.ImageManager,
 	runtimeOverride *templates.RuntimeConfig,
-) (string, *types.ImageMetadata, error) {
-	var imageMetadata *types.ImageMetadata
-	var imageToUse string
-
+) (string, error) {
 	slog.Debug("Detected protocol scheme", "server", serverOrImage)
 	// Process the protocol scheme and build the image
 	caCertPath := resolveCACertPath(rawCACertPath)
 	generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath, runtimeOverride)
 	if err != nil {
-		return "", nil, errors.Join(ErrBadProtocolScheme, err)
+		return "", errors.Join(ErrBadProtocolScheme, err)
 	}
-	// Update the image in the runConfig with the generated image
 	slog.Debug("Using built image", "image", generatedImage, "original", serverOrImage)
-	imageToUse = generatedImage
-
-	return imageToUse, imageMetadata, nil
+	return generatedImage, nil
 }
 
 // handleGroupLookup handles the group lookup case
@@ -344,32 +346,31 @@ func verifyImage(image string, server *types.ImageMetadata, verifySetting string
 	case VerifyImageDisabled:
 		slog.Warn("Image verification is disabled")
 	case VerifyImageWarn, VerifyImageEnabled:
-		// Create a new verifier
-		v, err := verifier.New(server)
-		if err != nil {
-			// This happens if we have no provenance entry in the registry for this server.
-			// Not finding provenance info in the registry is not a fatal error if the setting is "warn".
-			if errors.Is(err, verifier.ErrProvenanceServerInformationNotSet) && verifySetting == VerifyImageWarn {
+		// Guard against missing provenance info before calling the verifier.
+		if server == nil || server.Provenance == nil {
+			if verifySetting == VerifyImageWarn {
 				slog.Warn("MCP server has no provenance information set, skipping image verification", "image", image)
 				return nil
 			}
+			return verifier.ErrProvenanceServerInformationNotSet
+		}
+
+		// Create a new verifier
+		v, err := verifier.New(server.Provenance, images.NewCompositeKeychain())
+		if err != nil {
 			return err
 		}
 
-		// Verify the image passing the server info
-		isSafe, err := v.VerifyServer(image, server)
-		if err != nil {
+		// Verify the image passing the provenance info
+		if err = v.VerifyServer(image, server.Provenance); err != nil {
+			if (errors.Is(err, verifier.ErrImageNotSigned) || errors.Is(err, verifier.ErrProvenanceMismatch)) &&
+				verifySetting == VerifyImageWarn {
+				slog.Warn("MCP server failed image verification", "image", image, "reason", err)
+				return nil
+			}
 			return fmt.Errorf("image verification failed: %w", err)
 		}
-		if !isSafe {
-			if verifySetting == VerifyImageWarn {
-				slog.Warn("MCP server failed image verification", "image", image)
-			} else {
-				return fmt.Errorf("MCP server %s failed image verification", image)
-			}
-		} else {
-			slog.Debug("MCP server is verified successfully", "image", image)
-		}
+		slog.Debug("MCP server is verified successfully", "image", image)
 	default:
 		return fmt.Errorf("invalid value for --image-verification: %s", verifySetting)
 	}

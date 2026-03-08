@@ -72,27 +72,6 @@ func NewDefaultHandlerFactory(rt router.Router, backendClient vmcp.BackendClient
 	}
 }
 
-// convertToMCPContent converts vmcp.Content to mcp.Content.
-// This reconstructs MCP content from the vmcp wrapper type.
-func convertToMCPContent(content vmcp.Content) mcp.Content {
-	switch content.Type {
-	case "text":
-		return mcp.NewTextContent(content.Text)
-	case "image":
-		return mcp.NewImageContent(content.Data, content.MimeType)
-	case "audio":
-		return mcp.NewAudioContent(content.Data, content.MimeType)
-	case "resource":
-		// Handle embedded resources if needed
-		// For now, convert to text
-		slog.Warn("converting resource content to empty text - embedded resources not yet supported")
-		return mcp.NewTextContent("")
-	default:
-		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
-		return mcp.NewTextContent("")
-	}
-}
-
 // CreateToolHandler creates a tool handler that routes to the appropriate backend.
 func (f *DefaultHandlerFactory) CreateToolHandler(
 	toolName string,
@@ -133,11 +112,12 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 			return mcp.NewToolResultError(fmt.Sprintf("Tool call failed: %v", err)), nil
 		}
 
-		// Convert vmcp.Content array to MCP content array
-		mcpContent := make([]mcp.Content, len(result.Content))
-		for i, content := range result.Content {
-			mcpContent[i] = convertToMCPContent(content)
-		}
+		// Convert vmcp.Content array to MCP content array.
+		// Note: This uses centralized conversion logic from pkg/vmcp/conversion/content.go.
+		// Previously, this file had a local convertToMCPContent() function that duplicated
+		// this logic. The local duplicate was removed to maintain a single source of truth
+		// for MCP protocol conversions (DRY principle, easier testing, consistency).
+		mcpContent := conversion.ToMCPContents(result.Content)
 
 		// Create MCP tool result with _meta field preserved
 		mcpResult := &mcp.CallToolResult{

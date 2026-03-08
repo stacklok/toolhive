@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 func TestNewRegistryProvider(t *testing.T) {

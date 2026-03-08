@@ -103,7 +103,7 @@ jobs:
         uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version-file: 'go.mod'
-          cache: true
+          cache: false # No cache for release builds — prevents cache poisoning attacks
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
@@ -140,9 +140,14 @@ jobs:
           echo "✅ Version verification passed: $BINARY_VERSION"
           rm ./thv-test
 
+      - name: Bundle CLI docs
+        run: |
+          mkdir -p build
+          tar -czf build/thv-cli-docs.tar.gz -C docs/cli .
+
       - name: Run GoReleaser
         id: run-goreleaser
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7
         with:
           distribution: goreleaser
           version: "~> v2"

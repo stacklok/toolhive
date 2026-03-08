@@ -7,6 +7,12 @@ package skills
 type ListOptions struct {
 	// Scope filters results by installation scope.
 	Scope Scope `json:"scope,omitempty"`
+	// ClientApp filters results by client application.
+	ClientApp string `json:"client,omitempty"`
+	// ProjectRoot filters results by project root path.
+	ProjectRoot string `json:"project_root,omitempty"`
+	// Group filters results to only skills that belong to the specified group.
+	Group string `json:"group,omitempty"`
 }
 
 // InstallOptions configures the behavior of the Install operation.
@@ -23,6 +29,8 @@ type InstallOptions struct {
 	Force bool `json:"force,omitempty"`
 	// ProjectRoot is the project root path for project-scoped installs.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// Group is the group name to add the skill to after installation.
+	Group string `json:"group,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).
@@ -53,6 +61,8 @@ type InfoOptions struct {
 	Name string `json:"name"`
 	// Scope filters the lookup by installation scope.
 	Scope Scope `json:"scope,omitempty"`
+	// ProjectRoot filters the lookup by project root path.
+	ProjectRoot string `json:"project_root,omitempty"`
 }
 
 // SkillInfo contains detailed information about an installed skill.

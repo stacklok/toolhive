@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
@@ -23,9 +22,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
-
-// lockTimeout is the maximum time to wait for a file lock
-const lockTimeout = 1 * time.Second
 
 // defaultURLFieldName is the default URL field name used when no specific mapping exists
 const defaultURLFieldName = "url"

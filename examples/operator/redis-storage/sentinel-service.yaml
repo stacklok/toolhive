@@ -1,0 +1,231 @@
+# Complete Redis + Sentinel deployment for ToolHive auth server token storage.
+#
+# This is the recommended approach. The Spotahome Redis Operator (redis-failover.yaml)
+# has known issues that make it unsuitable for this use case — see redis-failover.yaml
+# for details.
+#
+# What this creates (all in the "redis" namespace):
+#   - redis-acl       Secret    — ACL file provisioned into each Redis pod
+#   - redis           Service   — headless; gives Redis pods stable DNS names
+#   - redis           StatefulSet — 1 Redis pod (redis-0.redis.redis.svc.cluster.local)
+#   - redis-sentinel-config ConfigMap — sentinel.conf with hostname resolution
+#   - redis-sentinel  Service   — headless; required for Sentinel announce-hostnames
+#   - redis-sentinel  StatefulSet — 3 Sentinel pods
+#
+# The "redis-sentinel" headless Service is referenced by sentinelService in
+# mcpexternalauthconfig-redis-storage.yaml. The ToolHive operator resolves its
+# EndpointSlices to discover individual Sentinel pod addresses.
+#
+# Prerequisites:
+#   kubectl create namespace redis
+#
+# Usage:
+#   # Fill in your Redis password, then apply:
+#   REDIS_PASSWORD=<your-password> envsubst < sentinel-service.yaml | kubectl apply -f -
+#
+#   # Or substitute manually and apply directly:
+#   kubectl apply -f sentinel-service.yaml
+
+---
+# ACL file provisioned into each Redis pod by the init container.
+# Fill in the password before applying (must match redis-credentials.yaml).
+#
+# The ACL entry grants the toolhive-auth user access to:
+#   ~thv:auth:*  — keys with the ToolHive auth prefix
+#   &*           — all Pub/Sub channels (required for Sentinel failover notifications)
+#   +GET +SET …  — only the commands the auth server uses (principle of least privilege)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-acl
+  namespace: redis
+type: Opaque
+stringData:
+  users.acl: "user toolhive-auth on ><your-redis-password> ~thv:auth:* &* +GET +SET +SETNX +DEL +EXISTS +EXPIRE +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +EVALSHA +PING"
+---
+# Headless Service gives Redis pods stable, individually addressable DNS names:
+#   redis-0.redis.redis.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: redis
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      initContainers:
+        # Copy the ACL Secret (read-only mount) to the writable data volume so
+        # Redis can load and rewrite it via the "aclfile" directive.
+        - name: init-acl
+          image: redis:7-alpine
+          command: ["cp", "/etc/redis-acl/users.acl", "/data/users.acl"]
+          volumeMounts:
+            - name: redis-acl
+              mountPath: /etc/redis-acl
+            - name: redis-data
+              mountPath: /data
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command:
+            - redis-server
+            - --bind
+            - "0.0.0.0"
+            - --aclfile
+            - /data/users.acl
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "PING"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: redis-acl
+              mountPath: /etc/redis-acl
+              readOnly: true
+      volumes:
+        - name: redis-acl
+          secret:
+            secretName: redis-acl
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+---
+# sentinel.conf for all Sentinel pods.
+#
+# resolve-hostnames and announce-hostnames are required in Kubernetes.
+# Without them, Sentinel advertises 127.0.0.1 as the master address, which is
+# unreachable from other pods.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-sentinel-config
+  namespace: redis
+data:
+  sentinel.conf: |
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    # Monitor the Redis master by its stable StatefulSet DNS name.
+    # The "2" means quorum: 2 out of 3 Sentinels must agree for failover.
+    sentinel monitor mymaster redis-0.redis.redis.svc.cluster.local 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 10000
+    sentinel parallel-syncs mymaster 1
+---
+# Headless Service for Sentinel pods. Required for two reasons:
+#   1. Gives pods stable DNS names used by "sentinel announce-hostnames yes"
+#      (e.g., redis-sentinel-0.redis-sentinel.redis.svc.cluster.local)
+#   2. Referenced by sentinelService in MCPExternalAuthConfig — the ToolHive
+#      operator uses this Service's EndpointSlices to discover Sentinel pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: redis
+spec:
+  clusterIP: None
+  selector:
+    app: redis-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sentinel
+  namespace: redis
+spec:
+  serviceName: redis-sentinel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-sentinel
+  template:
+    metadata:
+      labels:
+        app: redis-sentinel
+    spec:
+      initContainers:
+        # Sentinel rewrites sentinel.conf at runtime, so copy from the read-only
+        # ConfigMap to a writable PVC-backed volume before starting.
+        - name: copy-config
+          image: redis:7-alpine
+          command: ["cp", "/etc/sentinel-ro/sentinel.conf", "/data/sentinel.conf"]
+          volumeMounts:
+            - name: sentinel-config-ro
+              mountPath: /etc/sentinel-ro
+            - name: sentinel-data
+              mountPath: /data
+      containers:
+        - name: sentinel
+          image: redis:7-alpine
+          ports:
+            - containerPort: 26379
+              name: sentinel
+          command: ["redis-sentinel", "/data/sentinel.conf"]
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "PING"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: sentinel-data
+              mountPath: /data
+      volumes:
+        - name: sentinel-config-ro
+          configMap:
+            name: redis-sentinel-config
+  volumeClaimTemplates:
+    - metadata:
+        name: sentinel-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Mi

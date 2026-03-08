@@ -25,7 +25,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
@@ -675,7 +674,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 		slog.Warn("container exited", "container", t.containerName, "error", err)
 
 		// Check if container was removed (not just exited) using typed error
-		if errors.Is(err, docker.ErrContainerRemoved) {
+		if errors.Is(err, rt.ErrContainerRemoved) {
 			//nolint:gosec // G706: logging container name from config
 			slog.Debug("container was removed, stopping proxy and cleaning up",
 				"container", t.containerName)
@@ -706,7 +705,8 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 }
 
 // ShouldRestart returns true if the container exited and should be restarted.
-// Returns false if the container was removed (intentionally deleted).
+// Returns false if the container was removed (intentionally deleted) or
+// restarted by Docker (already running, no ToolHive restart needed).
 func (t *StdioTransport) ShouldRestart() bool {
 	t.exitErrMutex.Lock()
 	defer t.exitErrMutex.Unlock()
@@ -715,6 +715,7 @@ func (t *StdioTransport) ShouldRestart() bool {
 		return false // No exit error, normal shutdown
 	}
 
-	// Don't restart if container was removed (use typed error check)
-	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
+	// Don't restart if container was removed or restarted by Docker (use typed error check)
+	return !errors.Is(t.containerExitErr, rt.ErrContainerRemoved) &&
+		!errors.Is(t.containerExitErr, rt.ErrContainerRestarted)
 }

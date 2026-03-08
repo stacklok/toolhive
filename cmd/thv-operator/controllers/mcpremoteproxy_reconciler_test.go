@@ -24,9 +24,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -302,6 +304,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 			reconciler := &MCPRemoteProxyReconciler{
 				Client:           fakeClient,
 				Scheme:           scheme,
+				Recorder:         record.NewFakeRecorder(10),
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
@@ -386,6 +389,7 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 	reconciler := &MCPRemoteProxyReconciler{
 		Client:           fakeClient,
 		Scheme:           scheme,
+		Recorder:         record.NewFakeRecorder(10),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
@@ -463,6 +467,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 	reconciler := &MCPRemoteProxyReconciler{
 		Client:           fakeClient,
 		Scheme:           scheme,
+		Recorder:         record.NewFakeRecorder(10),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
@@ -789,6 +794,130 @@ func TestGenerateTokenExchangeEnvVarsShared(t *testing.T) {
 	assert.Equal(t, "key", envVars[0].ValueFrom.SecretKeyRef.Key)
 }
 
+// TestValidateSpecConfigurationConditions tests that validateSpec sets the ConfigurationValid condition correctly
+func TestValidateSpecConfigurationConditions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		proxy           *mcpv1alpha1.MCPRemoteProxy
+		existingObjects []runtime.Object
+		expectError     bool
+		errContains     string
+		expectCondition string // expected reason for ConfigurationValid condition
+		conditionStatus metav1.ConditionStatus
+	}{
+		{
+			name: "HTTP OIDC issuer is rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "http-oidc-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "http://insecure-idp.example.com",
+							Audience: "test",
+						},
+					},
+				},
+			},
+			expectError:     true,
+			errContains:     "HTTP scheme",
+			expectCondition: mcpv1alpha1.ConditionReasonOIDCIssuerInsecure,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "HTTP OIDC issuer with insecureAllowHTTP is accepted",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "http-insecure-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:            "http://dev-idp.example.com",
+							Audience:          "test",
+							InsecureAllowHTTP: true,
+						},
+					},
+				},
+			},
+			expectError:     false,
+			expectCondition: mcpv1alpha1.ConditionReasonConfigurationValid,
+			conditionStatus: metav1.ConditionTrue,
+		},
+		{
+			name: "HTTPS OIDC issuer is accepted",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "https-oidc-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "test",
+						},
+					},
+				},
+			},
+			expectError:     false,
+			expectCondition: mcpv1alpha1.ConditionReasonConfigurationValid,
+			conditionStatus: metav1.ConditionTrue,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := createRunConfigTestScheme()
+			objects := append([]runtime.Object{tt.proxy}, tt.existingObjects...)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objects...).
+				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+				Build()
+
+			fakeRecorder := record.NewFakeRecorder(10)
+			reconciler := &MCPRemoteProxyReconciler{
+				Client:   fakeClient,
+				Scheme:   scheme,
+				Recorder: fakeRecorder,
+			}
+
+			err := reconciler.validateSpec(context.TODO(), tt.proxy)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					require.Contains(t, err.Error(), tt.errContains)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+
+			// Verify the ConfigurationValid condition was set
+			cond := meta.FindStatusCondition(tt.proxy.Status.Conditions, mcpv1alpha1.ConditionTypeConfigurationValid)
+			require.NotNil(t, cond, "ConfigurationValid condition should be set")
+			assert.Equal(t, tt.conditionStatus, cond.Status)
+			assert.Equal(t, tt.expectCondition, cond.Reason)
+
+			// Verify an event was recorded for failures
+			if tt.expectError {
+				select {
+				case event := <-fakeRecorder.Events:
+					assert.Contains(t, event, tt.expectCondition)
+				default:
+					t.Error("expected a warning event to be recorded")
+				}
+			}
+		})
+	}
+}
+
 // TestValidateAndHandleConfigs tests the validation and config handling
 func TestValidateAndHandleConfigs(t *testing.T) {
 	t.Parallel()
@@ -884,8 +1013,9 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 				Build()
 
 			reconciler := &MCPRemoteProxyReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
+				Client:   fakeClient,
+				Scheme:   scheme,
+				Recorder: record.NewFakeRecorder(10),
 			}
 
 			err := reconciler.validateAndHandleConfigs(context.TODO(), tt.proxy)

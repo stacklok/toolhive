@@ -101,6 +101,13 @@ type TransparentProxy struct {
 	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
 	endpointPrefix string
 
+	// remoteBasePath is the path prefix from the remote URL that must be prepended
+	// to incoming request paths before forwarding. For example, if the remote URL is
+	// https://mcp.asana.com/v2/mcp and a client sends to /mcp, the proxy must
+	// forward to /v2/mcp. Without this, the path prefix is lost because the target
+	// URI only contains the scheme and host.
+	remoteBasePath string
+
 	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
 	trustProxyHeaders bool
 
@@ -112,6 +119,9 @@ type TransparentProxy struct {
 
 	// Health check ping timeout (default: 5 seconds)
 	healthCheckPingTimeout time.Duration
+
+	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
+	shutdownTimeout time.Duration
 }
 
 const (
@@ -120,6 +130,14 @@ const (
 
 	// DefaultHealthCheckRetryDelay is the default delay between retry attempts
 	DefaultHealthCheckRetryDelay = 5 * time.Second
+
+	// defaultShutdownTimeout is the maximum time to wait for graceful HTTP server
+	// shutdown before force-closing connections.
+	defaultShutdownTimeout = 30 * time.Second
+
+	// defaultIdleTimeout is the maximum time to wait for the next request on a
+	// keep-alive connection. Matches the value used by the vMCP server.
+	defaultIdleTimeout = 120 * time.Second
 
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	// This is primarily useful for testing with shorter intervals.
@@ -151,6 +169,15 @@ func withHealthCheckRetryDelay(delay time.Duration) Option {
 	}
 }
 
+// WithRemoteBasePath sets the base path prefix from the remote URL.
+// When set, incoming request paths are rewritten to include this prefix
+// before forwarding to the remote server.
+func WithRemoteBasePath(basePath string) Option {
+	return func(p *TransparentProxy) {
+		p.remoteBasePath = basePath
+	}
+}
+
 // withHealthCheckPingTimeout sets the health check ping timeout.
 // This is primarily useful for testing with shorter timeouts.
 // Ignores non-positive timeouts; default will be used.
@@ -162,7 +189,16 @@ func withHealthCheckPingTimeout(timeout time.Duration) Option {
 	}
 }
 
-// NewTransparentProxy creates a new transparent proxy with optional middlewares and configuration options.
+// withShutdownTimeout sets the graceful shutdown timeout for the HTTP server.
+// This is primarily useful for testing with shorter timeouts.
+// Ignores non-positive timeouts; default will be used.
+func withShutdownTimeout(timeout time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if timeout > 0 {
+			p.shutdownTimeout = timeout
+		}
+	}
+}
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
@@ -184,7 +220,7 @@ func NewTransparentProxy(
 	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
-	return newTransparentProxyWithOptions(
+	return NewTransparentProxyWithOptions(
 		host,
 		port,
 		targetURI,
@@ -214,8 +250,8 @@ func getHealthCheckInterval() time.Duration {
 	return DefaultHealthCheckInterval
 }
 
-// newTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
-func newTransparentProxyWithOptions(
+// NewTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
+func NewTransparentProxyWithOptions(
 	host string,
 	port int,
 	targetURI string,
@@ -251,6 +287,7 @@ func newTransparentProxyWithOptions(
 		healthCheckInterval:    getHealthCheckInterval(),
 		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
 		healthCheckPingTimeout: DefaultPingerTimeout,
+		shutdownTimeout:        defaultShutdownTimeout,
 	}
 
 	// Apply options
@@ -418,6 +455,11 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
+	// Guard against calling Start() after Stop()
+	if p.stopped {
+		return fmt.Errorf("proxy has been stopped")
+	}
+
 	// Parse the target URI
 	targetURL, err := url.Parse(p.targetURI)
 	if err != nil {
@@ -425,21 +467,27 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 
 	// Create a reverse proxy
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.FlushInterval = -1
+	proxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(targetURL)
+			pr.SetXForwarded()
 
-	// Store the original director
-	originalDirector := proxy.Director
+			// Rewrite path to the remote server's path when configured.
+			// When the remote URL has a path (e.g., /v2/mcp), the target URI only
+			// contains the scheme+host. The client sends to /mcp (default MCP
+			// endpoint) but the remote server expects /v2/mcp. We replace the
+			// request path with the remote server's configured path.
+			if p.remoteBasePath != "" {
+				pr.Out.URL.Path = p.remoteBasePath
+				pr.Out.URL.RawPath = ""
+			}
 
-	// Override director to inject trace propagation headers
-	proxy.Director = func(req *http.Request) {
-		// Apply original director logic first
-		originalDirector(req)
-
-		// Inject OpenTelemetry trace propagation headers for downstream tracing
-		if req.Context() != nil {
-			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-		}
+			// Inject OpenTelemetry trace propagation headers for downstream tracing
+			if pr.Out.Context() != nil {
+				otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
+			}
+		},
 	}
 
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
@@ -510,7 +558,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
+		ReadHeaderTimeout: 10 * time.Second,   // Prevent Slowloris attacks
+		IdleTimeout:       defaultIdleTimeout, // Prevent idle keep-alive connections from blocking Shutdown()
 	}
 
 	// Capture server in local variable to avoid race with Stop()
@@ -666,31 +715,55 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 // Stop stops the transparent proxy.
 func (p *TransparentProxy) Stop(ctx context.Context) error {
 	p.mutex.Lock()
-	defer p.mutex.Unlock()
 
 	// Check if already stopped
 	if p.stopped {
+		p.mutex.Unlock()
 		//nolint:gosec // G706: logging target URI from config
 		slog.Debug("proxy is already stopped, skipping", "target", p.targetURI)
 		return nil
 	}
 
-	// Mark as stopped before closing channel
+	// Mark as stopped and signal shutdown under the lock
 	p.stopped = true
-
-	// Signal shutdown
 	close(p.shutdownCh)
 
-	// Stop the HTTP server
-	if p.server != nil {
-		err := p.server.Shutdown(ctx)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
-			slog.Warn("error during proxy shutdown", "error", err)
-			return err
+	// Capture server reference and nil it out under the lock so no other
+	// goroutine can race on p.server after we release the mutex.
+	server := p.server
+	p.server = nil
+
+	// Release the lock before server.Shutdown() so IsRunning() is not blocked
+	// while long-lived connections drain.
+	p.mutex.Unlock()
+
+	if server != nil {
+		// Use the caller's context if still valid; fall back to a fresh one
+		// when the caller's context is already cancelled (e.g. the health
+		// monitor calls Stop() after its parent context is done).
+		base := ctx
+		if base.Err() != nil {
+			base = context.Background()
+		}
+		shutdownCtx, cancel := context.WithTimeout(base, p.shutdownTimeout)
+		defer cancel()
+
+		err := server.Shutdown(shutdownCtx)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				// Graceful shutdown timed out — force-close remaining connections
+				slog.Warn("graceful shutdown timed out, force-closing connections",
+					"target", p.targetURI, "timeout", p.shutdownTimeout)
+				if closeErr := server.Close(); closeErr != nil {
+					slog.Warn("error during forced server close", "error", closeErr)
+				}
+			} else if !errors.Is(err, http.ErrServerClosed) {
+				slog.Warn("error during proxy shutdown", "error", err)
+				return err
+			}
 		}
 		//nolint:gosec // G706: logging target URI from config
 		slog.Debug("server stopped successfully", "target", p.targetURI)
-		p.server = nil
 	}
 
 	return nil
@@ -698,10 +771,8 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 
 // IsRunning checks if the proxy is running.
 func (p *TransparentProxy) IsRunning() (bool, error) {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
-	// Check if the shutdown channel is closed
+	// No mutex needed: shutdownCh is closed under the lock in Stop(),
+	// and a select on a closed channel is goroutine-safe by design.
 	select {
 	case <-p.shutdownCh:
 		return false, nil

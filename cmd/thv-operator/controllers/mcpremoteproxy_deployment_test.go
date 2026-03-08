@@ -264,10 +264,31 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				// Verify selector
 				assert.Equal(t, labelsForMCPRemoteProxy("basic-proxy"), svc.Spec.Selector)
 
+				// Verify session affinity
+				assert.Equal(t, corev1.ServiceAffinityClientIP, svc.Spec.SessionAffinity)
+
 				// Verify port
 				require.Len(t, svc.Spec.Ports, 1)
 				assert.Equal(t, int32(8080), svc.Spec.Ports[0].Port)
 				assert.Equal(t, "http", svc.Spec.Ports[0].Name)
+			},
+		},
+		{
+			name: "service with session affinity None",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "basic-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL:       "https://mcp.example.com",
+					Port:            8080,
+					SessionAffinity: string(corev1.ServiceAffinityNone),
+				},
+			},
+			validate: func(t *testing.T, svc *corev1.Service) {
+				t.Helper()
+				assert.Equal(t, corev1.ServiceAffinityNone, svc.Spec.SessionAffinity)
 			},
 		},
 		{
@@ -297,6 +318,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				assert.Equal(t, "svc-value", svc.Labels["svc-label"])
 				assert.Equal(t, "svc-annotation-value", svc.Annotations["svc-annotation"])
 				assert.Equal(t, int32(9090), svc.Spec.Ports[0].Port)
+				assert.Equal(t, corev1.ServiceAffinityClientIP, svc.Spec.SessionAffinity)
 			},
 		},
 	}
@@ -971,6 +993,93 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 			if tt.validate != nil {
 				tt.validate(t, envVars)
 			}
+		})
+	}
+}
+
+func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	baseProxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://mcp.example.com",
+			Port:      8080,
+		},
+	}
+
+	baseService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        createProxyServiceName(baseProxy.Name),
+			Namespace:   baseProxy.Namespace,
+			Labels:      labelsForMCPRemoteProxy(baseProxy.Name),
+			Annotations: map[string]string{},
+		},
+		Spec: corev1.ServiceSpec{
+			SessionAffinity: corev1.ServiceAffinityClientIP,
+			Ports: []corev1.ServicePort{{
+				Port: 8080,
+			}},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		service     *corev1.Service
+		proxy       *mcpv1alpha1.MCPRemoteProxy
+		needsUpdate bool
+	}{
+		{
+			name:        "no update needed",
+			service:     baseService.DeepCopy(),
+			proxy:       baseProxy.DeepCopy(),
+			needsUpdate: false,
+		},
+		{
+			name: "session affinity drifted to empty",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.SessionAffinity = ""
+				return s
+			}(),
+			proxy:       baseProxy.DeepCopy(),
+			needsUpdate: true,
+		},
+		{
+			name:    "session affinity spec changed to None",
+			service: baseService.DeepCopy(),
+			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
+				p := baseProxy.DeepCopy()
+				p.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+				return p
+			}(),
+			needsUpdate: true,
+		},
+		{
+			name: "session affinity matches spec None",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.SessionAffinity = corev1.ServiceAffinityNone
+				return s
+			}(),
+			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
+				p := baseProxy.DeepCopy()
+				p.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+				return p
+			}(),
+			needsUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := &MCPRemoteProxyReconciler{}
+			result := r.serviceNeedsUpdate(tt.service, tt.proxy)
+			assert.Equal(t, tt.needsUpdate, result)
 		})
 	}
 }

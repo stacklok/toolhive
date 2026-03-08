@@ -467,31 +467,27 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 
 	// Create a reverse proxy
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.FlushInterval = -1
+	proxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(targetURL)
+			pr.SetXForwarded()
 
-	// Store the original director
-	originalDirector := proxy.Director
+			// Rewrite path to the remote server's path when configured.
+			// When the remote URL has a path (e.g., /v2/mcp), the target URI only
+			// contains the scheme+host. The client sends to /mcp (default MCP
+			// endpoint) but the remote server expects /v2/mcp. We replace the
+			// request path with the remote server's configured path.
+			if p.remoteBasePath != "" {
+				pr.Out.URL.Path = p.remoteBasePath
+				pr.Out.URL.RawPath = ""
+			}
 
-	// Override director to handle remote base path rewriting and trace propagation
-	proxy.Director = func(req *http.Request) {
-		// Apply original director logic first (rewrites scheme + host)
-		originalDirector(req)
-
-		// Rewrite path to the remote server's path when configured.
-		// When the remote URL has a path (e.g., /v2/mcp), the target URI only
-		// contains the scheme+host. The client sends to /mcp (default MCP
-		// endpoint) but the remote server expects /v2/mcp. We replace the
-		// request path with the remote server's configured path.
-		if p.remoteBasePath != "" {
-			req.URL.Path = p.remoteBasePath
-			req.URL.RawPath = ""
-		}
-
-		// Inject OpenTelemetry trace propagation headers for downstream tracing
-		if req.Context() != nil {
-			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-		}
+			// Inject OpenTelemetry trace propagation headers for downstream tracing
+			if pr.Out.Context() != nil {
+				otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
+			}
+		},
 	}
 
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}

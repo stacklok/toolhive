@@ -1,6 +1,13 @@
 # Default reviewer
 *                                   @JAORMX
 
+# AI Agent Configuration (changes here affect what AI agents can do in CI)
+CLAUDE.md                            @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/                             @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/skills/                      @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/agents/                      @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/rules/                       @JAORMX @jhrozek @rdimitrov @jerm-dro
+
 # CLI (thv)
 cmd/thv/                             @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
 cmd/help/                            @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek

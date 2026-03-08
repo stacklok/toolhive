@@ -364,12 +364,27 @@ type PromptArgument struct {
 	Required bool
 }
 
+// ContentType represents the type of content in an MCP message.
+type ContentType string
+
+const (
+	// ContentTypeText represents text content.
+	ContentTypeText ContentType = "text"
+	// ContentTypeImage represents image content.
+	ContentTypeImage ContentType = "image"
+	// ContentTypeAudio represents audio content.
+	ContentTypeAudio ContentType = "audio"
+	// ContentTypeResource represents embedded resource content.
+	ContentTypeResource ContentType = "resource"
+	// ContentTypeLink represents a resource link.
+	ContentTypeLink ContentType = "resource_link"
+)
+
 // Content represents MCP content (text, image, audio, embedded resource, resource link).
 // This is used by ToolCallResult to preserve the full content structure from backends.
-// Supported types: "text", "image", "audio", "resource", "resource_link".
 type Content struct {
-	// Type indicates the content type: "text", "image", "audio", "resource", "resource_link"
-	Type string
+	// Type indicates the content type.
+	Type ContentType
 
 	// Text is the content text (for TextContent)
 	Text string

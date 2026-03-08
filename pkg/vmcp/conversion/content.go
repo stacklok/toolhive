@@ -17,39 +17,31 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-const (
-	contentTypeText     = "text"
-	contentTypeImage    = "image"
-	contentTypeAudio    = "audio"
-	contentTypeResource = "resource"
-	contentTypeLink     = "resource_link"
-)
-
 // ConvertMCPContent converts a single mcp.Content item to vmcp.Content.
 // Unknown content types are returned as vmcp.Content{Type: "unknown"}.
 func ConvertMCPContent(content mcp.Content) vmcp.Content {
 	if text, ok := mcp.AsTextContent(content); ok {
-		return vmcp.Content{Type: contentTypeText, Text: text.Text}
+		return vmcp.Content{Type: vmcp.ContentTypeText, Text: text.Text}
 	}
 	if img, ok := mcp.AsImageContent(content); ok {
-		return vmcp.Content{Type: contentTypeImage, Data: img.Data, MimeType: img.MIMEType}
+		return vmcp.Content{Type: vmcp.ContentTypeImage, Data: img.Data, MimeType: img.MIMEType}
 	}
 	if audio, ok := mcp.AsAudioContent(content); ok {
-		return vmcp.Content{Type: contentTypeAudio, Data: audio.Data, MimeType: audio.MIMEType}
+		return vmcp.Content{Type: vmcp.ContentTypeAudio, Data: audio.Data, MimeType: audio.MIMEType}
 	}
 	if res, ok := mcp.AsEmbeddedResource(content); ok {
 		if textRes, ok := mcp.AsTextResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: "resource", Text: textRes.Text, URI: textRes.URI, MimeType: textRes.MIMEType}
+			return vmcp.Content{Type: vmcp.ContentTypeResource, Text: textRes.Text, URI: textRes.URI, MimeType: textRes.MIMEType}
 		}
 		if blobRes, ok := mcp.AsBlobResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: "resource", Data: blobRes.Blob, URI: blobRes.URI, MimeType: blobRes.MIMEType}
+			return vmcp.Content{Type: vmcp.ContentTypeResource, Data: blobRes.Blob, URI: blobRes.URI, MimeType: blobRes.MIMEType}
 		}
 		slog.Debug("Embedded resource has unknown resource contents type", "type", fmt.Sprintf("%T", res.Resource))
-		return vmcp.Content{Type: "resource"}
+		return vmcp.Content{Type: vmcp.ContentTypeResource}
 	}
 	if link, ok := content.(mcp.ResourceLink); ok {
 		return vmcp.Content{
-			Type:        contentTypeLink,
+			Type:        vmcp.ContentTypeLink,
 			URI:         link.URI,
 			Name:        link.Name,
 			Description: link.Description,
@@ -74,13 +66,13 @@ func ConvertMCPContents(contents []mcp.Content) []vmcp.Content {
 // Unknown content types are converted to empty text with a warning.
 func ToMCPContent(content vmcp.Content) mcp.Content {
 	switch content.Type {
-	case contentTypeText:
+	case vmcp.ContentTypeText:
 		return mcp.NewTextContent(content.Text)
-	case contentTypeImage:
+	case vmcp.ContentTypeImage:
 		return mcp.NewImageContent(content.Data, content.MimeType)
-	case contentTypeAudio:
+	case vmcp.ContentTypeAudio:
 		return mcp.NewAudioContent(content.Data, content.MimeType)
-	case contentTypeResource:
+	case vmcp.ContentTypeResource:
 		// Reconstruct embedded resource from vmcp.Content fields.
 		// Text content takes precedence over blob content when both are present.
 		if content.Text != "" {
@@ -104,7 +96,7 @@ func ToMCPContent(content vmcp.Content) mcp.Content {
 			MIMEType: content.MimeType,
 			Text:     "",
 		})
-	case contentTypeLink:
+	case vmcp.ContentTypeLink:
 		// Reconstruct a ResourceLink from vmcp.Content fields.
 		return mcp.NewResourceLink(content.URI, content.Name, content.Description, content.MimeType)
 	default:
@@ -277,15 +269,15 @@ func ContentArrayToMap(content []vmcp.Content) map[string]any {
 
 	for _, item := range content {
 		switch item.Type {
-		case contentTypeText:
-			key := contentTypeText
+		case vmcp.ContentTypeText:
+			key := string(vmcp.ContentTypeText)
 			if textIndex > 0 {
 				key = fmt.Sprintf("text_%d", textIndex)
 			}
 			result[key] = item.Text
 			textIndex++
 
-		case contentTypeImage:
+		case vmcp.ContentTypeImage:
 			key := fmt.Sprintf("image_%d", imageIndex)
 			result[key] = item.Data
 			imageIndex++

@@ -868,7 +868,7 @@ func TestSessionManager_GetAdaptedTools(t *testing.T) {
 		ctrl := gomock.NewController(t)
 
 		callToolResult := &vmcp.ToolCallResult{
-			Content: []vmcp.Content{{Type: "text", Text: "Hello, world!"}},
+			Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "Hello, world!"}},
 		}
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 		factory.EXPECT().

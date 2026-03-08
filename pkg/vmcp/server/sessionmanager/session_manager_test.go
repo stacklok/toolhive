@@ -821,7 +821,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 		fakeSess := factory.createdSessions[sessionID]
 		require.NotNil(t, fakeSess)
 		fakeSess.callToolResult = &vmcp.ToolCallResult{
-			Content: []vmcp.Content{{Type: "text", Text: "Hello, world!"}},
+			Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "Hello, world!"}},
 		}
 
 		adaptedTools, err := sm.GetAdaptedTools(sessionID)

@@ -52,7 +52,7 @@ func newV2FakeMultiSession(sess transportsession.Session, tools []vmcp.Tool) *v2
 		Session: sess,
 		tools:   tools,
 		callToolResult: &vmcp.ToolCallResult{
-			Content: []vmcp.Content{{Type: "text", Text: "fake result"}},
+			Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "fake result"}},
 		},
 	}
 }

@@ -222,6 +222,8 @@ func ParsePortSpec(portSpec string) (string, int, error) {
 	}
 
 	return "", 0, fmt.Errorf("invalid port specification: %s (expected 'hostPort:containerPort' or 'containerPort')", portSpec)
+}
+
 // GetProcessOnPort returns the PID of the process listening on the given TCP port.
 // Returns 0 if the port is free or if the holder cannot be determined.
 // Uses gopsutil which provides cross-platform support (Linux: /proc, Windows: GetExtendedTcpTable,

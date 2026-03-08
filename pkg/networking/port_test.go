@@ -6,6 +6,8 @@ package networking_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -67,15 +69,12 @@ func TestValidateCallbackPort(t *testing.T) {
 			err := networking.ValidateCallbackPort(tt.port, tt.clientID)
 
 			if tt.wantError {
-				if err == nil {
-					t.Errorf("ValidateCallbackPort() expected error but got nil")
-				} else if tt.errorMsg != "" && err.Error() != tt.errorMsg {
-					t.Errorf("ValidateCallbackPort() error = %v, want %v", err.Error(), tt.errorMsg)
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					require.EqualError(t, err, tt.errorMsg)
 				}
 			} else {
-				if err != nil {
-					t.Errorf("ValidateCallbackPort() unexpected error = %v", err)
-				}
+				require.NoError(t, err)
 			}
 		})
 	}
@@ -129,28 +128,19 @@ func TestParsePortSpec(t *testing.T) {
 			hostPort, containerPort, err := networking.ParsePortSpec(tt.portSpec)
 
 			if tt.wantError {
-				if err == nil {
-					t.Errorf("ParsePortSpec(%s) expected error but got nil", tt.portSpec)
-				}
+				require.Error(t, err, "ParsePortSpec(%s) expected error", tt.portSpec)
 				return
 			}
 
-			if err != nil {
-				t.Errorf("ParsePortSpec(%s) unexpected error: %v", tt.portSpec, err)
-				return
+			require.NoError(t, err, "ParsePortSpec(%s) unexpected error", tt.portSpec)
+
+			if tt.expectedHostPort != "" {
+				require.Equal(t, tt.expectedHostPort, hostPort, "ParsePortSpec(%s) unexpected host port", tt.portSpec)
+			} else {
+				require.NotEmpty(t, hostPort, "ParsePortSpec(%s) hostPort is empty, want random port", tt.portSpec)
 			}
 
-			if tt.expectedHostPort != "" && hostPort != tt.expectedHostPort {
-				t.Errorf("ParsePortSpec(%s) hostPort = %s, want %s", tt.portSpec, hostPort, tt.expectedHostPort)
-			}
-
-			if tt.expectedHostPort == "" && hostPort == "" {
-				t.Errorf("ParsePortSpec(%s) hostPort is empty, want random port", tt.portSpec)
-			}
-
-			if containerPort != tt.expectedContainer {
-				t.Errorf("ParsePortSpec(%s) containerPort = %d, want %d", tt.portSpec, containerPort, tt.expectedContainer)
-			}
+			require.Equal(t, tt.expectedContainer, containerPort, "ParsePortSpec(%s) unexpected container port", tt.portSpec)
 		})
 	}
 }

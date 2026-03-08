@@ -118,6 +118,42 @@ func TestGeneratePortBindings_NonAuxiliaryAssignsRandomPortAndMutatesFirstBindin
 	assert.Equal(t, 1, countMatches, "expected exactly one first binding to be updated to hostPort=%s", expected)
 }
 
+func TestGeneratePortBindings_NonAuxiliaryKeepsExplicitHostPort(t *testing.T) {
+	t.Parallel()
+
+	labels := map[string]string{} // not auxiliary
+	in := map[string][]runtime.PortBinding{
+		"8080/tcp": {
+			{HostIP: "", HostPort: "9090"},
+		},
+	}
+	out, hostPort, err := generatePortBindings(labels, in)
+	require.NoError(t, err)
+	require.Equal(t, 9090, hostPort)
+
+	require.Contains(t, out, "8080/tcp")
+	require.Len(t, out["8080/tcp"], 1)
+	assert.Equal(t, "9090", out["8080/tcp"][0].HostPort)
+}
+
+func TestGeneratePortBindings_NonAuxiliaryAssignsRandomPortForZero(t *testing.T) {
+	t.Parallel()
+
+	labels := map[string]string{} // not auxiliary
+	in := map[string][]runtime.PortBinding{
+		"8080/tcp": {
+			{HostIP: "", HostPort: "0"},
+		},
+	}
+	out, hostPort, err := generatePortBindings(labels, in)
+	require.NoError(t, err)
+	require.NotZero(t, hostPort)
+
+	require.Contains(t, out, "8080/tcp")
+	require.Len(t, out["8080/tcp"], 1)
+	assert.Equal(t, fmt.Sprintf("%d", hostPort), out["8080/tcp"][0].HostPort)
+}
+
 func TestAddEgressEnvVars_SetsAll(t *testing.T) {
 	t.Parallel()
 

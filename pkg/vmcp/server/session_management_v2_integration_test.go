@@ -118,7 +118,6 @@ func (f *v2FakeMultiSessionFactory) MakeSession(
 	if !allowAnonymous {
 		// Authenticated session - set non-empty hash placeholder
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "fake-hash-for-testing")
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenSalt, "fake-salt-for-testing")
 	} else {
 		// Anonymous session - set empty hash
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "")
@@ -143,7 +142,6 @@ func (f *v2FakeMultiSessionFactory) MakeSessionWithID(
 	if identity != nil && identity.Token != "" && !allowAnonymous {
 		// Authenticated session - set non-empty hash placeholder
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "fake-hash-for-testing")
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenSalt, "fake-salt-for-testing")
 	} else {
 		// Anonymous session - set empty hash
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "")

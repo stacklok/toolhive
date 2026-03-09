@@ -22,8 +22,10 @@ var (
 )
 
 // mockSession is a minimal implementation of MultiSession for testing.
+// It embeds the interface so only the methods exercised by tests need to be defined.
 type mockSession struct {
-	metadata map[string]string
+	sessiontypes.MultiSession // satisfies the rest of the interface
+	metadata                  map[string]string
 }
 
 func newMockSession(_ string) *mockSession {
@@ -52,13 +54,7 @@ func (*mockSession) GetPrompt(_ context.Context, _ *auth.Identity, _ string, _ m
 	return nil, nil
 }
 
-func (*mockSession) Close() error {
-	return nil
-}
-
-func (*mockSession) SessionID() string {
-	return "test-session"
-}
+func (*mockSession) Close() error { return nil }
 
 // TestValidateCaller_EdgeCases tests edge cases in caller validation logic.
 func TestValidateCaller_EdgeCases(t *testing.T) {
@@ -88,28 +84,28 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 		{
 			name:           "bound session with nil caller",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
 			caller:         nil,
 			wantErr:        sessiontypes.ErrNilCaller,
 		},
 		{
 			name:           "bound session with matching token",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
 			caller:         &auth.Identity{Subject: "user", Token: "correct-token"},
 			wantErr:        nil, // Should succeed
 		},
 		{
 			name:           "bound session with wrong token",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
 			caller:         &auth.Identity{Subject: "user", Token: "wrong-token"},
 			wantErr:        sessiontypes.ErrUnauthorizedCaller,
 		},
 		{
 			name:           "bound session with empty token in identity",
 			allowAnonymous: false,
-			boundTokenHash: HashToken("correct-token", testSecret, testTokenSalt),
+			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
 			caller:         &auth.Identity{Subject: "user", Token: ""},
 			wantErr:        sessiontypes.ErrUnauthorizedCaller,
 		},
@@ -144,8 +140,8 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 			baseSession := newMockSession("test-session")
 
 			// Wrap with decorator that has the test configuration
-			decorator := &HijackPreventionDecorator{
-				session:        baseSession,
+			decorator := &hijackPreventionDecorator{
+				MultiSession:   baseSession,
 				allowAnonymous: tt.allowAnonymous,
 				boundTokenHash: tt.boundTokenHash,
 				tokenSalt:      testTokenSalt,
@@ -171,10 +167,10 @@ func TestConcurrentValidation(t *testing.T) {
 
 	baseSession := newMockSession("test-session")
 
-	decorator := &HijackPreventionDecorator{
-		session:        baseSession,
+	decorator := &hijackPreventionDecorator{
+		MultiSession:   baseSession,
 		allowAnonymous: false,
-		boundTokenHash: HashToken("test-token", testSecret, testTokenSalt),
+		boundTokenHash: hashToken("test-token", testSecret, testTokenSalt),
 		tokenSalt:      testTokenSalt,
 		hmacSecret:     testSecret,
 	}
@@ -209,14 +205,14 @@ func TestPreventSessionHijacking_BasicFunctionality(t *testing.T) {
 		baseSession := newMockSession("test-session")
 		identity := &auth.Identity{Subject: "user", Token: "test-token"}
 
-		decorated, err := PreventSessionHijacking(baseSession, testSecret, identity, false)
+		decorated, err := PreventSessionHijacking(baseSession, testSecret, identity)
 		require.NoError(t, err)
 		require.NotNil(t, decorated)
 
 		// Verify metadata was set (no cast needed - returns concrete type)
 		metadata := decorated.GetMetadata()
-		assert.NotEmpty(t, metadata[MetadataKeyTokenHash])
-		assert.NotEmpty(t, metadata[MetadataKeyTokenSalt])
+		assert.NotEmpty(t, metadata[metadataKeyTokenHash])
+		assert.NotEmpty(t, metadata[metadataKeyTokenSalt])
 	})
 
 	t.Run("anonymous session", func(t *testing.T) {
@@ -224,13 +220,13 @@ func TestPreventSessionHijacking_BasicFunctionality(t *testing.T) {
 
 		baseSession := newMockSession("test-session")
 
-		decorated, err := PreventSessionHijacking(baseSession, testSecret, nil, true)
+		decorated, err := PreventSessionHijacking(baseSession, testSecret, nil)
 		require.NoError(t, err)
 		require.NotNil(t, decorated)
 
 		// Verify metadata was set (empty for anonymous, no cast needed)
 		metadata := decorated.GetMetadata()
-		assert.Empty(t, metadata[MetadataKeyTokenHash])
-		assert.Empty(t, metadata[MetadataKeyTokenSalt])
+		assert.Empty(t, metadata[metadataKeyTokenHash])
+		assert.Empty(t, metadata[metadataKeyTokenSalt])
 	})
 }

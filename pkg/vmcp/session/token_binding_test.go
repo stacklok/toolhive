@@ -5,9 +5,6 @@ package session
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -17,69 +14,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	internalbk "github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
-
-var (
-	// Test HMAC secret and salt for consistent test results
-	testSecret    = []byte("test-secret")
-	testTokenSalt = []byte("test-salt-123456") // 16 bytes
-)
-
-// ---------------------------------------------------------------------------
-// HashToken
-// ---------------------------------------------------------------------------
-
-func TestHashToken(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		token string
-		want  string
-	}{
-		{
-			name:  "empty token returns anonymous sentinel",
-			token: "",
-			want:  "",
-		},
-		{
-			name:  "non-empty token returns HMAC-SHA256 hex",
-			token: "my-bearer-token",
-			want: func() string {
-				h := hmac.New(sha256.New, testSecret)
-				h.Write(testTokenSalt)
-				h.Write([]byte("my-bearer-token"))
-				return hex.EncodeToString(h.Sum(nil))
-			}(),
-		},
-		{
-			name:  "different tokens produce different hashes",
-			token: "another-token",
-			want: func() string {
-				h := hmac.New(sha256.New, testSecret)
-				h.Write(testTokenSalt)
-				h.Write([]byte("another-token"))
-				return hex.EncodeToString(h.Sum(nil))
-			}(),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, security.HashToken(tt.token, testSecret, testTokenSalt))
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Note: ComputeTokenHash was removed
-// ---------------------------------------------------------------------------
-// ComputeTokenHash was removed because HMAC-SHA256 hashing requires
-// per-session salt, so token hashes can't be computed without session context.
-// Use HashToken(token, secret, salt) directly with session-specific parameters.
 
 // ---------------------------------------------------------------------------
 // makeSession stores token hash in metadata
@@ -97,7 +33,7 @@ func nilBackendConnector() backendConnector {
 func TestMakeSession_StoresTokenHash(t *testing.T) {
 	t.Parallel()
 
-	t.Run("authenticated session stores HMAC-SHA256 hash and salt", func(t *testing.T) {
+	t.Run("authenticated session stores HMAC-SHA256 hash", func(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "test-bearer-token"
@@ -116,9 +52,9 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		// Raw token must never appear in metadata.
 		assert.NotEqual(t, rawToken, storedHash)
 
-		// Verify salt is stored
-		storedSalt, saltPresent := sess.GetMetadata()[MetadataKeyTokenSalt]
-		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set")
+		// Verify salt is stored for authenticated sessions
+		storedSalt, saltPresent := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set for authenticated sessions")
 		assert.NotEmpty(t, storedSalt, "Salt must be non-empty for authenticated session")
 	})
 
@@ -134,9 +70,9 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		require.True(t, present, "MetadataKeyTokenHash must be set even for anonymous sessions")
 		assert.Empty(t, storedHash, "anonymous session must store empty sentinel")
 
-		// Anonymous sessions should not have salt
-		storedSalt := sess.GetMetadata()[MetadataKeyTokenSalt]
-		assert.Empty(t, storedSalt, "anonymous session should not have salt")
+		// Salt must not be present for anonymous sessions
+		storedSalt := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		assert.Empty(t, storedSalt, "anonymous session must not store a salt")
 	})
 
 	t.Run("identity with empty token stores empty sentinel", func(t *testing.T) {
@@ -151,12 +87,12 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		storedHash := sess.GetMetadata()[MetadataKeyTokenHash]
 		assert.Empty(t, storedHash, "empty-token identity must store empty sentinel")
 
-		// Empty token should not have salt
-		storedSalt := sess.GetMetadata()[MetadataKeyTokenSalt]
-		assert.Empty(t, storedSalt, "empty-token identity should not have salt")
+		// Salt must not be present for empty-token (anonymous) sessions
+		storedSalt := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		assert.Empty(t, storedSalt, "empty-token identity must not store a salt")
 	})
 
-	t.Run("MakeSessionWithID also stores token hash and salt", func(t *testing.T) {
+	t.Run("MakeSessionWithID also stores token hash", func(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "id-specific-token"
@@ -173,10 +109,10 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		assert.NotEmpty(t, storedHash, "Token hash must be non-empty")
 		assert.Len(t, storedHash, 64, "HMAC-SHA256 hex-encoded hash should be 64 characters")
 
-		// Verify salt
-		storedSalt, saltPresent := sess.GetMetadata()[MetadataKeyTokenSalt]
-		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set")
-		assert.NotEmpty(t, storedSalt, "Salt must be non-empty")
+		// Verify salt is stored for authenticated sessions
+		storedSalt, saltPresent := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set for authenticated sessions")
+		assert.NotEmpty(t, storedSalt, "Salt must be non-empty for authenticated session")
 	})
 }
 

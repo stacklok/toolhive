@@ -268,10 +268,7 @@ func (f *defaultMultiSessionFactory) MakeSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
-	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
-	allowAnonymous := ShouldAllowAnonymous(identity)
-	return f.makeSession(ctx, uuid.New().String(), identity, allowAnonymous, backends)
+	return f.makeSession(ctx, uuid.New().String(), identity, backends)
 }
 
 // MakeSessionWithID implements MultiSessionFactory.
@@ -302,7 +299,7 @@ func (f *defaultMultiSessionFactory) MakeSessionWithID(
 		)
 	}
 
-	return f.makeSession(ctx, id, identity, allowAnonymous, backends)
+	return f.makeSession(ctx, id, identity, backends)
 }
 
 // validateSessionID checks that id is non-empty and contains only visible
@@ -339,7 +336,6 @@ func (f *defaultMultiSessionFactory) makeSession(
 	ctx context.Context,
 	sessID string,
 	identity *auth.Identity,
-	allowAnonymous bool,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
 	// Filter nil entries upfront so that every downstream dereference of a
@@ -422,7 +418,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 
 	// Apply hijack prevention: computes token binding, stores metadata, and wraps
 	// the session with validation logic. This encapsulates all security initialization.
-	decorated, err := security.PreventSessionHijacking(baseSession, f.hmacSecret, identity, allowAnonymous)
+	decorated, err := security.PreventSessionHijacking(baseSession, f.hmacSecret, identity)
 	if err != nil {
 		return nil, err
 	}

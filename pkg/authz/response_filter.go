@@ -24,11 +24,12 @@ var errBug = errors.New("there's a bug")
 // ResponseFilteringWriter wraps an http.ResponseWriter to intercept and filter responses
 type ResponseFilteringWriter struct {
 	http.ResponseWriter
-	authorizer authorizers.Authorizer
-	request    *http.Request
-	method     string
-	buffer     *bytes.Buffer
-	statusCode int
+	authorizer    authorizers.Authorizer
+	request       *http.Request
+	method        string
+	buffer        *bytes.Buffer
+	statusCode    int
+	headerWritten bool // Track if headers have been written
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer
@@ -42,6 +43,7 @@ func NewResponseFilteringWriter(
 		method:         method,
 		buffer:         &bytes.Buffer{},
 		statusCode:     http.StatusOK,
+		headerWritten:  false,
 	}
 }
 
@@ -50,24 +52,34 @@ func (rfw *ResponseFilteringWriter) Write(data []byte) (int, error) {
 	return rfw.buffer.Write(data)
 }
 
-// WriteHeader captures the status code
+// WriteHeader captures the status code and forwards to underlying writer.
+// Deletes Content-Length since filtered response size may differ.
 func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 	rfw.statusCode = statusCode
+	if !rfw.headerWritten {
+		// Delete Content-Length before writing headers - filtered response size will differ
+		rfw.ResponseWriter.Header().Del("Content-Length")
+		rfw.ResponseWriter.WriteHeader(statusCode)
+		rfw.headerWritten = true
+	}
 }
 
 // FlushAndFilter processes the captured response and applies filtering if needed.
 // Returns an error if filtering or writing fails.
 func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
+	// Delete Content-Length to prevent mismatch with filtered response
+	rfw.ResponseWriter.Header().Del("Content-Length")
+
 	// If it's not a successful response, just pass it through
 	if rfw.statusCode != http.StatusOK && rfw.statusCode != http.StatusAccepted {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		rfw.writeHeaderOnce(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
 		return err
 	}
 
 	// Check if this is a list operation that needs filtering
 	if !isListOperation(rfw.method) {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		rfw.writeHeaderOnce(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
 		return err
 	}
@@ -76,7 +88,7 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 	// Skip filtering for empty responses (common in SSE scenarios where actual data comes via SSE stream)
 	if len(rawResponse) == 0 {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		rfw.writeHeaderOnce(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
 	}
@@ -89,31 +101,87 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	case "text/event-stream":
 		return rfw.processSSEResponse(rawResponse)
 	default:
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		rfw.writeHeaderOnce(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
 	}
 }
 
-// Flush implements http.Flusher if the underlying ResponseWriter supports it.
-// This method is required for streaming support (SSE, streamable-http).
-func (rfw *ResponseFilteringWriter) Flush() {
-	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
+// writeHeaderOnce writes the status code only if not already written
+func (rfw *ResponseFilteringWriter) writeHeaderOnce(statusCode int) {
+	if !rfw.headerWritten {
+		rfw.ResponseWriter.Header().Del("Content-Length")
+		rfw.ResponseWriter.WriteHeader(statusCode)
+		rfw.headerWritten = true
 	}
+}
+
+// Flush implements http.Flusher. For SSE responses with list operations,
+// it processes buffered data when a complete event is available.
+func (rfw *ResponseFilteringWriter) Flush() {
+	// Always flush the underlying writer at the end
+	defer func() {
+		if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}()
+
+	// If no data buffered, nothing to process
+	if rfw.buffer.Len() == 0 {
+		return
+	}
+
+	// For non-list operations, write through immediately
+	if !isListOperation(rfw.method) {
+		rfw.ResponseWriter.Header().Del("Content-Length")
+		_, _ = rfw.ResponseWriter.Write(rfw.buffer.Bytes())
+		rfw.buffer.Reset()
+		return
+	}
+
+	mimeType := strings.Split(rfw.ResponseWriter.Header().Get("Content-Type"), ";")[0]
+
+	// For SSE, wait until we have a complete event (ends with \n\n)
+	if mimeType == "text/event-stream" {
+		rawResponse := rfw.buffer.Bytes()
+		hasCompleteEvent := bytes.Contains(rawResponse, []byte("\n\n")) ||
+			bytes.Contains(rawResponse, []byte("\r\n\r\n"))
+		if !hasCompleteEvent {
+			// Keep buffering until we have a complete event
+			return
+		}
+
+		// Process complete SSE event
+		rfw.ResponseWriter.Header().Del("Content-Length")
+		if err := rfw.processSSEResponse(rawResponse); err != nil {
+			slog.Error("error processing SSE response in Flush", "error", err)
+			// On error, write original data
+			_, _ = rfw.ResponseWriter.Write(rawResponse)
+		}
+		rfw.buffer.Reset()
+		return
+	}
+
+	// For other content types (like JSON), process immediately
+	rfw.ResponseWriter.Header().Del("Content-Length")
+	if err := rfw.processJSONResponse(rfw.buffer.Bytes()); err != nil {
+		slog.Error("error processing JSON response in Flush", "error", err)
+		_, _ = rfw.ResponseWriter.Write(rfw.buffer.Bytes())
+	}
+	rfw.buffer.Reset()
 }
 
 func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) error {
 	message, err := jsonrpc2.DecodeMessage(rawResponse)
 	if err != nil {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		rfw.writeHeaderOnce(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
 	}
 
 	response, ok := message.(*jsonrpc2.Response)
 	if !ok {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		rfw.writeHeaderOnce(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
 	}
@@ -128,7 +196,7 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 		return rfw.writeErrorResponse(response.ID, err)
 	}
 
-	rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+	rfw.writeHeaderOnce(rfw.statusCode)
 	_, err = rfw.ResponseWriter.Write(filteredData)
 	return err
 }
@@ -160,18 +228,25 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 		var written bool
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			// Trim leading space after "data:" (optional in SSE spec)
+			data = bytes.TrimLeft(data, " ")
+
 			message, err := jsonrpc2.DecodeMessage(data)
 			if err != nil {
-				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-				_, err := rfw.ResponseWriter.Write(rawResponse)
-				return err
+				// Can't decode, write line as-is
+				_, _ = rfw.ResponseWriter.Write(line)
+				_, _ = rfw.ResponseWriter.Write(linesep)
+				linesepCount++
+				continue
 			}
 
 			response, ok := message.(*jsonrpc2.Response)
 			if !ok {
-				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-				_, err := rfw.ResponseWriter.Write(rawResponse)
-				return err
+				// Not a response, write line as-is
+				_, _ = rfw.ResponseWriter.Write(line)
+				_, _ = rfw.ResponseWriter.Write(linesep)
+				linesepCount++
+				continue
 			}
 
 			filteredResponse, err := rfw.filterListResponse(response)
@@ -184,10 +259,22 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 				return rfw.writeErrorResponse(response.ID, err)
 			}
 
-			_, err = rfw.ResponseWriter.Write([]byte("data: " + string(filteredData) + "\n"))
+			// Trim trailing whitespace from encoded data for consistent format
+			filteredData = bytes.TrimRight(filteredData, " \t\r\n")
+
+			_, err = rfw.ResponseWriter.Write([]byte("data: "))
 			if err != nil {
 				return fmt.Errorf("%w: %w", errBug, err)
 			}
+			_, err = rfw.ResponseWriter.Write(filteredData)
+			if err != nil {
+				return fmt.Errorf("%w: %w", errBug, err)
+			}
+			_, err = rfw.ResponseWriter.Write(linesep)
+			if err != nil {
+				return fmt.Errorf("%w: %w", errBug, err)
+			}
+			linesepCount++
 
 			written = true
 		}
@@ -197,22 +284,22 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 			if err != nil {
 				return fmt.Errorf("%w: %w", errBug, err)
 			}
+			_, err = rfw.ResponseWriter.Write(linesep)
+			if err != nil {
+				return fmt.Errorf("%w: %w", errBug, err)
+			}
+			linesepCount++
 		}
+	}
 
+	// This ensures we don't send too few line separators, which might break
+	// SSE parsing.
+	for linesepCount < linesepTotal {
 		_, err := rfw.ResponseWriter.Write(linesep)
 		if err != nil {
 			return fmt.Errorf("%w: %w", errBug, err)
 		}
 		linesepCount++
-	}
-
-	// This ensures we don't send too few line separators, which might break
-	// SSE parsing.
-	if linesepCount < linesepTotal {
-		_, err := rfw.ResponseWriter.Write(linesep)
-		if err != nil {
-			return fmt.Errorf("%w: %w", errBug, err)
-		}
 	}
 
 	return nil

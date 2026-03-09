@@ -21,6 +21,9 @@ type upstreamTokenRefresher struct {
 	storage  storage.UpstreamTokenStorage
 }
 
+// Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
+var _ storage.UpstreamTokenRefresher = (*upstreamTokenRefresher)(nil)
+
 // RefreshAndStore refreshes expired upstream tokens using the stored refresh token,
 // persists the new tokens, and returns them.
 func (r *upstreamTokenRefresher) RefreshAndStore(

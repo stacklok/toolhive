@@ -1038,8 +1038,8 @@ func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription s
 
 // RFC 6750 error code constants for Bearer token authentication.
 const (
-	OAuthErrInvalidRequest  = "invalid_request"
-	OAuthErrInvalidToken    = "invalid_token"
+	OAuthErrInvalidRequest    = "invalid_request"
+	OAuthErrInvalidToken      = "invalid_token"
 	OAuthErrInsufficientScope = "insufficient_scope"
 )
 

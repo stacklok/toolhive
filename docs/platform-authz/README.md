@@ -27,7 +27,7 @@ Resolved during invariants design:
 | Policy targeting | `targetRef` by name (MVP) | `targetSelector` additive later |
 | Server scoping | Include `MCP` entity from day one | vMCP already has centralized auth; policies are self-contained |
 | Action model | Flat actions with `*` wildcard | MCP action space is sparse; flat avoids invalid combinations |
-| Built-in roles | `reader` and `writer` from MCP annotations | `readOnlyHint` enforced via Cedar `when` clause |
+| Default roles | `reader` and `writer` as Helm-managed CRD instances | `readOnlyTools` field gates `call_tool` via Cedar `when` clause |
 | Policy conflict | Union of permits (Cedar native) | Narrowing via `forbid`/`deny` field |
 | Nested claims | Dot-notation in `group_claim` | Keycloak support from day one |
 | Multiple claims | Single `group_claim` for MVP | `group_claims` plural additive later |

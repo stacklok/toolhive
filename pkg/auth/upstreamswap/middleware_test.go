@@ -9,6 +9,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1011,4 +1013,117 @@ func TestMiddleware_DefenseInDepth_ExpiredButNoError_RefreshSuccess(t *testing.T
 
 	assert.True(t, nextCalled, "next handler should be called after successful defense-in-depth refresh")
 	assert.Equal(t, "Bearer refreshed-access-token", capturedAuthHeader)
+}
+
+// TestSingleFlightRefresh_ConcurrentRequests verifies that concurrent requests
+// with the same expired session only trigger a single upstream refresh call.
+// Without singleflight, providers that rotate refresh tokens (single-use)
+// would fail all but the first concurrent caller.
+func TestSingleFlightRefresh_ConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	const numRequests = 10
+	var refreshCallCount atomic.Int32
+
+	expiredTokens := &storage.UpstreamTokens{
+		AccessToken:  "expired-access",
+		RefreshToken: "one-time-refresh",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}
+
+	refreshedTokens := &storage.UpstreamTokens{
+		AccessToken:  "fresh-access",
+		RefreshToken: "new-refresh",
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
+	}
+
+	// Use a real (non-mock) storage and refresher to avoid gomock concurrency issues
+	stor := &fakeTokenStorage{tokens: expiredTokens, err: storage.ErrExpired}
+	refresher := &fakeRefresher{
+		result:    refreshedTokens,
+		callCount: &refreshCallCount,
+	}
+
+	storageGetter := func() storage.UpstreamTokenStorage { return stor }
+	refresherGetter := func() storage.UpstreamTokenRefresher { return refresher }
+
+	cfg := &Config{}
+	middleware := createMiddlewareFunc(cfg, storageGetter, refresherGetter)
+
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
+	handler := middleware(nextHandler)
+
+	// Use a barrier to ensure all goroutines start at the same time
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]int, numRequests)
+
+	for i := range numRequests {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-ready // Wait for all goroutines to be ready
+
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			identity := &auth.Identity{
+				Subject: "user123",
+				Claims: map[string]any{
+					"sub":                          "user123",
+					session.TokenSessionIDClaimKey: "sf-concurrent-session",
+				},
+			}
+			ctx := auth.WithIdentity(req.Context(), identity)
+			req = req.WithContext(ctx)
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			results[idx] = rr.Code
+		}(i)
+	}
+
+	// Release all goroutines simultaneously
+	close(ready)
+	wg.Wait()
+
+	// KEY ASSERTION: RefreshAndStore should be called exactly once.
+	// Without singleflight, all 10 goroutines would call it independently.
+	assert.Equal(t, int32(1), refreshCallCount.Load(),
+		"RefreshAndStore should be called exactly once — singleflight deduplicates concurrent refreshes")
+
+	// All requests should succeed
+	for i, code := range results {
+		assert.Equal(t, http.StatusOK, code,
+			"request %d should succeed", i)
+	}
+}
+
+// fakeTokenStorage always returns the configured tokens and error.
+type fakeTokenStorage struct {
+	tokens *storage.UpstreamTokens
+	err    error
+}
+
+func (f *fakeTokenStorage) GetUpstreamTokens(_ context.Context, _ string) (*storage.UpstreamTokens, error) {
+	return f.tokens, f.err
+}
+
+func (f *fakeTokenStorage) StoreUpstreamTokens(_ context.Context, _ string, _ *storage.UpstreamTokens) error {
+	return nil
+}
+
+func (f *fakeTokenStorage) DeleteUpstreamTokens(_ context.Context, _ string) error {
+	return nil
+}
+
+// fakeRefresher counts calls and adds a small delay to allow concurrency overlap.
+type fakeRefresher struct {
+	result    *storage.UpstreamTokens
+	callCount *atomic.Int32
+}
+
+func (f *fakeRefresher) RefreshAndStore(_ context.Context, _ string, _ *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+	f.callCount.Add(1)
+	// Small delay to ensure concurrent goroutines overlap in the singleflight window
+	time.Sleep(50 * time.Millisecond)
+	return f.result, nil
 }

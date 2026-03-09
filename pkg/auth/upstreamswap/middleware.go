@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -154,6 +156,11 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter, refresherGet
 		strategy = HeaderStrategyReplace
 	}
 
+	// Deduplicate concurrent upstream token refresh attempts for the same session.
+	// Providers that rotate refresh tokens (single-use) would fail all but the
+	// first concurrent caller without this.
+	var sfGroup singleflight.Group
+
 	var injectToken injectionFunc
 	switch strategy {
 	case HeaderStrategyReplace:
@@ -195,7 +202,7 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter, refresherGet
 			}
 
 			// 4. Lookup upstream tokens, refreshing if expired
-			tokens, err := getOrRefreshUpstreamTokens(r.Context(), stor, tsid, refresherGetter)
+			tokens, err := getOrRefreshUpstreamTokens(r.Context(), &sfGroup, stor, tsid, refresherGetter)
 			if err != nil {
 				slog.Warn("Failed to get upstream tokens",
 					"middleware", "upstreamswap", "error", err)
@@ -234,6 +241,7 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter, refresherGet
 // refreshing them if expired and a refresh token is available.
 func getOrRefreshUpstreamTokens(
 	ctx context.Context,
+	sfGroup *singleflight.Group,
 	stor storage.UpstreamTokenStorage,
 	sessionID string,
 	refresherGetter RefresherGetter,
@@ -243,7 +251,7 @@ func getOrRefreshUpstreamTokens(
 		// ErrExpired returns tokens (including refresh token) alongside the error.
 		// Attempt a refresh before giving up.
 		if errors.Is(err, storage.ErrExpired) && tokens != nil {
-			if refreshed := tryRefreshUpstreamTokens(ctx, sessionID, tokens, refresherGetter); refreshed != nil {
+			if refreshed := doSingleFlightRefresh(ctx, sfGroup, sessionID, tokens, refresherGetter); refreshed != nil {
 				return refreshed, nil
 			}
 		}
@@ -253,13 +261,36 @@ func getOrRefreshUpstreamTokens(
 	// Defense in depth: some storage implementations may return tokens
 	// without checking expiry (the interface does not require it).
 	if !tokens.ExpiresAt.IsZero() && tokens.IsExpired(time.Now()) {
-		if refreshed := tryRefreshUpstreamTokens(ctx, sessionID, tokens, refresherGetter); refreshed != nil {
+		if refreshed := doSingleFlightRefresh(ctx, sfGroup, sessionID, tokens, refresherGetter); refreshed != nil {
 			return refreshed, nil
 		}
 		return nil, storage.ErrExpired
 	}
 
 	return tokens, nil
+}
+
+// doSingleFlightRefresh wraps tryRefreshUpstreamTokens in a singleflight.Group
+// to deduplicate concurrent refresh attempts for the same session.
+func doSingleFlightRefresh(
+	ctx context.Context,
+	sfGroup *singleflight.Group,
+	sessionID string,
+	expired *storage.UpstreamTokens,
+	refresherGetter RefresherGetter,
+) *storage.UpstreamTokens {
+	result, err, _ := sfGroup.Do(sessionID, func() (any, error) {
+		refreshed := tryRefreshUpstreamTokens(ctx, sessionID, expired, refresherGetter)
+		if refreshed == nil {
+			return nil, errors.New("refresh failed")
+		}
+		return refreshed, nil
+	})
+	if err != nil {
+		return nil
+	}
+	tokens, _ := result.(*storage.UpstreamTokens)
+	return tokens
 }
 
 // tryRefreshUpstreamTokens attempts to refresh expired upstream tokens using the

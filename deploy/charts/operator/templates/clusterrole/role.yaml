@@ -10,7 +10,6 @@ rules:
   - configmaps
   - persistentvolumeclaims
   - secrets
-  - serviceaccounts
   - services
   verbs:
   - create
@@ -81,19 +80,6 @@ rules:
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - rolebindings
-  - roles
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - toolhive.stacklok.dev

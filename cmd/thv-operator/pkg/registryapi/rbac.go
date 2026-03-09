@@ -70,6 +70,10 @@ func (m *manager) ensureRBACResources(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 ) error {
+	if m.disableWorkloadRBAC {
+		return nil
+	}
+
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Ensuring RBAC resources for registry API")
 

@@ -46,6 +46,10 @@ const (
 	featureServer   = "ENABLE_SERVER"
 	featureRegistry = "ENABLE_REGISTRY"
 	featureVMCP     = "ENABLE_VMCP"
+	// disableWorkloadRBAC disables per-workload RBAC management (ServiceAccount, Role, RoleBinding).
+	// When enabled, the operator will not create RBAC resources for workloads,
+	// allowing them to be managed externally (e.g., via per-workload Helm charts).
+	disableWorkloadRBAC = "DISABLE_WORKLOAD_RBAC"
 )
 
 // controllerDependencies maps each controller group to its required dependencies
@@ -131,6 +135,11 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	enableServer := isFeatureEnabled(featureServer, true)
 	enableRegistry := isFeatureEnabled(featureRegistry, true)
 	enableVMCP := isFeatureEnabled(featureVMCP, true)
+	workloadRBACDisabled := isFeatureEnabled(disableWorkloadRBAC, false)
+
+	if workloadRBACDisabled {
+		setupLog.Info("DISABLE_WORKLOAD_RBAC is enabled, operator will not create per-workload RBAC resources")
+	}
 
 	// Track enabled features for dependency checking
 	enabledFeatures := map[string]bool{
@@ -159,7 +168,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up server-related controllers
 	if enabledFeatures[featureServer] {
-		if err := setupServerControllers(mgr, enableRegistry); err != nil {
+		if err := setupServerControllers(mgr, enableRegistry, workloadRBACDisabled); err != nil {
 			return err
 		}
 	} else {
@@ -168,7 +177,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up registry controller
 	if enabledFeatures[featureRegistry] {
-		if err := setupRegistryController(mgr); err != nil {
+		if err := setupRegistryController(mgr, workloadRBACDisabled); err != nil {
 			return err
 		}
 	} else {
@@ -177,7 +186,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up Virtual MCP controllers and webhooks
 	if enabledFeatures[featureVMCP] {
-		if err := setupAggregationControllers(mgr); err != nil {
+		if err := setupAggregationControllers(mgr, workloadRBACDisabled); err != nil {
 			return err
 		}
 	} else {
@@ -189,7 +198,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 }
 
 // setupServerControllers sets up server-related controllers (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, ToolConfig)
-func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
+func setupServerControllers(mgr ctrl.Manager, enableRegistry, disableWorkloadRBAC bool) error {
 	// Set up field indexing for MCPServer.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
@@ -232,11 +241,12 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 
 	// Set up MCPServer controller
 	rec := &controllers.MCPServerReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("mcpserver-controller"),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-		ImageValidation:  imageValidation,
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("mcpserver-controller"),
+		PlatformDetector:    ctrlutil.NewSharedPlatformDetector(),
+		ImageValidation:     imageValidation,
+		DisableWorkloadRBAC: disableWorkloadRBAC,
 	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)
@@ -260,10 +270,11 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 
 	// Set up MCPRemoteProxy controller
 	if err := (&controllers.MCPRemoteProxyReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("mcpremoteproxy-controller"),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("mcpremoteproxy-controller"),
+		PlatformDetector:    ctrlutil.NewSharedPlatformDetector(),
+		DisableWorkloadRBAC: disableWorkloadRBAC,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
 	}
@@ -283,8 +294,11 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 }
 
 // setupRegistryController sets up the MCPRegistry controller
-func setupRegistryController(mgr ctrl.Manager) error {
-	if err := (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
+func setupRegistryController(mgr ctrl.Manager, disableWorkloadRBAC bool) error {
+	reconciler := controllers.NewMCPRegistryReconciler(
+		mgr.GetClient(), mgr.GetScheme(), disableWorkloadRBAC,
+	)
+	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRegistry: %w", err)
 	}
 	return nil
@@ -294,7 +308,7 @@ func setupRegistryController(mgr ctrl.Manager) error {
 // (MCPGroup, VirtualMCPServer, and their webhooks)
 // Note: This function assumes server controllers are enabled (enforced by dependency check)
 // The field index for MCPServer.Spec.GroupRef is created in setupServerControllers
-func setupAggregationControllers(mgr ctrl.Manager) error {
+func setupAggregationControllers(mgr ctrl.Manager, disableWorkloadRBAC bool) error {
 	// Set up MCPGroup controller
 	if err := (&controllers.MCPGroupReconciler{
 		Client: mgr.GetClient(),
@@ -304,10 +318,11 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 
 	// Set up VirtualMCPServer controller
 	if err := (&controllers.VirtualMCPServerReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("virtualmcpserver-controller"),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("virtualmcpserver-controller"),
+		PlatformDetector:    ctrlutil.NewSharedPlatformDetector(),
+		DisableWorkloadRBAC: disableWorkloadRBAC,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
 	}

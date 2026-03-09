@@ -280,7 +280,12 @@ func doSingleFlightRefresh(
 	refresherGetter RefresherGetter,
 ) *storage.UpstreamTokens {
 	result, err, _ := sfGroup.Do(sessionID, func() (any, error) {
-		refreshed := tryRefreshUpstreamTokens(ctx, sessionID, expired, refresherGetter)
+		// Detach from the triggering request's context so that if the first
+		// caller disconnects, the refresh still completes for waiting callers.
+		// The 30s timeout bounds the operation independently from client lifecycle.
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		refreshed := tryRefreshUpstreamTokens(refreshCtx, sessionID, expired, refresherGetter)
 		if refreshed == nil {
 			return nil, errors.New("refresh failed")
 		}

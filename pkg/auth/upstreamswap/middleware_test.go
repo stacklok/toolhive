@@ -1037,11 +1037,23 @@ func TestSingleFlightRefresh_ConcurrentRequests(t *testing.T) {
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 	}
 
-	// Use a real (non-mock) storage and refresher to avoid gomock concurrency issues
-	stor := &fakeTokenStorage{tokens: expiredTokens, err: storage.ErrExpired}
+	// Use a barrier so all goroutines complete GetUpstreamTokens before any
+	// enters singleflight. This guarantees they all contend on the same key.
+	var storageBarrier sync.WaitGroup
+	storageBarrier.Add(numRequests)
+	storageGate := make(chan struct{})
+
+	stor := &fakeTokenStorage{
+		tokens:  expiredTokens,
+		err:     storage.ErrExpired,
+		barrier: &storageBarrier,
+		gate:    storageGate,
+	}
+	proceed := make(chan struct{})
 	refresher := &fakeRefresher{
 		result:    refreshedTokens,
 		callCount: &refreshCallCount,
+		proceed:   proceed,
 	}
 
 	storageGetter := func() storage.UpstreamTokenStorage { return stor }
@@ -1083,6 +1095,18 @@ func TestSingleFlightRefresh_ConcurrentRequests(t *testing.T) {
 
 	// Release all goroutines simultaneously
 	close(ready)
+
+	// Wait for ALL goroutines to reach GetUpstreamTokens
+	storageBarrier.Wait()
+
+	// Release them all at once — they all proceed to singleflight.Do concurrently
+	close(storageGate)
+
+	// Give goroutines a moment to enter singleflight, then let refresh complete
+	// The singleflight ensures only one actually calls RefreshAndStore
+	time.Sleep(10 * time.Millisecond)
+	close(proceed)
+
 	wg.Wait()
 
 	// KEY ASSERTION: RefreshAndStore should be called exactly once.
@@ -1097,13 +1121,23 @@ func TestSingleFlightRefresh_ConcurrentRequests(t *testing.T) {
 	}
 }
 
-// fakeTokenStorage always returns the configured tokens and error.
+// fakeTokenStorage returns configured tokens and optionally blocks until
+// a barrier is released, ensuring all goroutines reach storage before any
+// proceeds to the singleflight refresh.
 type fakeTokenStorage struct {
-	tokens *storage.UpstreamTokens
-	err    error
+	tokens  *storage.UpstreamTokens
+	err     error
+	barrier *sync.WaitGroup // if set, each call does barrier.Done() then waits
+	gate    chan struct{}   // if set, blocks until closed
 }
 
 func (f *fakeTokenStorage) GetUpstreamTokens(_ context.Context, _ string) (*storage.UpstreamTokens, error) {
+	if f.barrier != nil {
+		f.barrier.Done()
+	}
+	if f.gate != nil {
+		<-f.gate
+	}
 	return f.tokens, f.err
 }
 
@@ -1115,15 +1149,15 @@ func (*fakeTokenStorage) DeleteUpstreamTokens(_ context.Context, _ string) error
 	return nil
 }
 
-// fakeRefresher counts calls and adds a small delay to allow concurrency overlap.
+// fakeRefresher counts calls and blocks until proceed is closed.
 type fakeRefresher struct {
 	result    *storage.UpstreamTokens
 	callCount *atomic.Int32
+	proceed   chan struct{}
 }
 
 func (f *fakeRefresher) RefreshAndStore(_ context.Context, _ string, _ *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
 	f.callCount.Add(1)
-	// Small delay to ensure concurrent goroutines overlap in the singleflight window
-	time.Sleep(50 * time.Millisecond)
+	<-f.proceed
 	return f.result, nil
 }

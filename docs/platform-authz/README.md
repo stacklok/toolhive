@@ -14,7 +14,7 @@ RBAC terms while compiling down to Cedar for runtime enforcement.
 | [Cedar Compilation](02-cedar-compilation.md) | Complete | How CRDs compile to Cedar policies and entities |
 | [Controller Design](03-controller.md) | Complete | Reconciliation loops, SSA, watch predicates |
 | [OSS Changes](04-oss-changes.md) | Complete | Changes needed in this repo (ToolHive OSS) |
-| [Claim Mapping](05-claim-mapping.md) | Planned | IdP-specific claim extraction and group resolution |
+| [Claim Mapping](05-claim-mapping.md) | Complete | IdP-specific claim extraction and group resolution |
 
 ## Key Design Decisions
 

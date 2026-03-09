@@ -231,10 +231,24 @@ func extractGroups(claims jwt.MapClaims, groupClaim string) []string {
 
 // resolveNestedClaim resolves a dot-separated claim path.
 // For example, "realm_access.roles" resolves claims["realm_access"]["roles"].
+//
+// Auth0 uses namespace-prefixed URLs as claim names (e.g.,
+// "https://myapp.example.com/roles") which contain dots. To handle this,
+// the resolver tries an exact top-level match first before falling back to
+// dot-notation traversal.
 func resolveNestedClaim(claims jwt.MapClaims, path string) interface{} {
-    parts := strings.Split(path, ".")
-    var current interface{} = map[string]interface{}(claims)
+    // Fast path: exact top-level match (handles Auth0 URLs with dots)
+    if v, exists := claims[path]; exists {
+        return v
+    }
 
+    // Slow path: dot-notation traversal (handles Keycloak nesting)
+    parts := strings.Split(path, ".")
+    if len(parts) == 1 {
+        return nil // single segment already tried above
+    }
+
+    var current interface{} = map[string]interface{}(claims)
     for _, part := range parts {
         m, ok := current.(map[string]interface{})
         if !ok {

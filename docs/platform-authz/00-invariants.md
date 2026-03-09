@@ -192,7 +192,7 @@ permit(
   principal in Role::"reader",
   action == Action::"call_tool",
   resource in MCP::"github"
-) when { resource.readOnlyHint == true };
+) when { resource has readOnlyHint && resource.readOnlyHint == true };
 ```
 
 The OSS authorizer is responsible for populating `readOnlyHint` as a resource
@@ -495,13 +495,17 @@ in the operator deployment guide.
 - Consider a validating admission webhook in future that verifies the policy
   author has authority to grant the referenced roles on the referenced servers
 
-### 4.7 Entity identifiers must be normalized
+### 4.7 Entity identifiers are NOT normalized (case-sensitive matching)
 
-Cedar entity IDs derived from tool names, group names, and role names must be
-consistently normalized. Unnormalized identifiers can bypass `forbid` rules
-(e.g., `Tool::"Delete_Repo"` vs `Tool::"delete_repo"` are different entities
-in Cedar). The enterprise controller must normalize all entity IDs, and the
-OSS authorizer must apply the same normalization to runtime entity IDs.
+Cedar entity IDs are compared exactly as written — `Tool::"Delete_Repo"` and
+`Tool::"delete_repo"` are different entities. This is intentional:
+normalization would hide misconfiguration and make debugging harder. The CRD
+values must match the IdP's exact group names and the MCP server's exact
+tool/resource/prompt names.
+
+The enterprise controller must surface case mismatches (e.g., a
+`ToolhiveRoleBinding` group name that doesn't match any JWT claim value)
+via status conditions and warning events, rather than silently normalizing.
 
 ## 5. Compatibility Invariants
 

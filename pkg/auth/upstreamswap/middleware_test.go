@@ -1107,11 +1107,11 @@ func (f *fakeTokenStorage) GetUpstreamTokens(_ context.Context, _ string) (*stor
 	return f.tokens, f.err
 }
 
-func (f *fakeTokenStorage) StoreUpstreamTokens(_ context.Context, _ string, _ *storage.UpstreamTokens) error {
+func (*fakeTokenStorage) StoreUpstreamTokens(_ context.Context, _ string, _ *storage.UpstreamTokens) error {
 	return nil
 }
 
-func (f *fakeTokenStorage) DeleteUpstreamTokens(_ context.Context, _ string) error {
+func (*fakeTokenStorage) DeleteUpstreamTokens(_ context.Context, _ string) error {
 	return nil
 }
 

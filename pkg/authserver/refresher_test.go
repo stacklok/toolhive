@@ -58,7 +58,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 						ExpiresAt:    newExpiry,
 					}, nil)
 			},
-			setupStorage: func(t *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
+			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
 				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-1", gomock.Any()).
 					DoAndReturn(func(_ context.Context, _ string, tokens *storage.UpstreamTokens) error {
 						// Verify binding fields are preserved from expired tokens
@@ -100,7 +100,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 						ExpiresAt:    newExpiry,
 					}, nil)
 			},
-			setupStorage: func(t *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
+			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
 				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-2", gomock.Any()).
 					DoAndReturn(func(_ context.Context, _ string, tokens *storage.UpstreamTokens) error {
 						assert.Equal(t, "old-refresh", tokens.RefreshToken)
@@ -163,7 +163,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 						ExpiresAt:    newExpiry,
 					}, nil)
 			},
-			setupStorage: func(t *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
+			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
 				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-6", gomock.Any()).
 					Return(errors.New("redis connection lost"))
 			},

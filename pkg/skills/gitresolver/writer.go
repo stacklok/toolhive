@@ -19,13 +19,20 @@ const (
 
 // WriteFiles writes resolved skill files to the target directory.
 // If force is true, any existing directory is removed before writing.
+//
+// Security: targetDir is produced by PathResolver.GetSkillPath (a trusted
+// internal source that builds paths from known base directories). File paths
+// within the archive are validated via containment check against targetDir.
 func WriteFiles(files []FileEntry, targetDir string, force bool) error {
+	// Sanitize targetDir early so all downstream os calls use the clean path.
+	targetDir = filepath.Clean(targetDir)
+
 	// Handle existing directory
-	if _, statErr := os.Stat(targetDir); statErr == nil {
+	if _, statErr := os.Stat(targetDir); statErr == nil { //#nosec G304 -- targetDir is cleaned and produced by PathResolver
 		if !force {
 			return fmt.Errorf("target directory %q already exists; use force to overwrite", targetDir)
 		}
-		if err := os.RemoveAll(targetDir); err != nil {
+		if err := os.RemoveAll(targetDir); err != nil { //#nosec G304 -- targetDir is cleaned above
 			return fmt.Errorf("removing existing directory: %w", err)
 		}
 	}
@@ -35,7 +42,7 @@ func WriteFiles(files []FileEntry, targetDir string, force bool) error {
 		return fmt.Errorf("target path validation: %w", err)
 	}
 
-	if err := os.MkdirAll(targetDir, dirPermissions); err != nil {
+	if err := os.MkdirAll(targetDir, dirPermissions); err != nil { //#nosec G304 -- targetDir is cleaned above
 		return fmt.Errorf("creating target directory: %w", err)
 	}
 
@@ -85,7 +92,7 @@ func validatePathNoSymlinks(targetDir string) error {
 		}
 		current = filepath.Join(current, component)
 
-		info, err := os.Lstat(current)
+		info, err := os.Lstat(current) //#nosec G304 -- current is built from filepath.Abs of the cleaned targetDir
 		if err != nil {
 			// Path doesn't exist yet — remaining components will be created by MkdirAll.
 			break

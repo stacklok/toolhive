@@ -67,6 +67,10 @@ const (
 	// defaultSessionTTL is the default session time-to-live duration.
 	// Sessions that are inactive for this duration will be automatically cleaned up.
 	defaultSessionTTL = 30 * time.Minute
+
+	// defaultSessionLoggingInterval is how often active sessions are logged when
+	// SessionManagementV2 is enabled.
+	defaultSessionLoggingInterval = 1 * time.Minute
 )
 
 //go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
@@ -665,6 +669,17 @@ func (s *Server) Start(ctx context.Context) error {
 		} else {
 			slog.Info("health monitor started")
 		}
+	}
+
+	// Start periodic session logging if SessionManagementV2 is enabled
+	if s.vmcpSessionMgr != nil {
+		sessionLoggingCtx, sessionLoggingCancel := context.WithCancel(ctx)
+		s.vmcpSessionMgr.StartPeriodicLogging(sessionLoggingCtx, defaultSessionLoggingInterval)
+		slog.Info("session periodic logging started", "interval", defaultSessionLoggingInterval)
+		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
+			sessionLoggingCancel()
+			return nil
+		})
 	}
 
 	// Start status reporter if configured

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -41,15 +42,6 @@ const (
 	// when a session has been terminated.
 	MetadataValTrue = "true"
 )
-
-// BackendUsage tracks session usage statistics for a specific backend.
-// This provides operational visibility into backend load and health without
-// exposing session identifiers that could be used for session hijacking.
-type BackendUsage struct {
-	SessionCount int `json:"session_count"` // Number of sessions using this backend
-	HealthyCount int `json:"healthy_count"` // Number of sessions with healthy connections
-	FailedCount  int `json:"failed_count"`  // Number of sessions with failed connections
-}
 
 // Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
 // to the mark3labs SDK's SessionIdManager interface.
@@ -216,9 +208,14 @@ func (sm *Manager) CreateSession(
 		return nil, fmt.Errorf("Manager.CreateSession: failed to replace placeholder: %w", err)
 	}
 
-	slog.Debug("Manager: created multi-session",
+	backendNames := make([]string, len(backends))
+	for i, b := range backends {
+		backendNames[i] = b.Name
+	}
+	slog.Info("Manager: session created",
 		"session_id", sessionID,
-		"backend_count", len(backends))
+		"backend_count", len(backends),
+		"backends", backendNames)
 	return sess, nil
 }
 
@@ -281,6 +278,7 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 
 	// If the session is a fully-formed MultiSession, close its backend connections.
 	if multiSess, ok := sess.(vmcpsession.MultiSession); ok {
+		backendSessions := multiSess.BackendSessions()
 		if closeErr := multiSess.Close(); closeErr != nil {
 			slog.Warn("Manager.Terminate: error closing multi-session backend connections",
 				"session_id", sessionID, "error", closeErr)
@@ -289,37 +287,39 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 		if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
-	} else {
-		// Placeholder session (not yet upgraded to MultiSession).
-		//
-		// This handles the race condition where a client sends DELETE between
-		// Generate() (Phase 1) and CreateSession() (Phase 2). The two-phase
-		// pattern creates a window where the session exists as a placeholder:
-		//
-		//   1. Client sends initialize → Generate() creates placeholder
-		//   2. Client sends DELETE before OnRegisterSession hook fires
-		//   3. We mark the placeholder as terminated (don't delete it)
-		//   4. CreateSession() hook fires → sees terminated flag → fails fast
-		//
-		// Without this branch, CreateSession() would open backend HTTP connections
-		// for a session the client already terminated, silently resurrecting it.
-		//
-		// We mark (not delete) so Validate() can return isTerminated=true, which
-		// lets the SDK distinguish "actively terminated" from "never existed".
-		// TTL cleanup will remove the placeholder later.
-		sess.SetMetadata(MetadataKeyTerminated, MetadataValTrue)
-		if replaceErr := sm.storage.UpsertSession(sess); replaceErr != nil {
-			slog.Warn("Manager.Terminate: failed to persist terminated flag for placeholder; attempting delete fallback",
-				"session_id", sessionID, "error", replaceErr)
-			if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
-				return false, fmt.Errorf(
-					"Manager.Terminate: failed to persist terminated flag and delete placeholder: upsertErr=%v, deleteErr=%w",
-					replaceErr, deleteErr)
-			}
+		slog.Info("Manager: session terminated", "session_id", sessionID, "backend_count", len(backendSessions))
+		return false, nil
+	}
+
+	// Placeholder session (not yet upgraded to MultiSession).
+	//
+	// This handles the race condition where a client sends DELETE between
+	// Generate() (Phase 1) and CreateSession() (Phase 2). The two-phase
+	// pattern creates a window where the session exists as a placeholder:
+	//
+	//   1. Client sends initialize → Generate() creates placeholder
+	//   2. Client sends DELETE before OnRegisterSession hook fires
+	//   3. We mark the placeholder as terminated (don't delete it)
+	//   4. CreateSession() hook fires → sees terminated flag → fails fast
+	//
+	// Without this branch, CreateSession() would open backend HTTP connections
+	// for a session the client already terminated, silently resurrecting it.
+	//
+	// We mark (not delete) so Validate() can return isTerminated=true, which
+	// lets the SDK distinguish "actively terminated" from "never existed".
+	// TTL cleanup will remove the placeholder later.
+	sess.SetMetadata(MetadataKeyTerminated, MetadataValTrue)
+	if replaceErr := sm.storage.UpsertSession(sess); replaceErr != nil {
+		slog.Warn("Manager.Terminate: failed to persist terminated flag for placeholder; attempting delete fallback",
+			"session_id", sessionID, "error", replaceErr)
+		if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
+			return false, fmt.Errorf(
+				"Manager.Terminate: failed to persist terminated flag and delete placeholder: upsertErr=%v, deleteErr=%w",
+				replaceErr, deleteErr)
 		}
 	}
 
-	slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
+	slog.Info("Manager: placeholder session terminated", "session_id", sessionID)
 	return false, nil
 }
 
@@ -418,95 +418,66 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 	return sdkTools, nil
 }
 
-// ListActiveSessions returns backend-centric usage statistics for all active vMCP sessions.
-// Used by the /status endpoint to expose operational visibility without leaking session identifiers.
+// StartPeriodicLogging starts a background goroutine that logs active session
+// counts at the given interval until ctx is cancelled.
 //
-// Security Note: This method intentionally does NOT expose session IDs or backend session IDs,
-// as these could be used as bearer tokens for session hijacking attacks via the Mcp-Session-Id
-// header. Instead, it aggregates session data by backend to provide operational insights
-// (load distribution, health status) without security risk.
-//
-// Storage Backend Limitation: This method uses transportsession.Manager.Range(), which only
-// works with LocalStorage. With distributed storage backends (Redis, Valkey), Range is a no-op
-// and this method will return (0, empty map). This is acceptable because MultiSessions are
-// node-local (they hold in-process HTTP connections and routing state that cannot be serialized).
-// Even with distributed storage, a session can only be served by the process that created it,
-// so reporting only local sessions provides accurate operational visibility for this node.
-//
-// Returns:
-//   - activeCount: Total number of active sessions on this node
-//   - backendUsage: Map of backend_name -> usage statistics (session count, healthy, failed)
-//
-// Returns (0, empty map) if no sessions exist, all sessions are placeholders, or using
-// non-local storage backend.
-func (sm *Manager) ListActiveSessions() (int, map[string]BackendUsage) {
-	backendUsage := make(map[string]BackendUsage)
-	activeCount := 0
-	rangeExecuted := false
+// This provides operational visibility into session load without exposing
+// session identifiers over the network.
+func (sm *Manager) StartPeriodicLogging(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		slog.Warn("Manager: StartPeriodicLogging called with non-positive interval, defaulting to 1m", "interval", interval)
+		interval = time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sm.logActiveSessions()
+			}
+		}
+	}()
+}
 
-	// Iterate over all sessions in storage using the Range() helper.
-	// Note: Range only works with LocalStorage backend. With distributed storage
-	// (Redis, Valkey), this is a no-op and returns empty results. This is expected
-	// because sessions are node-local and cannot be transferred between processes.
+// logActiveSessions logs a summary of all active vMCP sessions on this node.
+//
+// Storage Backend Limitation: Range() only works with LocalStorage. With
+// distributed backends (Redis, Valkey) it is a no-op and 0 sessions will be
+// reported even if sessions exist in the cluster. This is expected: sessions
+// hold in-process HTTP connections and are inherently node-local.
+func (sm *Manager) logActiveSessions() {
+	if !sm.storage.SupportsRange() {
+		sm.storageWarningOnce.Do(func() {
+			slog.Warn("Manager: session enumeration unavailable with current storage backend",
+				"reason", "Range() only works with LocalStorage; distributed storage (Redis, Valkey) cannot enumerate sessions",
+				"note", "Sessions are node-local; this is expected behavior")
+		})
+		return
+	}
+
+	activeCount := 0
+	backendSessionCounts := make(map[string]int) // backend ID -> session count
+
 	sm.storage.Range(func(key, value interface{}) bool {
-		rangeExecuted = true
-		sessionID, ok := key.(string)
+		_, ok := key.(string)
 		if !ok {
-			slog.Warn("Manager.ListActiveSessions: non-string session key", "key", key)
-			return true // continue iteration
+			return true
 		}
 
-		// Type assert to MultiSession to access session-specific methods
 		multiSess, ok := value.(vmcpsession.MultiSession)
 		if !ok {
-			// Session is a placeholder (not yet fully initialized) or different type
-			slog.Debug("Manager.ListActiveSessions: skipping non-MultiSession",
-				"session_id", sessionID,
-				"type", fmt.Sprintf("%T", value))
-			return true // continue iteration
+			return true // placeholder, skip
 		}
 
 		activeCount++
-
-		// Get backend session mappings (backendID -> backendSessionID)
-		backendSessions := multiSess.BackendSessions()
-
-		// Aggregate statistics by backend name.
-		//
-		// Limitation: Currently all backends with sessions are counted as healthy.
-		// This doesn't account for partial failures where some backends failed during
-		// session initialization. To properly track failed backends, we would need:
-		//   1. MultiSession to expose which backends were attempted vs succeeded
-		//   2. Session metadata storing the original backend list at creation time
-		//   3. Comparison between attempted and successful backends to compute failures
-		//
-		// For now, BackendSessions() only returns successfully connected backends,
-		// so we cannot distinguish between "backend not attempted" and "backend failed".
-		// This means FailedCount will always be 0 until proper failure tracking is added.
-		for backendID := range backendSessions {
-			usage := backendUsage[backendID]
-			usage.SessionCount++
-			usage.HealthyCount++ // Only successfully connected backends appear in BackendSessions()
-			// usage.FailedCount stays 0 - we don't currently track which backends failed
-			backendUsage[backendID] = usage
+		for backendID := range multiSess.BackendSessions() {
+			backendSessionCounts[backendID]++
 		}
-
-		return true // continue iteration
+		return true
 	})
 
-	// Log a one-time warning if Range was never executed (distributed storage)
-	if !rangeExecuted && activeCount == 0 {
-		sm.storageWarningOnce.Do(func() {
-			slog.Warn("Session enumeration not supported with current storage backend",
-				"reason", "Range() only works with LocalStorage; distributed storage (Redis, Valkey) cannot enumerate sessions",
-				"impact", "/status endpoint will show 0 sessions even if sessions exist in the cluster",
-				"note", "Sessions are node-local - each node can only serve sessions it created; this is expected behavior")
-		})
-	}
-
-	slog.Debug("Manager.ListActiveSessions: completed",
-		"total_sessions", activeCount,
-		"backends", len(backendUsage))
-
-	return activeCount, backendUsage
+	slog.Info("Manager: active sessions", "total_sessions", activeCount, "backend_session_counts", backendSessionCounts)
 }

@@ -5,10 +5,10 @@ package server
 
 import (
 	"context"
+	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -32,8 +32,8 @@ type SessionManager interface {
 	// session's backend connections rather than the global router.
 	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
 
-	// ListActiveSessions returns backend-centric usage statistics for all active vMCP sessions.
-	// Used by the /status endpoint to expose operational visibility without leaking session identifiers.
-	// Returns (activeCount, backendUsage map). Returns (0, empty map) if no sessions exist.
-	ListActiveSessions() (int, map[string]sessionmanager.BackendUsage)
+	// StartPeriodicLogging starts a background goroutine that periodically logs
+	// the active session count and per-backend session counts at the given interval.
+	// The goroutine stops when ctx is cancelled.
+	StartPeriodicLogging(ctx context.Context, interval time.Duration)
 }

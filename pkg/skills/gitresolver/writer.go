@@ -28,11 +28,11 @@ func WriteFiles(files []FileEntry, targetDir string, force bool) error {
 	targetDir = filepath.Clean(targetDir)
 
 	// Handle existing directory
-	if _, statErr := os.Stat(targetDir); statErr == nil { //#nosec G304 -- targetDir is cleaned and produced by PathResolver
+	if _, statErr := os.Stat(targetDir); statErr == nil { // lgtm[go/path-injection] #nosec G304
 		if !force {
 			return fmt.Errorf("target directory %q already exists; use force to overwrite", targetDir)
 		}
-		if err := os.RemoveAll(targetDir); err != nil { //#nosec G304 -- targetDir is cleaned above
+		if err := os.RemoveAll(targetDir); err != nil { // lgtm[go/path-injection] #nosec G304 -- targetDir is cleaned above
 			return fmt.Errorf("removing existing directory: %w", err)
 		}
 	}
@@ -42,7 +42,7 @@ func WriteFiles(files []FileEntry, targetDir string, force bool) error {
 		return fmt.Errorf("target path validation: %w", err)
 	}
 
-	if err := os.MkdirAll(targetDir, dirPermissions); err != nil { //#nosec G304 -- targetDir is cleaned above
+	if err := os.MkdirAll(targetDir, dirPermissions); err != nil { // lgtm[go/path-injection] #nosec G304
 		return fmt.Errorf("creating target directory: %w", err)
 	}
 
@@ -92,7 +92,7 @@ func validatePathNoSymlinks(targetDir string) error {
 		}
 		current = filepath.Join(current, component)
 
-		info, err := os.Lstat(current) //#nosec G304 -- current is built from filepath.Abs of the cleaned targetDir
+		info, err := os.Lstat(current) // lgtm[go/path-injection] #nosec G304 -- built from filepath.Abs of cleaned targetDir
 		if err != nil {
 			// Path doesn't exist yet — remaining components will be created by MkdirAll.
 			break

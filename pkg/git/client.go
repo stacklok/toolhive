@@ -247,3 +247,17 @@ func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
 
 	return nil
 }
+
+// HeadCommitHash returns the commit hash of the HEAD reference.
+func HeadCommitHash(repoInfo *RepositoryInfo) (string, error) {
+	if repoInfo == nil || repoInfo.Repository == nil {
+		return "", ErrNilRepository
+	}
+
+	ref, err := repoInfo.Repository.Head()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD reference: %w", err)
+	}
+
+	return ref.Hash().String(), nil
+}

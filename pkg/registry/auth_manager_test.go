@@ -17,9 +17,9 @@ func TestDefaultAuthManager_UnsetAuth(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		updateErr     error
-		wantErr       bool
+		name      string
+		updateErr error
+		wantErr   bool
 	}{
 		{
 			name:      "clears registry auth config on success",

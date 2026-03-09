@@ -18,6 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -39,7 +42,46 @@ const (
 	// MetadataValTrue is the string value stored under MetadataKeyTerminated
 	// when a session has been terminated.
 	MetadataValTrue = "true"
+
+	// DefaultMaxSessions is the default global concurrent session limit.
+	// 0 disables the global limit.
+	DefaultMaxSessions = 100
+
+	// DefaultMaxSessionsPerClient is the default per-identity session limit.
+	// 0 disables the per-client limit.
+	DefaultMaxSessionsPerClient = 10
+
+	// DefaultIdleSessionTimeout is the default duration after which inactive
+	// sessions are proactively expired. Must be ≤ session TTL.
+	// 0 disables idle expiry.
+	DefaultIdleSessionTimeout = 5 * time.Minute
+
+	// defaultIdleCheckInterval is how often the idle reaper scans for idle sessions.
+	defaultIdleCheckInterval = time.Minute
 )
+
+// ErrSessionLimitReached is returned when the global session limit is hit.
+var ErrSessionLimitReached = errors.New("maximum concurrent sessions exceeded")
+
+// ErrPerClientSessionLimitReached is returned when the per-client session limit is hit.
+var ErrPerClientSessionLimitReached = errors.New("maximum sessions per client exceeded")
+
+// Limits configures resource-exhaustion protections for the Manager.
+type Limits struct {
+	// MaxSessions is the maximum number of concurrent sessions globally.
+	// 0 means unlimited.
+	MaxSessions int
+
+	// MaxSessionsPerClient is the maximum concurrent sessions per client identity,
+	// keyed by auth.Identity.Subject. Anonymous clients (no Subject) are not limited.
+	// 0 means unlimited.
+	MaxSessionsPerClient int
+
+	// IdleSessionTimeout is the maximum duration a session may be inactive
+	// before it is proactively expired. Must be ≤ the session TTL.
+	// 0 disables idle expiry.
+	IdleSessionTimeout time.Duration
+}
 
 // Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
 // to the mark3labs SDK's SessionIdManager interface.
@@ -68,19 +110,40 @@ type Manager struct {
 	storage         *transportsession.Manager
 	factory         vmcpsession.MultiSessionFactory
 	backendRegistry vmcp.BackendRegistry
+	limits          Limits
+
+	// perClientMu guards perClientCounts and sessionSubject.
+	perClientMu     sync.Mutex
+	perClientCounts map[string]int    // subject → active session count
+	sessionSubject  map[string]string // sessionID → subject (for decrement on Terminate)
+
+	// idleActivityMu guards idleActivity.
+	idleActivityMu sync.RWMutex
+	idleActivity   map[string]time.Time // sessionID → last active time
+
+	// activeSessionCount tracks sessions that have been generated but not yet
+	// terminated, excluding terminated placeholders left for TTL cleanup.
+	// This gives an accurate count for global limit enforcement, unlike
+	// storage.Count() which includes those terminated placeholders.
+	activeSessionCount atomic.Int64
 }
 
 // New creates a Manager backed by the given transport manager, session factory,
-// and backend registry.
+// backend registry, and resource-exhaustion limits.
 func New(
 	storage *transportsession.Manager,
 	factory vmcpsession.MultiSessionFactory,
 	backendRegistry vmcp.BackendRegistry,
+	limits Limits,
 ) *Manager {
 	return &Manager{
 		storage:         storage,
 		factory:         factory,
 		backendRegistry: backendRegistry,
+		limits:          limits,
+		perClientCounts: make(map[string]int),
+		sessionSubject:  make(map[string]string),
+		idleActivity:    make(map[string]time.Time),
 	}
 }
 
@@ -93,6 +156,22 @@ func New(
 // The placeholder is replaced by CreateSession() in Phase 2 once context
 // is available via the OnRegisterSession hook.
 func (sm *Manager) Generate() string {
+	// Atomically claim a slot before allocating storage. Incrementing first
+	// (rather than Load → check → Add) eliminates the TOCTOU race where
+	// concurrent initialize requests all observe Count < MaxSessions and all
+	// proceed past the cap. If the incremented value exceeds the cap, or if
+	// storage allocation fails, the slot is released immediately.
+	if sm.limits.MaxSessions > 0 {
+		if int(sm.activeSessionCount.Add(1)) > sm.limits.MaxSessions {
+			sm.activeSessionCount.Add(-1)
+			slog.Warn("Manager: session limit reached, rejecting new session",
+				"active", sm.activeSessionCount.Load(),
+				"max", sm.limits.MaxSessions,
+				"error", ErrSessionLimitReached)
+			return ""
+		}
+	}
+
 	sessionID := uuid.New().String()
 
 	if err := sm.storage.AddWithID(sessionID); err != nil {
@@ -101,10 +180,17 @@ func (sm *Manager) Generate() string {
 		sessionID = uuid.New().String()
 		if err := sm.storage.AddWithID(sessionID); err != nil {
 			slog.Error("Manager: failed to store placeholder session on retry", "session_id", sessionID, "error", err)
+			if sm.limits.MaxSessions > 0 {
+				sm.activeSessionCount.Add(-1)
+			}
 			return ""
 		}
 	}
 
+	if sm.limits.MaxSessions <= 0 {
+		// Unlimited: count is not pre-incremented above, so increment here.
+		sm.activeSessionCount.Add(1)
+	}
 	slog.Debug("Manager: generated placeholder session", "session_id", sessionID)
 	return sessionID
 }
@@ -151,6 +237,12 @@ func (sm *Manager) CreateSession(
 	// Resolve the caller identity (may be nil for anonymous access).
 	identity, _ := auth.IdentityFromContext(ctx)
 
+	// Enforce per-client session limit for identified callers.
+	perClientIncremented, err := sm.enforcePerClientLimit(sessionID, identity)
+	if err != nil {
+		return nil, err
+	}
+
 	// Note: Token hash and salt are computed and stored by the session factory
 	// (MakeSessionWithID below). Token binding enforcement happens at the session
 	// level via validateCaller(), which uses HMAC-SHA256 with a per-session salt.
@@ -168,6 +260,9 @@ func (sm *Manager) CreateSession(
 	allowAnonymous := sessiontypes.ShouldAllowAnonymous(identity)
 	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, allowAnonymous, backends)
 	if err != nil {
+		if perClientIncremented {
+			sm.decrementPerClientCount(sessionID)
+		}
 		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)
 	}
 
@@ -180,6 +275,9 @@ func (sm *Manager) CreateSession(
 	placeholder2, exists := sm.storage.Get(sessionID)
 	if !exists {
 		_ = sess.Close()
+		if perClientIncremented {
+			sm.decrementPerClientCount(sessionID)
+		}
 		return nil, fmt.Errorf(
 			"Manager.CreateSession: placeholder for session %q disappeared during backend init (terminated concurrently)",
 			sessionID,
@@ -187,6 +285,9 @@ func (sm *Manager) CreateSession(
 	}
 	if placeholder2.GetMetadata()[MetadataKeyTerminated] == MetadataValTrue {
 		_ = sess.Close()
+		if perClientIncremented {
+			sm.decrementPerClientCount(sessionID)
+		}
 		return nil, fmt.Errorf(
 			"Manager.CreateSession: session %q was terminated during backend init (marked after first check)",
 			sessionID,
@@ -200,8 +301,14 @@ func (sm *Manager) CreateSession(
 	if err := sm.storage.UpsertSession(sess); err != nil {
 		// Best-effort close of the newly created session to release backend connections.
 		_ = sess.Close()
+		if perClientIncremented {
+			sm.decrementPerClientCount(sessionID)
+		}
 		return nil, fmt.Errorf("Manager.CreateSession: failed to replace placeholder: %w", err)
 	}
+
+	// Session is fully established — start the idle clock.
+	sm.resetIdleActivity(sessionID)
 
 	slog.Debug("Manager: created multi-session",
 		"session_id", sessionID,
@@ -263,6 +370,11 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	sess, exists := sm.storage.Get(sessionID)
 	if !exists {
 		slog.Debug("Manager.Terminate: session not found (already expired?)", "session_id", sessionID)
+		// The storage entry may have been removed by TTL cleanup racing with
+		// Terminate(). Clean up any in-memory map entries that may be left behind
+		// to prevent per-client counts from sticking and stale idle-reap entries.
+		sm.decrementPerClientCount(sessionID)
+		sm.removeIdleActivity(sessionID)
 		return false, nil
 	}
 
@@ -276,6 +388,9 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 		if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
+		sm.activeSessionCount.Add(-1)
+		sm.decrementPerClientCount(sessionID)
+		sm.removeIdleActivity(sessionID)
 	} else {
 		// Placeholder session (not yet upgraded to MultiSession).
 		//
@@ -294,6 +409,7 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 		// We mark (not delete) so Validate() can return isTerminated=true, which
 		// lets the SDK distinguish "actively terminated" from "never existed".
 		// TTL cleanup will remove the placeholder later.
+		sm.activeSessionCount.Add(-1)
 		sess.SetMetadata(MetadataKeyTerminated, MetadataValTrue)
 		if replaceErr := sm.storage.UpsertSession(sess); replaceErr != nil {
 			slog.Warn("Manager.Terminate: failed to persist terminated flag for placeholder; attempting delete fallback",
@@ -382,6 +498,10 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 				return mcp.NewToolResultError(callErr.Error()), nil
 			}
 
+			// Reset idle clock after the tool call completes so long-running tools
+			// are not reaped mid-execution by the idle reaper.
+			sm.resetIdleActivity(capturedSessionID)
+
 			return &mcp.CallToolResult{
 				Result: mcp.Result{
 					Meta: conversion.ToMCPMeta(result.Meta),
@@ -462,4 +582,135 @@ func (sm *Manager) GetAdaptedResources(sessionID string) ([]mcpserver.ServerReso
 	}
 
 	return sdkResources, nil
+}
+
+// ActiveSessionCount returns the number of sessions that have been generated
+// but not yet terminated. Unlike storage.Count(), this excludes terminated
+// placeholders left in storage for TTL cleanup, giving an accurate measure
+// for global session limit enforcement.
+func (sm *Manager) ActiveSessionCount() int {
+	return int(sm.activeSessionCount.Load())
+}
+
+// ---------------------------------------------------------------------------
+// Per-client session limit helpers
+// ---------------------------------------------------------------------------
+
+// enforcePerClientLimit checks and increments the per-client session count for the
+// given identity. Returns (true, nil) when the count was incremented, (false, nil)
+// for anonymous sessions (not subject to limiting), and (false, err) when the limit
+// is exceeded. The caller must call decrementPerClientCount on any failure path when
+// the returned bool is true.
+func (sm *Manager) enforcePerClientLimit(sessionID string, identity *auth.Identity) (bool, error) {
+	subject := identitySubject(identity)
+	if sm.limits.MaxSessionsPerClient <= 0 || subject == "" {
+		return false, nil
+	}
+	sm.perClientMu.Lock()
+	defer sm.perClientMu.Unlock()
+	if sm.perClientCounts[subject] >= sm.limits.MaxSessionsPerClient {
+		return false, fmt.Errorf("%w: subject %q", ErrPerClientSessionLimitReached, subject)
+	}
+	sm.perClientCounts[subject]++
+	sm.sessionSubject[sessionID] = subject
+	return true, nil
+}
+
+// decrementPerClientCount removes the per-client counter entry for sessionID.
+// It is safe to call even if the session was never counted (anonymous sessions).
+func (sm *Manager) decrementPerClientCount(sessionID string) {
+	sm.perClientMu.Lock()
+	defer sm.perClientMu.Unlock()
+	subject, ok := sm.sessionSubject[sessionID]
+	if !ok {
+		return
+	}
+	delete(sm.sessionSubject, sessionID)
+	if sm.perClientCounts[subject] > 0 {
+		sm.perClientCounts[subject]--
+	}
+}
+
+// identitySubject returns the Subject claim for identity-based rate limiting.
+// Returns "" for nil identities or identities without a Subject, which opts
+// them out of per-client limiting.
+func identitySubject(identity *auth.Identity) string {
+	if identity == nil {
+		return ""
+	}
+	return identity.Subject
+}
+
+// ---------------------------------------------------------------------------
+// Idle session timeout helpers
+// ---------------------------------------------------------------------------
+
+// resetIdleActivity records the current time as the last-active timestamp for
+// sessionID. Called on session creation and on every tool call.
+// No-op when IdleSessionTimeout is zero (idle tracking disabled).
+func (sm *Manager) resetIdleActivity(sessionID string) {
+	if sm.limits.IdleSessionTimeout <= 0 {
+		return
+	}
+	sm.idleActivityMu.Lock()
+	sm.idleActivity[sessionID] = time.Now()
+	sm.idleActivityMu.Unlock()
+}
+
+// removeIdleActivity removes the idle-tracking entry for sessionID.
+// Called from Terminate() so the reaper does not attempt to re-terminate.
+func (sm *Manager) removeIdleActivity(sessionID string) {
+	sm.idleActivityMu.Lock()
+	delete(sm.idleActivity, sessionID)
+	sm.idleActivityMu.Unlock()
+}
+
+// reapIdleSessions terminates any sessions that have been inactive longer than
+// the configured IdleSessionTimeout.
+func (sm *Manager) reapIdleSessions() {
+	cutoff := time.Now().Add(-sm.limits.IdleSessionTimeout)
+
+	sm.idleActivityMu.RLock()
+	var toTerminate []string
+	for sessionID, lastActive := range sm.idleActivity {
+		if lastActive.Before(cutoff) {
+			toTerminate = append(toTerminate, sessionID)
+		}
+	}
+	sm.idleActivityMu.RUnlock()
+
+	for _, sessionID := range toTerminate {
+		slog.Info("Manager: terminating idle session",
+			"session_id", sessionID,
+			"idle_timeout", sm.limits.IdleSessionTimeout)
+		if _, err := sm.Terminate(sessionID); err != nil {
+			slog.Warn("Manager: failed to terminate idle session",
+				"session_id", sessionID, "error", err)
+		}
+	}
+}
+
+// StartIdleReaper starts a background goroutine that periodically calls
+// reapIdleSessions. It is a no-op when IdleSessionTimeout is zero (disabled).
+// The goroutine is stopped when ctx is cancelled; the caller should add a
+// cancel to shutdownFuncs to ensure cleanup on server Stop().
+func (sm *Manager) StartIdleReaper(ctx context.Context, interval time.Duration) {
+	if sm.limits.IdleSessionTimeout <= 0 {
+		return
+	}
+	if interval <= 0 {
+		interval = defaultIdleCheckInterval
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sm.reapIdleSessions()
+			}
+		}
+	}()
 }

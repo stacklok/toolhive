@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,13 @@ const (
 	// defaultSessionTTL is the default session time-to-live duration.
 	// Sessions that are inactive for this duration will be automatically cleaned up.
 	defaultSessionTTL = 30 * time.Minute
+
+	// defaultIdleCheckInterval is how often the idle reaper scans for inactive sessions.
+	defaultIdleCheckInterval = time.Minute
+
+	// defaultRetryAfterSeconds is the Retry-After value returned with HTTP 503
+	// when the global session limit is reached.
+	defaultRetryAfterSeconds = 30
 )
 
 //go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
@@ -161,6 +169,21 @@ type Config struct {
 	// SessionFactory creates MultiSessions for session management.
 	// Required; must not be nil.
 	SessionFactory vmcpsession.MultiSessionFactory
+
+	// MaxSessions is the global concurrent session limit when SessionManagementV2 is enabled.
+	// Requests that would exceed this limit receive HTTP 503 with a Retry-After header.
+	// 0 uses the default (100). Requires SessionManagementV2 = true.
+	MaxSessions int
+
+	// MaxSessionsPerClient is the per-identity session limit when SessionManagementV2 is enabled.
+	// Keyed by auth.Identity.Subject; anonymous clients are not limited.
+	// 0 uses the default (10). Requires SessionManagementV2 = true.
+	MaxSessionsPerClient int
+
+	// IdleSessionTimeout is the duration after which inactive sessions are proactively
+	// expired when SessionManagementV2 is enabled. Must be ≤ SessionTTL.
+	// 0 uses the default (5 minutes). Requires SessionManagementV2 = true.
+	IdleSessionTimeout time.Duration
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -274,6 +297,24 @@ func New(
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = defaultSessionTTL
+	}
+	if cfg.MaxSessions == 0 {
+		cfg.MaxSessions = sessionmanager.DefaultMaxSessions
+	}
+	if cfg.MaxSessionsPerClient == 0 {
+		cfg.MaxSessionsPerClient = sessionmanager.DefaultMaxSessionsPerClient
+	}
+	if cfg.IdleSessionTimeout == 0 {
+		cfg.IdleSessionTimeout = sessionmanager.DefaultIdleSessionTimeout
+	}
+	// IdleSessionTimeout must not exceed SessionTTL: if it did, the transport
+	// TTL reaper could evict sessions before the idle reaper fires, leaving
+	// per-client counters and idle-tracking maps stale.
+	if cfg.IdleSessionTimeout > cfg.SessionTTL {
+		slog.Warn("IdleSessionTimeout exceeds SessionTTL; clamping to SessionTTL",
+			"idle_session_timeout", cfg.IdleSessionTimeout,
+			"session_ttl", cfg.SessionTTL)
+		cfg.IdleSessionTimeout = cfg.SessionTTL
 	}
 
 	// Create hooks for SDK integration
@@ -392,7 +433,12 @@ func New(
 	if cfg.SessionFactory == nil {
 		return nil, fmt.Errorf("SessionFactory is required but was not provided")
 	}
-	vmcpSessMgr := sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry)
+	limits := sessionmanager.Limits{
+		MaxSessions:          cfg.MaxSessions,
+		MaxSessionsPerClient: cfg.MaxSessionsPerClient,
+		IdleSessionTimeout:   cfg.IdleSessionTimeout,
+	}
+	vmcpSessMgr := sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry, limits)
 
 	// Create Server instance
 	srv := &Server{
@@ -548,6 +594,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("audit middleware enabled for MCP endpoints")
 	}
 
+	// Apply session limit middleware when V2 session management is active.
+	// Runs before auth so over-limit requests are rejected early without auth overhead.
+	if s.vmcpSessionMgr != nil && s.config.MaxSessions > 0 {
+		mcpHandler = s.sessionLimitMiddleware(mcpHandler)
+		slog.Info("session limit middleware enabled", "max_sessions", s.config.MaxSessions)
+	}
+
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
@@ -564,6 +617,37 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	mux.Handle("/", mcpHandler)
 
 	return mux, nil
+}
+
+// sessionLimitMiddleware is a best-effort fast-fail for new session requests
+// (no Mcp-Session-Id header): it returns HTTP 503 + Retry-After before the
+// request reaches the SDK when the global session cap appears to be reached.
+// Existing sessions (with a valid Mcp-Session-Id) are never affected.
+//
+// This check is intentionally optimistic (non-atomic): it avoids the overhead
+// of routing and SDK processing for clearly-over-limit requests, but it does
+// not guarantee strict enforcement under concurrent load. Strict enforcement
+// is provided atomically by sessionmanager.Manager.Generate(), which uses an
+// increment-first reservation to prevent races between concurrent initialize
+// requests.
+func (s *Server) sessionLimitMiddleware(next http.Handler) http.Handler {
+	// Resolve the concrete manager once so we can call ActiveSessionCount().
+	mgr, _ := s.vmcpSessionMgr.(*sessionmanager.Manager)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Mcp-Session-Id") == "" && mgr != nil {
+			if mgr.ActiveSessionCount() >= s.config.MaxSessions {
+				w.Header().Set("Retry-After", strconv.Itoa(defaultRetryAfterSeconds))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(
+					`{"error":{"code":-32000,"message":"Maximum concurrent sessions exceeded. ` +
+						`Please try again later or contact administrator."}}`,
+				))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.
@@ -656,6 +740,19 @@ func (s *Server) Start(ctx context.Context) error {
 		} else {
 			slog.Info("health monitor started")
 		}
+	}
+
+	// Start idle session reaper if V2 session management is active with an idle timeout.
+	if mgr, ok := s.vmcpSessionMgr.(*sessionmanager.Manager); ok && s.config.IdleSessionTimeout > 0 {
+		idleCtx, idleCancel := context.WithCancel(ctx)
+		mgr.StartIdleReaper(idleCtx, defaultIdleCheckInterval)
+		slog.Info("idle session reaper started",
+			"idle_timeout", s.config.IdleSessionTimeout,
+			"check_interval", defaultIdleCheckInterval)
+		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
+			idleCancel()
+			return nil
+		})
 	}
 
 	// Start status reporter if configured

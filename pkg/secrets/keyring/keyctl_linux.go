@@ -96,10 +96,14 @@ func (k *keyctlProvider) deleteKeyUnlocked(service, key string) error {
 		return nil
 	}
 
-	_, err = unix.KeyctlInt(unix.KEYCTL_REVOKE, keyID, 0, 0, 0)
+	// Unlink the key from the keyring first so it's no longer searchable,
+	// then revoke it to invalidate any remaining references.
+	_, err = unix.KeyctlInt(unix.KEYCTL_UNLINK, keyID, k.ringID, 0, 0)
 	if err != nil {
-		return fmt.Errorf("failed to delete key '%s': %w", keyName, err)
+		return fmt.Errorf("failed to unlink key '%s': %w", keyName, err)
 	}
+	// Best-effort revoke — key is already removed from keyring
+	_, _ = unix.KeyctlInt(unix.KEYCTL_REVOKE, keyID, 0, 0, 0)
 
 	// Remove from tracking
 	if serviceKeys, exists := k.keys[service]; exists {

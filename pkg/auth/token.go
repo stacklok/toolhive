@@ -115,6 +115,7 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	u.RawQuery = query.Encode()
 
 	// Create the GET request
+	//nolint:gosec // G704 - URL from trusted OIDC discovery config
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Google tokeninfo request: %w", err)
@@ -290,6 +291,7 @@ func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jw
 	formData.Set("token_type_hint", "access_token")
 
 	// Create POST request with form data
+	//nolint:gosec // G704 - URL is configured introspection endpoint
 	req, err := http.NewRequestWithContext(ctx, "POST", r.url, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create introspection request: %w", err)

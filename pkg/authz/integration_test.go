@@ -29,12 +29,17 @@ func TestIntegrationListFiltering(t *testing.T) {
 	// Create a realistic Cedar authorizer with role-based policies
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
+			// All principals can perform list operations (results are filtered per role)
+			`permit(principal, action == Action::"list_tools", resource);`,
+			`permit(principal, action == Action::"list_prompts", resource);`,
+			`permit(principal, action == Action::"list_resources", resource);`,
+
 			// Basic users can only access weather and news tools
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather") when { principal.claim_role == "user" };`,
-			`permit(principal, action == Action::"call_tool", resource == Tool::"news") when { principal.claim_role == "user" };`,
+			`permit(principal, action == Action::"read_tool", resource == Tool::"weather") when { principal.claim_role == "user" };`,
+			`permit(principal, action == Action::"read_tool", resource == Tool::"news") when { principal.claim_role == "user" };`,
 
 			// Admin users can access all tools
-			`permit(principal, action == Action::"call_tool", resource) when { principal.claim_role == "admin" };`,
+			`permit(principal, action == Action::"read_tool", resource) when { principal.claim_role == "admin" };`,
 
 			// Basic users can only access public prompts
 			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting") when { principal.claim_role == "user" };`,

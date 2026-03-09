@@ -35,6 +35,9 @@ func TestMiddleware(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
 			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
+			`permit(principal, action == Action::"list_tools", resource);`,
+			`permit(principal, action == Action::"list_prompts", resource);`,
+			`permit(principal, action == Action::"list_resources", resource);`,
 		},
 		EntitiesJSON: `[]`,
 	})
@@ -695,7 +698,8 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				testkit.WithJSONClientType(),
 			},
 			policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"read_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"list_tools", resource);`,
 			},
 			expected: []any{
 				map[string]any{"name": "foo", "description": "A test tool"},
@@ -711,7 +715,8 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				testkit.WithJSONClientType(),
 			},
 			policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"read_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"list_tools", resource);`,
 			},
 			expected: []any{
 				map[string]any{"name": "foo", "description": "A test tool"},
@@ -725,7 +730,8 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				testkit.WithJSONClientType(),
 			},
 			policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"read_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"list_tools", resource);`,
 			},
 			expected: []any{},
 		},
@@ -739,7 +745,8 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				testkit.WithSSEClientType(),
 			},
 			policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"read_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"list_tools", resource);`,
 			},
 			expected: []any{
 				map[string]any{"name": "foo", "description": "A test tool"},
@@ -755,7 +762,8 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				testkit.WithSSEClientType(),
 			},
 			policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"read_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"list_tools", resource);`,
 			},
 			expected: []any{
 				map[string]any{"name": "foo", "description": "A test tool"},
@@ -769,7 +777,8 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				testkit.WithSSEClientType(),
 			},
 			policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"read_tool", resource == Tool::"foo");`,
+				`permit(principal, action == Action::"list_tools", resource);`,
 			},
 			expected: []any{},
 		},

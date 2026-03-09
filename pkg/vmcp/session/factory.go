@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -112,6 +113,8 @@ type defaultMultiSessionFactory struct {
 	maxConcurrency     int
 	backendInitTimeout time.Duration
 	hmacSecret         []byte // Server-managed secret for HMAC-SHA256 token hashing
+	keepaliveCfg       KeepaliveConfig
+	keepaliveMetrics   *keepaliveMetrics
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -135,6 +138,43 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 			f.backendInitTimeout = d
 		}
 	}
+}
+
+// WithKeepaliveConfig sets the server-level keepalive configuration applied to
+// every session created by this factory. Per-backend overrides live in
+// BackendTarget.KeepaliveMethod. Keepalive is disabled when Method is
+// KeepaliveMethodNone on the target.
+func WithKeepaliveConfig(cfg KeepaliveConfig) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.keepaliveCfg = cfg
+	}
+}
+
+// WithMeterProvider sets the OTel MeterProvider used to emit keepalive metrics.
+// If not provided (or nil), a no-op provider is used so keepalive still works
+// without metrics infrastructure.
+func WithMeterProvider(mp metric.MeterProvider) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		if mp == nil {
+			return
+		}
+		km, err := newKeepaliveMetrics(mp)
+		if err != nil {
+			slog.Warn("failed to initialise keepalive metrics; metrics will be no-ops", "error", err)
+			return
+		}
+		f.keepaliveMetrics = km
+	}
+}
+
+// ensureKeepaliveMetrics returns the factory's keepalive metrics, initialising
+// a no-op set if none were configured via WithMeterProvider.
+func (f *defaultMultiSessionFactory) ensureKeepaliveMetrics() *keepaliveMetrics {
+	if f.keepaliveMetrics != nil {
+		return f.keepaliveMetrics
+	}
+	km, _ := newKeepaliveMetrics(nil) // nil → noop provider, error is impossible
+	return km
 }
 
 // WithHMACSecret sets the server-managed secret used for HMAC-SHA256 token hashing.
@@ -404,7 +444,18 @@ func (f *defaultMultiSessionFactory) makeSession(
 
 	populateBackendMetadata(transportSess, results)
 
-	// Create the base session
+	// Build the target map needed by the keepalive manager (workloadID → target).
+	targetsByID := make(map[string]*vmcp.BackendTarget, len(results))
+	for i := range results {
+		targetsByID[results[i].target.WorkloadID] = results[i].target
+	}
+
+	// Create and start the keepalive manager. This factory is only constructed
+	// when SessionManagementV2 is enabled, so keepalive is gated by that flag.
+	km := newKeepaliveManager(connections, targetsByID, f.keepaliveCfg, f.ensureKeepaliveMetrics())
+	km.Start(context.Background())
+
+	// Create the base session without token binding
 	baseSession := &defaultMultiSession{
 		Session:         transportSess,
 		connections:     connections,
@@ -414,6 +465,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
 		queue:           newAdmissionQueue(),
+		keepalive:       km,
 	}
 
 	// Apply hijack prevention: computes token binding, stores metadata, and wraps

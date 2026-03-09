@@ -45,6 +45,11 @@ type Session interface {
 		arguments map[string]any,
 	) (*vmcp.PromptGetResult, error)
 
+	// Ping sends a protocol-level ping to the backend and returns an error if
+	// the backend is unreachable or does not respond. It is side-effect-free
+	// and is used exclusively by the keepalive mechanism.
+	Ping(ctx context.Context) error
+
 	// Close releases all resources held by this session. Implementations must
 	// be idempotent: calling Close multiple times returns nil.
 	Close() error

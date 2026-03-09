@@ -56,7 +56,8 @@ func (m *mockConnectedBackend) GetPrompt(ctx context.Context, name string, argum
 	return &vmcp.PromptGetResult{Messages: "hello"}, nil
 }
 
-func (m *mockConnectedBackend) SessionID() string { return m.sessID }
+func (*mockConnectedBackend) Ping(_ context.Context) error { return nil }
+func (m *mockConnectedBackend) SessionID() string          { return m.sessID }
 func (m *mockConnectedBackend) Close() error {
 	m.closeCalled.Store(true)
 	return m.closeErr

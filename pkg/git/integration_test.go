@@ -8,382 +8,174 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-const (
-	mainBranchName = "main"
-)
+const mainBranchName = "main"
 
-// TestDefaultGitClient_FullWorkflow tests a complete Git workflow with a real repository
+// initTestRepo creates a local git repo with an initial commit containing the given files.
+// Returns the repo directory path.
+func initTestRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	require.NoError(t, err)
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0644))
+		_, err = wt.Add(name)
+		require.NoError(t, err)
+	}
+
+	_, err = wt.Commit("Initial commit", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com"},
+	})
+	require.NoError(t, err)
+
+	return dir
+}
+
 func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 	t.Parallel()
-	// Create a temporary directory for the source repository
-	sourceRepoDir, err := os.MkdirTemp("", "git-source-*")
-	if err != nil {
-		t.Fatalf("Failed to create source temp dir: %v", err)
-	}
-	defer os.RemoveAll(sourceRepoDir)
 
-	// Create a test repository
-	sourceRepo, err := git.PlainInit(sourceRepoDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init source repository: %v", err)
-	}
-
-	sourceWorkTree, err := sourceRepo.Worktree()
-	if err != nil {
-		t.Fatalf("Failed to get source worktree: %v", err)
-	}
-
-	// Create a test file
-	testFilePath := filepath.Join(sourceRepoDir, "registry.json")
 	testContent := `{"name": "test-registry", "version": "1.0.0"}`
-	err = os.WriteFile(testFilePath, []byte(testContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
+	repoDir := initTestRepo(t, map[string]string{"registry.json": testContent})
 
-	// Add and commit the file
-	_, err = sourceWorkTree.Add("registry.json")
-	if err != nil {
-		t.Fatalf("Failed to add file: %v", err)
-	}
-
-	_, err = sourceWorkTree.Commit("Add registry file", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Test Author",
-			Email: "test@example.com",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Failed to commit: %v", err)
-	}
-
-	// Test the full workflow
 	client := NewDefaultGitClient()
 	ctx := t.Context()
 
-	// Clone the repository
-	config := &CloneConfig{
-		URL: sourceRepoDir, // Use local path for testing
-	}
+	repoInfo, err := client.Clone(ctx, &CloneConfig{URL: repoDir})
+	require.NoError(t, err)
+	require.NotNil(t, repoInfo.Repository)
+	assert.Equal(t, repoDir, repoInfo.RemoteURL)
 
-	repoInfo, err := client.Clone(ctx, config)
-	if err != nil {
-		t.Fatalf("Failed to clone repository: %v", err)
-	}
-
-	// Verify repository info was populated
-	if repoInfo.Repository == nil {
-		t.Error("Repository should not be nil")
-	}
-	if repoInfo.RemoteURL != sourceRepoDir {
-		t.Errorf("Expected RemoteURL to be %s, got %s", sourceRepoDir, repoInfo.RemoteURL)
-	}
-
-	// Test GetFileContent
+	// Read existing file
 	content, err := client.GetFileContent(repoInfo, "registry.json")
-	if err != nil {
-		t.Fatalf("Failed to get file content: %v", err)
-	}
-	if string(content) != testContent {
-		t.Errorf("Expected content %q, got %q", testContent, string(content))
-	}
+	require.NoError(t, err)
+	assert.Equal(t, testContent, string(content))
 
-	// Test GetFileContent with non-existent file
+	// Non-existent file
 	_, err = client.GetFileContent(repoInfo, "nonexistent.json")
-	if err == nil {
-		t.Error("Expected error for non-existent file")
-	}
+	require.Error(t, err)
 
-	// Test HeadCommitHash
+	// HeadCommitHash
 	hash, err := HeadCommitHash(repoInfo)
-	if err != nil {
-		t.Fatalf("Failed to get HEAD commit hash: %v", err)
-	}
-	if hash == "" {
-		t.Error("Expected non-empty commit hash")
-	}
-	if len(hash) != 40 {
-		t.Errorf("Expected 40-char commit hash, got %d chars: %s", len(hash), hash)
-	}
+	require.NoError(t, err)
+	assert.Len(t, hash, 40)
 
-	// Test Cleanup
-	err = client.Cleanup(ctx, repoInfo)
-	if err != nil {
-		t.Fatalf("Failed to cleanup: %v", err)
-	}
+	// Cleanup
+	require.NoError(t, client.Cleanup(ctx, repoInfo))
 }
 
-// TestDefaultGitClient_CloneWithBranch tests cloning with a specific branch
 func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 	t.Parallel()
-	sourceRepoDir, err := os.MkdirTemp("", "git-source-branch-*")
-	if err != nil {
-		t.Fatalf("Failed to create source temp dir: %v", err)
-	}
-	defer os.RemoveAll(sourceRepoDir)
 
-	sourceRepo, err := git.PlainInit(sourceRepoDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init source repository: %v", err)
-	}
+	// Create repo with main branch
+	repoDir := initTestRepo(t, map[string]string{"main.txt": "main branch content"})
 
-	sourceWorkTree, err := sourceRepo.Worktree()
-	if err != nil {
-		t.Fatalf("Failed to get source worktree: %v", err)
-	}
+	// Add a feature branch
+	repo, err := gogit.PlainOpen(repoDir)
+	require.NoError(t, err)
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
 
-	// Create initial commit on main branch
-	testFilePath := filepath.Join(sourceRepoDir, "main.txt")
-	err = os.WriteFile(testFilePath, []byte("main branch content"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	_, err = sourceWorkTree.Add("main.txt")
-	if err != nil {
-		t.Fatalf("Failed to add file: %v", err)
-	}
-
-	_, err = sourceWorkTree.Commit("Initial commit", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Test Author",
-			Email: "test@example.com",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Failed to commit: %v", err)
-	}
-
-	// Create and checkout feature branch
-	featureBranchRef := plumbing.NewBranchReferenceName("feature")
-	err = sourceWorkTree.Checkout(&git.CheckoutOptions{
-		Branch: featureBranchRef,
+	require.NoError(t, wt.Checkout(&gogit.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("feature"),
 		Create: true,
+	}))
+
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("feature branch content"), 0644))
+	_, err = wt.Add("feature.txt")
+	require.NoError(t, err)
+	_, err = wt.Commit("Add feature", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com"},
 	})
-	if err != nil {
-		t.Fatalf("Failed to create and checkout feature branch: %v", err)
-	}
-
-	// Add content to feature branch
-	featureFilePath := filepath.Join(sourceRepoDir, "feature.txt")
-	err = os.WriteFile(featureFilePath, []byte("feature branch content"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write feature file: %v", err)
-	}
-
-	_, err = sourceWorkTree.Add("feature.txt")
-	if err != nil {
-		t.Fatalf("Failed to add feature file: %v", err)
-	}
-
-	_, err = sourceWorkTree.Commit("Add feature", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Test Author",
-			Email: "test@example.com",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Failed to commit feature: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Clone the feature branch
 	client := NewDefaultGitClient()
-	ctx := t.Context()
-	config := &CloneConfig{
-		URL:    sourceRepoDir,
-		Branch: "feature",
-	}
 
-	repoInfo, err := client.Clone(ctx, config)
-	if err != nil {
-		t.Fatalf("Failed to clone feature branch: %v", err)
-	}
+	repoInfo, err := client.Clone(t.Context(), &CloneConfig{URL: repoDir, Branch: "feature"})
+	require.NoError(t, err)
 
-	// Verify we're on the feature branch and have the feature file
 	content, err := client.GetFileContent(repoInfo, "feature.txt")
-	if err != nil {
-		t.Fatalf("Failed to get feature file content: %v", err)
-	}
-	if string(content) != "feature branch content" {
-		t.Errorf("Expected feature content, got %q", string(content))
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "feature branch content", string(content))
 
-	// Clean up
-	err = client.Cleanup(ctx, repoInfo)
-	if err != nil {
-		t.Fatalf("Failed to cleanup: %v", err)
-	}
+	require.NoError(t, client.Cleanup(t.Context(), repoInfo))
 }
 
-// TestDefaultGitClient_CloneWithCommit tests cloning with a specific commit
 func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 	t.Parallel()
-	sourceRepoDir, err := os.MkdirTemp("", "git-source-commit-*")
-	if err != nil {
-		t.Fatalf("Failed to create source temp dir: %v", err)
-	}
-	defer os.RemoveAll(sourceRepoDir)
 
-	sourceRepo, err := git.PlainInit(sourceRepoDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init source repository: %v", err)
-	}
+	// Create repo with first commit
+	repoDir := initTestRepo(t, map[string]string{"file1.txt": "first commit"})
 
-	sourceWorkTree, err := sourceRepo.Worktree()
-	if err != nil {
-		t.Fatalf("Failed to get source worktree: %v", err)
-	}
+	// Add second commit
+	repo, err := gogit.PlainOpen(repoDir)
+	require.NoError(t, err)
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
 
-	// Create first commit
-	file1Path := filepath.Join(sourceRepoDir, "file1.txt")
-	err = os.WriteFile(file1Path, []byte("first commit"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write first file: %v", err)
-	}
+	// Record first commit hash before adding second commit
+	head, err := repo.Head()
+	require.NoError(t, err)
+	firstCommit := head.Hash()
 
-	_, err = sourceWorkTree.Add("file1.txt")
-	if err != nil {
-		t.Fatalf("Failed to add first file: %v", err)
-	}
-
-	firstCommit, err := sourceWorkTree.Commit("First commit", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Test Author",
-			Email: "test@example.com",
-		},
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "file2.txt"), []byte("second commit"), 0644))
+	_, err = wt.Add("file2.txt")
+	require.NoError(t, err)
+	_, err = wt.Commit("Second commit", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com"},
 	})
-	if err != nil {
-		t.Fatalf("Failed to make first commit: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Create second commit
-	file2Path := filepath.Join(sourceRepoDir, "file2.txt")
-	err = os.WriteFile(file2Path, []byte("second commit"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write second file: %v", err)
-	}
-
-	_, err = sourceWorkTree.Add("file2.txt")
-	if err != nil {
-		t.Fatalf("Failed to add second file: %v", err)
-	}
-
-	_, err = sourceWorkTree.Commit("Second commit", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Test Author",
-			Email: "test@example.com",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Failed to make second commit: %v", err)
-	}
-
-	// Clone at the first commit
+	// Clone at first commit
 	client := NewDefaultGitClient()
-	ctx := t.Context()
-	config := &CloneConfig{
-		URL:    sourceRepoDir,
-		Commit: firstCommit.String(),
-	}
 
-	repoInfo, err := client.Clone(ctx, config)
-	if err != nil {
-		t.Fatalf("Failed to clone at specific commit: %v", err)
-	}
+	repoInfo, err := client.Clone(t.Context(), &CloneConfig{URL: repoDir, Commit: firstCommit.String()})
+	require.NoError(t, err)
 
-	// Verify we have the first file
+	// file1.txt should exist at first commit
 	content, err := client.GetFileContent(repoInfo, "file1.txt")
-	if err != nil {
-		t.Fatalf("Failed to get first file content: %v", err)
-	}
-	if string(content) != "first commit" {
-		t.Errorf("Expected first commit content, got %q", string(content))
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "first commit", string(content))
 
-	// Verify we don't have the second file (since we're at first commit)
+	// file2.txt should NOT exist at first commit
 	_, err = client.GetFileContent(repoInfo, "file2.txt")
-	if err == nil {
-		t.Error("Expected error for file2.txt not present at first commit")
-	}
+	require.Error(t, err)
 
-	// Clean up
-	err = client.Cleanup(ctx, repoInfo)
-	if err != nil {
-		t.Fatalf("Failed to cleanup: %v", err)
-	}
+	require.NoError(t, client.Cleanup(t.Context(), repoInfo))
 }
 
-// TestDefaultGitClient_UpdateRepositoryInfo tests the updateRepositoryInfo method
 func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
 	t.Parallel()
-	tempRepoDir, err := os.MkdirTemp("", "git-repo-update-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempRepoDir)
 
-	repo, err := git.PlainInit(tempRepoDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repository: %v", err)
-	}
+	repoDir := initTestRepo(t, map[string]string{"test.txt": "test content"})
 
-	workTree, err := repo.Worktree()
-	if err != nil {
-		t.Fatalf("Failed to get worktree: %v", err)
-	}
+	repo, err := gogit.PlainOpen(repoDir)
+	require.NoError(t, err)
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
 
-	testFilePath := filepath.Join(tempRepoDir, "test.txt")
-	err = os.WriteFile(testFilePath, []byte("test content"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	_, err = workTree.Add("test.txt")
-	if err != nil {
-		t.Fatalf("Failed to add file: %v", err)
-	}
-
-	commitHash, err := workTree.Commit("Initial commit", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Test Author",
-			Email: "test@example.com",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Failed to commit: %v", err)
-	}
-
-	// Create a branch
+	// Create and checkout a named branch
+	head, err := repo.Head()
+	require.NoError(t, err)
 	branchRef := plumbing.NewBranchReferenceName(mainBranchName)
-	err = repo.Storer.SetReference(plumbing.NewHashReference(branchRef, commitHash))
-	if err != nil {
-		t.Fatalf("Failed to set branch reference: %v", err)
-	}
-
-	// Checkout the branch to set HEAD properly
-	err = workTree.Checkout(&git.CheckoutOptions{
-		Branch: branchRef,
-	})
-	if err != nil {
-		t.Fatalf("Failed to checkout branch: %v", err)
-	}
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(branchRef, head.Hash())))
+	require.NoError(t, wt.Checkout(&gogit.CheckoutOptions{Branch: branchRef}))
 
 	client := NewDefaultGitClient()
-	repoInfo := &RepositoryInfo{
-		Repository: repo,
-	}
+	repoInfo := &RepositoryInfo{Repository: repo}
 
-	err = client.updateRepositoryInfo(repoInfo)
-	if err != nil {
-		t.Fatalf("updateRepositoryInfo failed: %v", err)
-	}
-
-	if repoInfo.Branch != mainBranchName {
-		t.Errorf("Expected Branch to be %q, got %s", mainBranchName, repoInfo.Branch)
-	}
+	require.NoError(t, client.updateRepositoryInfo(repoInfo))
+	assert.Equal(t, mainBranchName, repoInfo.Branch)
 }

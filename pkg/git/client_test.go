@@ -5,110 +5,90 @@ package git
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewDefaultGitClient(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
-	if client == nil {
-		t.Fatal("NewDefaultGitClient() returned nil")
+	require.NotNil(t, client)
+	assert.IsType(t, &DefaultGitClient{}, client)
+}
+
+func TestDefaultGitClient_Clone_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "invalid URL", url: "invalid-url"},
+		{name: "non-existent repo", url: "https://github.com/nonexistent/nonexistent.git"},
 	}
 
-	// Verify it's the correct type
-	if _, ok := any(client).(*DefaultGitClient); !ok {
-		t.Fatal("NewDefaultGitClient() did not return *DefaultGitClient")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client := NewDefaultGitClient()
+
+			repoInfo, err := client.Clone(t.Context(), &CloneConfig{URL: tt.url})
+			require.Error(t, err)
+			assert.Nil(t, repoInfo)
+		})
 	}
 }
 
-func TestDefaultGitClient_Clone_InvalidURL(t *testing.T) {
+func TestDefaultGitClient_Cleanup_NilInputs(t *testing.T) {
 	t.Parallel()
-	client := NewDefaultGitClient()
 
-	config := &CloneConfig{
-		URL: "invalid-url",
+	tests := []struct {
+		name     string
+		repoInfo *RepositoryInfo
+	}{
+		{name: "nil repoInfo", repoInfo: nil},
+		{name: "nil repository", repoInfo: &RepositoryInfo{Repository: nil}},
 	}
 
-	repoInfo, err := client.Clone(t.Context(), config)
-	if err == nil {
-		t.Error("Expected error for invalid URL, got nil")
-	}
-	if repoInfo != nil {
-		t.Error("Expected nil repoInfo for invalid URL")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client := NewDefaultGitClient()
 
-func TestDefaultGitClient_Clone_NonExistentRepo(t *testing.T) {
-	t.Parallel()
-	client := NewDefaultGitClient()
-
-	config := &CloneConfig{
-		URL: "https://github.com/nonexistent/nonexistent.git",
-	}
-
-	repoInfo, err := client.Clone(t.Context(), config)
-	if err == nil {
-		t.Error("Expected error for non-existent repository, got nil")
-	}
-	if repoInfo != nil {
-		t.Error("Expected nil repoInfo for non-existent repository")
-	}
-}
-
-func TestDefaultGitClient_Cleanup_NilRepoInfo(t *testing.T) {
-	t.Parallel()
-	client := NewDefaultGitClient()
-
-	err := client.Cleanup(t.Context(), nil)
-	if err == nil {
-		t.Errorf("Expected error for nil repoInfo, got nil")
-	}
-}
-
-func TestDefaultGitClient_Cleanup_NilRepository(t *testing.T) {
-	t.Parallel()
-	client := NewDefaultGitClient()
-	repoInfo := &RepositoryInfo{
-		Repository: nil,
-	}
-
-	err := client.Cleanup(t.Context(), repoInfo)
-	if err == nil {
-		t.Errorf("Expected error for nil repository, got nil")
+			err := client.Cleanup(t.Context(), tt.repoInfo)
+			require.Error(t, err)
+		})
 	}
 }
 
 func TestDefaultGitClient_GetFileContent_NoRepo(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
-	repoInfo := &RepositoryInfo{
-		Repository: nil,
-	}
 
-	content, err := client.GetFileContent(repoInfo, "test.txt")
-	if err == nil {
-		t.Error("Expected error for nil repository, got nil")
-	}
-	if content != nil {
-		t.Error("Expected nil content for nil repository")
-	}
+	content, err := client.GetFileContent(&RepositoryInfo{Repository: nil}, "test.txt")
+	require.Error(t, err)
+	assert.Nil(t, content)
 }
 
-func TestHeadCommitHash_NilRepo(t *testing.T) {
+func TestHeadCommitHash_NilInputs(t *testing.T) {
 	t.Parallel()
 
-	hash, err := HeadCommitHash(nil)
-	if err == nil {
-		t.Error("Expected error for nil repoInfo")
-	}
-	if hash != "" {
-		t.Error("Expected empty hash for nil repoInfo")
+	tests := []struct {
+		name     string
+		repoInfo *RepositoryInfo
+	}{
+		{name: "nil repoInfo", repoInfo: nil},
+		{name: "nil repository", repoInfo: &RepositoryInfo{}},
 	}
 
-	hash, err = HeadCommitHash(&RepositoryInfo{})
-	if err == nil {
-		t.Error("Expected error for nil repository")
-	}
-	if hash != "" {
-		t.Error("Expected empty hash for nil repository")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			hash, err := HeadCommitHash(tt.repoInfo)
+			require.Error(t, err)
+			assert.Empty(t, hash)
+		})
 	}
 }

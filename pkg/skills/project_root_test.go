@@ -58,7 +58,7 @@ func TestValidateProjectRoot(t *testing.T) {
 			name: "not a directory",
 			projectRoot: func(t *testing.T) string {
 				t.Helper()
-				root := t.TempDir()
+				root := resolvedTempDir(t)
 				file := filepath.Join(root, "file")
 				require.NoError(t, os.WriteFile(file, []byte("test"), 0o600))
 				return file
@@ -69,7 +69,7 @@ func TestValidateProjectRoot(t *testing.T) {
 			name: "missing git",
 			projectRoot: func(t *testing.T) string {
 				t.Helper()
-				return t.TempDir()
+				return resolvedTempDir(t)
 			},
 			wantErr: "git repository",
 		},
@@ -84,7 +84,7 @@ func TestValidateProjectRoot(t *testing.T) {
 			name: "git file",
 			projectRoot: func(t *testing.T) string {
 				t.Helper()
-				root := t.TempDir()
+				root := resolvedTempDir(t)
 				require.NoError(t, os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir"), 0o600))
 				return root
 			},
@@ -202,9 +202,20 @@ func TestValidateProjectRootSymlink(t *testing.T) {
 	assert.Contains(t, err.Error(), "symlinks")
 }
 
+// resolvedTempDir returns a temp directory path with symlinks resolved, so that
+// paths under it pass ValidateProjectRoot's "must not contain symlinks" check
+// (e.g. on macOS, t.TempDir() may return /var/folders/... which is a symlink).
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	return resolved
+}
+
 func makeGitRoot(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
 	return root
 }

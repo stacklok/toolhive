@@ -307,3 +307,157 @@ func TestToolConfigReconciler_findReferencingMCPServers(t *testing.T) {
 	assert.Contains(t, serverNames, "server2")
 	assert.NotContains(t, serverNames, "server3")
 }
+
+func TestToolConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	toolConfig := &mcpv1alpha1.MCPToolConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPToolConfigSpec{
+			ToolsFilter: []string{"tool1"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(toolConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+		Build()
+
+	r := &ToolConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      toolConfig.Name,
+			Namespace: toolConfig.Namespace,
+		},
+	}
+
+	// First reconciliation - add finalizer
+	result, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0))
+
+	// Second reconciliation - sets hash, no servers yet
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1alpha1.MCPToolConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
+	assert.Empty(t, updatedConfig.Status.ReferencingServers, "No servers should be referencing yet")
+
+	// Add an MCPServer that references this config (without changing the config spec)
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "new-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+				Name: "test-config",
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, mcpServer))
+
+	// Reconcile again - hash hasn't changed, but referencing servers should be updated
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.Contains(t, updatedConfig.Status.ReferencingServers, "new-server",
+		"ReferencingServers should be updated even without hash change")
+}
+
+func TestToolConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	toolConfig := &mcpv1alpha1.MCPToolConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPToolConfigSpec{
+			ToolsFilter: []string{"tool1"},
+		},
+	}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-to-delete",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+				Name: "test-config",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(toolConfig, mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+		Build()
+
+	r := &ToolConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      toolConfig.Name,
+			Namespace: toolConfig.Namespace,
+		},
+	}
+
+	// Add finalizer
+	result, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0))
+
+	// Set hash and referencing servers
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1alpha1.MCPToolConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.Contains(t, updatedConfig.Status.ReferencingServers, "server-to-delete")
+
+	// Delete the MCPServer
+	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
+
+	// Reconcile again - referencing servers should be empty now
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+	assert.Empty(t, updatedConfig.Status.ReferencingServers,
+		"ReferencingServers should be empty after server deletion")
+}

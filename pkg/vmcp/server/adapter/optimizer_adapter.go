@@ -35,16 +35,36 @@ func CreateOptimizerTools(opt optimizer.Optimizer) []server.ServerTool {
 	return []server.ServerTool{
 		{
 			Tool: mcp.Tool{
-				Name:           FindToolName,
-				Description:    "Search for tools by description. Returns matching tools ranked by relevance.",
+				Name: FindToolName,
+				Description: "Find and return tools that can help accomplish the user's request. " +
+					"This searches available MCP server tools using semantic and keyword-based matching. " +
+					"Use this function when you need to: " +
+					"(1) discover what tools are available for a specific task, " +
+					"(2) find the right tool(s) before attempting to solve a problem, " +
+					"(3) check if required functionality exists in the current environment. " +
+					"Returns matching tools ranked by relevance including their names, descriptions, " +
+					"required parameters and schemas, plus token efficiency metrics showing " +
+					"baseline_tokens, returned_tokens, and savings_percent. " +
+					"Example: for 'Find good restaurants in San Jose', call with " +
+					"tool_description='search the web' and tool_keywords='web search restaurants'. " +
+					"Always call this before call_tool to discover the correct tool name and parameter schema.",
 				RawInputSchema: findToolInputSchema,
 			},
 			Handler: createFindToolHandler(opt),
 		},
 		{
 			Tool: mcp.Tool{
-				Name:           CallToolName,
-				Description:    "Call a tool by name with the given parameters.",
+				Name: CallToolName,
+				Description: "Execute a specific tool with the provided parameters. " +
+					"Use this function to: " +
+					"(1) run a tool after identifying it with find_tool, " +
+					"(2) execute operations that require specific MCP server functionality, " +
+					"(3) perform actions that go beyond your built-in capabilities. " +
+					"Important: always use find_tool first to get the correct tool_name " +
+					"and parameter schema before calling this function. " +
+					"The parameters must match the tool's input schema as returned by find_tool. " +
+					"Returns the tool's execution result which may include success/failure status, " +
+					"result data or content, and error messages if execution failed.",
 				RawInputSchema: callToolInputSchema,
 			},
 			Handler: createCallToolHandler(opt),

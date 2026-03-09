@@ -28,6 +28,10 @@ import (
 )
 
 const (
+	// podTemplateSpecHashAnnotation tracks the SHA256 hash of the user-provided PodTemplateSpec.
+	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
+	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
+
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
 
@@ -533,10 +537,20 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
 func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
-	_ *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
+
+	// Store hash of user-provided PodTemplateSpec to detect changes without
+	// comparing full rendered templates (which include K8s-defaulted fields).
+	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
+	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
+		hash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
+		if err == nil {
+			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
+		}
+	}
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 
@@ -605,6 +619,13 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 		serviceType = corev1.ServiceType(vmcp.Spec.ServiceType)
 	}
 
+	sessionAffinity := func() corev1.ServiceAffinity {
+		if vmcp.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(vmcp.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName,
@@ -613,8 +634,9 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 			Annotations: serviceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Type:     serviceType,
-			Selector: ls,
+			Type:            serviceType,
+			Selector:        ls,
+			SessionAffinity: sessionAffinity,
 			Ports: []corev1.ServicePort{{
 				Port:       vmcpDefaultPort,
 				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),

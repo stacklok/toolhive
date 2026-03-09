@@ -262,6 +262,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			skillsvc.WithOCIStore(ociStore),
 			skillsvc.WithPackager(packager),
 			skillsvc.WithRegistryClient(registry),
+			skillsvc.WithGroupManager(b.groupManager),
 		)
 	}
 

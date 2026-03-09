@@ -1437,6 +1437,16 @@ spec:
                 - NodePort
                 - LoadBalancer
                 type: string
+              sessionAffinity:
+                default: ClientIP
+                description: |-
+                  SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+                  MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+                  Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+                enum:
+                - ClientIP
+                - None
+                type: string
             required:
             - incomingAuth
             type: object

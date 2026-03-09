@@ -24,6 +24,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
@@ -70,6 +71,13 @@ func WithRegistryClient(rc ociskills.RegistryClient) Option {
 	}
 }
 
+// WithGroupManager sets the group manager for skill group membership.
+func WithGroupManager(mgr groups.Manager) Option {
+	return func(s *service) {
+		s.groupManager = mgr
+	}
+}
+
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
@@ -100,6 +108,7 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 type service struct {
 	locks        skillLock
 	store        storage.SkillStore
+	groupManager groups.Manager
 	pathResolver skills.PathResolver
 	installer    skills.Installer
 	ociStore     *ociskills.Store
@@ -133,7 +142,40 @@ func (s *service) List(ctx context.Context, opts skills.ListOptions) ([]skills.I
 		ClientApp:   opts.ClientApp,
 		ProjectRoot: projectRoot,
 	}
-	return s.store.List(ctx, filter)
+	all, err := s.store.List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	if opts.Group == "" {
+		return all, nil
+	}
+
+	if s.groupManager == nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("group filtering is not available: group manager is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	group, err := s.groupManager.Get(ctx, opts.Group)
+	if err != nil {
+		return nil, fmt.Errorf("getting group %q: %w", opts.Group, err)
+	}
+
+	// Build a lookup set of skill names in the group.
+	groupSkills := make(map[string]struct{}, len(group.Skills))
+	for _, name := range group.Skills {
+		groupSkills[name] = struct{}{}
+	}
+
+	filtered := make([]skills.InstalledSkill, 0, len(all))
+	for _, sk := range all {
+		if _, ok := groupSkills[sk.Metadata.Name]; ok {
+			filtered = append(filtered, sk)
+		}
+	}
+	return filtered, nil
 }
 
 // Install installs a skill. When the Name field contains an OCI reference
@@ -159,7 +201,11 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		)
 	}
 	if isOCI {
-		return s.installFromOCI(ctx, opts, scope, ref)
+		result, err := s.installFromOCI(ctx, opts, scope, ref)
+		if err != nil {
+			return nil, err
+		}
+		return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
 	}
 
 	// Plain skill name — validate and proceed with existing flow.
@@ -170,12 +216,36 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
-	// Without layer data, fall back to creating a pending record.
+	// Without layer data, check the local OCI store for a matching tag
+	// before falling back to a pending record. This enables the
+	// build → install workflow where `thv skill build` tags the artifact
+	// with the skill name and a subsequent `thv skill install <name>`
+	// resolves it locally.
 	if len(opts.LayerData) == 0 {
-		return s.installPending(ctx, opts, scope)
+		resolved := false
+		if s.ociStore != nil {
+			var resolveErr error
+			// Pass pointer to hydrate opts with layer data, digest, and version.
+			resolved, resolveErr = s.resolveFromLocalStore(ctx, &opts)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+		}
+		if !resolved {
+			result, err := s.installPending(ctx, opts, scope)
+			if err != nil {
+				return nil, err
+			}
+			return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+		}
+		// resolved: opts hydrated, fall through to installWithExtraction
 	}
 
-	return s.installWithExtraction(ctx, opts, scope)
+	result, err := s.installWithExtraction(ctx, opts, scope)
+	if err != nil {
+		return nil, err
+	}
+	return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
 }
 
 // Uninstall removes an installed skill and cleans up files for all clients.
@@ -218,6 +288,13 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 
 	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
 		return err
+	}
+
+	// Remove the skill from all groups — best-effort, same pattern as file cleanup.
+	if s.groupManager != nil {
+		if groupErr := groups.RemoveSkillFromAllGroups(ctx, s.groupManager, opts.Name); groupErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("removing skill from groups: %w", groupErr))
+		}
 	}
 
 	return errors.Join(cleanupErrs...)
@@ -439,6 +516,55 @@ func (s *service) installFromOCI(
 	defer unlock()
 
 	return s.installWithExtraction(ctx, opts, scope)
+}
+
+// resolveFromLocalStore attempts to resolve a skill name as a tag in the local
+// OCI store. On success it hydrates opts with layer data, digest, and version
+// from the artifact. Returns (true, nil) when resolved, (false, nil) when the
+// tag is not found, or (false, err) on validation/extraction failure.
+func (s *service) resolveFromLocalStore(ctx context.Context, opts *skills.InstallOptions) (bool, error) {
+	d, err := s.ociStore.Resolve(ctx, opts.Name)
+	if err != nil {
+		// Tag not found in the local store — not an error, just unresolved.
+		slog.Debug("skill name not found in local OCI store", "name", opts.Name, "error", err)
+		return false, nil
+	}
+
+	layerData, skillConfig, err := s.extractOCIContent(ctx, d)
+	if err != nil {
+		return false, err
+	}
+
+	if err := skills.ValidateSkillName(skillConfig.Name); err != nil {
+		return false, httperr.WithCode(
+			fmt.Errorf("local artifact contains invalid skill name: %w", err),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// Supply-chain defense: the skill name declared inside the artifact must
+	// match the tag used to install it. A mismatch could indicate a
+	// tampered or mis-tagged artifact.
+	if skillConfig.Name != opts.Name {
+		return false, httperr.WithCode(
+			fmt.Errorf(
+				"skill name %q in local artifact does not match install name %q",
+				skillConfig.Name, opts.Name,
+			),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	opts.LayerData = layerData
+	opts.Digest = d.String()
+	if opts.Reference == "" {
+		opts.Reference = opts.Name
+	}
+	if opts.Version == "" && skillConfig.Version != "" {
+		opts.Version = skillConfig.Version
+	}
+
+	return true, nil
 }
 
 // extractOCIContent navigates the OCI content graph from a pulled digest,
@@ -744,4 +870,14 @@ func defaultScope(s skills.Scope) skills.Scope {
 		return skills.ScopeUser
 	}
 	return s
+}
+
+// registerSkillInGroup adds the skill to the requested group when a group
+// manager is configured. It is a no-op when groupName is empty or the manager
+// is nil (group support is optional).
+func (s *service) registerSkillInGroup(ctx context.Context, groupName string, skillName string) error {
+	if groupName == "" || s.groupManager == nil {
+		return nil
+	}
+	return groups.AddSkillToGroup(ctx, s.groupManager, groupName, skillName)
 }

@@ -333,14 +333,14 @@ func TestEncryptedManager_Concurrency(t *testing.T) {
 		<-done
 	}
 
-	// Verify all secrets were set
+	// Verify all secrets were set in memory
 	secrets, err := manager.ListSecrets(ctx)
 	assert.NoError(t, err, "Listing secrets should not return an error")
 	assert.Len(t, secrets, numGoroutines+1, "There should be numGoroutines+1 secrets")
 
 	// Helper function to check if a key exists in the secrets list
-	containsKey := func(key string) bool {
-		for _, secret := range secrets {
+	containsKey := func(list []SecretDescription, key string) bool {
+		for _, secret := range list {
 			if secret.Key == key {
 				return true
 			}
@@ -349,12 +349,24 @@ func TestEncryptedManager_Concurrency(t *testing.T) {
 	}
 
 	// Check if the original key exists
-	assert.True(t, containsKey("test-key"), "The list should contain the original key")
+	assert.True(t, containsKey(secrets, "test-key"), "The list should contain the original key")
 
 	// Check if all the keys created in the goroutines exist
 	for i := 0; i < numGoroutines; i++ {
 		keyName := fmt.Sprintf("key-%d", i)
-		assert.True(t, containsKey(keyName), "The list should contain %s", keyName)
+		assert.True(t, containsKey(secrets, keyName), "The list should contain %s", keyName)
+	}
+
+	// Verify file-level consistency: reload from disk and confirm all secrets are present
+	reloaded := createEncryptedManager(t, tempFile, key)
+	reloadedSecrets, err := reloaded.ListSecrets(ctx)
+	require.NoError(t, err, "Listing secrets from reloaded manager should not return an error")
+	assert.Len(t, reloadedSecrets, numGoroutines+1, "Reloaded manager should have numGoroutines+1 secrets")
+
+	assert.True(t, containsKey(reloadedSecrets, "test-key"), "Reloaded list should contain the original key")
+	for i := 0; i < numGoroutines; i++ {
+		keyName := fmt.Sprintf("key-%d", i)
+		assert.True(t, containsKey(reloadedSecrets, keyName), "Reloaded list should contain %s", keyName)
 	}
 }
 

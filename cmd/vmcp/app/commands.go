@@ -18,10 +18,12 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -31,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
@@ -227,19 +230,23 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 
 // discoverBackends initializes managers, discovers backends, and creates backend client
 // Returns empty backends list with no error if running in Kubernetes where CLI discovery doesn't work
-func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
+// Also returns the outgoingRegistry for use in creating SessionFactory
+func discoverBackends(
+	ctx context.Context,
+	cfg *config.Config,
+) ([]vmcp.Backend, vmcp.BackendClient, vmcpauth.OutgoingAuthRegistry, error) {
 	// Create outgoing authentication registry
 	slog.Info("initializing outgoing authentication")
 	envReader := &env.OSReader{}
 	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, envReader)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
 
 	// Create backend client first (needed even with empty backends)
 	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create backend client: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}
 
 	// Create backend discoverer based on configuration mode
@@ -257,28 +264,75 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		slog.Info("dynamic mode: initializing group manager for backend discovery")
 		groupsManager, err := groups.NewManager()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
 		}
 
 		discoverer, err = aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
 		}
 	}
 
 	slog.Info(fmt.Sprintf("Discovering backends in group: %s", cfg.Group))
 	backends, err := discoverer.Discover(ctx, cfg.Group)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to discover backends: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to discover backends: %w", err)
 	}
 
 	if len(backends) == 0 {
 		slog.Warn(fmt.Sprintf("No backends discovered in group %s - vmcp will start but have no backends to proxy", cfg.Group))
-		return []vmcp.Backend{}, backendClient, nil
+		return []vmcp.Backend{}, backendClient, outgoingRegistry, nil
 	}
 
 	slog.Info(fmt.Sprintf("Discovered %d backends", len(backends)))
-	return backends, backendClient, nil
+	return backends, backendClient, outgoingRegistry, nil
+}
+
+// createSessionFactory creates a MultiSessionFactory with HMAC-SHA256 token binding.
+// The HMAC secret is read from the VMCP_SESSION_HMAC_SECRET environment variable.
+//
+// Behavior:
+//   - If VMCP_SESSION_HMAC_SECRET is set: validates length and creates factory with the secret
+//   - If running in Kubernetes without secret: returns error (production safety requirement)
+//   - Otherwise: logs warning and creates factory with default insecure secret
+//
+// Returns an error only when running in Kubernetes without a secret (fail-fast for production).
+func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcpsession.MultiSessionFactory, error) {
+	const (
+		envKey                  = "VMCP_SESSION_HMAC_SECRET"
+		minRecommendedSecretLen = 32
+	)
+
+	hmacSecret := os.Getenv(envKey)
+
+	if hmacSecret != "" {
+		// Validate secret length (warn if too short, but still use it)
+		if secretLen := len(hmacSecret); secretLen < minRecommendedSecretLen {
+			// G706: Safe - only logging integer length, not the secret itself
+			slog.Warn( //nolint:gosec
+				"HMAC secret is shorter than recommended length - consider using a longer secret",
+				"actual_length", secretLen,
+				"recommended_length", minRecommendedSecretLen,
+			)
+		}
+		slog.Info("using HMAC secret from VMCP_SESSION_HMAC_SECRET environment variable for session token binding")
+		return vmcpsession.NewSessionFactory(
+			outgoingRegistry,
+			vmcpsession.WithHMACSecret([]byte(hmacSecret)),
+		), nil
+	}
+
+	// No secret provided - check if we're in Kubernetes (production environment)
+	if runtime.IsKubernetesRuntime() {
+		return nil, fmt.Errorf(
+			"VMCP_SESSION_HMAC_SECRET environment variable is required when running in Kubernetes. " +
+				"Generate a secure secret with: openssl rand -base64 32",
+		)
+	}
+
+	// Development mode: use default insecure secret with warning
+	slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
+	return vmcpsession.NewSessionFactory(outgoingRegistry), nil
 }
 
 // runServe implements the serve command logic
@@ -308,7 +362,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Discover backends and create client
-	backends, backendClient, err := discoverBackends(ctx, cfg)
+	backends, backendClient, outgoingRegistry, err := discoverBackends(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -468,6 +522,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
+	// Create session factory only when SessionManagementV2 is enabled
+	var sessionFactory vmcpsession.MultiSessionFactory
+	if cfg.Operational.SessionManagementV2 {
+		sessionFactory, err = createSessionFactory(outgoingRegistry)
+		if err != nil {
+			return err
+		}
+	}
+
 	serverCfg := &vmcpserver.Config{
 		Name:                    cfg.Name,
 		Version:                 getVersion(),
@@ -483,6 +546,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
+		SessionManagementV2:     cfg.Operational.SessionManagementV2,
+		SessionFactory:          sessionFactory,
 	}
 
 	// Convert composite tool configurations to workflow definitions

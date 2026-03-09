@@ -324,6 +324,7 @@ For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](..
 3. **Service**
    - Exposes proxy deployment
    - Type: ClusterIP, LoadBalancer, or NodePort
+   - SessionAffinity: ClientIP (ensures stateful MCP sessions reach the same pod)
    - Routes traffic to proxy
 
 4. **ConfigMap** (RunConfig)
@@ -340,7 +341,7 @@ For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](..
 graph LR
     subgraph "Namespace: default"
         Deploy["Deployment (proxy)<br/>Replicas: 1<br/>thv-proxyrunner"]
-        SVC["Service<br/>Type: ClusterIP"]
+        SVC["Service<br/>Type: ClusterIP<br/>SessionAffinity: ClientIP"]
         STS["StatefulSet (mcp)<br/>Replicas: 1<br/>MCP Server"]
         CM["ConfigMap<br/>RunConfig"]
     end

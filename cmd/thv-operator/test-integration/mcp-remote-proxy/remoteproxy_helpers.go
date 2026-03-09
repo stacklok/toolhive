@@ -129,6 +129,19 @@ func (rb *RemoteProxyBuilder) WithGroupRef(name string) *RemoteProxyBuilder {
 	return rb
 }
 
+// WithInlineOIDCConfig sets an inline OIDC config for the proxy
+func (rb *RemoteProxyBuilder) WithInlineOIDCConfig(issuer, audience string, insecureAllowHTTP bool) *RemoteProxyBuilder {
+	rb.proxy.Spec.OIDCConfig = mcpv1alpha1.OIDCConfigRef{
+		Type: "inline",
+		Inline: &mcpv1alpha1.InlineOIDCConfig{
+			Issuer:            issuer,
+			Audience:          audience,
+			InsecureAllowHTTP: insecureAllowHTTP,
+		},
+	}
+	return rb
+}
+
 // Create builds and creates the MCPRemoteProxy in the cluster
 func (rb *RemoteProxyBuilder) Create(h *MCPRemoteProxyTestHelper) *mcpv1alpha1.MCPRemoteProxy {
 	proxy := rb.proxy.DeepCopy()

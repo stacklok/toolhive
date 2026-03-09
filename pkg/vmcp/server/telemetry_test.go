@@ -146,7 +146,7 @@ func TestTelemetryOptimizer(t *testing.T) {
 				return &fakeOptimizer{
 					findToolFn: func(_ context.Context, _ optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
 						return &optimizer.FindToolOutput{
-							Tools: []optimizer.ToolMatch{
+							Tools: []mcp.Tool{
 								{Name: "tool_a", Description: "Tool A"},
 								{Name: "tool_b", Description: "Tool B"},
 							},

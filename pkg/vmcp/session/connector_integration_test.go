@@ -142,7 +142,7 @@ func TestSessionFactory_Integration_CallTool(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
-	result, err := sess.CallTool(context.Background(), "echo", map[string]any{"input": "hello world"}, nil)
+	result, err := sess.CallTool(context.Background(), nil, "echo", map[string]any{"input": "hello world"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Content, 1)
@@ -165,7 +165,7 @@ func TestSessionFactory_Integration_ReadResource(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
-	result, err := sess.ReadResource(context.Background(), "test://data")
+	result, err := sess.ReadResource(context.Background(), nil, "test://data")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, "hello", string(result.Contents))
@@ -187,7 +187,7 @@ func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
-	result, err := sess.GetPrompt(context.Background(), "greet", nil)
+	result, err := sess.GetPrompt(context.Background(), nil, "greet", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	// ConvertPromptMessages formats messages as "[role] text\n"

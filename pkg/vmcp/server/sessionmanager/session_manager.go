@@ -15,6 +15,7 @@ package sessionmanager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 const (
@@ -149,6 +151,10 @@ func (sm *Manager) CreateSession(
 	// Resolve the caller identity (may be nil for anonymous access).
 	identity, _ := auth.IdentityFromContext(ctx)
 
+	// Note: Token hash and salt are computed and stored by the session factory
+	// (MakeSessionWithID below). Token binding enforcement happens at the session
+	// level via validateCaller(), which uses HMAC-SHA256 with a per-session salt.
+
 	// List all available backends from the registry.
 	rawBackends := sm.backendRegistry.List(ctx)
 	backends := make([]*vmcp.Backend, len(rawBackends))
@@ -157,7 +163,10 @@ func (sm *Manager) CreateSession(
 	}
 
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
-	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends)
+	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
+	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
+	allowAnonymous := vmcpsession.ShouldAllowAnonymous(identity)
+	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, allowAnonymous, backends)
 	if err != nil {
 		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)
 	}
@@ -183,6 +192,9 @@ func (sm *Manager) CreateSession(
 			sessionID,
 		)
 	}
+
+	// The token hash and salt are already stored in the session metadata by the
+	// factory (MakeSessionWithID). No need to transfer from placeholder.
 
 	// Replace the placeholder in the transport manager.
 	if err := sm.storage.UpsertSession(sess); err != nil {
@@ -338,10 +350,11 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 			RawInputSchema: schemaJSON,
 		}
 
-		// Build the session-scoped handler that captures multiSess and toolName
+		// Build the session-scoped handler that captures multiSess, sessionID, and toolName
 		// by value. Using the captured toolName (not req.Params.Name) ensures
 		// routing is driven by the server-registered name, not client-supplied input.
 		capturedSess := multiSess
+		capturedSessionID := sessionID
 		toolName := domainTool.Name
 		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, ok := req.Params.Arguments.(map[string]any)
@@ -352,8 +365,23 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 			}
 
 			meta := conversion.FromMCPMeta(req.Params.Meta)
-			result, callErr := capturedSess.CallTool(ctx, toolName, args, meta)
+
+			// Extract caller identity from context
+			caller, _ := auth.IdentityFromContext(ctx)
+
+			result, callErr := capturedSess.CallTool(ctx, caller, toolName, args, meta)
 			if callErr != nil {
+				// Handle authorization errors - terminate session immediately
+				if errors.Is(callErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(callErr, sessiontypes.ErrNilCaller) {
+					slog.Warn("caller authorization failed, terminating session",
+						"session_id", capturedSessionID, "tool", toolName, "error", callErr)
+					// Terminate session to prevent further unauthorized attempts
+					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
+						slog.Error("failed to terminate session after auth failure",
+							"session_id", capturedSessionID, "error", termErr)
+					}
+					return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", callErr)), nil
+				}
 				return mcp.NewToolResultError(callErr.Error()), nil
 			}
 

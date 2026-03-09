@@ -175,6 +175,8 @@ type SkillIndexEntry struct {
 	Metadata SkillMetadata `json:"metadata"`
 	// Repository is the OCI repository reference for the skill.
 	Repository string `json:"repository"`
+	// Group is the optional group this skill belongs to.
+	Group string `json:"group,omitempty"`
 }
 
 // SkillIndex represents a collection of available skills from a remote index.

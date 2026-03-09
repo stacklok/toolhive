@@ -73,7 +73,7 @@ func GetMCPServer(
 		slog.Debug("Attempting to retrieve MCP server from protocol scheme",
 			"server_or_image", serverOrImage)
 		var err error
-		imageToUse, imageMetadata, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager, runtimeOverride)
+		imageToUse, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager, runtimeOverride)
 		if err != nil {
 			return "", nil, err
 		}
@@ -124,32 +124,34 @@ func GetMCPServer(
 		return "", nil, fmt.Errorf("failed to retrieve or pull image: %w", err)
 	}
 
-	return imageToUse, imageMetadata, nil
+	// Guard against returning a typed nil pointer as a ServerMetadata interface.
+	// A nil *ImageMetadata wrapped in a non-nil interface would cause callers
+	// checking "serverMetadata != nil" to proceed and panic on method calls.
+	if imageMetadata != nil {
+		return imageToUse, imageMetadata, nil
+	}
+	return imageToUse, nil, nil
 }
 
-// handleProtocolScheme handles the protocol scheme case
+// handleProtocolScheme handles the protocol scheme case.
+// Protocol schemes (npx://, uvx://, go://) don't have registry metadata,
+// so this only returns the generated image name.
 func handleProtocolScheme(
 	ctx context.Context,
 	serverOrImage string,
 	rawCACertPath string,
 	imageManager images.ImageManager,
 	runtimeOverride *templates.RuntimeConfig,
-) (string, *types.ImageMetadata, error) {
-	var imageMetadata *types.ImageMetadata
-	var imageToUse string
-
+) (string, error) {
 	slog.Debug("Detected protocol scheme", "server", serverOrImage)
 	// Process the protocol scheme and build the image
 	caCertPath := resolveCACertPath(rawCACertPath)
 	generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath, runtimeOverride)
 	if err != nil {
-		return "", nil, errors.Join(ErrBadProtocolScheme, err)
+		return "", errors.Join(ErrBadProtocolScheme, err)
 	}
-	// Update the image in the runConfig with the generated image
 	slog.Debug("Using built image", "image", generatedImage, "original", serverOrImage)
-	imageToUse = generatedImage
-
-	return imageToUse, imageMetadata, nil
+	return generatedImage, nil
 }
 
 // handleGroupLookup handles the group lookup case

@@ -20,12 +20,12 @@ func TestGenerateSchema_FindToolInput(t *testing.T) {
 		"properties": map[string]any{
 			"tool_description": map[string]any{
 				"type":        "string",
-				"description": "Natural language description of the tool to find",
+				"description": "Description of the task or capability needed (e.g. 'web search', 'analyze CSV file', 'send an email'). This is used for semantic similarity matching against available tools.",
 			},
 			"tool_keywords": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Optional keywords to narrow search",
+				"description": "Optional keywords for BM25 text search to narrow results (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Combined with tool_description for hybrid search.",
 			},
 		},
 		"required": []string{"tool_description"},
@@ -45,11 +45,11 @@ func TestGenerateSchema_CallToolInput(t *testing.T) {
 		"properties": map[string]any{
 			"tool_name": map[string]any{
 				"type":        "string",
-				"description": "Name of the tool to call",
+				"description": "The name of the tool to execute (obtain this from find_tool results - it is the tool's name field)",
 			},
 			"parameters": map[string]any{
 				"type":        "object",
-				"description": "Parameters to pass to the tool",
+				"description": "Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool.",
 			},
 		},
 		"required": []string{"tool_name", "parameters"},

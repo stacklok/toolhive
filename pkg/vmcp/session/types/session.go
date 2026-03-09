@@ -9,7 +9,9 @@ package types
 
 import (
 	"context"
+	"errors"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -21,23 +23,49 @@ import (
 type Caller interface {
 	// CallTool invokes toolName on the backend.
 	//
+	// caller identifies the requesting user/service. For bound sessions, caller
+	// must be non-nil and its identity must match the session creator. For
+	// anonymous sessions, caller may be nil.
+	//
+	// Returns:
+	//   - ErrNilCaller if caller is nil for a bound session
+	//   - ErrUnauthorizedCaller if the caller identity does not match the session owner
+	//
 	// arguments contains the tool input parameters.
 	// meta contains protocol-level metadata (_meta) forwarded from the client.
 	CallTool(
 		ctx context.Context,
+		caller *auth.Identity,
 		toolName string,
 		arguments map[string]any,
 		meta map[string]any,
 	) (*vmcp.ToolCallResult, error)
 
 	// ReadResource retrieves the resource identified by uri from the backend.
-	ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error)
+	//
+	// caller identifies the requesting user/service. For bound sessions, caller
+	// must be non-nil and its identity must match the session creator. For
+	// anonymous sessions, caller may be nil.
+	//
+	// Returns:
+	//   - ErrNilCaller if caller is nil for a bound session
+	//   - ErrUnauthorizedCaller if the caller identity does not match the session owner
+	ReadResource(ctx context.Context, caller *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
 
 	// GetPrompt retrieves the named prompt from the backend.
+	//
+	// caller identifies the requesting user/service. For bound sessions, caller
+	// must be non-nil and its identity must match the session creator. For
+	// anonymous sessions, caller may be nil.
+	//
+	// Returns:
+	//   - ErrNilCaller if caller is nil for a bound session
+	//   - ErrUnauthorizedCaller if the caller identity does not match the session owner
 	//
 	// arguments contains the prompt input parameters.
 	GetPrompt(
 		ctx context.Context,
+		caller *auth.Identity,
 		name string,
 		arguments map[string]any,
 	) (*vmcp.PromptGetResult, error)
@@ -46,3 +74,19 @@ type Caller interface {
 	// be idempotent: calling Close multiple times returns nil.
 	Close() error
 }
+
+// Token binding errors returned by Caller methods when caller identity
+// validation fails.
+var (
+	// ErrUnauthorizedCaller is returned when the caller identity does not
+	// match the session owner's identity (token hash mismatch).
+	ErrUnauthorizedCaller = errors.New("caller identity does not match session owner")
+
+	// ErrNilCaller is returned when a bound session receives a nil caller.
+	// Bound sessions require explicit caller identity on every method call.
+	ErrNilCaller = errors.New("caller identity is required for bound sessions")
+
+	// ErrSessionOwnerUnknown is returned when the session has no bound identity
+	// but is configured to require one. This indicates a configuration error.
+	ErrSessionOwnerUnknown = errors.New("session has no bound identity")
+)

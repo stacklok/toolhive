@@ -146,6 +146,9 @@ const docTemplate = `{
                         "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
                         "type": "string"
                     },
+                    "token_response_mapping": {
+                        "$ref": "#/components/schemas/authserver.TokenResponseMappingRunConfig"
+                    },
                     "userinfo": {
                         "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
                     }
@@ -279,6 +282,28 @@ const docTemplate = `{
                     },
                     "refresh_token_lifespan": {
                         "description": "RefreshTokenLifespan is the duration that refresh tokens are valid.\nIf empty, defaults to 7 days (168h).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TokenResponseMappingRunConfig": {
+                "description": "TokenResponseMapping configures custom field extraction from non-standard token responses.\nWhen set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using\nthe configured dot-notation paths.",
+                "properties": {
+                    "access_token_path": {
+                        "description": "AccessTokenPath is the dot-notation path to the access token (required).",
+                        "type": "string"
+                    },
+                    "expires_in_path": {
+                        "description": "ExpiresInPath is the dot-notation path to the expires_in value. Defaults to \"expires_in\".",
+                        "type": "string"
+                    },
+                    "refresh_token_path": {
+                        "description": "RefreshTokenPath is the dot-notation path to the refresh token. Defaults to \"refresh_token\".",
+                        "type": "string"
+                    },
+                    "scope_path": {
+                        "description": "ScopePath is the dot-notation path to the scope. Defaults to \"scope\".",
                         "type": "string"
                     }
                 },
@@ -602,6 +627,13 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "registered_clients": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "skills": {
                         "items": {
                             "type": "string"
                         },
@@ -1818,6 +1850,10 @@ const docTemplate = `{
                     "force": {
                         "description": "Force allows overwriting unmanaged skill directories",
                         "type": "boolean"
+                    },
+                    "group": {
+                        "description": "Group is the group name to add the skill to after installation",
+                        "type": "string"
                     },
                     "name": {
                         "description": "Name or OCI reference of the skill to install",
@@ -3540,6 +3576,14 @@ const docTemplate = `{
                         "description": "Filter by project root path",
                         "in": "query",
                         "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by group name",
+                        "in": "query",
+                        "name": "group",
                         "schema": {
                             "type": "string"
                         }

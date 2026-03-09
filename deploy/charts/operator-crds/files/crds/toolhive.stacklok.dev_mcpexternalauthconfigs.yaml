@@ -441,6 +441,38 @@ spec:
                                 token endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            tokenResponseMapping:
+                              description: |-
+                                TokenResponseMapping configures custom field extraction from non-standard token responses.
+                                Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths
+                                instead of returning them at the top level. When set, ToolHive performs the token
+                                exchange HTTP call directly and extracts fields using the configured dot-notation paths.
+                                If nil, standard OAuth 2.0 token response parsing is used.
+                              properties:
+                                accessTokenPath:
+                                  description: |-
+                                    AccessTokenPath is the dot-notation path to the access token in the response.
+                                    Example: "authed_user.access_token"
+                                  minLength: 1
+                                  type: string
+                                expiresInPath:
+                                  description: |-
+                                    ExpiresInPath is the dot-notation path to the expires_in value (in seconds).
+                                    If not specified, defaults to "expires_in".
+                                  type: string
+                                refreshTokenPath:
+                                  description: |-
+                                    RefreshTokenPath is the dot-notation path to the refresh token in the response.
+                                    If not specified, defaults to "refresh_token".
+                                  type: string
+                                scopePath:
+                                  description: |-
+                                    ScopePath is the dot-notation path to the scope string in the response.
+                                    If not specified, defaults to "scope".
+                                  type: string
+                              required:
+                              - accessTokenPath
+                              type: object
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.

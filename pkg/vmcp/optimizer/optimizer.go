@@ -104,25 +104,22 @@ type Optimizer interface {
 // FindToolInput contains the parameters for finding tools.
 type FindToolInput struct {
 	// ToolDescription is a natural language description of the tool to find.
-	ToolDescription string `json:"tool_description" description:"Natural language description of the tool to find"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	ToolDescription string `json:"tool_description" description:"Description of the task or capability needed (e.g. 'web search', 'analyze CSV file', 'send an email'). This is used for semantic similarity matching against available tools."`
 
 	// ToolKeywords is an optional list of keywords to narrow the search.
-	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords to narrow search"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords for BM25 text search to narrow results (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Combined with tool_description for hybrid search."`
 }
 
 // FindToolOutput contains the results of a tool search.
 type FindToolOutput struct {
 	// Tools contains the matching tools, ranked by relevance.
-	Tools []ToolMatch `json:"tools"`
+	Tools []mcp.Tool `json:"tools"`
 
 	// TokenMetrics provides information about token savings from using the optimizer.
 	TokenMetrics TokenMetrics `json:"token_metrics"`
 }
-
-// ToolMatch represents a tool that matched the search criteria.
-// It is defined in the internal/types package and aliased here so that
-// external consumers continue to use optimizer.ToolMatch.
-type ToolMatch = types.ToolMatch
 
 // TokenMetrics provides information about token usage optimization.
 // It is defined in the internal/tokencounter package and aliased here so that
@@ -132,10 +129,12 @@ type TokenMetrics = tokencounter.TokenMetrics
 // CallToolInput contains the parameters for calling a tool.
 type CallToolInput struct {
 	// ToolName is the name of the tool to invoke.
-	ToolName string `json:"tool_name" description:"Name of the tool to call"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	ToolName string `json:"tool_name" description:"The name of the tool to execute (obtain this from find_tool results - it is the tool's name field)"`
 
 	// Parameters are the arguments to pass to the tool.
-	Parameters map[string]any `json:"parameters" description:"Parameters to pass to the tool"`
+	//nolint:lll // Long description tag provides essential context for LLM tool usage.
+	Parameters map[string]any `json:"parameters" description:"Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool."`
 }
 
 // NewOptimizerFactory creates the embedding client and SQLite tool store from
@@ -248,6 +247,15 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 	matches, err := d.store.Search(ctx, input.ToolDescription, d.toolNames)
 	if err != nil {
 		return nil, fmt.Errorf("tool search failed: %w", err)
+	}
+
+	// Enrich each match with the full tool from the in-memory map.
+	// The store only returns Name and Description; replacing with the full
+	// mcp.Tool gives us InputSchema, OutputSchema, Annotations, etc.
+	for i, m := range matches {
+		if tool, ok := d.tools[m.Name]; ok {
+			matches[i] = tool.Tool
+		}
 	}
 
 	matchedNames := make([]string, len(matches))

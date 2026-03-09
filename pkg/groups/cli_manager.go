@@ -212,6 +212,11 @@ func (m *cliManager) UnregisterClients(ctx context.Context, groupNames []string,
 	return nil
 }
 
+// Update persists changes to an existing group.
+func (m *cliManager) Update(ctx context.Context, group *Group) error {
+	return m.saveGroup(ctx, group)
+}
+
 // saveGroup saves the group to the group state store
 func (m *cliManager) saveGroup(ctx context.Context, group *Group) error {
 	writer, err := m.groupStore.GetWriter(ctx, group.Name)

@@ -23,6 +23,13 @@ import (
 )
 
 func main() {
+	// Bind TOOLHIVE_DEBUG env var early, before logger initialization.
+	// This must happen before viper.GetBool("debug") so the env var
+	// is available when configuring the log level.
+	if err := viper.BindEnv("debug", "TOOLHIVE_DEBUG"); err != nil {
+		slog.Error("failed to bind TOOLHIVE_DEBUG env var", "error", err)
+	}
+
 	// Initialize the logger
 	var opts []logging.Option
 	if viper.GetBool("debug") {

@@ -193,6 +193,12 @@ ToolHive supports multiple MCP transport protocols (https://modelcontextprotocol
 - When generating tests for code which touches the state files on disk, ensure
   that they write state into isolated temporary directories to prevent clashes
   between different tests.
+- When tests need a temp directory that must pass validation that rejects
+  symlinks (e.g. project-root or path validators that require "must not contain
+  symlinks"), use a resolved temp dir: create with `t.TempDir()` then resolve
+  with `filepath.EvalSymlinks(dir)` so the path has no symlink components (on
+  macOS, `t.TempDir()` often returns `/var/folders/...` which is a symlink).
+  See `pkg/skills/project_root_test.go` for a `resolvedTempDir(t)` helper example.
 - Also take care of tests which set env vars. Try and write the tests in a way
   that the tests are isolated from other tests which may set the same env vars.
 

@@ -29,6 +29,8 @@ type installSkillRequest struct {
 	Client string `json:"client,omitempty"`
 	// Force allows overwriting unmanaged skill directories
 	Force bool `json:"force,omitempty"`
+	// Group is the group name to add the skill to after installation
+	Group string `json:"group,omitempty"`
 }
 
 // installSkillResponse represents the response after installing a skill.

@@ -10,6 +10,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -26,22 +27,14 @@ type ToolStore interface {
 	// Search finds tools matching the query string.
 	// The allowedTools parameter limits results to only tools with names in the given set.
 	// If allowedTools is empty, no results are returned (empty = no access).
-	// Returns matches ranked by relevance.
-	Search(ctx context.Context, query string, allowedTools []string) ([]ToolMatch, error)
+	// Returns matches ranked by relevance. The returned mcp.Tool values contain
+	// only Name and Description; the caller is responsible for enriching with schemas.
+	Search(ctx context.Context, query string, allowedTools []string) ([]mcp.Tool, error)
 
 	// Close releases any resources held by the store (e.g., database connections).
 	// For in-memory stores this is a no-op.
 	// It is safe to call Close multiple times.
 	Close() error
-}
-
-// ToolMatch represents a tool that matched the search criteria.
-type ToolMatch struct {
-	// Name is the unique identifier of the tool.
-	Name string `json:"name"`
-
-	// Description is the human-readable description of the tool.
-	Description string `json:"description"`
 }
 
 // EmbeddingClient generates vector embeddings from text.

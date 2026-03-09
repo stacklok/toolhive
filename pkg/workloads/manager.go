@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -868,6 +869,51 @@ func (d *DefaultManager) stopProxyIfNeeded(ctx context.Context, name, baseName s
 	}
 }
 
+// freePortHolderIfNeeded kills the process holding the proxy port if it is in use.
+// This ensures the port is free before the child attempts to bind, preventing
+// "address already in use" errors on restart.
+func (*DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *runner.RunConfig) {
+	if runConfig == nil || runConfig.Port <= 0 {
+		return
+	}
+
+	if networking.IsAvailable(runConfig.Port) {
+		return
+	}
+
+	portPID, err := networking.GetProcessOnPort(runConfig.Port)
+	if err != nil {
+		slog.Warn("failed to get process on port", "port", runConfig.Port, "error", err)
+		return
+	}
+	if portPID <= 0 {
+		return
+	}
+
+	isWorkloadProxy, err := process.IsToolHiveProxyForWorkload(portPID, runConfig.BaseName)
+	if err != nil {
+		slog.Debug("could not verify process identity, skipping kill", "port", runConfig.Port, "pid", portPID, "error", err)
+		return
+	}
+	if !isWorkloadProxy {
+		slog.Debug("process on port is not this workload's ToolHive proxy, skipping kill",
+			"port", runConfig.Port, "pid", portPID, "workload", runConfig.BaseName)
+		return
+	}
+
+	slog.Debug("killing process holding proxy port", "port", runConfig.Port, "pid", portPID)
+	if err := process.KillProcess(portPID); err != nil {
+		slog.Warn("failed to kill process holding port", "port", runConfig.Port, "pid", portPID, "error", err)
+		return
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := process.WaitForExit(waitCtx, portPID); err != nil {
+		slog.Warn("timeout waiting for process to exit", "pid", portPID, "error", err)
+	}
+}
+
 // removeContainer removes the container from the runtime
 func (d *DefaultManager) removeContainer(ctx context.Context, name string) error {
 	slog.Debug("removing container", "workload", name)
@@ -1069,8 +1115,10 @@ func (d *DefaultManager) restartRemoteWorkload(
 	return d.startWorkload(ctx, name, mcpRunner, foreground)
 }
 
-// maybeSetupRemoteWorkload is the startup steps for a remote workload.
-// A runner may not be returned if the workload is already running and supervised.
+// maybeSetupRemoteWorkload performs startup steps for a remote workload before it is run.
+// It checks workload status, runs cleanup when needed (all states except Starting),
+// loads the runner config from state, and sets status to Starting.
+// Returns (nil, nil) if the workload is already running and supervised.
 func (d *DefaultManager) maybeSetupRemoteWorkload(
 	ctx context.Context,
 	name string,
@@ -1087,33 +1135,25 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 
 	// If workload is already running, check if the supervisor process is healthy
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		// Check if the supervisor process is actually alive
-		supervisorAlive := d.isSupervisorProcessAlive(ctx, runConfig.BaseName)
-
-		if supervisorAlive {
-			// Workload is running and healthy - preserve old behavior (no-op)
+		if d.isSupervisorProcessAlive(ctx, runConfig.BaseName) {
 			slog.Debug("remote workload is already running", "workload", name)
 			return nil, nil
 		}
-
-		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
 		slog.Debug("remote workload is running but supervisor is dead, cleaning up before restart", "workload", name)
+	}
 
-		// Set status to stopping
+	// Run cleanup (Stopping → stop proxy → remove client configs → Stopped) for all
+	// known workload states except Starting. Skip when workload not found (first-time start)
+	// or status is Starting (parent set this before spawning the child process).
+	needsCleanup := err == nil && workload.Status != rt.WorkloadStatusStarting
+	if needsCleanup {
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
 			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 		}
-
-		// Stop the supervisor process (proxy) if it exists (may already be dead)
-		// This ensures we clean up any orphaned supervisor processes
 		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
-
-		// Clean up client configurations
 		if err := removeClientConfigurations(name, false); err != nil {
 			slog.Warn("failed to remove client configurations", "error", err)
 		}
-
-		// Set status to stopped after cleanup is complete
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
 			slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
 		}
@@ -1129,6 +1169,10 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
 		slog.Warn("Failed to set workload status to starting", "workload", name, "error", err)
 	}
+
+	// Ensure port is free before spawning. Kill the process holding the port if bound.
+	// This prevents "address already in use" when the new child tries to bind.
+	d.freePortHolderIfNeeded(ctx, mcpRunner.Config)
 
 	slog.Debug("loaded configuration from state", "workload", runConfig.BaseName)
 	return mcpRunner, nil

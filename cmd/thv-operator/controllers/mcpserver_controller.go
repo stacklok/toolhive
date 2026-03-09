@@ -59,12 +59,12 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{"apps"},
 		Resources: []string{"statefulsets"},
-		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	},
 	{
 		APIGroups: []string{""},
 		Resources: []string{"services"},
-		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	},
 	{
 		APIGroups: []string{""},
@@ -140,7 +140,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -148,7 +148,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete;apply
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
@@ -306,18 +306,33 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// check if the RBAC resources are in place for the MCP server
 	if err := r.ensureRBACResources(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure RBAC resources: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RBAC error")
+		}
 		return ctrl.Result{}, err
 	}
 
 	// Ensure authorization ConfigMap for inline configuration
 	if err := r.ensureAuthzConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure authorization ConfigMap")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure authorization ConfigMap: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after authz ConfigMap error")
+		}
 		return ctrl.Result{}, err
 	}
 
 	// Ensure RunConfig ConfigMap exists and is up to date
 	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig error")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -332,6 +347,11 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		ctxLogger.Error(err, "Failed to get RunConfig checksum")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig checksum error")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -343,12 +363,23 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		dep := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		if dep == nil {
 			ctxLogger.Error(nil, "Failed to create Deployment object")
-			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
+			deploymentErr := fmt.Errorf("failed to create Deployment object")
+			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+			mcpServer.Status.Message = deploymentErr.Error()
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment build failure")
+			}
+			return ctrl.Result{}, deploymentErr
 		}
 		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 		err = r.Create(ctx, dep)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+			mcpServer.Status.Message = fmt.Sprintf("Failed to create Deployment: %s", err.Error())
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment creation failure")
+			}
 			return ctrl.Result{}, err
 		}
 		// Deployment created successfully - return and requeue
@@ -442,6 +473,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Update the service
 		newService := r.serviceForMCPServer(ctx, mcpServer)
 		service.Spec.Ports = newService.Spec.Ports
+		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
+		service.Labels = newService.Labels
+		service.Annotations = newService.Annotations
 		err = r.Update(ctx, service)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
@@ -1249,6 +1283,13 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 		}
 	}
 
+	sessionAffinity := func() corev1.ServiceAffinity {
+		if m.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(m.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName,
@@ -1257,7 +1298,8 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 			Annotations: serviceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: ls, // Keep original labels for selector
+			Selector:        ls, // Keep original labels for selector
+			SessionAffinity: sessionAffinity,
 			Ports: []corev1.ServicePort{{
 				Port:       m.GetProxyPort(),
 				TargetPort: intstr.FromInt(int(m.GetProxyPort())),
@@ -1361,11 +1403,16 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	}
 
 	if len(podList.Items) == 0 {
-		// No Deployment pods found yet
-		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
-		m.Status.Message = "MCP server is being created"
-		m.Status.ReadyReplicas = 0
-		return r.Status().Update(ctx, m)
+		// No Deployment pods found yet. If a previous reconciliation already set Phase=Failed
+		// (e.g. due to a RunConfig or RBAC error), preserve that status so the failure
+		// reason remains visible. Only reset to Pending when the phase is not Failed.
+		if m.Status.Phase != mcpv1alpha1.MCPServerPhaseFailed {
+			m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
+			m.Status.Message = "MCP server is being created"
+			m.Status.ReadyReplicas = 0
+			return r.Status().Update(ctx, m)
+		}
+		return nil
 	}
 
 	// Check pod and container statuses
@@ -1663,6 +1710,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServer) bool {
 	// Check if the service port has changed
 	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.GetProxyPort() {
+		return true
+	}
+
+	// Check if session affinity has drifted from spec
+	expectedAffinity := func() corev1.ServiceAffinity {
+		if mcpServer.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(mcpServer.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+	if service.Spec.SessionAffinity != expectedAffinity {
 		return true
 	}
 

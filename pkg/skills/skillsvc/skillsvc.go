@@ -26,6 +26,7 @@ import (
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -78,6 +79,13 @@ func WithGroupManager(mgr groups.Manager) Option {
 	}
 }
 
+// WithGitResolver sets the git resolver for git:// skill references.
+func WithGitResolver(r gitresolver.Resolver) Option {
+	return func(s *service) {
+		s.gitResolver = r
+	}
+}
+
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
@@ -114,6 +122,7 @@ type service struct {
 	ociStore     *ociskills.Store
 	packager     ociskills.SkillPackager
 	registry     ociskills.RegistryClient
+	gitResolver  gitresolver.Resolver
 }
 
 // New creates a new SkillService backed by the given store.
@@ -193,6 +202,15 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// the same lock key and DB record.
 	opts.ProjectRoot = projectRoot
 
+	// Check for git:// reference first (before OCI, since git:// contains '/')
+	if gitresolver.IsGitReference(opts.Name) {
+		result, err := s.installFromGit(ctx, opts, scope)
+		if err != nil {
+			return nil, err
+		}
+		return result, s.registerSkillInGroup(ctx, opts.Group, result.Skill.Metadata.Name)
+	}
+
 	ref, isOCI, err := parseOCIReference(opts.Name)
 	if err != nil {
 		return nil, httperr.WithCode(
@@ -232,11 +250,12 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			}
 		}
 		if !resolved {
-			result, err := s.installPending(ctx, opts, scope)
-			if err != nil {
-				return nil, err
-			}
-			return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+			return nil, httperr.WithCode(
+				fmt.Errorf("skill %q not found; use an OCI reference (ghcr.io/org/foo:v1), "+
+					"a git reference (git://github.com/org/repo#path), "+
+					"or build locally first (thv skill build ./foo)", opts.Name),
+				http.StatusNotFound,
+			)
 		}
 		// resolved: opts hydrated, fall through to installWithExtraction
 	}
@@ -651,26 +670,6 @@ func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byt
 	}
 
 	return layerData, skillConfig, nil
-}
-
-// installPending creates a pending skill record (no extraction).
-func (s *service) installPending(
-	ctx context.Context, opts skills.InstallOptions, scope skills.Scope,
-) (*skills.InstallResult, error) {
-	sk := skills.InstalledSkill{
-		Metadata: skills.SkillMetadata{
-			Name:    opts.Name,
-			Version: opts.Version,
-		},
-		Scope:       scope,
-		ProjectRoot: opts.ProjectRoot,
-		Status:      skills.InstallStatusPending,
-		InstalledAt: time.Now().UTC(),
-	}
-	if err := s.store.Create(ctx, sk); err != nil {
-		return nil, err
-	}
-	return &skills.InstallResult{Skill: sk}, nil
 }
 
 // installWithExtraction handles the full install flow: managed/unmanaged

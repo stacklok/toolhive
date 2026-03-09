@@ -151,86 +151,35 @@ func TestList(t *testing.T) {
 	}
 }
 
-func TestInstallPending(t *testing.T) {
+func TestInstallPlainName(t *testing.T) {
 	t.Parallel()
 
-	projectRoot := makeProjectRoot(t)
-
 	tests := []struct {
-		name      string
-		opts      skills.InstallOptions
-		setupMock func(*storemocks.MockSkillStore)
-		wantCode  int
-		wantName  string
-		wantScope skills.Scope
+		name     string
+		opts     skills.InstallOptions
+		wantCode int
+		wantErr  string
 	}{
 		{
-			name: "creates pending record with defaults",
-			opts: skills.InstallOptions{Name: "my-skill"},
-			setupMock: func(s *storemocks.MockSkillStore) {
-				s.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-					func(_ context.Context, sk skills.InstalledSkill) error {
-						assert.Equal(t, "my-skill", sk.Metadata.Name)
-						assert.Equal(t, skills.ScopeUser, sk.Scope)
-						assert.Equal(t, skills.InstallStatusPending, sk.Status)
-						assert.False(t, sk.InstalledAt.IsZero())
-						return nil
-					})
-			},
-			wantName:  "my-skill",
-			wantScope: skills.ScopeUser,
+			name:     "plain name without local build returns actionable error",
+			opts:     skills.InstallOptions{Name: "my-skill"},
+			wantCode: http.StatusNotFound,
+			wantErr:  "not found",
 		},
 		{
-			name: "propagates version",
-			opts: skills.InstallOptions{Name: "my-skill", Version: "2.1.0"},
-			setupMock: func(s *storemocks.MockSkillStore) {
-				s.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-					func(_ context.Context, sk skills.InstalledSkill) error {
-						assert.Equal(t, "2.1.0", sk.Metadata.Version)
-						return nil
-					})
-			},
-			wantName: "my-skill",
+			name:     "rejects project scope without root",
+			opts:     skills.InstallOptions{Name: "my-skill", Scope: skills.ScopeProject},
+			wantCode: http.StatusBadRequest,
 		},
 		{
-			name: "respects explicit scope",
-			opts: skills.InstallOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot},
-			setupMock: func(s *storemocks.MockSkillStore) {
-				s.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-					func(_ context.Context, sk skills.InstalledSkill) error {
-						assert.Equal(t, skills.ScopeProject, sk.Scope)
-						assert.Equal(t, projectRoot, sk.ProjectRoot)
-						return nil
-					})
-			},
-			wantName:  "my-skill",
-			wantScope: skills.ScopeProject,
+			name:     "rejects invalid name",
+			opts:     skills.InstallOptions{Name: "A"},
+			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:      "rejects project scope without root",
-			opts:      skills.InstallOptions{Name: "my-skill", Scope: skills.ScopeProject},
-			setupMock: func(_ *storemocks.MockSkillStore) {},
-			wantCode:  http.StatusBadRequest,
-		},
-		{
-			name:      "rejects invalid name",
-			opts:      skills.InstallOptions{Name: "A"},
-			setupMock: func(_ *storemocks.MockSkillStore) {},
-			wantCode:  http.StatusBadRequest,
-		},
-		{
-			name:      "rejects empty name",
-			opts:      skills.InstallOptions{Name: ""},
-			setupMock: func(_ *storemocks.MockSkillStore) {},
-			wantCode:  http.StatusBadRequest,
-		},
-		{
-			name: "returns conflict on duplicate",
-			opts: skills.InstallOptions{Name: "my-skill"},
-			setupMock: func(s *storemocks.MockSkillStore) {
-				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(storage.ErrAlreadyExists)
-			},
-			wantCode: http.StatusConflict,
+			name:     "rejects empty name",
+			opts:     skills.InstallOptions{Name: ""},
+			wantCode: http.StatusBadRequest,
 		},
 	}
 
@@ -239,17 +188,13 @@ func TestInstallPending(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
 			store := storemocks.NewMockSkillStore(ctrl)
-			tt.setupMock(store)
 
-			result, err := New(store).Install(t.Context(), tt.opts)
-			if tt.wantCode != 0 {
-				require.Error(t, err)
-				assert.Equal(t, tt.wantCode, httperr.Code(err))
-				return
+			_, err := New(store).Install(t.Context(), tt.opts)
+			require.Error(t, err)
+			assert.Equal(t, tt.wantCode, httperr.Code(err))
+			if tt.wantErr != "" {
+				assert.Contains(t, err.Error(), tt.wantErr)
 			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantName, result.Skill.Metadata.Name)
-			assert.Equal(t, skills.InstallStatusPending, result.Skill.Status)
 		})
 	}
 }
@@ -889,7 +834,7 @@ func TestInstallFromLocalStore(t *testing.T) {
 			wantErr:  "does not match install name",
 		},
 		{
-			name: "tag not found falls back to pending",
+			name: "tag not found returns actionable error",
 			opts: skills.InstallOptions{Name: "no-such-skill"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
@@ -898,30 +843,22 @@ func TestInstallFromLocalStore(t *testing.T) {
 				require.NoError(t, err)
 
 				store := storemocks.NewMockSkillStore(ctrl)
-				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-					func(_ context.Context, sk skills.InstalledSkill) error {
-						assert.Equal(t, skills.InstallStatusPending, sk.Status)
-						return nil
-					})
 				pr := skillsmocks.NewMockPathResolver(ctrl)
 				return ociStore, store, pr
 			},
-			wantStatus: string(skills.InstallStatusPending),
+			wantCode: http.StatusNotFound,
+			wantErr:  "not found",
 		},
 		{
-			name: "nil ociStore falls back to pending",
+			name: "nil ociStore returns actionable error",
 			opts: skills.InstallOptions{Name: "some-skill"},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
 				store := storemocks.NewMockSkillStore(ctrl)
-				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-					func(_ context.Context, sk skills.InstalledSkill) error {
-						assert.Equal(t, skills.InstallStatusPending, sk.Status)
-						return nil
-					})
 				return nil, store, nil
 			},
-			wantStatus: string(skills.InstallStatusPending),
+			wantCode: http.StatusNotFound,
+			wantErr:  "not found",
 		},
 		{
 			name: "corrupt manifest propagates error",
@@ -1799,9 +1736,10 @@ func TestListFiltersByGroup(t *testing.T) {
 func TestInstallAddsSkillToGroup(t *testing.T) {
 	t.Parallel()
 
-	// These tests use plain skill names with no LayerData, so Install takes the
-	// pending path (installPending) which only calls store.Create — no store.Get,
-	// no path resolver needed.
+	layerData := makeLayerData(t)
+
+	// These tests use LayerData so Install goes through the extraction path,
+	// which requires a path resolver and store interactions.
 	tests := []struct {
 		name           string
 		opts           skills.InstallOptions
@@ -1811,8 +1749,9 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 	}{
 		{
 			name: "install with group registers skill",
-			opts: skills.InstallOptions{Name: "my-skill", Group: "mygroup"},
+			opts: skills.InstallOptions{Name: "my-skill", Group: "mygroup", LayerData: layerData, Digest: "sha256:aaa"},
 			setupStoreMock: func(s *storemocks.MockSkillStore) {
+				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 			},
 			setupGroupMock: func(gm *groupmocks.MockManager) {
@@ -1823,8 +1762,9 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 		},
 		{
 			name: "install without group skips group registration",
-			opts: skills.InstallOptions{Name: "my-skill"},
+			opts: skills.InstallOptions{Name: "my-skill", LayerData: layerData, Digest: "sha256:bbb"},
 			setupStoreMock: func(s *storemocks.MockSkillStore) {
+				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 			},
 			setupGroupMock: func(_ *groupmocks.MockManager) {
@@ -1833,8 +1773,9 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 		},
 		{
 			name: "group registration error propagates",
-			opts: skills.InstallOptions{Name: "my-skill", Group: "badgroup"},
+			opts: skills.InstallOptions{Name: "my-skill", Group: "badgroup", LayerData: layerData, Digest: "sha256:ccc"},
 			setupStoreMock: func(s *storemocks.MockSkillStore) {
+				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 			},
 			setupGroupMock: func(gm *groupmocks.MockManager) {
@@ -1852,11 +1793,26 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			store := storemocks.NewMockSkillStore(ctrl)
 			gm := groupmocks.NewMockManager(ctrl)
+			pr := skillsmocks.NewMockPathResolver(ctrl)
+			inst := skillsmocks.NewMockInstaller(ctrl)
 
 			tt.setupStoreMock(store)
 			tt.setupGroupMock(gm)
 
-			svc := New(store, WithGroupManager(gm))
+			targetDir := tempDir(t)
+			pr.EXPECT().GetSkillPath(gomock.Any(), "my-skill", skills.ScopeUser, "").
+				Return(filepath.Join(targetDir, "my-skill"), nil).AnyTimes()
+			pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"}).AnyTimes()
+			inst.EXPECT().Extract(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(&skills.ExtractResult{SkillDir: filepath.Join(targetDir, "my-skill"), Files: 1}, nil).AnyTimes()
+			// Allow rollback Remove on error paths.
+			inst.EXPECT().Remove(gomock.Any()).Return(nil).AnyTimes()
+
+			svc := New(store,
+				WithGroupManager(gm),
+				WithPathResolver(pr),
+				WithInstaller(inst),
+			)
 
 			_, err := svc.Install(t.Context(), tt.opts)
 			if tt.wantErr != "" {

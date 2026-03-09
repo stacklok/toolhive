@@ -20,8 +20,13 @@ var (
 var skillInstallCmd = &cobra.Command{
 	Use:   "install [skill-name]",
 	Short: "Install a skill",
-	Long: `Install a skill by name or OCI reference.
-The skill will be fetched from a remote registry and installed locally.`,
+	Long: `Install a skill by name, OCI reference, or git reference.
+
+Examples:
+  thv skill install my-skill                                      # from local build
+  thv skill install ghcr.io/org/my-skill:v1                       # from OCI registry
+  thv skill install git://github.com/org/repo#skills/my-skill     # from git repo
+  thv skill install git://github.com/org/repo@v1.0#skills/my-skill # from git ref`,
 	Args: cobra.ExactArgs(1),
 	PreRunE: chainPreRunE(
 		validateSkillScope(&skillInstallScope),

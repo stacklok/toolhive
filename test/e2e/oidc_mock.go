@@ -258,7 +258,7 @@ func (m *OIDCMockServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
 	// Check for test auth code from auto-complete flow
-	if r.FormValue("code") == "test-auth-code" {
+	if r.FormValue("code") == "test-auth-code" { //nolint:gosec // G120 - test-only mock server
 		// Return a test token directly for auto-complete flow
 		tokenResponse := map[string]interface{}{
 			"access_token": "test-access-token",

@@ -359,9 +359,9 @@ These are the interfaces as they exist today. Sub-designs will propose changes.
 
 | Use Case | Status |
 |----------|--------|
-| UC-01: Multi-Upstream Providers | Not started |
-| UC-02: Incoming/Outgoing Boundary | Not started |
-| UC-03: Backward Compatibility | Not started |
+| UC-01: Multi-Upstream Providers | Complete |
+| UC-02: Incoming/Outgoing Boundary | Complete |
+| UC-03: Backward Compatibility | Complete |
 | UC-04: Session Identity Model | Complete |
 | UC-05: Optional Auth Server | Complete |
-| UC-06: Step-Up Auth Signaling | Draft |
+| UC-06: Step-Up Auth Signaling | Complete |

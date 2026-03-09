@@ -311,12 +311,15 @@ permit(
   action in [Action::"call_tool", Action::"list_tools"],
   resource
 ) when {
+  resource in MCP::"github" &&
   resource in [Tool::"list_issues", Tool::"create_pr"]
 };
 ```
 
 Only `call_tool` and `list_tools` are emitted — these are the actions whose
-schema `resourceTypes` includes `Tool`.
+schema `resourceTypes` includes `Tool`. Server scoping (`resource in MCP::`)
+is always included for defense-in-depth (see
+[01-crds.md](01-crds.md#all-generated-permits-must-be-server-scoped)).
 
 **CRD input (single tool):**
 ```yaml
@@ -329,11 +332,10 @@ permit(
   principal in Role::"writer",
   action in [Action::"call_tool", Action::"list_tools"],
   resource == Tool::"create_pr"
-);
+) when { resource in MCP::"github" };
 ```
 
-When there is exactly one name, use `resource == Tool::"name"` in the head
-(simpler, no `when` clause).
+Even with a single name, server scoping is added via a `when` clause.
 
 **CRD input (mixed types):**
 ```yaml
@@ -347,25 +349,25 @@ spec:
         - resources: [config.yaml]
 ```
 
-**Compiled Cedar (one policy per type):**
+**Compiled Cedar (one policy per type, all server-scoped):**
 ```cedar
 permit(
   principal in Role::"writer",
   action in [Action::"call_tool", Action::"list_tools"],
   resource == Tool::"create_pr"
-);
+) when { resource in MCP::"github" };
 
 permit(
   principal in Role::"writer",
   action in [Action::"get_prompt", Action::"list_prompts"],
   resource == Prompt::"code_review"
-);
+) when { resource in MCP::"github" };
 
 permit(
   principal in Role::"writer",
   action in [Action::"read_resource", Action::"list_resources"],
   resource == Resource::"config.yaml"
-);
+) when { resource in MCP::"github" };
 ```
 
 ### Action-to-resource-type mapping
@@ -419,6 +421,51 @@ The reader role compiles to **two** policies: one for list/get/read actions
 (unrestricted within the server), and one for `call_tool` gated on
 `readOnlyHint`. This is because `readOnlyHint` only applies to tool calls,
 not to list/get/read operations.
+
+### Shape 3a: Reader role with restrictions
+
+When a reader binding has `ruleRestrictions`, the `readOnlyHint` condition
+must be **intersected** with the resource restrictions. Without this, the
+restrictions would be silently dropped (see
+[01-crds.md](01-crds.md#built-in-reader-role-and-resource-restrictions)).
+
+**CRD input:**
+```yaml
+spec:
+  targetRef: {name: github}
+  bindings:
+    - platformRole: reader
+      ruleRestrictions:
+        - tools: [safe_query, safe_list]
+```
+
+**Compiled Cedar:**
+```cedar
+// Reader can list restricted tools on the server
+permit(
+  principal in Role::"reader",
+  action == Action::"list_tools",
+  resource
+) when {
+  resource in MCP::"github" &&
+  resource in [Tool::"safe_query", Tool::"safe_list"]
+};
+
+// Reader can call restricted tools that are read-only
+permit(
+  principal in Role::"reader",
+  action == Action::"call_tool",
+  resource
+) when {
+  resource in MCP::"github" &&
+  resource in [Tool::"safe_query", Tool::"safe_list"] &&
+  resource has readOnlyHint && resource.readOnlyHint == true
+};
+```
+
+The restrictions narrow the set of tools, and the `readOnlyHint` condition
+is still applied to `call_tool`. This means the reader can only call tools
+that are both in the restriction list AND marked read-only.
 
 ### Shape 4: Deny rule
 
@@ -487,6 +534,33 @@ forbid(
 ) when { resource in MCP::"github" };
 ```
 
+### Shape 4a: Server-wide deny (no typed fields)
+
+When a deny rule lists actions but omits all typed resource fields (`tools`,
+`prompts`, `resources`), it means "forbid these actions on ALL resources for
+this server." See [01-crds.md](01-crds.md#deny-without-resource-restrictions-means-server-wide-deny).
+
+**CRD input:**
+```yaml
+spec:
+  targetRef: {name: github}
+  deny:
+    - actions: [call_tool]
+```
+
+**Compiled Cedar:**
+```cedar
+forbid(
+  principal,
+  action == Action::"call_tool",
+  resource in MCP::"github"
+);
+```
+
+No `when` clause is needed — the scope `resource in MCP::"github"` directly
+constrains to the target server. This is the mechanism for safety rails like
+"no one may call tools on this server."
+
 ### Shape 5: Custom role
 
 **CRD input:**
@@ -545,31 +619,30 @@ for each unique role referenced by any policy targeting S:
     entities.append(Role entity)
 
 # Group entities with Role parents (from all bindings)
+# The `from` field is a list of PrincipalConditions (OR of ANDs).
+# Each condition's groups and roles all create Group entities with the
+# binding's platformRole as a parent.
 for each ToolhiveRoleBinding:
     for each binding entry:
         role = binding.platformRole
-        for each group in binding.from.groups:
-            if Group entity already exists:
-                add Role as additional parent
-            else:
-                create Group entity with Role parent
-
-# Group entities from role bindings (from all bindings)
-for each ToolhiveRoleBinding:
-    for each binding entry:
-        role = binding.platformRole
-        for each role_name in binding.from.roles:
-            # IdP roles are treated as groups for entity hierarchy
-            if Group entity already exists:
-                add Role as additional parent
-            else:
-                create Group entity with Role parent
+        for each condition in binding.from:  # list of PrincipalCondition
+            for each group in condition.groups:
+                if Group entity already exists:
+                    add Role as additional parent
+                else:
+                    create Group entity with Role parent
+            for each role_name in condition.roles:
+                # IdP roles are treated as groups for entity hierarchy
+                if Group entity already exists:
+                    add Role as additional parent
+                else:
+                    create Group entity with Role parent
 ```
 
-Note: both `from.groups` and `from.roles` in the RoleBinding create `Group`
-entities in Cedar. The distinction between IdP "groups" and IdP "roles" is
-which JWT claim they come from (configured in the IdP ConfigMap), not how
-they are represented in Cedar.
+Note: both `condition.groups` and `condition.roles` create `Group` entities
+in Cedar. The distinction between IdP "groups" and IdP "roles" is which JWT
+claim they come from (configured in the IdP ConfigMap), not how they are
+represented in Cedar.
 
 ### Step 3: Generate policies
 
@@ -584,48 +657,105 @@ ACTIONS_FOR_TYPE = {
 policies = []
 
 for each ToolhiveAuthorizationPolicy targeting S:
-    # Grants
+    # --- Grants ---
     for each binding in policy.bindings:
         role = resolve(binding.platformRole)
         actions = expand_actions(role)  # '*' expands to all 6
 
-        if role is "reader":
-            # Split into two policies
-            non_call_actions = actions - [call_tool]
-            policies.append(permit(Role, non_call_actions, MCP::S))
-            policies.append(permit(Role, [call_tool], MCP::S,
-                                   when: readOnlyHint))
-        else if binding has ruleRestrictions:
-            for each restriction:
-                # Emit one policy per typed field (tools, prompts, resources)
-                for each (type, names) in restriction.typed_fields():
-                    compatible = intersect(actions, ACTIONS_FOR_TYPE[type])
-                    if len(compatible) == 0:
-                        continue  # role has no actions for this type
-                    if len(names) == 1:
-                        policies.append(permit(Role, compatible,
-                                               resource == Type::names[0]))
-                    else:
-                        policies.append(permit(Role, compatible,
-                                               when: resource in names))
-        else:
-            policies.append(permit(Role, actions, MCP::S))
+        # Build per-condition when clauses from the binding's `from` list.
+        # Each condition generates a separate permit policy (OR semantics).
+        # Within each condition, all groups/roles form an AND clause.
+        # See 05-claim-mapping.md section 4 for why ALL conditions need
+        # explicit when clauses.
+        condition_clauses = []
+        for each condition in binding's associated RoleBinding.from:
+            all_names = condition.groups + condition.roles
+            clause = join(" && ",
+                [f"principal in Group::\"{n}\"" for n in all_names])
+            condition_clauses.append(clause)
 
-    # Denials (always server-scoped via targetRef)
+        # For each condition, emit policies scoped by that condition's
+        # when clause. If no conditions (standalone policy without binding),
+        # emit a single policy.
+        for each cond_clause in condition_clauses (or [None] if empty):
+
+            if role is "reader" and binding has NO ruleRestrictions:
+                # Shape 3: reader without restrictions
+                non_call_actions = actions - [call_tool]
+                when = cond_clause or None
+                policies.append(permit(Role, non_call_actions, MCP::S,
+                                       when: when))
+                roi_when = combine(cond_clause,
+                    "resource has readOnlyHint && resource.readOnlyHint == true")
+                policies.append(permit(Role, [call_tool], MCP::S,
+                                       when: roi_when))
+
+            else if role is "reader" and binding HAS ruleRestrictions:
+                # Shape 3a: reader with restrictions
+                for each restriction:
+                    for each (type, names) in restriction.typed_fields():
+                        compatible = intersect(actions, ACTIONS_FOR_TYPE[type])
+                        if len(compatible) == 0:
+                            continue
+                        res_clause = resource_clause(type, names, S)
+                        non_call = compatible - [call_tool]
+                        if non_call:
+                            when = combine(cond_clause, res_clause)
+                            policies.append(permit(Role, non_call, resource,
+                                                   when: when))
+                        if call_tool in compatible:
+                            roi = "resource has readOnlyHint && resource.readOnlyHint == true"
+                            when = combine(cond_clause, res_clause, roi)
+                            policies.append(permit(Role, [call_tool], resource,
+                                                   when: when))
+
+            else if binding has ruleRestrictions:
+                # Shape 2: restricted grant (server-scoped)
+                for each restriction:
+                    for each (type, names) in restriction.typed_fields():
+                        compatible = intersect(actions, ACTIONS_FOR_TYPE[type])
+                        if len(compatible) == 0:
+                            continue
+                        res_clause = resource_clause(type, names, S)
+                        when = combine(cond_clause, res_clause)
+                        policies.append(permit(Role, compatible, resource,
+                                               when: when))
+            else:
+                # Shape 1: unrestricted grant (server-scoped)
+                when = cond_clause or None
+                policies.append(permit(Role, actions, MCP::S,
+                                       when: when))
+
+    # --- Denials (always server-scoped) ---
     for each deny_rule in policy.deny:
         deny_actions = deny_rule.actions  # direct, no expansion
-        for each (type, names) in deny_rule.typed_fields():
-            compatible = intersect(deny_actions, ACTIONS_FOR_TYPE[type])
-            if len(compatible) == 0:
-                continue
-            if len(names) == 1:
-                policies.append(forbid(compatible,
-                                       resource == Type::names[0],
-                                       when: resource in MCP::S))
-            else:
-                policies.append(forbid(compatible,
-                                       when: resource in MCP::S &&
-                                             resource in names))
+        typed_fields = deny_rule.typed_fields()
+
+        if typed_fields is empty:
+            # Shape 4a: server-wide deny (no typed resource fields)
+            for each action in deny_actions:
+                policies.append(forbid(action, resource in MCP::S))
+        else:
+            # Shape 4: typed deny
+            for each (type, names) in typed_fields:
+                compatible = intersect(deny_actions, ACTIONS_FOR_TYPE[type])
+                if len(compatible) == 0:
+                    continue
+                if len(names) == 1:
+                    policies.append(forbid(compatible,
+                                           resource == Type::names[0],
+                                           when: resource in MCP::S))
+                else:
+                    policies.append(forbid(compatible,
+                                           when: resource in MCP::S &&
+                                                 resource in names))
+
+# Helper: resource_clause(type, names, server)
+#   Builds "resource in MCP::S && resource in [Type::n1, Type::n2, ...]"
+#   or "resource in MCP::S" combined with "resource == Type::n1" for single name
+#
+# Helper: combine(clauses...)
+#   Joins non-None clauses with " && " for the when block
 ```
 
 ### Step 4: Validate
@@ -905,7 +1035,8 @@ var ReaderActions = []string{
 }
 ```
 
-Compiles to two policies (see Shape 3 in section 4).
+Compiles to two policies (see Shape 3 in section 4). With restrictions,
+see Shape 3a which intersects `readOnlyHint` with resource restrictions.
 
 ### writer
 
@@ -980,7 +1111,7 @@ spec:
 
       "forbid(principal, action == Action::\"call_tool\", resource == Tool::\"delete_repo\") when { resource in MCP::\"github\" };",
 
-      "permit(principal in Role::\"writer\", action in [Action::\"call_tool\", Action::\"list_tools\"], resource == Tool::\"create_pr\");"
+      "permit(principal in Role::\"writer\", action in [Action::\"call_tool\", Action::\"list_tools\"], resource == Tool::\"create_pr\") when { resource in MCP::\"github\" };"
     ],
     "entities_json": "[{\"uid\":{\"type\":\"MCP\",\"id\":\"github\"},\"attrs\":{},\"parents\":[]},{\"uid\":{\"type\":\"Role\",\"id\":\"writer\"},\"attrs\":{},\"parents\":[]},{\"uid\":{\"type\":\"Role\",\"id\":\"reader\"},\"attrs\":{},\"parents\":[]},{\"uid\":{\"type\":\"Group\",\"id\":\"platform-eng\"},\"attrs\":{},\"parents\":[{\"type\":\"Role\",\"id\":\"writer\"}]},{\"uid\":{\"type\":\"Group\",\"id\":\"all-developers\"},\"attrs\":{},\"parents\":[{\"type\":\"Role\",\"id\":\"reader\"}]}]",
     "group_claim": "groups"
@@ -988,11 +1119,13 @@ spec:
 }
 ```
 
-Note the key changes from the untyped design:
-- Policy 4 (forbid): now includes `when { resource in MCP::"github" }` for
-  server scoping
+Note the key design properties:
+- Policy 4 (forbid): includes `when { resource in MCP::"github" }` for
+  server scoping (defense-in-depth)
 - Policy 5 (restricted grant): only `call_tool` and `list_tools` actions
-  (compatible with `Tool` type), not all 6
+  (compatible with `Tool` type), not all 6; also server-scoped via `when`
+- All permits are server-scoped, even restricted grants (see
+  [01-crds.md](01-crds.md#all-generated-permits-must-be-server-scoped))
 
 ### Runtime evaluation
 

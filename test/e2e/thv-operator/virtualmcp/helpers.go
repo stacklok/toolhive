@@ -753,6 +753,7 @@ func CreateMCPServerAndWait(
 			Transport: "streamable-http",
 			ProxyPort: 8080,
 			McpPort:   8080,
+			Resources: defaultMCPServerResources(),
 			Env: []mcpv1alpha1.EnvVar{
 				{Name: "TRANSPORT", Value: "streamable-http"},
 			},
@@ -778,13 +779,36 @@ func CreateMCPServerAndWait(
 	return backend
 }
 
-// BackendConfig holds configuration for creating an MCPServer
+// BackendConfig holds configuration for creating a backend MCPServer in tests.
 type BackendConfig struct {
 	Name                  string
 	Namespace             string
 	GroupRef              string
 	Image                 string
+	Transport             string // defaults to "streamable-http" if empty
 	ExternalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
+	Secrets               []mcpv1alpha1.SecretRef
+	Env                   []mcpv1alpha1.EnvVar // additional env vars beyond TRANSPORT
+	// Resources overrides the default resource requests/limits. When nil,
+	// defaultMCPServerResources() is used to ensure containers are scheduled
+	// with reasonable resource guarantees and do not compete excessively.
+	Resources *mcpv1alpha1.ResourceRequirements
+}
+
+// defaultMCPServerResources returns conservative resource requests/limits that
+// mirror the quickstart example (vmcp_optimizer_quickstart.yaml) and are
+// sufficient for functional E2E testing without starving other pods.
+func defaultMCPServerResources() mcpv1alpha1.ResourceRequirements {
+	return mcpv1alpha1.ResourceRequirements{
+		Limits: mcpv1alpha1.ResourceList{
+			CPU:    "200m",
+			Memory: "256Mi",
+		},
+		Requests: mcpv1alpha1.ResourceList{
+			CPU:    "100m",
+			Memory: "128Mi",
+		},
+	}
 }
 
 // CreateMultipleMCPServersInParallel creates multiple MCPServers concurrently and waits for all to be running.
@@ -798,6 +822,16 @@ func CreateMultipleMCPServersInParallel(
 	// Create all backends concurrently
 	for i := range backends {
 		idx := i // Capture loop variable
+		backendTransport := backends[idx].Transport
+		if backendTransport == "" {
+			backendTransport = "streamable-http"
+		}
+
+		resources := defaultMCPServerResources()
+		if backends[idx].Resources != nil {
+			resources = *backends[idx].Resources
+		}
+
 		backend := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backends[idx].Name,
@@ -806,13 +840,15 @@ func CreateMultipleMCPServersInParallel(
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:              backends[idx].GroupRef,
 				Image:                 backends[idx].Image,
-				Transport:             "streamable-http",
+				Transport:             backendTransport,
 				ProxyPort:             8080,
 				McpPort:               8080,
 				ExternalAuthConfigRef: backends[idx].ExternalAuthConfigRef,
-				Env: []mcpv1alpha1.EnvVar{
-					{Name: "TRANSPORT", Value: "streamable-http"},
-				},
+				Secrets:               backends[idx].Secrets,
+				Resources:             resources,
+				Env: append([]mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: backendTransport},
+				}, backends[idx].Env...),
 			},
 		}
 		gomega.Expect(c.Create(ctx, backend)).To(gomega.Succeed())

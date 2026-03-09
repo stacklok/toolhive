@@ -4,7 +4,7 @@
 # EmbeddingServer configuration options explicitly set, suitable as a
 # reference for production tuning.
 #
-# Unlike vmcp_optimizer_example.yaml (which relies on auto-configuration),
+# Unlike vmcp_optimizer_quickstart.yaml (which relies on auto-configuration),
 # this example:
 # - Explicitly specifies every EmbeddingServer field (model, image, port, replicas, resources, etc.)
 # - Explicitly configures the optimizer block with tuned search parameters
@@ -26,7 +26,7 @@
 #   ARM64 support is tracked in: https://github.com/huggingface/text-embeddings-inference/pull/827
 #
 # Usage:
-#   kubectl apply -f vmcp_optimizer_advanced.yaml
+#   kubectl apply -f vmcp_optimizer_all_options.yaml
 
 ---
 # Step 1: Create MCPGroup

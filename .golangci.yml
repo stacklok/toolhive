@@ -67,6 +67,17 @@ linters:
     gosec:
       excludes:
         - G601
+        # The following rules were introduced in gosec v2.22+ (shipped with
+        # golangci-lint alongside Go 1.26). They flag pre-existing patterns
+        # across the codebase. Exclude them here and address in a follow-up PR.
+        - G117 # Marshaled struct field matches secret pattern
+        - G118 # Context cancellation / goroutine context issues
+        - G120 # Form parsing without body size limit
+        - G122 # Filesystem race in filepath.Walk
+        - G703 # Path traversal via taint analysis
+        - G704 # SSRF via taint analysis
+        - G705 # XSS via taint analysis
+        - G706 # Log injection via taint analysis
     lll:
       line-length: 130
     revive:

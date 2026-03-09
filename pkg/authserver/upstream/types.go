@@ -30,6 +30,12 @@ type Identity struct {
 
 	// Subject is the canonical user identifier from the upstream IDP (the "sub" claim).
 	Subject string
+
+	// Name is the user's display name from the upstream IDP (optional).
+	Name string
+
+	// Email is the user's email address from the upstream IDP (optional).
+	Email string
 }
 
 // ErrIdentityResolutionFailed indicates identity could not be determined.

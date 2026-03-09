@@ -24,6 +24,24 @@ type CloneConfig struct {
 	Commit string
 }
 
+// validate checks that the CloneConfig is well-formed.
+func (c *CloneConfig) validate() error {
+	count := 0
+	if c.Branch != "" {
+		count++
+	}
+	if c.Tag != "" {
+		count++
+	}
+	if c.Commit != "" {
+		count++
+	}
+	if count > 1 {
+		return ErrInvalidCloneConfig
+	}
+	return nil
+}
+
 // RepositoryInfo contains information about a Git repository
 type RepositoryInfo struct {
 	// Repository is the go-git repository instance

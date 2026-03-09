@@ -20,6 +20,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
@@ -2202,28 +2203,17 @@ func TestMiddleware_RFC6750JSONErrorResponse(t *testing.T) {
 			res := rr.Result()
 			defer res.Body.Close()
 
-			if res.StatusCode != tt.wantStatus {
-				t.Fatalf("expected status %d, got %d", tt.wantStatus, res.StatusCode)
-			}
-
-			contentType := res.Header.Get("Content-Type")
-			if !strings.HasPrefix(contentType, "application/json") {
-				t.Fatalf("expected Content-Type application/json, got %q", contentType)
-			}
+			require.Equal(t, tt.wantStatus, res.StatusCode)
+			require.True(t, strings.HasPrefix(res.Header.Get("Content-Type"), "application/json"),
+				"expected Content-Type application/json")
 
 			var body struct {
 				Error            string `json:"error"`
 				ErrorDescription string `json:"error_description"`
 			}
-			if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-				t.Fatalf("response body is not valid JSON: %v", err)
-			}
-			if body.Error != tt.wantErrorCode {
-				t.Errorf("expected error code %q, got %q", tt.wantErrorCode, body.Error)
-			}
-			if !strings.Contains(body.ErrorDescription, tt.wantDescSubstring) {
-				t.Errorf("expected error_description to contain %q, got %q", tt.wantDescSubstring, body.ErrorDescription)
-			}
+			require.NoError(t, json.NewDecoder(res.Body).Decode(&body), "response body must be valid JSON")
+			require.Equal(t, tt.wantErrorCode, body.Error)
+			require.Contains(t, body.ErrorDescription, tt.wantDescSubstring)
 		})
 	}
 }

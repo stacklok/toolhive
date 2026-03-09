@@ -6,15 +6,15 @@ package git
 import (
 	"context"
 	"fmt"
-	"runtime"
+	"log/slog"
 
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/filesystem"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Client defines the interface for Git operations
@@ -29,19 +29,37 @@ type Client interface {
 	Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error
 }
 
-// DefaultGitClient implements GitClient using go-git
-type DefaultGitClient struct{}
+// DefaultGitClient implements Client using go-git
+type DefaultGitClient struct {
+	// auth is the optional authentication method for cloning
+	auth transport.AuthMethod
+}
+
+// ClientOption configures a DefaultGitClient.
+type ClientOption func(*DefaultGitClient)
+
+// WithAuth sets the authentication method for git operations.
+func WithAuth(auth transport.AuthMethod) ClientOption {
+	return func(c *DefaultGitClient) {
+		c.auth = auth
+	}
+}
 
 // NewDefaultGitClient creates a new DefaultGitClient
-func NewDefaultGitClient() *DefaultGitClient {
-	return &DefaultGitClient{}
+func NewDefaultGitClient(opts ...ClientOption) *DefaultGitClient {
+	c := &DefaultGitClient{}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // Clone clones a repository with the given configuration
 func (c *DefaultGitClient) Clone(ctx context.Context, config *CloneConfig) (*RepositoryInfo, error) {
-	// Prepare clone options (no authentication for initial version)
+	// Prepare clone options
 	cloneOptions := &git.CloneOptions{
-		URL: config.URL,
+		URL:  config.URL,
+		Auth: c.auth,
 	}
 
 	// Set reference if specified (but not for commit-based clones)
@@ -154,28 +172,27 @@ func (*DefaultGitClient) GetFileContent(repoInfo *RepositoryInfo, path string) (
 }
 
 // Cleanup removes local repository directory
-func (*DefaultGitClient) Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error {
-	logger := log.FromContext(ctx)
+func (*DefaultGitClient) Cleanup(_ context.Context, repoInfo *RepositoryInfo) error {
 	if repoInfo == nil || repoInfo.Repository == nil {
 		return fmt.Errorf("repository is nil")
 	}
 
 	// 1. Clear object cache explicitly
 	if repoInfo.objectCache != nil {
-		logger.V(1).Info("Clearing object cache")
+		slog.Debug("Clearing object cache")
 		repoInfo.objectCache.Clear()
 	}
 
 	// 2. Clear worktree filesystem
 	worktree, err := repoInfo.Repository.Worktree()
 	if err == nil && worktree.Filesystem != nil {
-		logger.V(1).Info("Clearing worktree filesystem")
+		slog.Debug("Clearing worktree filesystem")
 		_ = util.RemoveAll(worktree.Filesystem, "/")
 	}
 
 	// 3. Clear storer filesystem (memfs)
 	if repoInfo.storerFilesystem != nil {
-		logger.V(1).Info("Clearing storer filesystem")
+		slog.Debug("Clearing storer filesystem")
 		_ = util.RemoveAll(repoInfo.storerFilesystem, "/")
 	}
 
@@ -184,8 +201,6 @@ func (*DefaultGitClient) Cleanup(ctx context.Context, repoInfo *RepositoryInfo) 
 	repoInfo.storerFilesystem = nil
 	repoInfo.Repository = nil
 
-	// // 5. Force GC to reclaim memory
-	runtime.GC()
 	return nil
 }
 
@@ -207,3 +222,4 @@ func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
 
 	return nil
 }
+

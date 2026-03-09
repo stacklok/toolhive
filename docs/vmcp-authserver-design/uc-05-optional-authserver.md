@@ -275,7 +275,7 @@ Startup-time validation covers inline-mode backends and `OutgoingAuth.Default`. 
 | V-02 | `upstream_inject` provider name not in AS upstream config | **Error** | S, K | Typo or config drift. Would cause `ErrUpstreamTokenNotFound` on every request. |
 | V-03 | `token_exchange` with AS as incoming auth provider | **Warning** | S | Subject token changes from `identity.Token` (TH-JWT) to upstream front-door token. Backend STS must trust the upstream IDP, not the TH-AS. |
 | V-04 | AS `issuer` ≠ `incomingAuth.oidc.issuer` | **Error** | S | OIDC middleware validates the JWT `iss` claim against the configured issuer. If they differ, every AS-issued token is rejected. |
-| V-05 | AS `RunConfig` fails validation | **Error** | S | Delegates to `RunConfig.Validate()` (existing). Catches missing upstreams, invalid issuer URL, etc. |
+| V-05 | AS config fails validation | **Error** | S | `NewEmbeddedAuthServer` resolves `RunConfig` → `Config` and calls `Config.Validate()` internally. Catches missing upstreams, invalid issuer URL, etc. Errors surface at startup. |
 | V-06 | `upstream_inject` provider name is empty | **Error** | S, K | Structural validation in `validateBackendAuthStrategy`. |
 | V-07 | `incomingAuth.oidc.audience` not in AS `allowedAudiences` | **Error** | S | AS issues tokens with audience from `AllowedAudiences`. If the incoming OIDC audience isn't in that list, the AS either can't issue tokens with the right audience, or the middleware rejects tokens with the wrong audience. |
 
@@ -310,12 +310,11 @@ func (v *DefaultValidator) validateAuthServerIntegration(cfg *Config) error {
         cfg.IncomingAuth.OIDC != nil &&
         cfg.IncomingAuth.OIDC.Issuer == cfg.AuthServer.RunConfig.Issuer
 
-    // Validate AS RunConfig if present (V-05)
-    if asConfigured {
-        if err := cfg.AuthServer.RunConfig.Validate(); err != nil {
-            return fmt.Errorf("authServer: %w", err)
-        }
-    }
+    // V-05: AS config validation happens at creation time.
+    // NewEmbeddedAuthServer resolves RunConfig → Config and calls
+    // Config.Validate() internally (via newServer). No separate
+    // RunConfig.Validate() method is needed — invalid configs surface
+    // as errors from NewEmbeddedAuthServer at startup.
 
     // V-04: Issuer consistency
     if asConfigured && cfg.IncomingAuth != nil &&

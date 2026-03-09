@@ -113,12 +113,13 @@ User authenticates with Atlassian
 
 ```go
 type PendingAuthorization struct {
-    // ... existing fields from UC-01 ...
+    // ... existing fields from UC-01 (ExistingTSID, UpstreamProviderName) ...
     RemainingUpstreams []string  // upstream providers still to authenticate
-    SessionID          string   // fosite session ID for auth code issuance
     Subject            string   // user subject from first upstream (front door)
 }
 ```
+
+Note: `ExistingTSID` (from UC-01) serves double duty — it is both the upstream token storage key and the session identity for auth code issuance. No separate `SessionID` field is needed.
 
 **Callback handler logic** (~30 lines added to `handleCallback()`):
 
@@ -128,10 +129,9 @@ if len(pending.RemainingUpstreams) > 0 {
     next := pending.RemainingUpstreams[0]
     rest := pending.RemainingUpstreams[1:]
     newPending := &PendingAuthorization{
-        ExistingTSID:       tsid,
-        RemainingUpstreams: rest,
-        SessionID:          pending.SessionID,
-        Subject:            pending.Subject,
+        ExistingTSID:         tsid,
+        RemainingUpstreams:   rest,
+        Subject:              pending.Subject,
         UpstreamProviderName: next,
     }
     store(newPending)
@@ -139,7 +139,7 @@ if len(pending.RemainingUpstreams) > 0 {
     return
 }
 // All upstreams complete → issue auth code to client
-issueAuthCode(w, r, pending.SessionID, tsid)
+issueAuthCode(w, r, tsid)
 ```
 
 ### 2.3 Partial Failure Handling
@@ -150,7 +150,11 @@ Not all upstream failures are equal:
 |---------|----------|-----------|
 | **Front-door IDP** (first upstream) | Abort entire flow | No user identity established; cannot issue JWT |
 | **Non-front-door IDP** | Skip provider, continue chain | User is authenticated; some backends will work without this provider |
-| **IDP temporarily unavailable** | AS retry logic (3 attempts) | Transient network issues shouldn't block login |
+
+The existing `handleUpstreamError()` in `callback.go` currently redirects all errors back to the client. For chaining, it needs to branch:
+
+- If `pending.ExistingTSID == ""` (front-door leg): abort, redirect error to client (current behavior)
+- If `pending.ExistingTSID != ""` (non-front-door leg): log warning, skip this provider, chain to next upstream in `pending.RemainingUpstreams` (or issue auth code if none remain)
 
 On partial completion, the AS issues a TH-JWT with the TSID containing only the tokens that succeeded. Backends requiring missing tokens will be excluded from the vMCP session (same behavior as today for missing tokens).
 
@@ -238,6 +242,7 @@ The most promising post-v1 direction is **URL elicitation** (MCP spec code -3204
 
 | File | Change |
 |------|--------|
-| `pkg/authserver/server/handlers/authorize.go` | Add `parseUpstreamScopes()` to extract all `upstream:*` scopes; store `RemainingUpstreams` in `PendingAuthorization` |
-| `pkg/authserver/server/handlers/callback.go` | Add chaining logic: after storing token, check `RemainingUpstreams`; if non-empty, redirect to next upstream; if empty, issue auth code |
-| `pkg/authserver/storage/types.go` | Add `RemainingUpstreams`, `SessionID`, `Subject` fields to `PendingAuthorization` |
+| `pkg/authserver/server/handlers/authorize.go` | Add `parseUpstreamScopes()` to extract all `upstream:*` scopes; validate all provider names upfront; store `RemainingUpstreams` in `PendingAuthorization` |
+| `pkg/authserver/server/handlers/callback.go` | Add chaining logic: after storing token, check `RemainingUpstreams`; if non-empty, redirect to next upstream; if empty, issue auth code. Modify `handleUpstreamError()` to branch on front-door vs non-front-door failure. |
+| `pkg/authserver/storage/types.go` | Add `RemainingUpstreams`, `Subject` fields to `PendingAuthorization` |
+| `pkg/authserver/storage/memory.go` | Update defensive copy in `StorePendingAuthorization`/`LoadPendingAuthorization` to clone `RemainingUpstreams` slice |

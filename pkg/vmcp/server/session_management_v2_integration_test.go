@@ -218,6 +218,55 @@ func buildV2Server(
 	return ts
 }
 
+// buildV2ServerWithLimits is like buildV2Server but accepts an explicit MaxSessions cap.
+func buildV2ServerWithLimits(
+	t *testing.T,
+	factory vmcpsession.MultiSessionFactory,
+	maxSessions int,
+) *httptest.Server {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	emptyAggCaps := &aggregator.AggregatedCapabilities{}
+	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(emptyAggCaps, nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+
+	rt := router.NewDefaultRouter()
+
+	srv, err := server.New(
+		context.Background(),
+		&server.Config{
+			Host:                "127.0.0.1",
+			Port:                0,
+			SessionTTL:          5 * time.Minute,
+			SessionManagementV2: true,
+			SessionFactory:      factory,
+			MaxSessions:         maxSessions,
+		},
+		rt,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	handler, err := srv.Handler(context.Background())
+	require.NoError(t, err)
+
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	return ts
+}
+
 // postMCP sends a JSON-RPC POST to /mcp and returns the response.
 func postMCP(t *testing.T, baseURL string, body map[string]any, sessionID string) *http.Response {
 	t.Helper()
@@ -473,4 +522,73 @@ func TestIntegration_SessionManagementV2_OldPathUnused(t *testing.T) {
 		10*time.Millisecond,
 		"MakeSessionWithID should NOT be called when SessionManagementV2 is false",
 	)
+}
+
+// TestIntegration_SessionManagementV2_SessionLimitMiddleware verifies that the
+// global session cap (MaxSessions) is enforced end-to-end: once the cap is
+// reached every new initialize request gets HTTP 503 with a Retry-After header
+// and a JSON error body, while existing sessions are unaffected.
+func TestIntegration_SessionManagementV2_SessionLimitMiddleware(t *testing.T) {
+	t.Parallel()
+
+	const maxSessions = 2
+
+	factory := newV2FakeFactory([]vmcp.Tool{{Name: "noop"}})
+	ts := buildV2ServerWithLimits(t, factory, maxSessions)
+
+	initReq := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}
+
+	// Fill the pool to exactly MaxSessions.
+	sessionIDs := make([]string, maxSessions)
+	for i := range maxSessions {
+		resp := postMCP(t, ts.URL, initReq, "")
+		defer resp.Body.Close() //nolint:gocritic // deferred inside loop is intentional for test cleanup
+		require.Equal(t, http.StatusOK, resp.StatusCode, "session %d should succeed", i+1)
+		id := resp.Header.Get("Mcp-Session-Id")
+		require.NotEmpty(t, id, "session %d should return a session ID", i+1)
+		sessionIDs[i] = id
+	}
+
+	// The next initialize request must be rejected with 503.
+	overResp := postMCP(t, ts.URL, initReq, "")
+	defer overResp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, overResp.StatusCode,
+		"initialize beyond MaxSessions must return 503")
+	assert.NotEmpty(t, overResp.Header.Get("Retry-After"),
+		"503 response must include Retry-After header")
+	assert.Equal(t, "application/json", overResp.Header.Get("Content-Type"))
+
+	var errBody struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(overResp.Body).Decode(&errBody))
+	assert.Equal(t, -32000, errBody.Error.Code)
+	assert.NotEmpty(t, errBody.Error.Message)
+
+	// Existing sessions must still be valid (DELETE returns 200, not 404/503).
+	for _, id := range sessionIDs {
+		req, err := http.NewRequestWithContext(
+			context.Background(), http.MethodDelete, ts.URL+"/mcp", http.NoBody,
+		)
+		require.NoError(t, err)
+		req.Header.Set("Mcp-Session-Id", id)
+		delResp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		delResp.Body.Close()
+		assert.Equal(t, http.StatusOK, delResp.StatusCode,
+			"existing session %s should still be terminable after cap is hit", id)
+	}
 }

@@ -91,10 +91,11 @@ spec:
   bindings:
     - platformRole: writer
       from:
-        groups: [platform-eng, sre-team]
+        - groups: [platform-eng]
+        - groups: [sre-team]
     - platformRole: reader
       from:
-        groups: [all-developers]
+        - groups: [all-developers]
 ```
 
 The controller generates:
@@ -931,10 +932,10 @@ spec:
   bindings:
     - platformRole: writer
       from:
-        groups: [platform-eng]
+        - groups: [platform-eng]
     - platformRole: reader
       from:
-        groups: [all-developers]
+        - groups: [all-developers]
 ---
 kind: ToolhiveAuthorizationPolicy
 metadata:

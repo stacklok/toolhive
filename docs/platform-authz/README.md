@@ -10,10 +10,10 @@ RBAC terms while compiling down to Cedar for runtime enforcement.
 | Document | Status | Description |
 |----------|--------|-------------|
 | [Invariants](00-invariants.md) | Complete | Immutable truths and design constraints |
-| [CRDs](01-crds.md) | Planned | CRD definitions and field semantics |
+| [CRDs](01-crds.md) | Complete | CRD definitions and field semantics |
 | [Cedar Compilation](02-cedar-compilation.md) | Complete | How CRDs compile to Cedar policies and entities |
 | [Controller Design](03-controller.md) | Complete | Reconciliation loops, SSA, watch predicates |
-| [OSS Changes](04-oss-changes.md) | Draft | Changes needed in this repo (ToolHive OSS) |
+| [OSS Changes](04-oss-changes.md) | Complete | Changes needed in this repo (ToolHive OSS) |
 | [Claim Mapping](05-claim-mapping.md) | Planned | IdP-specific claim extraction and group resolution |
 
 ## Key Design Decisions

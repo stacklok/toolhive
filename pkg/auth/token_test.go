@@ -2140,3 +2140,90 @@ func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
 		}
 	})
 }
+
+func TestMiddleware_RFC6750JSONErrorResponse(t *testing.T) {
+	t.Parallel()
+
+	tv := &TokenValidator{
+		issuer:   issuer,
+		jwksURL:  "https://placeholder/jwks", // prevents lazy OIDC discovery with nil HTTP client
+		registry: NewRegistry(),
+	}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := tv.Middleware(next)
+
+	tests := []struct {
+		name              string
+		setupRequest      func(r *http.Request)
+		wantStatus        int
+		wantErrorCode     string
+		wantDescSubstring string
+	}{
+		{
+			name:              "missing Authorization header returns invalid_request",
+			setupRequest:      func(_ *http.Request) {},
+			wantStatus:        http.StatusUnauthorized,
+			wantErrorCode:     "invalid_request",
+			wantDescSubstring: "authorization header",
+		},
+		{
+			name: "wrong scheme returns invalid_request",
+			setupRequest: func(r *http.Request) {
+				r.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+			},
+			wantStatus:        http.StatusUnauthorized,
+			wantErrorCode:     "invalid_request",
+			wantDescSubstring: "authorization header",
+		},
+		{
+			name: "malformed bearer token returns invalid_token",
+			setupRequest: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer not.a.valid.jwt")
+			},
+			wantStatus:        http.StatusUnauthorized,
+			wantErrorCode:     "invalid_token",
+			wantDescSubstring: "Invalid token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			tt.setupRequest(req)
+			rr := httptest.NewRecorder()
+
+			handler.ServeHTTP(rr, req)
+
+			res := rr.Result()
+			defer res.Body.Close()
+
+			if res.StatusCode != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, res.StatusCode)
+			}
+
+			contentType := res.Header.Get("Content-Type")
+			if !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("expected Content-Type application/json, got %q", contentType)
+			}
+
+			var body struct {
+				Error            string `json:"error"`
+				ErrorDescription string `json:"error_description"`
+			}
+			if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+				t.Fatalf("response body is not valid JSON: %v", err)
+			}
+			if body.Error != tt.wantErrorCode {
+				t.Errorf("expected error code %q, got %q", tt.wantErrorCode, body.Error)
+			}
+			if !strings.Contains(body.ErrorDescription, tt.wantDescSubstring) {
+				t.Errorf("expected error_description to contain %q, got %q", tt.wantDescSubstring, body.ErrorDescription)
+			}
+		})
+	}
+}

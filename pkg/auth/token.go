@@ -115,6 +115,7 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	u.RawQuery = query.Encode()
 
 	// Create the GET request
+	//nolint:gosec // G704 - URL from trusted OIDC discovery config
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Google tokeninfo request: %w", err)
@@ -290,6 +291,7 @@ func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jw
 	formData.Set("token_type_hint", "access_token")
 
 	// Create POST request with form data
+	//nolint:gosec // G704 - URL is configured introspection endpoint
 	req, err := http.NewRequestWithContext(ctx, "POST", r.url, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create introspection request: %w", err)
@@ -1033,6 +1035,24 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 	return "Bearer " + strings.Join(parts, ", ")
 }
 
+// writeOAuthError writes an RFC 6750 compliant JSON error response.
+func writeOAuthError(w http.ResponseWriter, errorCode, description string, status int) {
+	body, err := json.Marshal(struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}{
+		Error:            errorCode,
+		ErrorDescription: description,
+	})
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1040,7 +1060,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		tokenString, err := ExtractBearerToken(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
-			http.Error(w, err.Error(), http.StatusUnauthorized)
+			writeOAuthError(w, "invalid_request", err.Error(), http.StatusUnauthorized)
 			return
 		}
 
@@ -1048,7 +1068,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
-			http.Error(w, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
+			writeOAuthError(w, "invalid_token", fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
 			return
 		}
 
@@ -1057,7 +1077,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		if err != nil {
 			slog.Error("failed to convert claims to identity", "error", err)
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
-			http.Error(w, "Invalid authentication claims", http.StatusUnauthorized)
+			writeOAuthError(w, "invalid_token", "Invalid authentication claims", http.StatusUnauthorized)
 			return
 		}
 

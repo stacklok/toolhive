@@ -8,6 +8,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -28,13 +29,13 @@ type LimitedFs struct {
 }
 
 // ErrNotImplemented is returned when a method is not implemented.
-var ErrNotImplemented = fmt.Errorf("not implemented")
+var ErrNotImplemented = errors.New("not implemented")
 
 // ErrTooBig is returned when a file is too big.
-var ErrTooBig = fmt.Errorf("file too big")
+var ErrTooBig = errors.New("file too big")
 
 // ErrTooManyFiles is returned when there are too many files.
-var ErrTooManyFiles = fmt.Errorf("too many files")
+var ErrTooManyFiles = errors.New("too many files")
 
 var _ billy.Filesystem = (*LimitedFs)(nil)
 

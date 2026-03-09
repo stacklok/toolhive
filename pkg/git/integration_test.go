@@ -43,7 +43,8 @@ func initTestRepo(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// TestDefaultGitClient_FullWorkflow tests a complete Git workflow with a real repository
+// TestDefaultGitClient_FullWorkflow exercises the complete clone → read → cleanup lifecycle
+// against a local git repository to verify end-to-end correctness.
 func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -53,28 +54,29 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 	client := NewDefaultGitClient()
 	ctx := t.Context()
 
-	// Clone the repository
+	// Clone the local repository
 	repoInfo, err := client.Clone(ctx, &CloneConfig{URL: repoDir})
 	require.NoError(t, err)
 
-	// Verify repository info was populated
+	// Verify repository info was populated correctly
 	require.NotNil(t, repoInfo.Repository)
 	assert.Equal(t, repoDir, repoInfo.RemoteURL)
 
-	// Test GetFileContent
+	// Retrieve and verify file content matches what was committed
 	content, err := client.GetFileContent(repoInfo, "registry.json")
 	require.NoError(t, err)
 	assert.Equal(t, testContent, string(content))
 
-	// Test GetFileContent with non-existent file
+	// Non-existent files should return an error
 	_, err = client.GetFileContent(repoInfo, "nonexistent.json")
 	require.Error(t, err)
 
-	// Test Cleanup
+	// Cleanup should release all in-memory resources
 	require.NoError(t, client.Cleanup(ctx, repoInfo))
 }
 
-// TestDefaultGitClient_CloneWithBranch tests cloning with a specific branch
+// TestDefaultGitClient_CloneWithBranch verifies that cloning with a specific branch
+// checks out only that branch's content, including files inherited from its parent.
 func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 	t.Parallel()
 
@@ -116,7 +118,53 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 	require.NoError(t, client.Cleanup(t.Context(), repoInfo))
 }
 
-// TestDefaultGitClient_CloneWithCommit tests cloning with a specific commit
+// TestDefaultGitClient_CloneWithTag verifies that cloning with a specific tag
+// checks out the tree at the tagged commit.
+func TestDefaultGitClient_CloneWithTag(t *testing.T) {
+	t.Parallel()
+
+	// Create repo with initial commit
+	repoDir := initTestRepo(t, map[string]string{"v1.txt": "tagged content"})
+
+	// Create a tag pointing to HEAD
+	repo, err := gogit.PlainOpen(repoDir)
+	require.NoError(t, err)
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	_, err = repo.CreateTag("v1.0.0", head.Hash(), nil)
+	require.NoError(t, err)
+
+	// Add a second commit after the tag
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "v2.txt"), []byte("post-tag content"), 0644))
+	_, err = wt.Add("v2.txt")
+	require.NoError(t, err)
+	_, err = wt.Commit("Post-tag commit", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com"},
+	})
+	require.NoError(t, err)
+
+	// Clone at the tag — should have v1.txt but not v2.txt
+	client := NewDefaultGitClient()
+
+	repoInfo, err := client.Clone(t.Context(), &CloneConfig{URL: repoDir, Tag: "v1.0.0"})
+	require.NoError(t, err)
+
+	content, err := client.GetFileContent(repoInfo, "v1.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "tagged content", string(content))
+
+	// v2.txt was committed after the tag, so it should not be present
+	_, err = client.GetFileContent(repoInfo, "v2.txt")
+	require.Error(t, err)
+
+	require.NoError(t, client.Cleanup(t.Context(), repoInfo))
+}
+
+// TestDefaultGitClient_CloneWithCommit verifies that cloning at a specific commit
+// checks out exactly the tree at that point — later commits' files must not be visible.
 func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 	t.Parallel()
 
@@ -161,7 +209,8 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 	require.NoError(t, client.Cleanup(t.Context(), repoInfo))
 }
 
-// TestDefaultGitClient_UpdateRepositoryInfo tests the updateRepositoryInfo method
+// TestDefaultGitClient_UpdateRepositoryInfo verifies that updateRepositoryInfo
+// correctly populates the Branch field from the repository's HEAD reference.
 func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
 	t.Parallel()
 

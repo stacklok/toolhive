@@ -5,8 +5,11 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-billy/v5/util"
@@ -16,6 +19,15 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 )
+
+// ErrNilRepository is returned when a nil repository is passed to an operation that requires one.
+var ErrNilRepository = errors.New("repository is nil")
+
+// ErrInvalidFilePath is returned when a file path contains traversal or absolute components.
+var ErrInvalidFilePath = errors.New("invalid file path")
+
+// ErrInvalidCloneConfig is returned when CloneConfig has conflicting ref specifications.
+var ErrInvalidCloneConfig = errors.New("invalid clone config: at most one of Branch, Tag, or Commit may be specified")
 
 // Client defines the interface for Git operations
 type Client interface {
@@ -56,6 +68,10 @@ func NewDefaultGitClient(opts ...ClientOption) *DefaultGitClient {
 
 // Clone clones a repository with the given configuration
 func (c *DefaultGitClient) Clone(ctx context.Context, config *CloneConfig) (*RepositoryInfo, error) {
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+
 	// Prepare clone options
 	cloneOptions := &git.CloneOptions{
 		URL:  config.URL,
@@ -135,7 +151,12 @@ func (c *DefaultGitClient) Clone(ctx context.Context, config *CloneConfig) (*Rep
 // GetFileContent retrieves the content of a file from the repository
 func (*DefaultGitClient) GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error) {
 	if repoInfo == nil || repoInfo.Repository == nil {
-		return nil, fmt.Errorf("repository is nil")
+		return nil, ErrNilRepository
+	}
+
+	// Reject absolute paths, traversal, and null bytes
+	if filepath.IsAbs(path) || strings.Contains(path, "..") || strings.ContainsRune(path, 0) {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidFilePath, path)
 	}
 
 	// Get the HEAD reference
@@ -174,7 +195,7 @@ func (*DefaultGitClient) GetFileContent(repoInfo *RepositoryInfo, path string) (
 // Cleanup removes local repository directory
 func (*DefaultGitClient) Cleanup(_ context.Context, repoInfo *RepositoryInfo) error {
 	if repoInfo == nil || repoInfo.Repository == nil {
-		return fmt.Errorf("repository is nil")
+		return ErrNilRepository
 	}
 
 	// 1. Clear object cache explicitly
@@ -187,13 +208,17 @@ func (*DefaultGitClient) Cleanup(_ context.Context, repoInfo *RepositoryInfo) er
 	worktree, err := repoInfo.Repository.Worktree()
 	if err == nil && worktree.Filesystem != nil {
 		slog.Debug("Clearing worktree filesystem")
-		_ = util.RemoveAll(worktree.Filesystem, "/")
+		if err := util.RemoveAll(worktree.Filesystem, "/"); err != nil {
+			slog.Warn("Failed to clear worktree filesystem", "error", err)
+		}
 	}
 
 	// 3. Clear storer filesystem (memfs)
 	if repoInfo.storerFilesystem != nil {
 		slog.Debug("Clearing storer filesystem")
-		_ = util.RemoveAll(repoInfo.storerFilesystem, "/")
+		if err := util.RemoveAll(repoInfo.storerFilesystem, "/"); err != nil {
+			slog.Warn("Failed to clear storer filesystem", "error", err)
+		}
 	}
 
 	// 4. Nil out all references
@@ -207,7 +232,7 @@ func (*DefaultGitClient) Cleanup(_ context.Context, repoInfo *RepositoryInfo) er
 // updateRepositoryInfo updates the repository info with current state
 func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
 	if repoInfo == nil || repoInfo.Repository == nil {
-		return fmt.Errorf("repository is nil")
+		return ErrNilRepository
 	}
 
 	// Get current branch name
@@ -222,4 +247,3 @@ func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
 
 	return nil
 }
-

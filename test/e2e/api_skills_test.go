@@ -159,6 +159,16 @@ func buildSkill(server *e2e.Server, path, tag string) *http.Response {
 
 // createTestSkillDir creates a temporary directory with a valid SKILL.md file.
 // The directory name matches the skill name (validator requirement).
+// buildTestSkill creates a test skill directory, builds it via the API (so it
+// lands in the local OCI store), and returns the skill directory path. The
+// caller can then install the skill by plain name.
+func buildTestSkill(server *e2e.Server, skillName, description string) {
+	skillDir := createTestSkillDir(skillName, description)
+	resp := buildSkill(server, skillDir, "")
+	defer resp.Body.Close()
+	ExpectWithOffset(1, resp.StatusCode).To(Equal(http.StatusOK))
+}
+
 func createTestSkillDir(skillName, description string) string {
 	parentDir := GinkgoT().TempDir()
 	skillDir := filepath.Join(parentDir, skillName)
@@ -460,7 +470,8 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		})
 
 		It("should include installed skills", func() {
-			By("Installing a skill")
+			By("Building and installing a skill")
+			buildTestSkill(apiServer, "list-test-skill", "A skill for list test")
 			installResp := installSkill(apiServer, installSkillRequest{Name: "list-test-skill"})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -496,23 +507,35 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 			}
 		})
 
-		It("should install a skill with pending status", func() {
-			By("Installing a skill by name")
+		It("should install a locally-built skill", func() {
+			By("Building a skill so it is available in the local store")
+			buildTestSkill(apiServer, "install-test-skill", "A skill for install test")
+
+			By("Installing the skill by name")
 			resp := installSkill(apiServer, installSkillRequest{Name: "install-test-skill"})
 			defer resp.Body.Close()
 
 			By("Verifying response status is 201 Created")
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 
-			By("Verifying the skill has pending status")
+			By("Verifying the skill has installed status")
 			var result installSkillResponse
 			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
-			Expect(result.Skill.Status).To(Equal("pending"))
+			Expect(result.Skill.Status).To(Equal("installed"))
 			Expect(result.Skill.Metadata.Name).To(Equal("install-test-skill"))
 			Expect(result.Skill.InstalledAt).ToNot(BeZero(), "InstalledAt should be a valid timestamp")
 
 			By("Verifying Location header is set")
 			Expect(resp.Header.Get("Location")).To(Equal("/api/v1beta/skills/install-test-skill"))
+		})
+
+		It("should return 404 for unresolvable plain name", func() {
+			By("Attempting to install a skill that has not been built or published")
+			resp := installSkill(apiServer, installSkillRequest{Name: "no-such-skill"})
+			defer resp.Body.Close()
+
+			By("Verifying response status is 404 Not Found")
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
 		It("should reject empty name", func() {
@@ -534,7 +557,8 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		})
 
 		It("should reject duplicate install", func() {
-			By("Installing a skill")
+			By("Building and installing a skill")
+			buildTestSkill(apiServer, "dup-test-skill", "A skill for dup test")
 			resp := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
@@ -569,7 +593,8 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		})
 
 		It("should return info for an installed skill", func() {
-			By("Installing a skill")
+			By("Building and installing a skill")
+			buildTestSkill(apiServer, "info-test-skill", "A skill for info test")
 			installResp := installSkill(apiServer, installSkillRequest{Name: "info-test-skill"})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -608,7 +633,8 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 
 	Describe("DELETE /api/v1beta/skills/{name} - Uninstall a skill", func() {
 		It("should uninstall an installed skill", func() {
-			By("Installing a skill")
+			By("Building and installing a skill")
+			buildTestSkill(apiServer, "uninstall-test", "A skill for uninstall test")
 			installResp := installSkill(apiServer, installSkillRequest{Name: "uninstall-test"})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -670,6 +696,9 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		It("should register the skill in the group on install", func() {
 			skillName := "group-install-skill"
 
+			By("Building the skill")
+			buildTestSkill(apiServer, skillName, "A skill for group install test")
+
 			By("Installing a skill into the group")
 			resp := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
 			defer resp.Body.Close()
@@ -692,6 +721,10 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		It("should filter list by group", func() {
 			skillInGroup := "group-filter-in"
 			skillOutGroup := "group-filter-out"
+
+			By("Building both skills")
+			buildTestSkill(apiServer, skillInGroup, "A skill for group filter test (in)")
+			buildTestSkill(apiServer, skillOutGroup, "A skill for group filter test (out)")
 
 			By("Installing a skill into the group")
 			r1 := installSkill(apiServer, installSkillRequest{Name: skillInGroup, Group: groupName})
@@ -722,6 +755,9 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		It("should remove the skill from the group on uninstall", func() {
 			skillName := "group-uninstall-skill"
 
+			By("Building the skill")
+			buildTestSkill(apiServer, skillName, "A skill for group uninstall test")
+
 			By("Installing a skill into the group")
 			r1 := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
 			defer r1.Body.Close()
@@ -747,6 +783,9 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 		})
 
 		It("should return error when installing into a non-existent group", func() {
+			By("Building the skill so the name resolves")
+			buildTestSkill(apiServer, "group-noexist-skill", "A skill for non-existent group test")
+
 			By("Attempting to install a skill into a non-existent group")
 			resp := installSkill(apiServer, installSkillRequest{
 				Name:  "group-noexist-skill",
@@ -762,6 +801,9 @@ var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
 	Describe("Full lifecycle integration", func() {
 		It("should support install → list → info → uninstall → list → info", func() {
 			skillName := "lifecycle-test"
+
+			By("Building the skill")
+			buildTestSkill(apiServer, skillName, "A skill for lifecycle test")
 
 			By("Installing the skill")
 			installResp := installSkill(apiServer, installSkillRequest{Name: skillName})

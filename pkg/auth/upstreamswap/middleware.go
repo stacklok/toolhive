@@ -213,7 +213,7 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter, refresherGet
 				return
 			}
 
-			// 6. Inject access token
+			// 5. Inject access token
 			if tokens.AccessToken == "" {
 				slog.Warn("Access token is empty",
 					"middleware", "upstreamswap")

@@ -40,6 +40,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 	"github.com/stacklok/toolhive/pkg/updates"
@@ -263,6 +264,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			skillsvc.WithPackager(packager),
 			skillsvc.WithRegistryClient(registry),
 			skillsvc.WithGroupManager(b.groupManager),
+			skillsvc.WithGitResolver(gitresolver.NewResolver()),
 		)
 	}
 

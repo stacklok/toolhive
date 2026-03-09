@@ -252,7 +252,7 @@ func getOrRefreshUpstreamTokens(
 
 	// Defense in depth: some storage implementations may return tokens
 	// without checking expiry (the interface does not require it).
-	if tokens.IsExpired(time.Now()) {
+	if !tokens.ExpiresAt.IsZero() && tokens.IsExpired(time.Now()) {
 		if refreshed := tryRefreshUpstreamTokens(ctx, sessionID, tokens, refresherGetter); refreshed != nil {
 			return refreshed, nil
 		}

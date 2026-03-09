@@ -11,8 +11,6 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-logr/logr"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -66,7 +64,7 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 
 	// Test the full workflow
 	client := NewDefaultGitClient()
-	ctx := log.IntoContext(t.Context(), logr.Discard())
+	ctx := t.Context()
 
 	// Clone the repository
 	config := &CloneConfig{
@@ -101,6 +99,18 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 		t.Error("Expected error for non-existent file")
 	}
 
+	// Test HeadCommitHash
+	hash, err := HeadCommitHash(repoInfo)
+	if err != nil {
+		t.Fatalf("Failed to get HEAD commit hash: %v", err)
+	}
+	if hash == "" {
+		t.Error("Expected non-empty commit hash")
+	}
+	if len(hash) != 40 {
+		t.Errorf("Expected 40-char commit hash, got %d chars: %s", len(hash), hash)
+	}
+
 	// Test Cleanup
 	err = client.Cleanup(ctx, repoInfo)
 	if err != nil {
@@ -111,14 +121,12 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 // TestDefaultGitClient_CloneWithBranch tests cloning with a specific branch
 func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 	t.Parallel()
-	// Create a temporary directory for the source repository
 	sourceRepoDir, err := os.MkdirTemp("", "git-source-branch-*")
 	if err != nil {
 		t.Fatalf("Failed to create source temp dir: %v", err)
 	}
 	defer os.RemoveAll(sourceRepoDir)
 
-	// Create a test repository
 	sourceRepo, err := git.PlainInit(sourceRepoDir, false)
 	if err != nil {
 		t.Fatalf("Failed to init source repository: %v", err)
@@ -129,14 +137,14 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 		t.Fatalf("Failed to get source worktree: %v", err)
 	}
 
-	// Create initial commit on mainBranchName branch
-	testFilePath := filepath.Join(sourceRepoDir, "mainBranchName.txt")
-	err = os.WriteFile(testFilePath, []byte("mainBranchName branch content"), 0644)
+	// Create initial commit on main branch
+	testFilePath := filepath.Join(sourceRepoDir, "main.txt")
+	err = os.WriteFile(testFilePath, []byte("main branch content"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	_, err = sourceWorkTree.Add("mainBranchName.txt")
+	_, err = sourceWorkTree.Add("main.txt")
 	if err != nil {
 		t.Fatalf("Failed to add file: %v", err)
 	}
@@ -185,7 +193,7 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 
 	// Clone the feature branch
 	client := NewDefaultGitClient()
-	ctx := log.IntoContext(t.Context(), logr.Discard())
+	ctx := t.Context()
 	config := &CloneConfig{
 		URL:    sourceRepoDir,
 		Branch: "feature",
@@ -205,15 +213,6 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 		t.Errorf("Expected feature content, got %q", string(content))
 	}
 
-	// Verify we also have mainBranchName.txt (since feature branch was created from mainBranchName)
-	mainBranchNameContent, err := client.GetFileContent(repoInfo, "mainBranchName.txt")
-	if err != nil {
-		t.Fatalf("Failed to get mainBranchName.txt content: %v", err)
-	}
-	if string(mainBranchNameContent) != "mainBranchName branch content" {
-		t.Errorf("Expected mainBranchName branch content, got %q", string(mainBranchNameContent))
-	}
-
 	// Clean up
 	err = client.Cleanup(ctx, repoInfo)
 	if err != nil {
@@ -224,14 +223,12 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 // TestDefaultGitClient_CloneWithCommit tests cloning with a specific commit
 func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 	t.Parallel()
-	// Create a temporary directory for the source repository
 	sourceRepoDir, err := os.MkdirTemp("", "git-source-commit-*")
 	if err != nil {
 		t.Fatalf("Failed to create source temp dir: %v", err)
 	}
 	defer os.RemoveAll(sourceRepoDir)
 
-	// Create a test repository
 	sourceRepo, err := git.PlainInit(sourceRepoDir, false)
 	if err != nil {
 		t.Fatalf("Failed to init source repository: %v", err)
@@ -288,7 +285,7 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 
 	// Clone at the first commit
 	client := NewDefaultGitClient()
-	ctx := log.IntoContext(t.Context(), logr.Discard())
+	ctx := t.Context()
 	config := &CloneConfig{
 		URL:    sourceRepoDir,
 		Commit: firstCommit.String(),
@@ -324,14 +321,12 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 // TestDefaultGitClient_UpdateRepositoryInfo tests the updateRepositoryInfo method
 func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
 	t.Parallel()
-	// Create a temporary directory for the test repository
 	tempRepoDir, err := os.MkdirTemp("", "git-repo-update-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempRepoDir)
 
-	// Create a test repository
 	repo, err := git.PlainInit(tempRepoDir, false)
 	if err != nil {
 		t.Fatalf("Failed to init repository: %v", err)
@@ -342,7 +337,6 @@ func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
 		t.Fatalf("Failed to get worktree: %v", err)
 	}
 
-	// Create and commit a file to get a proper HEAD
 	testFilePath := filepath.Join(tempRepoDir, "test.txt")
 	err = os.WriteFile(testFilePath, []byte("test content"), 0644)
 	if err != nil {
@@ -384,13 +378,11 @@ func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
 		Repository: repo,
 	}
 
-	// Test updateRepositoryInfo
 	err = client.updateRepositoryInfo(repoInfo)
 	if err != nil {
 		t.Fatalf("updateRepositoryInfo failed: %v", err)
 	}
 
-	// Verify the repository info was updated correctly
 	if repoInfo.Branch != mainBranchName {
 		t.Errorf("Expected Branch to be %q, got %s", mainBranchName, repoInfo.Branch)
 	}

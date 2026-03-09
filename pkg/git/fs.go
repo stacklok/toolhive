@@ -1,3 +1,10 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+// From https://github.com/mindersec/minder/blob/main/internal/providers/git/memboxfs/fs.go
+// Apache License 2.0
+// Copyright (c) 2023 MinderSec
+
 package git
 
 import (
@@ -8,10 +15,6 @@ import (
 
 	billy "github.com/go-git/go-billy/v5"
 )
-
-// From https://github.com/mindersec/minder/blob/main/internal/providers/git/memboxfs/fs.go
-// Apache License 2.0
-// Copyright (c) 2023 MinderSec
 
 // LimitedFs provides a size-limited billy.Filesystem.  This is a struct, there's
 // no constructor here. Note that LimitedFs is not thread-safe.

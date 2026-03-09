@@ -209,7 +209,7 @@ func (h *Handler) writeAuthorizationResponse(
 			authorizeRequest.RequestedScope = append(authorizeRequest.RequestedScope, scope)
 			authorizeRequest.GrantedScope = append(authorizeRequest.GrantedScope, scope)
 		} else {
-			slog.Warn("filtered unregistered scope from authorization",
+			slog.Warn("filtered unregistered scope from authorization", //nolint:gosec // G706 - scope from server-side storage
 				"scope", scope,
 				"client_id", pending.ClientID,
 			)
@@ -242,7 +242,7 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	// so failure indicates storage corruption
 	redirectURI, err := url.Parse(pending.RedirectURI)
 	if err != nil {
-		slog.Error("stored redirect URI is invalid",
+		slog.Error("stored redirect URI is invalid", //nolint:gosec // G706 - redirect URI from server-side storage
 			"redirect_uri", pending.RedirectURI,
 			"error", err,
 		)

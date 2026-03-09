@@ -204,7 +204,7 @@ func newTestTransportManager(t *testing.T) *transportsession.Manager {
 	return mgr
 }
 
-// newTestVMCPSessionManager is a convenience constructor for tests.
+// newTestVMCPSessionManager is a convenience constructor for tests using default (zero) Limits.
 func newTestVMCPSessionManager(
 	t *testing.T,
 	factory vmcpsession.MultiSessionFactory,
@@ -212,7 +212,19 @@ func newTestVMCPSessionManager(
 ) (*Manager, *transportsession.Manager) {
 	t.Helper()
 	storage := newTestTransportManager(t)
-	return New(storage, factory, registry), storage
+	return New(storage, factory, registry, Limits{}), storage
+}
+
+// newTestVMCPSessionManagerWithLimits creates a Manager with explicit resource limits.
+func newTestVMCPSessionManagerWithLimits(
+	t *testing.T,
+	factory vmcpsession.MultiSessionFactory,
+	registry vmcp.BackendRegistry,
+	limits Limits,
+) (*Manager, *transportsession.Manager) {
+	t.Helper()
+	storage := newTestTransportManager(t)
+	return New(storage, factory, registry, limits), storage
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +264,7 @@ func TestVMCPSessionManager_Generate(t *testing.T) {
 		t.Cleanup(func() { _ = failingMgr.Stop() })
 
 		factory := newFakeFactory(nil)
-		sm := New(failingMgr, factory, newFakeRegistry())
+		sm := New(failingMgr, factory, newFakeRegistry(), Limits{})
 
 		id := sm.Generate()
 		assert.Empty(t, id, "Generate() should return '' when storage is unavailable")
@@ -634,7 +646,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 			failingStorage,
 		)
 		t.Cleanup(func() { _ = storage.Stop() })
-		sm := New(storage, factory, registry)
+		sm := New(storage, factory, registry, Limits{})
 
 		// Generate a placeholder (first Store, succeeds).
 		sessionID := sm.Generate()
@@ -671,7 +683,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 			failingStorage,
 		)
 		t.Cleanup(func() { _ = storage.Stop() })
-		sm := New(storage, factory, registry)
+		sm := New(storage, factory, registry, Limits{})
 
 		// Generate a placeholder (first Store, succeeds).
 		sessionID := sm.Generate()
@@ -1009,4 +1021,324 @@ func newCallToolRequest(name string, args map[string]any) mcp.CallToolRequest {
 	req.Params.Name = name
 	req.Params.Arguments = args
 	return req
+}
+
+// ---------------------------------------------------------------------------
+// Tests: per-client session limit
+// ---------------------------------------------------------------------------
+
+func TestVMCPSessionManager_PerClientLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("allows sessions up to MaxSessionsPerClient", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessionsPerClient: 2})
+
+		identity := &auth.Identity{Subject: "user-1"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		id1 := sm.Generate()
+		_, err := sm.CreateSession(ctx, id1)
+		require.NoError(t, err)
+
+		id2 := sm.Generate()
+		_, err = sm.CreateSession(ctx, id2)
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects session when per-client limit reached", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessionsPerClient: 1})
+
+		identity := &auth.Identity{Subject: "user-1"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		id1 := sm.Generate()
+		_, err := sm.CreateSession(ctx, id1)
+		require.NoError(t, err)
+
+		id2 := sm.Generate()
+		_, err = sm.CreateSession(ctx, id2)
+		require.ErrorIs(t, err, ErrPerClientSessionLimitReached)
+	})
+
+	t.Run("count is decremented after Terminate, allowing new session", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessionsPerClient: 1})
+
+		identity := &auth.Identity{Subject: "user-1"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		id1 := sm.Generate()
+		_, err := sm.CreateSession(ctx, id1)
+		require.NoError(t, err)
+
+		_, err = sm.Terminate(id1)
+		require.NoError(t, err)
+
+		id2 := sm.Generate()
+		_, err = sm.CreateSession(ctx, id2)
+		require.NoError(t, err, "should allow new session after previous was terminated")
+	})
+
+	t.Run("anonymous sessions (no Subject) are not limited", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessionsPerClient: 1})
+
+		// No identity in context → anonymous.
+		ctx := context.Background()
+
+		id1 := sm.Generate()
+		_, err := sm.CreateSession(ctx, id1)
+		require.NoError(t, err)
+
+		id2 := sm.Generate()
+		_, err = sm.CreateSession(ctx, id2)
+		require.NoError(t, err, "anonymous sessions should not be subject to per-client limit")
+	})
+
+	t.Run("different subjects have independent counts", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessionsPerClient: 1})
+
+		ctx1 := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "user-a"})
+		ctx2 := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "user-b"})
+
+		idA := sm.Generate()
+		_, err := sm.CreateSession(ctx1, idA)
+		require.NoError(t, err)
+
+		idB := sm.Generate()
+		_, err = sm.CreateSession(ctx2, idB)
+		require.NoError(t, err, "user-b should have its own independent count")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Tests: idle session reaper
+// ---------------------------------------------------------------------------
+
+func TestVMCPSessionManager_IdleReaper(t *testing.T) {
+	t.Parallel()
+
+	t.Run("terminates session that exceeds idle timeout", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		idleTimeout := 5 * time.Minute
+		sm, storage := newTestVMCPSessionManagerWithLimits(t, factory, registry,
+			Limits{IdleSessionTimeout: idleTimeout})
+
+		ctx := context.Background()
+		id := sm.Generate()
+		_, err := sm.CreateSession(ctx, id)
+		require.NoError(t, err)
+
+		// Back-date the idle timestamp so the session appears past the timeout
+		// without any real sleep, making the test immune to CI scheduling jitter.
+		sm.idleActivityMu.Lock()
+		sm.idleActivity[id] = time.Now().Add(-(idleTimeout + time.Second))
+		sm.idleActivityMu.Unlock()
+
+		sm.reapIdleSessions()
+
+		_, exists := storage.Get(id)
+		assert.False(t, exists, "idle session should have been reaped")
+	})
+
+	t.Run("does not terminate session active within timeout", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory([]vmcp.Tool{{Name: "noop"}})
+		registry := newFakeRegistry()
+		idleTimeout := 200 * time.Millisecond
+		sm, storage := newTestVMCPSessionManagerWithLimits(t, factory, registry,
+			Limits{IdleSessionTimeout: idleTimeout})
+
+		ctx := context.Background()
+		id := sm.Generate()
+		_, err := sm.CreateSession(ctx, id)
+		require.NoError(t, err)
+
+		// Simulate activity by resetting the idle clock.
+		sm.resetIdleActivity(id)
+
+		// Reap immediately — session should survive.
+		sm.reapIdleSessions()
+
+		_, exists := storage.Get(id)
+		assert.True(t, exists, "recently active session should not be reaped")
+	})
+
+	t.Run("reaper is no-op when IdleSessionTimeout is zero", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, storage := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{})
+
+		ctx := context.Background()
+		id := sm.Generate()
+		_, err := sm.CreateSession(ctx, id)
+		require.NoError(t, err)
+
+		// Idle map should be empty when timeout is disabled.
+		sm.idleActivityMu.RLock()
+		idleCount := len(sm.idleActivity)
+		sm.idleActivityMu.RUnlock()
+		assert.Equal(t, 0, idleCount, "idle map should be empty when timeout is disabled")
+
+		sm.reapIdleSessions() // should not panic or touch storage
+
+		_, exists := storage.Get(id)
+		assert.True(t, exists, "session should still exist when idle reaper is disabled")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ActiveSessionCount / global limit accuracy
+// ---------------------------------------------------------------------------
+
+func TestVMCPSessionManager_ActiveSessionCount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("increments on Generate and decrements on Terminate for MultiSession", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+
+		assert.Equal(t, 0, sm.ActiveSessionCount())
+
+		id := sm.Generate()
+		assert.Equal(t, 1, sm.ActiveSessionCount())
+
+		_, err := sm.CreateSession(context.Background(), id)
+		require.NoError(t, err)
+		assert.Equal(t, 1, sm.ActiveSessionCount(), "CreateSession should not change the count")
+
+		_, err = sm.Terminate(id)
+		require.NoError(t, err)
+		assert.Equal(t, 0, sm.ActiveSessionCount())
+	})
+
+	t.Run("decrements on Terminate for placeholder (terminated but not deleted)", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+
+		id := sm.Generate()
+		assert.Equal(t, 1, sm.ActiveSessionCount())
+
+		// Terminate the placeholder before CreateSession — it is marked terminated,
+		// not deleted, but the active count must still drop.
+		_, err := sm.Terminate(id)
+		require.NoError(t, err)
+		assert.Equal(t, 0, sm.ActiveSessionCount(),
+			"terminated placeholder must not count towards active sessions")
+	})
+
+	t.Run("Generate returns empty string and does not increment count when global limit reached", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessions: 1})
+
+		// First generate succeeds; active count becomes 1 (== MaxSessions).
+		id := sm.Generate()
+		require.NotEmpty(t, id)
+		assert.Equal(t, 1, sm.ActiveSessionCount())
+
+		// Second generate must be rejected because the limit is reached.
+		id2 := sm.Generate()
+		assert.Empty(t, id2, "Generate must return empty string when global limit is reached")
+		assert.Equal(t, 1, sm.ActiveSessionCount(), "rejected Generate must not increment active count")
+	})
+
+	t.Run("rejected CreateSession (per-client limit) does not leak into active count", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, _ := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessionsPerClient: 1})
+
+		identity := &auth.Identity{Subject: "user-x"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		// First session: succeeds.
+		id1 := sm.Generate()
+		_, err := sm.CreateSession(ctx, id1)
+		require.NoError(t, err)
+		assert.Equal(t, 1, sm.ActiveSessionCount())
+
+		// Second generate: count = 2.
+		id2 := sm.Generate()
+		assert.Equal(t, 2, sm.ActiveSessionCount())
+
+		// CreateSession fails (per-client limit). The server will call Terminate(id2).
+		_, err = sm.CreateSession(ctx, id2)
+		require.ErrorIs(t, err, ErrPerClientSessionLimitReached)
+		_, _ = sm.Terminate(id2) // server-side cleanup
+
+		// Active count must return to 1 (only the first session remains).
+		assert.Equal(t, 1, sm.ActiveSessionCount(),
+			"failed registration must not permanently consume the global session budget")
+	})
+
+	t.Run("Terminate cleans up in-memory maps when storage entry already removed by TTL", func(t *testing.T) {
+		t.Parallel()
+
+		factory := newFakeFactory(nil)
+		registry := newFakeRegistry()
+		sm, storage := newTestVMCPSessionManagerWithLimits(t, factory, registry, Limits{MaxSessionsPerClient: 5})
+
+		identity := &auth.Identity{Subject: "user-ttl"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		id := sm.Generate()
+		require.NotEmpty(t, id)
+		_, err := sm.CreateSession(ctx, id)
+		require.NoError(t, err)
+
+		// Simulate TTL eviction by deleting directly from the transport storage,
+		// bypassing sm.Terminate() (so sessionSubject/idleActivity are NOT cleaned up yet).
+		require.NoError(t, storage.Delete(id))
+
+		// Now call Terminate() — storage.Get returns !exists. The fix must still
+		// clean up the in-memory maps so per-client counts and idle entries don't leak.
+		_, err = sm.Terminate(id)
+		require.NoError(t, err)
+
+		// Per-client count for this identity must be back to zero.
+		sm.perClientMu.Lock()
+		count := sm.perClientCounts[identity.Subject]
+		sm.perClientMu.Unlock()
+		assert.Equal(t, 0, count, "per-client count must be cleaned up even when storage entry was already gone")
+
+		// Idle activity must be removed.
+		sm.idleActivityMu.RLock()
+		_, hasIdle := sm.idleActivity[id]
+		sm.idleActivityMu.RUnlock()
+		assert.False(t, hasIdle, "idle activity entry must be cleaned up even when storage entry was already gone")
+	})
 }

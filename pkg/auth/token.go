@@ -990,8 +990,9 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 
 // buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
 // WWW-Authenticate header. It always includes realm and, if set, resource_metadata.
-// If includeError is true, it appends error="invalid_token" and an optional description.
-func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription string) string {
+// When errorCode is non-empty ("invalid_request", "invalid_token", or "insufficient_scope"),
+// it appends the error and optional error_description.
+func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription string) string {
 	var parts []string
 
 	// realm (RFC 6750)
@@ -1026,8 +1027,8 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 	}
 
 	// error fields (RFC 6750 §3)
-	if includeError {
-		parts = append(parts, `error="invalid_token"`)
+	if errorCode != "" {
+		parts = append(parts, fmt.Sprintf(`error="%s"`, EscapeQuotes(errorCode)))
 		if errDescription != "" {
 			parts = append(parts, fmt.Sprintf(`error_description="%s"`, EscapeQuotes(errDescription)))
 		}
@@ -1035,12 +1036,22 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 	return "Bearer " + strings.Join(parts, ", ")
 }
 
+// RFC 6750 error code constants for Bearer token authentication.
+const (
+	OAuthErrInvalidRequest  = "invalid_request"
+	OAuthErrInvalidToken    = "invalid_token"
+	OAuthErrInsufficientScope = "insufficient_scope"
+)
+
+// RFC6750Error represents an RFC 6750 compliant OAuth error response body.
+type RFC6750Error struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
 // writeOAuthError writes an RFC 6750 compliant JSON error response.
 func writeOAuthError(w http.ResponseWriter, errorCode, description string, status int) {
-	body, err := json.Marshal(struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}{
+	body, err := json.Marshal(RFC6750Error{
 		Error:            errorCode,
 		ErrorDescription: description,
 	})
@@ -1059,16 +1070,16 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// Extract the bearer token from the Authorization header
 		tokenString, err := ExtractBearerToken(r)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
-			writeOAuthError(w, "invalid_request", err.Error(), http.StatusUnauthorized)
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidRequest, err.Error()))
+			writeOAuthError(w, OAuthErrInvalidRequest, err.Error(), http.StatusUnauthorized)
 			return
 		}
 
 		// Validate the token
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
-			writeOAuthError(w, "invalid_token", fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
+			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
 			return
 		}
 
@@ -1076,8 +1087,8 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		identity, err := claimsToIdentity(claims, tokenString)
 		if err != nil {
 			slog.Error("failed to convert claims to identity", "error", err)
-			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
-			writeOAuthError(w, "invalid_token", "Invalid authentication claims", http.StatusUnauthorized)
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
+			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims", http.StatusUnauthorized)
 			return
 		}
 

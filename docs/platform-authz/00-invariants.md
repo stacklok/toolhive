@@ -170,11 +170,12 @@ grant permissions beyond what the role defines.
 Example: If a role allows `[call_tool, list_tools]`, a policy can restrict to
 `tools: [list_issues]` but cannot add `read_resource` access.
 
-### 2.3 Built-in roles use MCP tool annotations
+### 2.3 Default roles use MCP tool annotations
 
-The system provides two built-in roles based on MCP tool annotation semantics:
+The system ships two default roles as Helm-managed `ToolhivePlatformRole` CRD
+instances, based on MCP tool annotation semantics:
 
-| Built-in Role | Actions | Rationale |
+| Default Role | Actions | Rationale |
 |---------------|---------|-----------|
 | `reader` | `list_tools`, `list_prompts`, `list_resources`, `get_prompt`, `read_resource`, `call_tool` (only tools with `readOnlyHint=true`) | Read-only access; tools that don't modify state |
 | `writer` | All of the above, plus `call_tool` for all tools | Full access to all operations including state-modifying tools |
@@ -183,9 +184,9 @@ The system provides two built-in roles based on MCP tool annotation semantics:
 - `readOnlyHint` (default `false`): tool does not modify its environment
 - `destructiveHint` (default `true`): tool may perform destructive updates
 
-The `reader` role restriction on `readOnlyHint` is enforced **at the Cedar
-policy level**, not by the controller querying tool lists. The compiled Cedar
-policy for a reader uses a `when` clause:
+The `readOnlyHint` restriction is driven by the `readOnlyTools: true` field on
+the role's `ToolhivePlatformRole` spec. The compiler gates `call_tool` at the
+**Cedar policy level** using a `when` clause:
 
 ```cedar
 permit(
@@ -199,8 +200,8 @@ The OSS authorizer is responsible for populating `readOnlyHint` as a resource
 entity attribute at request time, using cached tool annotation data from
 `tools/list` responses.
 
-Custom roles created via `ToolhivePlatformRole` CRD can define arbitrary
-action sets.
+Custom roles can also set `readOnlyTools: true` to get the same `call_tool`
+gating on `readOnlyHint`.
 
 ### 2.4 Flat action model with `*` wildcard
 

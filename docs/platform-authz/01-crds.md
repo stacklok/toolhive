@@ -29,9 +29,9 @@ prefix signals that these are platform-wide concepts.
 
 ## 2. ToolhivePlatformRole
 
-Defines the maximum set of actions a role permits. Built-in roles (`reader`,
-`writer`) are constants in the controller code — they do not require CRDs.
-Custom roles use this CRD.
+Defines the maximum set of actions a role permits. The system ships two
+default roles (`reader`, `writer`) as Helm-managed CRD instances (see
+section 7). Custom roles use the same CRD.
 
 ### Go types
 
@@ -46,12 +46,6 @@ const (
     ActionReadResource  = "read_resource"
     ActionListResources = "list_resources"
     ActionWildcard      = "*"
-)
-
-// Built-in role names are reserved and cannot be used for custom roles.
-const (
-    BuiltinRoleReader = "reader"
-    BuiltinRoleWriter = "writer"
 )
 
 // PlatformAction is a single MCP action string.
@@ -74,6 +68,13 @@ type ToolhivePlatformRoleSpec struct {
     // Description provides a human-readable description of what this role permits
     // +optional
     Description string `json:"description,omitempty"`
+
+    // ReadOnlyTools, when true, restricts the call_tool action to tools with
+    // readOnlyHint=true. The compiler gates call_tool on the tool's readOnlyHint
+    // attribute when this field is set. Only meaningful when actions includes
+    // call_tool. The default reader role sets this to true.
+    // +optional
+    ReadOnlyTools bool `json:"readOnlyTools,omitempty"`
 }
 
 // ToolhivePlatformRoleStatus defines the observed state of ToolhivePlatformRole
@@ -103,8 +104,6 @@ type ToolhivePlatformRoleStatus struct {
 // +kubebuilder:printcolumn:name="Actions",type="string",JSONPath=".spec.actions",description="Permitted actions"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //
-// NOTE: Reserved names ("reader", "writer") are validated at controller time,
-// not via CEL, for compatibility with older Kubernetes versions.
 type ToolhivePlatformRole struct {
     metav1.TypeMeta   `json:",inline"` // nolint:revive
     metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -120,8 +119,8 @@ type ToolhivePlatformRole struct {
 |------|-------|-----------|
 | Action values from enum `[call_tool, list_tools, get_prompt, list_prompts, read_resource, list_resources, *]` | kubebuilder Enum on `PlatformAction` type | Static set, catches typos at admission |
 | `*` must be the only action when present | CEL on spec | `["*", "call_tool"]` is ambiguous |
-| Names `reader` and `writer` are reserved | Controller-time validation | Built-in roles are controller constants; avoids `self.metadata.name` CEL which requires K8s 1.25+ |
 | At least 1 action, at most 7 | kubebuilder MinItems/MaxItems | 6 concrete actions + `*` |
+| `readOnlyTools` only with `call_tool` | Controller-time warning | Only meaningful when actions includes `call_tool` |
 
 ### Example
 
@@ -138,12 +137,56 @@ spec:
     - list_tools
 ```
 
+### Default role instances
+
+The `reader` and `writer` roles are shipped as Helm-managed
+`ToolhivePlatformRole` CRD instances. They follow the same resolution path as
+custom roles — no special-case code in the compiler.
+
+```yaml
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: ToolhivePlatformRole
+metadata:
+  name: reader
+  annotations:
+    toolhive.stacklok.dev/built-in: "true"
+spec:
+  description: "Read-only access; call_tool restricted to readOnlyHint tools"
+  actions:
+    - list_tools
+    - list_prompts
+    - list_resources
+    - get_prompt
+    - read_resource
+    - call_tool
+  readOnlyTools: true
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: ToolhivePlatformRole
+metadata:
+  name: writer
+  annotations:
+    toolhive.stacklok.dev/built-in: "true"
+spec:
+  description: "Full access to all MCP operations"
+  actions: ["*"]
+```
+
+The `toolhive.stacklok.dev/built-in: "true"` annotation marks these as
+system-provided defaults. The controller does not treat this annotation
+specially — it is for documentation and tooling. Deletion protection comes
+from Helm ownership: if the roles are accidentally deleted, the next Helm
+sync (via ArgoCD, Flux, or manual `helm upgrade`) re-creates them.
+
 ### kubectl output
 
 ```
 $ kubectl get tpr
-NAME               ACTIONS                  AGE
-security-auditor   [call_tool,list_tools]   5m
+NAME               ACTIONS                                                              AGE
+reader             [list_tools,list_prompts,list_resources,get_prompt,read_resource,…]   1h
+writer             [*]                                                                   1h
+security-auditor   [call_tool,list_tools]                                                5m
 ```
 
 ## 3. ToolhiveRoleBinding
@@ -175,8 +218,8 @@ type ToolhiveRoleBindingSpec struct {
 // RoleBindingEntry maps a set of IdP principals to a single platform role.
 type RoleBindingEntry struct {
     // PlatformRole is the name of the platform role to assign.
-    // Can reference a built-in role (reader, writer) or a custom
-    // ToolhivePlatformRole by name.
+    // References a ToolhivePlatformRole by name (including the default
+    // reader and writer roles shipped as Helm-managed instances).
     // +kubebuilder:validation:Required
     // +kubebuilder:validation:MinLength=1
     // +kubebuilder:validation:MaxLength=253
@@ -228,7 +271,7 @@ type ToolhiveRoleBindingStatus struct {
     ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
     // ResolvedRoles lists the platform roles resolved from this binding.
-    // Includes both built-in and custom roles.
+    // Includes both default and custom roles.
     // +optional
     ResolvedRoles []string `json:"resolvedRoles,omitempty"`
 
@@ -267,7 +310,7 @@ type ToolhiveRoleBinding struct {
 | `platformRole` references an existing role | Controller-time | CEL cannot do cross-resource lookups |
 
 **Role resolution is controller-time**: The controller resolves `platformRole`
-to a built-in constant or `ToolhivePlatformRole` CRD during compilation. If
+by looking up the `ToolhivePlatformRole` CRD by name during compilation. If
 the role does not exist, the controller sets `RolesResolved: False` with a
 message like `"unknown platform role: security-auditor"`. This allows applying
 the binding before the role CRD exists (Kubernetes eventual consistency).
@@ -420,8 +463,8 @@ This follows the Istio `targetRef` pattern and allows future expansion to
 // typed resource restrictions.
 type PolicyBinding struct {
     // PlatformRole is the name of the platform role to grant.
-    // Can reference a built-in role (reader, writer) or a custom
-    // ToolhivePlatformRole by name.
+    // References a ToolhivePlatformRole by name (including the default
+    // reader and writer roles shipped as Helm-managed instances).
     // +kubebuilder:validation:Required
     // +kubebuilder:validation:MinLength=1
     // +kubebuilder:validation:MaxLength=253
@@ -755,7 +798,6 @@ The `platformRole` field in both `ToolhiveRoleBinding` and
 valid characters) but resolved semantically at controller-time. This allows:
 
 - Applying a binding before the role CRD exists (eventual consistency)
-- Built-in roles (`reader`, `writer`) to be controller constants without CRDs
 - Clear error feedback via status conditions and events
 
 ### Deny actions exclude wildcard
@@ -781,15 +823,15 @@ The `targetRef.name` in `ToolhiveAuthorizationPolicy` provides the server name.
 See [02-cedar-compilation.md](02-cedar-compilation.md) for the compilation
 algorithm that must enforce this invariant.
 
-### Built-in `reader` role and resource restrictions
+### `readOnlyTools` roles and resource restrictions
 
-When a binding references the built-in `reader` role and also specifies
-`ruleRestrictions`, the compilation algorithm must intersect the `readOnlyHint`
-condition with the resource restrictions. Without this intersection, the
-restrictions would be silently dropped and the reader role would grant access to
-all read-only tools on the server. The compilation algorithm in
-[02-cedar-compilation.md](02-cedar-compilation.md) must handle this case
-explicitly — see that document for the resolution.
+When a binding references a role with `readOnlyTools: true` (e.g., the default
+`reader` role) and also specifies `ruleRestrictions`, the compilation algorithm
+must intersect the `readOnlyHint` condition with the resource restrictions.
+Without this intersection, the restrictions would be silently dropped and the
+role would grant access to all read-only tools on the server. The compilation
+algorithm in [02-cedar-compilation.md](02-cedar-compilation.md) must handle
+this case explicitly — see that document for the resolution.
 
 ### Deny without resource restrictions means server-wide deny
 
@@ -814,7 +856,7 @@ this can use hand-written Cedar policies alongside CRD-generated ones.
 ### Multi-domain extensibility
 
 The current CRDs are MCP-server-specific (actions, typed resource restrictions,
-built-in roles). The design supports extending to other domains (e.g., MCP
+default roles). The design supports extending to other domains (e.g., MCP
 registries) without breaking changes, using this strategy:
 
 - **`ToolhivePlatformRole` and `ToolhiveRoleBinding` are domain-agnostic.**
@@ -855,7 +897,6 @@ const (
 // Condition reasons for ToolhivePlatformRole
 const (
     ConditionReasonPlatformRoleValid          = "RoleValid"
-    ConditionReasonPlatformRoleReservedName   = "ReservedName"
     ConditionReasonPlatformRoleInvalidActions = "InvalidActions"
 )
 
@@ -902,7 +943,6 @@ const (
 | CRD | Condition | Set when |
 |-----|-----------|----------|
 | `ToolhivePlatformRole` | `Valid: True` | Actions are valid |
-| `ToolhivePlatformRole` | `Valid: False` | Reserved name used (admission should catch, but defense in depth) |
 | `ToolhiveRoleBinding` | `Valid: True` | Binding spec is syntactically valid |
 | `ToolhiveRoleBinding` | `RolesResolved: True` | All referenced platform roles exist |
 | `ToolhiveRoleBinding` | `RolesResolved: False` | One or more roles not found |
@@ -916,6 +956,31 @@ All conditions include `ObservedGeneration` to detect stale status (see
 
 ```yaml
 ---
+# Default roles (Helm-managed)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: ToolhivePlatformRole
+metadata:
+  name: reader
+  namespace: default
+  annotations:
+    toolhive.stacklok.dev/built-in: "true"
+spec:
+  description: "Read-only access; call_tool restricted to readOnlyHint tools"
+  actions: [list_tools, list_prompts, list_resources, get_prompt, read_resource, call_tool]
+  readOnlyTools: true
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: ToolhivePlatformRole
+metadata:
+  name: writer
+  namespace: default
+  annotations:
+    toolhive.stacklok.dev/built-in: "true"
+spec:
+  description: "Full access to all MCP operations"
+  actions: ["*"]
+---
+# Custom role
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhivePlatformRole
 metadata:

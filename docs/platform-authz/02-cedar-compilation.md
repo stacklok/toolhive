@@ -33,7 +33,7 @@ Client (dynamic, per-request from JWT)
 |------|--------|-----------|---------|
 | `Client` | JWT `sub` claim | Created per-request | The authenticated user |
 | `Group` | JWT group claim (name from `group_claim` config) | Created per-request; Role parents from static entities | IdP group membership |
-| `Role` | `ToolhivePlatformRole` CRD or built-in | Static in entities.json | Platform role with action set |
+| `Role` | `ToolhivePlatformRole` CRD (including Helm-managed defaults) | Static in entities.json | Platform role with action set |
 
 ### Resource Hierarchy
 
@@ -72,7 +72,7 @@ JSON is stored in the ConfigMap alongside the compiled policies.
 
 | Entity | Source CRD | When generated |
 |--------|-----------|----------------|
-| `Role` entities | `ToolhivePlatformRole` (custom) or built-in constants | On role create/update/delete |
+| `Role` entities | `ToolhivePlatformRole` CRD (including defaults) | On role create/update/delete |
 | `Group` entities with Role parents | `ToolhiveRoleBinding` | On binding create/update/delete |
 | `MCP` server entity | Target MCPServer name | On policy create targeting this server |
 
@@ -81,9 +81,9 @@ JSON is stored in the ConfigMap alongside the compiled policies.
 Given these CRDs:
 
 ```yaml
-# Built-in roles (no CRD needed)
-# reader: [list_tools, list_prompts, list_resources, get_prompt, read_resource, call_tool(readOnly)]
-# writer: [*]
+# Default roles (Helm-managed ToolhivePlatformRole instances)
+# reader: actions=[...all list/get/read + call_tool], readOnlyTools=true
+# writer: actions=[*]
 
 # Binding
 kind: ToolhiveRoleBinding
@@ -280,7 +280,7 @@ permit(
 );
 ```
 
-The action list is the role's action set. For `writer` (built-in, `*`), all
+The action list is the role's action set. For `writer` (`actions: [*]`), all
 six actions are expanded.
 
 ### Shape 2: Restricted grant (typed resource names)
@@ -386,19 +386,23 @@ restricted type, no policy is emitted for that type. For example, a custom
 role with only `[call_tool, list_tools]` restricted to `prompts: [x]` emits
 nothing — the role has no prompt actions.
 
-### Shape 3: Reader role (readOnlyHint)
+### Shape 3: Role with `readOnlyTools` (readOnlyHint)
+
+When a `ToolhivePlatformRole` has `readOnlyTools: true`, the compiler splits
+`call_tool` into a separate policy gated on the tool's `readOnlyHint`
+attribute. The default `reader` role uses this.
 
 **CRD input:**
 ```yaml
 spec:
   targetRef: {name: github}
   bindings:
-    - platformRole: reader
+    - platformRole: reader  # reader has readOnlyTools: true
 ```
 
 **Compiled Cedar:**
 ```cedar
-// Reader can list and browse everything on the server
+// List and browse everything on the server
 permit(
   principal in Role::"reader",
   action in [Action::"list_tools", Action::"list_prompts",
@@ -407,7 +411,7 @@ permit(
   resource in MCP::"github"
 );
 
-// Reader can call tools that are read-only
+// Call only read-only tools
 permit(
   principal in Role::"reader",
   action == Action::"call_tool",
@@ -417,17 +421,17 @@ permit(
 };
 ```
 
-The reader role compiles to **two** policies: one for list/get/read actions
-(unrestricted within the server), and one for `call_tool` gated on
-`readOnlyHint`. This is because `readOnlyHint` only applies to tool calls,
-not to list/get/read operations.
+A role with `readOnlyTools: true` compiles to **two** policies: one for
+list/get/read actions (unrestricted within the server), and one for
+`call_tool` gated on `readOnlyHint`. This is because `readOnlyHint` only
+applies to tool calls, not to list/get/read operations.
 
-### Shape 3a: Reader role with restrictions
+### Shape 3a: `readOnlyTools` role with restrictions
 
-When a reader binding has `ruleRestrictions`, the `readOnlyHint` condition
-must be **intersected** with the resource restrictions. Without this, the
-restrictions would be silently dropped (see
-[01-crds.md](01-crds.md#built-in-reader-role-and-resource-restrictions)).
+When a `readOnlyTools` binding has `ruleRestrictions`, the `readOnlyHint`
+condition must be **intersected** with the resource restrictions. Without
+this, the restrictions would be silently dropped (see
+[01-crds.md](01-crds.md#readonlytools-roles-and-resource-restrictions)).
 
 **CRD input:**
 ```yaml
@@ -602,7 +606,7 @@ CRDs for a given MCPServer:
 For a target MCPServer `S`:
 1. Find all `ToolhiveAuthorizationPolicy` resources with `targetRef.name == S`
 2. For each policy, resolve the referenced `platformRole` to its action set
-   (built-in constant or `ToolhivePlatformRole` CRD)
+   (`ToolhivePlatformRole` CRD lookup)
 3. Resolve all `ToolhiveRoleBinding` resources to build the Group→Role mapping
 4. Read the IdP claim configuration from the platform ConfigMap
 
@@ -679,8 +683,8 @@ for each ToolhiveAuthorizationPolicy targeting S:
         # emit a single policy.
         for each cond_clause in condition_clauses (or [None] if empty):
 
-            if role is "reader" and binding has NO ruleRestrictions:
-                # Shape 3: reader without restrictions
+            if role.spec.readOnlyTools and binding has NO ruleRestrictions:
+                # Shape 3: readOnlyTools without restrictions
                 non_call_actions = actions - [call_tool]
                 when = cond_clause or None
                 policies.append(permit(Role, non_call_actions, MCP::S,
@@ -690,8 +694,8 @@ for each ToolhiveAuthorizationPolicy targeting S:
                 policies.append(permit(Role, [call_tool], MCP::S,
                                        when: roi_when))
 
-            else if role is "reader" and binding HAS ruleRestrictions:
-                # Shape 3a: reader with restrictions
+            else if role.spec.readOnlyTools and binding HAS ruleRestrictions:
+                # Shape 3a: readOnlyTools with restrictions
                 for each restriction:
                     for each (type, names) in restriction.typed_fields():
                         compatible = intersect(actions, ACTIONS_FOR_TYPE[type])
@@ -1020,35 +1024,52 @@ ConfigMap.
   over-constraining. The existing Cedar authorizer adds all claims with a
   `claim_` prefix.
 
-## 8. Built-in Role Definitions
+## 8. Default Role Definitions
 
-Built-in roles are constants in the controller code. They do not require
-`ToolhivePlatformRole` CRDs.
+The default `reader` and `writer` roles are shipped as Helm-managed
+`ToolhivePlatformRole` CRD instances. The controller resolves them the same
+way as any custom role — no special-case code paths.
 
 ### reader
 
-```go
-var ReaderActions = []string{
-    "list_tools", "list_prompts", "list_resources",
-    "get_prompt", "read_resource",
-    "call_tool",  // gated on readOnlyHint in compiled policy
-}
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: ToolhivePlatformRole
+metadata:
+  name: reader
+  annotations:
+    toolhive.stacklok.dev/built-in: "true"
+spec:
+  description: "Read-only access; call_tool restricted to readOnlyHint tools"
+  actions:
+    - list_tools
+    - list_prompts
+    - list_resources
+    - get_prompt
+    - read_resource
+    - call_tool
+  readOnlyTools: true
 ```
 
-Compiles to two policies (see Shape 3 in section 4). With restrictions,
-see Shape 3a which intersects `readOnlyHint` with resource restrictions.
+The `readOnlyTools: true` field tells the compiler to gate `call_tool` on
+`readOnlyHint` (see Shape 3 in section 4). With restrictions, see Shape 3a
+which intersects `readOnlyHint` with resource restrictions.
 
 ### writer
 
-```go
-var WriterActions = []string{
-    "call_tool", "list_tools",
-    "get_prompt", "list_prompts",
-    "read_resource", "list_resources",
-}
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: ToolhivePlatformRole
+metadata:
+  name: writer
+  annotations:
+    toolhive.stacklok.dev/built-in: "true"
+spec:
+  description: "Full access to all MCP operations"
+  actions: ["*"]
 ```
 
-Equivalent to `*`. Compiles to a single server-scoped permit.
+Equivalent to all 6 actions. Compiles to a single server-scoped permit.
 
 ## 9. End-to-End Example
 

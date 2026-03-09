@@ -968,17 +968,15 @@ type EffectivePermission struct {
 
 ### Role resolution
 
-The `compileCedar` method resolves platform roles from three sources:
+The `compileCedar` method resolves platform roles by looking up the
+`ToolhivePlatformRole` CRD by name. Default roles (`reader`, `writer`) are
+Helm-managed CRD instances — they follow the same resolution path as custom
+roles, with no special-case code.
 
-1. **Built-in roles** (`reader`, `writer`) — constants in the controller code
-2. **Custom roles** (`ToolhivePlatformRole` CRDs) — fetched via the API
-3. **Dangling references** — a policy references a role name that does not
-   exist as a built-in or CRD
-
-Dangling role references set `Compiled: False` on the policy with a message
-like `"unknown platform role: security-auditor"`. The rest of the compilation
-proceeds for other bindings — a single bad binding does not block the entire
-ConfigMap.
+If a referenced role does not exist, the controller sets `Compiled: False`
+on the policy with a message like `"unknown platform role: security-auditor"`.
+The rest of the compilation proceeds for other bindings — a single bad binding
+does not block the entire ConfigMap.
 
 ### Group claim resolution
 

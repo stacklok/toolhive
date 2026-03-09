@@ -282,10 +282,12 @@ func ContentArrayToMap(content []vmcp.Content) map[string]any {
 			result[key] = item.Data
 			imageIndex++
 
-			// Default case (implicit):
+		case vmcp.ContentTypeAudio, vmcp.ContentTypeResource, vmcp.ContentTypeLink:
+			// Purposely ignored for template substitution:
 			// - Audio content is ignored (not supported for template substitution)
-			// - Resource content is ignored (handled separately, not converted to map)
-			// - Unknown content types are ignored (warnings logged at conversion boundaries)
+			// - Resource content/link is handled separately, not converted to map
+		default:
+			// Unknown content types are ignored (warnings logged at conversion boundaries)
 		}
 	}
 

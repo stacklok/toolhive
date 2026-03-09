@@ -185,7 +185,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 				nil, nil,
 			)
 
-			result, err := sess.CallTool(context.Background(), tt.toolName, nil, nil)
+			result, err := sess.CallTool(context.Background(), nil, tt.toolName, nil, nil)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.wantErrIs != nil {
@@ -250,7 +250,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 				nil,
 			)
 
-			result, err := sess.ReadResource(context.Background(), tt.uri)
+			result, err := sess.ReadResource(context.Background(), nil, tt.uri)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.wantErrIs != nil {
@@ -313,7 +313,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 				[]vmcp.Prompt{{Name: "greet", BackendID: "b1"}},
 			)
 
-			result, err := sess.GetPrompt(context.Background(), tt.prompt, nil)
+			result, err := sess.GetPrompt(context.Background(), nil, tt.prompt, nil)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.wantErrIs != nil {
@@ -373,7 +373,7 @@ func TestDefaultSession_Close(t *testing.T) {
 
 		var callDone atomic.Bool
 		go func() {
-			_, _ = sess.CallTool(context.Background(), "slow", nil, nil)
+			_, _ = sess.CallTool(context.Background(), nil, "slow", nil, nil)
 			callDone.Store(true)
 		}()
 
@@ -422,13 +422,13 @@ func TestDefaultSession_Close(t *testing.T) {
 		)
 		require.NoError(t, sess.Close())
 
-		_, err := sess.CallTool(context.Background(), "search", nil, nil)
+		_, err := sess.CallTool(context.Background(), nil, "search", nil, nil)
 		assert.ErrorIs(t, err, ErrSessionClosed)
 
-		_, err = sess.ReadResource(context.Background(), "file://x")
+		_, err = sess.ReadResource(context.Background(), nil, "file://x")
 		assert.ErrorIs(t, err, ErrSessionClosed)
 
-		_, err = sess.GetPrompt(context.Background(), "greet", nil)
+		_, err = sess.GetPrompt(context.Background(), nil, "greet", nil)
 		assert.ErrorIs(t, err, ErrSessionClosed)
 	})
 }
@@ -456,13 +456,13 @@ func TestDefaultSession_ErrNoBackendClient(t *testing.T) {
 	}
 	defer func() { _ = sess.Close() }()
 
-	_, err := sess.CallTool(context.Background(), "search", nil, nil)
+	_, err := sess.CallTool(context.Background(), nil, "search", nil, nil)
 	require.ErrorIs(t, err, ErrNoBackendClient)
 
-	_, err = sess.ReadResource(context.Background(), "file://readme")
+	_, err = sess.ReadResource(context.Background(), nil, "file://readme")
 	require.ErrorIs(t, err, ErrNoBackendClient)
 
-	_, err = sess.GetPrompt(context.Background(), "greet", nil)
+	_, err = sess.GetPrompt(context.Background(), nil, "greet", nil)
 	require.ErrorIs(t, err, ErrNoBackendClient)
 }
 
@@ -736,7 +736,7 @@ func TestNewSessionFactory_CapabilityNameConflictIsResolvedDeterministically(t *
 	assert.Equal(t, "alpha", sess.Prompts()[0].BackendID)
 
 	// Calling the conflicted tool must reach "alpha", not "zeta".
-	result, err := sess.CallTool(context.Background(), "fetch", nil, nil)
+	result, err := sess.CallTool(context.Background(), nil, "fetch", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 }
@@ -1116,11 +1116,11 @@ func TestMakeSessionWithID_InvalidIDReturnsError(t *testing.T) {
 		return nil, nil, nil
 	})
 
-	_, err := f.MakeSessionWithID(context.Background(), "", nil, nil)
+	_, err := f.MakeSessionWithID(context.Background(), "", nil, true, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not be empty")
 
-	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, nil)
+	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, true, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid character")
 }

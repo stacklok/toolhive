@@ -168,6 +168,77 @@ outgoingAuth:
 
 **Key Point**: Backend MCP servers receive pre-validated tokens and use them directly to call external APIs. They don't validate tokens themselves—security relies on network isolation and properly scoped API tokens.
 
+## Session Security
+
+### Token Binding (Session Management V2)
+
+When Session Management V2 is enabled, vmcp implements **token binding** to prevent session hijacking attacks. Each session is cryptographically bound to the authentication token used to create it.
+
+**Security Features:**
+
+- **HMAC-SHA256 Hashing**: Token hashes use HMAC with a server-managed secret
+- **Per-Session Salt**: Each session has a unique random salt
+- **Constant-Time Comparison**: Prevents timing attacks
+- **Request-Level Validation**: Each request independently validates the caller token; failed validation terminates the session immediately to prevent session hijacking attacks
+
+**Configuration:**
+
+Set the HMAC secret via environment variable (required for production):
+
+```bash
+export VMCP_SESSION_HMAC_SECRET="your-32-plus-byte-secret-here"
+vmcp serve --config vmcp-config.yaml
+```
+
+**Security Best Practices:**
+
+- ✅ Generate a secure random secret (32+ bytes recommended)
+- ✅ Store the secret in a secure configuration system (HashiCorp Vault, AWS Secrets Manager, etc.)
+- ✅ Rotate the secret periodically (requires session recreation)
+- ❌ Never commit secrets to version control
+- ❌ Never use the default secret in production
+
+**Generating a Secure Secret:**
+
+```bash
+# Generate a 32-byte secret using OpenSSL
+openssl rand -base64 32
+
+# Or using head and base64
+head -c 32 /dev/urandom | base64
+```
+
+**Example Kubernetes Deployment:**
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vmcp-secrets
+type: Opaque
+stringData:
+  hmac-secret: "<your-generated-secret>"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmcp
+spec:
+  template:
+    spec:
+      containers:
+      - name: vmcp
+        image: ghcr.io/stacklok/toolhive/vmcp:latest
+        env:
+        - name: VMCP_SESSION_HMAC_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: vmcp-secrets
+              key: hmac-secret
+```
+
+**Note**: Kubernetes deployments **require** `VMCP_SESSION_HMAC_SECRET` to be set (the server will fail to start without it). For non-Kubernetes environments (local development/testing), a default insecure secret is used as a fallback, but this is **NOT recommended for production**.
+
 ## Tool Aggregation & Conflict Resolution
 
 Virtual MCP aggregates tools from all workloads in the group and provides three strategies for handling naming conflicts:

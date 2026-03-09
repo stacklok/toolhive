@@ -5,6 +5,7 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -249,7 +250,7 @@ func newMockStoreWithSubstringSearch(ctrl *gomock.Controller) *mocks.MockToolSto
 	).AnyTimes()
 
 	store.EXPECT().Search(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, query string, allowedTools []string) ([]ToolMatch, error) {
+		func(_ context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
 			if len(allowedTools) == 0 {
 				return nil, nil
 			}
@@ -258,7 +259,7 @@ func newMockStoreWithSubstringSearch(ctrl *gomock.Controller) *mocks.MockToolSto
 			for _, name := range allowedTools {
 				allowedSet[name] = struct{}{}
 			}
-			var matches []ToolMatch
+			var matches []mcp.Tool
 			for _, tool := range tools {
 				if _, ok := allowedSet[tool.Tool.Name]; !ok {
 					continue
@@ -266,7 +267,7 @@ func newMockStoreWithSubstringSearch(ctrl *gomock.Controller) *mocks.MockToolSto
 				nameLower := strings.ToLower(tool.Tool.Name)
 				descLower := strings.ToLower(tool.Tool.Description)
 				if strings.Contains(nameLower, searchTerm) || strings.Contains(descLower, searchTerm) {
-					matches = append(matches, ToolMatch{
+					matches = append(matches, mcp.Tool{
 						Name:        tool.Tool.Name,
 						Description: tool.Tool.Description,
 					})
@@ -296,9 +297,9 @@ func TestOptimizer_SearchDelegation(t *testing.T) {
 
 	store.EXPECT().UpsertTools(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().Search(gomock.Any(), "query", gomock.Any()).DoAndReturn(
-		func(_ context.Context, _ string, allowedTools []string) ([]ToolMatch, error) {
+		func(_ context.Context, _ string, allowedTools []string) ([]mcp.Tool, error) {
 			require.ElementsMatch(t, []string{"tool_a", "tool_b"}, allowedTools)
-			return []ToolMatch{
+			return []mcp.Tool{
 				{Name: "tool_a", Description: "Tool A"},
 			}, nil
 		},
@@ -319,6 +320,45 @@ func TestOptimizer_SearchDelegation(t *testing.T) {
 	require.Greater(t, result.TokenMetrics.BaselineTokens, 0)
 	require.Greater(t, result.TokenMetrics.ReturnedTokens, 0)
 	require.Greater(t, result.TokenMetrics.SavingsPercent, 0.0)
+}
+
+// TestOptimizer_FindToolEnrichesSchema verifies that FindTool populates
+// InputSchema and OutputSchema from the in-memory tool definitions.
+func TestOptimizer_FindToolEnrichesSchema(t *testing.T) {
+	t.Parallel()
+
+	rawInput := json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}`)
+	tools := []server.ServerTool{
+		{Tool: mcp.NewToolWithRawSchema("fetch_url", "Fetch content from a URL", rawInput)},
+		{Tool: mcp.NewTool("typed_tool",
+			mcp.WithDescription("Tool with typed schema"),
+			mcp.WithString("name", mcp.Description("The name"), mcp.Required()),
+		)},
+	}
+
+	ctrl := gomock.NewController(t)
+	store := newMockStoreWithSubstringSearch(ctrl)
+	opt, err := newToolOptimizer(context.Background(), store, tokencounter.NewJSONByteCounter(), tools)
+	require.NoError(t, err)
+
+	result, err := opt.FindTool(context.Background(), FindToolInput{ToolDescription: "fetch"})
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+
+	m := result.Tools[0]
+	require.Equal(t, "fetch_url", m.Name)
+	require.NotEmpty(t, m.RawInputSchema, "RawInputSchema should be populated for raw-schema tools")
+	require.JSONEq(t, string(rawInput), string(m.RawInputSchema))
+
+	// Test typed schema fallback
+	result2, err := opt.FindTool(context.Background(), FindToolInput{ToolDescription: "typed"})
+	require.NoError(t, err)
+	require.Len(t, result2.Tools, 1)
+
+	m2 := result2.Tools[0]
+	require.Equal(t, "typed_tool", m2.Name)
+	require.Equal(t, "object", m2.InputSchema.Type)
+	require.NotEmpty(t, m2.InputSchema.Properties)
 }
 
 // TestOptimizer_SearchError verifies that store search errors are propagated.

@@ -133,7 +133,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Generate authorization code and redirect to client using fosite's RFC 6749 compliant handler
-	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject); err != nil {
+	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, result.Name, result.Email); err != nil {
 		slog.Error("failed to create authorization response",
 			"error", err,
 		)
@@ -155,6 +155,8 @@ func (h *Handler) writeAuthorizationResponse(
 	pending *storage.PendingAuthorization,
 	sessionID string,
 	subject string,
+	name string,
+	email string,
 ) error {
 	// Get the client from storage
 	fositeClient, err := h.storage.GetClient(ctx, pending.ClientID)
@@ -162,8 +164,11 @@ func (h *Handler) writeAuthorizationResponse(
 		return err
 	}
 
-	// Create the session with IDP session reference and client ID for binding
-	sess := session.New(subject, sessionID, pending.ClientID)
+	// Create the session with IDP session reference, client ID, and user profile claims
+	sess := session.New(subject, sessionID, pending.ClientID, session.UserClaims{
+		Name:  name,
+		Email: email,
+	})
 
 	// Set expiration times
 	now := time.Now()

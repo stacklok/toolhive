@@ -13,8 +13,8 @@ import (
 	context "context"
 	reflect "reflect"
 
+	mcp "github.com/mark3labs/mcp-go/mcp"
 	server "github.com/mark3labs/mcp-go/server"
-	types "github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -57,10 +57,10 @@ func (mr *MockToolStoreMockRecorder) Close() *gomock.Call {
 }
 
 // Search mocks base method.
-func (m *MockToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]types.ToolMatch, error) {
+func (m *MockToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Search", ctx, query, allowedTools)
-	ret0, _ := ret[0].([]types.ToolMatch)
+	ret0, _ := ret[0].([]mcp.Tool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

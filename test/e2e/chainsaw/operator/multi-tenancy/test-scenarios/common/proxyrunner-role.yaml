@@ -16,7 +16,6 @@ rules:
   - update
   - patch
   - delete
-  - apply
 - apiGroups:
   - ""
   resources:
@@ -29,7 +28,6 @@ rules:
   - update
   - patch
   - delete
-  - apply
 - apiGroups:
   - ""
   resources:

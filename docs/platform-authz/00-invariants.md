@@ -98,9 +98,9 @@ MCPServer for automatic garbage collection on server deletion.
 **Labels** on the ConfigMap:
 ```yaml
 labels:
-  toolhive.stacklok.io/component: enterprise-authz
-  toolhive.stacklok.io/mcp-server: {mcpserver-name}
-  toolhive.stacklok.io/managed-by: enterprise-authz-controller
+  toolhive.stacklok.dev/component: enterprise-authz
+  toolhive.stacklok.dev/mcp-server: {mcpserver-name}
+  toolhive.stacklok.dev/managed-by: enterprise-authz-controller
 ```
 
 ### 1.6 The OSS side must populate the entity hierarchy at request time
@@ -164,11 +164,11 @@ RoleBinding assigns principals, and the policy scopes it to targets.
 
 A `ToolhivePlatformRole` defines the maximum set of actions. A
 `ToolhiveAuthorizationPolicy` can restrict those permissions to specific
-`resourceNames` but can **never** grant permissions beyond what the role
-defines.
+resources (via typed `tools`, `prompts`, `resources` fields) but can **never**
+grant permissions beyond what the role defines.
 
 Example: If a role allows `[call_tool, list_tools]`, a policy can restrict to
-`resourceNames: [list_issues]` but cannot add `read_resource` access.
+`tools: [list_issues]` but cannot add `read_resource` access.
 
 ### 2.3 Built-in roles use MCP tool annotations
 
@@ -245,7 +245,7 @@ spec:
     - platformRole: writer
   deny:
     - actions: [call_tool]
-      resourceNames: [delete_repo, force_push]
+      tools: [delete_repo, force_push]
 ```
 
 This compiles to:
@@ -287,8 +287,9 @@ visible to administrators.
 
 ### 2.7 Resource names are exact matches
 
-`resourceNames` in `ruleRestrictions` and `deny` rules are exact string
-matches against Cedar entity IDs. Glob patterns are not supported.
+Resource names in `ruleRestrictions` (typed `tools`, `prompts`, `resources`
+fields) and `deny` rules are exact string matches against Cedar entity IDs.
+Glob patterns are not supported.
 
 ### 2.8 Policies target MCPServers by name only (MVP)
 
@@ -394,8 +395,9 @@ permit(
 
 ### 3.4 Restricted policies scope to specific resources
 
-When `ruleRestrictions` with `resourceNames` are specified, the compiled Cedar
-policy scopes to those specific resources:
+When `ruleRestrictions` with typed resource fields (`tools`, `prompts`,
+`resources`) are specified, the compiled Cedar policy scopes to those specific
+resources:
 
 ```cedar
 permit(

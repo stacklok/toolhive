@@ -460,7 +460,7 @@ two concerns:
 
 1. **`spec.authzConfig`** — the ConfigMap reference (changes only on first
    injection or cleanup)
-2. **`enterprise.toolhive.stacklok.io/policy-hash` annotation** — a SHA-256
+2. **`enterprise.toolhive.stacklok.dev/policy-hash` annotation** — a SHA-256
    hash of the compiled ConfigMap content (changes on every recompilation)
 
 The annotation is critical: when a RoleBinding or PlatformRole changes, the
@@ -490,7 +490,7 @@ func (r *EnterpriseAuthzReconciler) patchAuthzConfig(
                 "name":      mcpServer.Name,
                 "namespace": mcpServer.Namespace,
                 "annotations": map[string]interface{}{
-                    "enterprise.toolhive.stacklok.io/policy-hash": policyHash,
+                    "enterprise.toolhive.stacklok.dev/policy-hash": policyHash,
                 },
             },
             "spec": map[string]interface{}{
@@ -537,7 +537,7 @@ func (r *EnterpriseAuthzReconciler) clearAuthzConfig(
     patch := client.RawPatch(
         types.MergePatchType,
         []byte(`{`+
-            `"metadata":{"annotations":{"enterprise.toolhive.stacklok.io/policy-hash":null}},`+
+            `"metadata":{"annotations":{"enterprise.toolhive.stacklok.dev/policy-hash":null}},`+
             `"spec":{"authzConfig":null}`+
             `}`),
     )
@@ -574,9 +574,9 @@ metadata:
   name: github-enterprise-authz
   namespace: default
   labels:
-    toolhive.stacklok.io/component: enterprise-authz
-    toolhive.stacklok.io/mcp-server: github
-    toolhive.stacklok.io/managed-by: enterprise-authz-controller
+    toolhive.stacklok.dev/component: enterprise-authz
+    toolhive.stacklok.dev/mcp-server: github
+    toolhive.stacklok.dev/managed-by: enterprise-authz-controller
   ownerReferences:
     - apiVersion: toolhive.stacklok.dev/v1alpha1
       kind: MCPServer
@@ -622,9 +622,9 @@ func (r *EnterpriseAuthzReconciler) ensureConfigMap(
         "authz.json": result.ConfigMapJSON,
     }
     desiredLabels := map[string]string{
-        "toolhive.stacklok.io/component":  "enterprise-authz",
-        "toolhive.stacklok.io/mcp-server": mcpServer.Name,
-        "toolhive.stacklok.io/managed-by": "enterprise-authz-controller",
+        "toolhive.stacklok.dev/component":  "enterprise-authz",
+        "toolhive.stacklok.dev/mcp-server": mcpServer.Name,
+        "toolhive.stacklok.dev/managed-by": "enterprise-authz-controller",
     }
 
     configMap := &corev1.ConfigMap{}

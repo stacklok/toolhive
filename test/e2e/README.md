@@ -33,32 +33,48 @@ Tests are organized using Ginkgo labels for parallelization and filtering:
 - Export functionality (`export_test.go`)
 - THVIgnore support (`thvignore_test.go`)
 
-#### MCP Protocol Tests (Label: `mcp`)
-- MCP server operations (`osv_mcp_server_test.go`, `fetch_mcp_server_test.go`)
-- Protocol builds (`protocol_builds_e2e_test.go`)
-- Remote MCP servers (`remote_mcp_server_test.go`)
-- Inspector functionality (`inspector_test.go`)
+#### MCP Run Tests (Label: `mcp-run`)
+- MCP server operations (`fetch_mcp_server_test.go`, `osv_mcp_server_test.go`)
 
-#### Proxy Tests (Label: `proxy`)
+#### MCP Protocol Tests (Label: `mcp-protocol`)
+- Streamable HTTP (`osv_streamable_http_mcp_server_test.go`)
+- Remote MCP servers (`remote_mcp_server_test.go`)
+- Protocol builds (`protocol_builds_e2e_test.go`)
+- Inspector functionality (`inspector_test.go`, `inspector_autocleanup_test.go`)
+
+> **Note:** Both `mcp-run` and `mcp-protocol` tests also carry the parent `mcp` label, so `LABEL_FILTER=mcp` still runs all MCP tests locally.
+
+#### Proxy & Middleware Tests (Label: `proxy || middleware || stability`)
 - Stdio proxy (`proxy_stdio_test.go`)
 - OAuth authentication (`proxy_oauth_test.go`)
 - Tunnel functionality (`proxy_tunnel_e2e_test.go`)
 - Streamable HTTP proxy (`stdio_proxy_over_streamable_http_mcp_server_test.go`)
-
-#### Middleware Tests (Label: `middleware`)
 - Audit middleware (`audit_middleware_e2e_test.go`)
-- Authorization (`osv_authz_test.go`)
-- Telemetry (`telemetry_middleware_e2e_test.go`)
+- Authorization (`osv_authz_test.go`, `http_pdp_authz_test.go`)
+- Telemetry middleware (`telemetry_middleware_e2e_test.go`, `telemetry_metrics_validation_e2e_test.go`)
+- SSE endpoint rewriting (`sse_endpoint_rewrite_test.go`)
+- Network isolation (`network_isolation_test.go`)
+- Stability tests (`unhealthy_workload_test.go`, `health_check_zombie_test.go`)
 
-#### API Tests (Label: `api`)
-- Health check endpoint (`api_healthcheck_test.go`)
-- API server lifecycle and HTTP operations
+#### API Registry Tests (Label: `api-registry`)
+- Registry CRUD operations (`api_registry_test.go`)
 
-#### Other Tests
-- Network isolation (Label: `network`, `isolation`)
-- Stability tests (Label: `stability`)
-- Telemetry validation (Label: `telemetry`, `metrics`, `validation`)
-- SSE endpoint rewriting (Label: `sse`, `endpoint-rewrite`)
+#### API Workloads Tests (Label: `api-workloads`)
+- Workload endpoints (`api_workloads_test.go`)
+- Workload lifecycle (`api_workload_lifecycle_test.go`)
+
+#### API Clients Tests (Label: `api-clients`)
+- Client management (`api_clients_test.go`, `api_clients_validation_test.go`)
+- Skills API (`api_skills_test.go`)
+
+#### API Misc Tests (Label: `api-misc`)
+- Discovery API (`api_discovery_test.go`)
+- Groups API (`api_groups_test.go`)
+- Health check API (`api_healthcheck_test.go`)
+- Version API (`api_version_test.go`)
+- Secrets API (`api_secrets_test.go`)
+
+> **Note:** All `api-*` tests also carry the parent `api` label, so `LABEL_FILTER=api` still runs all API tests locally.
 
 ## Running Tests
 
@@ -124,11 +140,15 @@ E2E_LABEL_FILTER=api task test-e2e
 The e2e tests run in parallel in GitHub Actions using label filters. The workflow:
 
 1. Builds the ToolHive binary once and shares it across jobs
-2. Runs tests in parallel using matrix strategy with label filters:
-   - **core**: Core CLI functionality
-   - **mcp**: MCP protocol tests
-   - **proxy-mw**: Proxy, middleware, and stability tests
-   - **api**: HTTP API tests
+2. Runs tests in parallel using matrix strategy with 8 label-based buckets:
+   - **core**: Core CLI functionality (~57 specs)
+   - **mcp-run**: MCP server run tests (~33 specs)
+   - **mcp-protocol**: MCP protocol & inspector tests (~37 specs)
+   - **proxy-mw**: Proxy, middleware, and stability tests (~53 specs)
+   - **api-registry**: Registry API tests (~41 specs)
+   - **api-workloads**: Workloads API tests (~56 specs)
+   - **api-clients**: Clients & skills API tests (~44 specs)
+   - **api-misc**: Discovery, groups, health, version, secrets API tests (~50 specs)
 3. Uploads test results as artifacts
 
 See `.github/workflows/e2e-tests.yml` for the full configuration.

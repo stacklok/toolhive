@@ -50,15 +50,27 @@ jobs:
           - title: core
             label_filter: core
             artifact: e2e-test-results-core
-          - title: mcp
-            label_filter: mcp
-            artifact: e2e-test-results-mcp
+          - title: mcp-run
+            label_filter: mcp-run
+            artifact: e2e-test-results-mcp-run
+          - title: mcp-protocol
+            label_filter: mcp-protocol
+            artifact: e2e-test-results-mcp-protocol
           - title: proxy-mw
             label_filter: 'proxy || middleware || stability'
             artifact: e2e-test-results-proxy-mw
-          - title: api
-            label_filter: api
-            artifact: e2e-test-results-api
+          - title: api-registry
+            label_filter: api-registry
+            artifact: e2e-test-results-api-registry
+          - title: api-workloads
+            label_filter: api-workloads
+            artifact: e2e-test-results-api-workloads
+          - title: api-clients
+            label_filter: api-clients
+            artifact: e2e-test-results-api-clients
+          - title: api-misc
+            label_filter: api-misc
+            artifact: e2e-test-results-api-misc
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 

@@ -33,7 +33,7 @@ type WorkloadInfo struct {
 // This replaces the previous mcp-spec server which now requires OAuth authentication.
 const remoteServerURL = "https://toolhive-doc-mcp.stacklok.com/mcp"
 
-var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, func() {
+var _ = Describe("Remote MCP Server", Label("remote", "mcp", "mcp-protocol", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

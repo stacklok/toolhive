@@ -92,3 +92,30 @@ func TestRecoveryMiddleware_PreservesRequestContext(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, value, receivedValue)
 }
+
+func TestRecoveryMiddleware_RePanicsErrAbortHandler(t *testing.T) {
+	t.Parallel()
+
+	// Create a test handler that panics with http.ErrAbortHandler
+	testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
+
+	// Wrap with recovery middleware
+	wrappedHandler := Middleware(testHandler)
+
+	// Create test request
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	// Execute request - should re-panic http.ErrAbortHandler
+	defer func() {
+		recovered := recover()
+		assert.Equal(t, http.ErrAbortHandler, recovered, "http.ErrAbortHandler should be re-panicked")
+	}()
+
+	wrappedHandler.ServeHTTP(rec, req)
+
+	// If we reach here without re-panicking, the test should fail
+	t.Fatal("Expected http.ErrAbortHandler to be re-panicked, but it was not")
+}

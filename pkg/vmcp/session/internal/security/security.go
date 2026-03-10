@@ -222,21 +222,17 @@ func (d hijackPreventionDecorator) GetPrompt(
 //   - Raw tokens are never stored, only HMAC-SHA256 hashes
 //
 // Returns an error if:
-//   - session doesn't implement sessiontypes.MultiSession interface
+//   - session is nil
 //   - salt generation fails
 func PreventSessionHijacking(
-	session interface{},
+	session sessiontypes.MultiSession,
 	hmacSecret []byte,
 	identity *auth.Identity,
 ) (sessiontypes.MultiSession, error) {
-	allowAnonymous := identity == nil || identity.Token == ""
-	// Validate upfront that session implements the MultiSession interface.
-	// This provides fail-fast behavior for security-critical operations
-	// instead of panics at runtime.
-	multiSession, ok := session.(sessiontypes.MultiSession)
-	if !ok {
-		return nil, fmt.Errorf("session must implement sessiontypes.MultiSession interface, got %T", session)
+	if session == nil {
+		return nil, fmt.Errorf("session must not be nil")
 	}
+	allowAnonymous := sessiontypes.ShouldAllowAnonymous(identity)
 
 	// Note: Pass-through methods (ID, Type, CreatedAt, etc.) are validated by the
 	// type system when the decorator is used. We don't validate them here to keep
@@ -259,9 +255,9 @@ func PreventSessionHijacking(
 
 	// Store hash and salt in session metadata for persistence, auditing,
 	// and backward compatibility
-	multiSession.SetMetadata(metadataKeyTokenHash, boundTokenHash)
+	session.SetMetadata(metadataKeyTokenHash, boundTokenHash)
 	if len(tokenSalt) > 0 {
-		multiSession.SetMetadata(metadataKeyTokenSalt, hex.EncodeToString(tokenSalt))
+		session.SetMetadata(metadataKeyTokenSalt, hex.EncodeToString(tokenSalt))
 	}
 
 	// Make defensive copies of slices to prevent external mutation
@@ -277,7 +273,7 @@ func PreventSessionHijacking(
 	// The decorator embeds the MultiSession interface, so all methods are automatically
 	// delegated except for the three we override (CallTool, ReadResource, GetPrompt).
 	return &hijackPreventionDecorator{
-		MultiSession:   multiSession,
+		MultiSession:   session,
 		allowAnonymous: allowAnonymous,
 		hmacSecret:     hmacSecretCopy,
 		boundTokenHash: boundTokenHash,

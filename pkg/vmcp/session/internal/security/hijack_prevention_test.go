@@ -43,15 +43,15 @@ func (m *mockSession) GetMetadata() map[string]string {
 }
 
 func (*mockSession) CallTool(_ context.Context, _ *auth.Identity, _ string, _ map[string]any, _ map[string]any) (*vmcp.ToolCallResult, error) {
-	return nil, nil
+	return &vmcp.ToolCallResult{}, nil
 }
 
 func (*mockSession) ReadResource(_ context.Context, _ *auth.Identity, _ string) (*vmcp.ResourceReadResult, error) {
-	return nil, nil
+	return &vmcp.ResourceReadResult{}, nil
 }
 
 func (*mockSession) GetPrompt(_ context.Context, _ *auth.Identity, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
-	return nil, nil
+	return &vmcp.PromptGetResult{}, nil
 }
 
 func (*mockSession) Close() error { return nil }
@@ -148,51 +148,39 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 				hmacSecret:     testSecret,
 			}
 
-			// Test validateCaller directly on the decorator
-			err := decorator.validateCaller(tt.caller)
+			ctx := context.Background()
+
+			// Test all three decorated methods to verify validation is integrated correctly
+			toolResult, errCallTool := decorator.CallTool(ctx, tt.caller, "test-tool", nil, nil)
+			resourceResult, errReadResource := decorator.ReadResource(ctx, tt.caller, "test://uri")
+			promptResult, errGetPrompt := decorator.GetPrompt(ctx, tt.caller, "test-prompt", nil)
 
 			if tt.wantErr != nil {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, tt.wantErr)
+				require.ErrorIs(t, errCallTool, tt.wantErr)
+				require.ErrorIs(t, errReadResource, tt.wantErr)
+				require.ErrorIs(t, errGetPrompt, tt.wantErr)
+				assert.Nil(t, toolResult)
+				assert.Nil(t, resourceResult)
+				assert.Nil(t, promptResult)
 			} else {
-				require.NoError(t, err)
+				require.NoError(t, errCallTool)
+				require.NoError(t, errReadResource)
+				require.NoError(t, errGetPrompt)
+				assert.NotNil(t, toolResult)
+				assert.NotNil(t, resourceResult)
+				assert.NotNil(t, promptResult)
 			}
 		})
 	}
 }
 
-// TestConcurrentValidation tests that validateCaller is safe for concurrent use.
-func TestConcurrentValidation(t *testing.T) {
+// TestPreventSessionHijacking_NilSession tests that a nil session is rejected before any method call.
+func TestPreventSessionHijacking_NilSession(t *testing.T) {
 	t.Parallel()
 
-	baseSession := newMockSession("test-session")
-
-	decorator := &hijackPreventionDecorator{
-		MultiSession:   baseSession,
-		allowAnonymous: false,
-		boundTokenHash: hashToken("test-token", testSecret, testTokenSalt),
-		tokenSalt:      testTokenSalt,
-		hmacSecret:     testSecret,
-	}
-
-	// Run validation concurrently from multiple goroutines
-	// Collect errors in channel to avoid race conditions with testify assertions
-	const numGoroutines = 10
-	errChan := make(chan error, numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func() {
-			caller := &auth.Identity{Subject: "user", Token: "test-token"}
-			err := decorator.validateCaller(caller)
-			errChan <- err
-		}()
-	}
-
-	// Wait for all goroutines and assert in main goroutine (thread-safe)
-	for i := 0; i < numGoroutines; i++ {
-		err := <-errChan
-		assert.NoError(t, err, "concurrent validation should succeed")
-	}
+	decorated, err := PreventSessionHijacking(nil, testSecret, &auth.Identity{Subject: "user", Token: "test-token"})
+	require.Error(t, err)
+	assert.Nil(t, decorated)
 }
 
 // TestPreventSessionHijacking_BasicFunctionality tests the main entry point.

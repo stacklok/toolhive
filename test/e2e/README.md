@@ -44,16 +44,18 @@ Tests are organized using Ginkgo labels for parallelization and filtering:
 
 > **Note:** Both `mcp-run` and `mcp-protocol` tests also carry the parent `mcp` label, so `LABEL_FILTER=mcp` still runs all MCP tests locally.
 
-#### Proxy & Middleware Tests (Label: `proxy || middleware || stability`)
+#### Proxy Tests (Label: `proxy`)
 - Stdio proxy (`proxy_stdio_test.go`)
 - OAuth authentication (`proxy_oauth_test.go`)
 - Tunnel functionality (`proxy_tunnel_e2e_test.go`)
 - Streamable HTTP proxy (`stdio_proxy_over_streamable_http_mcp_server_test.go`)
+- SSE endpoint rewriting (`sse_endpoint_rewrite_test.go`)
+- Network isolation (`network_isolation_test.go`)
+
+#### Middleware & Stability Tests (Label: `middleware || stability`)
 - Audit middleware (`audit_middleware_e2e_test.go`)
 - Authorization (`osv_authz_test.go`, `http_pdp_authz_test.go`)
 - Telemetry middleware (`telemetry_middleware_e2e_test.go`, `telemetry_metrics_validation_e2e_test.go`)
-- SSE endpoint rewriting (`sse_endpoint_rewrite_test.go`)
-- Network isolation (`network_isolation_test.go`)
 - Stability tests (`unhealthy_workload_test.go`, `health_check_zombie_test.go`)
 
 #### API Registry Tests (Label: `api-registry`)
@@ -106,8 +108,11 @@ E2E_LABEL_FILTER=api ./run_tests.sh
 # Run only MCP protocol tests
 E2E_LABEL_FILTER=mcp ./run_tests.sh
 
-# Run proxy and middleware tests
-E2E_LABEL_FILTER='proxy || middleware' ./run_tests.sh
+# Run proxy tests
+E2E_LABEL_FILTER=proxy ./run_tests.sh
+
+# Run middleware and stability tests
+E2E_LABEL_FILTER='middleware || stability' ./run_tests.sh
 ```
 
 ### Run with Ginkgo Directly
@@ -140,11 +145,12 @@ E2E_LABEL_FILTER=api task test-e2e
 The e2e tests run in parallel in GitHub Actions using label filters. The workflow:
 
 1. Builds the ToolHive binary once and shares it across jobs
-2. Runs tests in parallel using matrix strategy with 8 label-based buckets:
+2. Runs tests in parallel using matrix strategy with 9 label-based buckets:
    - **core**: Core CLI functionality (~57 specs)
    - **mcp-run**: MCP server run tests (~33 specs)
    - **mcp-protocol**: MCP protocol & inspector tests (~37 specs)
-   - **proxy-mw**: Proxy, middleware, and stability tests (~53 specs)
+   - **proxy**: Proxy tests (~25 specs)
+   - **middleware**: Middleware & stability tests (~28 specs)
    - **api-registry**: Registry API tests (~41 specs)
    - **api-workloads**: Workloads API tests (~56 specs)
    - **api-clients**: Clients & skills API tests (~44 specs)

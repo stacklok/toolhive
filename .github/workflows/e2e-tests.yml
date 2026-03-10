@@ -56,9 +56,12 @@ jobs:
           - title: mcp-protocol
             label_filter: mcp-protocol
             artifact: e2e-test-results-mcp-protocol
-          - title: proxy-mw
-            label_filter: 'proxy || middleware || stability'
-            artifact: e2e-test-results-proxy-mw
+          - title: proxy
+            label_filter: proxy
+            artifact: e2e-test-results-proxy
+          - title: middleware
+            label_filter: 'middleware || stability'
+            artifact: e2e-test-results-middleware
           - title: api-registry
             label_filter: api-registry
             artifact: e2e-test-results-api-registry

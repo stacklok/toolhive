@@ -86,6 +86,11 @@ type MiddlewareRunner interface {
 	// before the embedded auth server is initialized. Storage availability is
 	// determined at request time when the returned function is called.
 	GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage
+
+	// GetUpstreamTokenRefresher returns a lazy accessor for the upstream token refresher.
+	// The returned function should be called at request time; it returns nil if
+	// the embedded auth server is not configured or the refresher is unavailable.
+	GetUpstreamTokenRefresher() func() storage.UpstreamTokenRefresher
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration

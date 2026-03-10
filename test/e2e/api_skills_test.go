@@ -186,7 +186,7 @@ This is a test skill.
 
 // Test suite
 
-var _ = Describe("Skills API", Label("api", "skills", "e2e"), func() {
+var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server

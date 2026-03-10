@@ -128,7 +128,7 @@ func (s *defaultMultiSession) lookupBackend(
 
 // CallTool invokes toolName on the appropriate backend.
 // The caller parameter is accepted for interface compatibility but validation
-// is performed by the HijackPreventionDecorator wrapper when enabled.
+// is performed by the session hijack-prevention wrapper when enabled.
 func (s *defaultMultiSession) CallTool(
 	ctx context.Context,
 	_ *auth.Identity,
@@ -146,7 +146,7 @@ func (s *defaultMultiSession) CallTool(
 
 // ReadResource retrieves the resource identified by uri.
 // The caller parameter is accepted for interface compatibility but validation
-// is performed by the HijackPreventionDecorator wrapper when enabled.
+// is performed by the session hijack-prevention wrapper when enabled.
 func (s *defaultMultiSession) ReadResource(
 	ctx context.Context, _ *auth.Identity, uri string,
 ) (*vmcp.ResourceReadResult, error) {
@@ -160,7 +160,7 @@ func (s *defaultMultiSession) ReadResource(
 
 // GetPrompt retrieves the named prompt from the appropriate backend.
 // The caller parameter is accepted for interface compatibility but validation
-// is performed by the HijackPreventionDecorator wrapper when enabled.
+// is performed by the session hijack-prevention wrapper when enabled.
 func (s *defaultMultiSession) GetPrompt(
 	ctx context.Context,
 	_ *auth.Identity,

@@ -27,6 +27,18 @@ const (
 	// AuthServerHMACVolumePrefix is the prefix for HMAC secret volume names
 	AuthServerHMACVolumePrefix = "authserver-hmac-secret-"
 
+	// RedisTLSCACertVolumePrefix is the prefix for Redis TLS CA cert volume names
+	RedisTLSCACertVolumePrefix = "redis-tls-ca-"
+
+	// RedisTLSCACertMountPath is the base path where Redis TLS CA certs are mounted
+	RedisTLSCACertMountPath = "/etc/toolhive/authserver/redis-tls"
+
+	// RedisTLSCACertFileName is the filename for the master CA cert
+	RedisTLSCACertFileName = "ca.crt"
+
+	// RedisSentinelTLSCACertFileName is the filename for the sentinel CA cert
+	RedisSentinelTLSCACertFileName = "sentinel-ca.crt"
+
 	// AuthServerKeysMountPath is the base path where signing keys are mounted
 	AuthServerKeysMountPath = "/etc/toolhive/authserver/keys"
 
@@ -159,6 +171,57 @@ func GenerateAuthServerVolumes(
 			SubPath:   fileName,
 			ReadOnly:  true,
 		})
+	}
+
+	// Generate volumes for Redis TLS CA certificates
+	if authConfig.Storage != nil && authConfig.Storage.Redis != nil {
+		redis := authConfig.Storage.Redis
+		if redis.TLS != nil && redis.TLS.CACertSecretRef != nil {
+			ref := redis.TLS.CACertSecretRef
+			volumeName := RedisTLSCACertVolumePrefix + "master"
+			volumes = append(volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: ref.Name,
+						Items: []corev1.KeyToPath{{
+							Key:  ref.Key,
+							Path: RedisTLSCACertFileName,
+						}},
+						DefaultMode: k8sptr.To(int32(0400)),
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, RedisTLSCACertFileName),
+				SubPath:   RedisTLSCACertFileName,
+				ReadOnly:  true,
+			})
+		}
+		if redis.SentinelTLS != nil && redis.SentinelTLS.CACertSecretRef != nil {
+			ref := redis.SentinelTLS.CACertSecretRef
+			volumeName := RedisTLSCACertVolumePrefix + "sentinel"
+			volumes = append(volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: ref.Name,
+						Items: []corev1.KeyToPath{{
+							Key:  ref.Key,
+							Path: RedisSentinelTLSCACertFileName,
+						}},
+						DefaultMode: k8sptr.To(int32(0400)),
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, RedisSentinelTLSCACertFileName),
+				SubPath:   RedisSentinelTLSCACertFileName,
+				ReadOnly:  true,
+			})
+		}
 	}
 
 	return volumes, volumeMounts
@@ -440,14 +503,15 @@ func buildStorageRunConfig(
 			DialTimeout:  redisConfig.DialTimeout,
 			ReadTimeout:  redisConfig.ReadTimeout,
 			WriteTimeout: redisConfig.WriteTimeout,
-			TLS:          convertRedisTLSConfig(redisConfig.TLS),
-			SentinelTLS:  convertRedisTLSConfig(redisConfig.SentinelTLS),
+			TLS:          convertRedisTLSConfig(redisConfig.TLS, false),
+			SentinelTLS:  convertRedisTLSConfig(redisConfig.SentinelTLS, true),
 		},
 	}, nil
 }
 
 // convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.
-func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig) *storage.RedisTLSRunConfig {
+// isSentinel determines which mount path to use for the CA cert file.
+func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig, isSentinel bool) *storage.RedisTLSRunConfig {
 	if cfg == nil {
 		return nil
 	}
@@ -455,9 +519,13 @@ func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig) *storage.RedisTLSRun
 		Enabled:            cfg.Enabled,
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 	}
-	// CA cert is mounted by the operator as a file; the path is set
-	// by the controller when building the pod spec.
-	// TODO: implement CA cert secret mounting in the controller
+	if cfg.CACertSecretRef != nil {
+		fileName := RedisTLSCACertFileName
+		if isSentinel {
+			fileName = RedisSentinelTLSCACertFileName
+		}
+		rc.CACertFile = fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, fileName)
+	}
 	return rc
 }
 

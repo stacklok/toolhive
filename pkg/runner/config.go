@@ -7,6 +7,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,6 +39,9 @@ import (
 // CurrentSchemaVersion is the current version of the RunConfig schema
 // TODO: Set to "v1.0.0" when we clean up the middleware configuration.
 const CurrentSchemaVersion = "v0.1.0"
+
+// ErrPortUnavailable indicates that a requested or required port is not available.
+var ErrPortUnavailable = errors.New("port unavailable")
 
 // RunConfig contains all the configuration needed to run an MCP server
 // It is serializable to JSON and YAML
@@ -403,7 +407,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 			slog.Debug("reusing existing port", "port", proxyPort)
 			selectedPort = proxyPort
 		} else if !networking.IsAvailable(proxyPort) {
-			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
+			return c, fmt.Errorf("%w: requested proxy port %d is not available", ErrPortUnavailable, proxyPort)
 		} else {
 			slog.Debug("using requested port", "port", proxyPort)
 			selectedPort = proxyPort
@@ -412,7 +416,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 		// Otherwise - pick a random available port.
 		selectedPort, err = networking.FindOrUsePort(proxyPort)
 		if err != nil {
-			return c, err
+			return c, fmt.Errorf("%w: %w", ErrPortUnavailable, err)
 		}
 	}
 	c.Port = selectedPort
@@ -421,7 +425,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
 		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
 		if err != nil {
-			return c, fmt.Errorf("target port error: %w", err)
+			return c, fmt.Errorf("%w: target port error: %w", ErrPortUnavailable, err)
 		}
 		slog.Debug("using target port", "port", selectedTargetPort)
 		c.TargetPort = selectedTargetPort

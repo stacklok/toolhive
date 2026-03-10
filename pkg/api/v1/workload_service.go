@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
@@ -74,13 +76,19 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 	// Save the workload state
 	if err := runConfig.SaveState(ctx); err != nil {
 		slog.Error("failed to save workload config", "error", err)
-		return nil, fmt.Errorf("failed to save workload config: %w", err)
+		return nil, httperr.WithCode(
+			fmt.Errorf("failed to save workload config: %w", err),
+			http.StatusInternalServerError,
+		)
 	}
 
 	// Start workload
 	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
 		slog.Error("failed to start workload", "error", err)
-		return nil, fmt.Errorf("failed to start workload: %w", err)
+		return nil, httperr.WithCode(
+			fmt.Errorf("failed to start workload: %w", err),
+			http.StatusInternalServerError,
+		)
 	}
 
 	return runConfig, nil
@@ -331,6 +339,13 @@ func (s *WorkloadService) BuildFullRunConfig(
 	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{}, options...)
 	if err != nil {
 		slog.Error("failed to build run config", "error", err)
+		// Map domain errors to HTTP status codes
+		if errors.Is(err, runner.ErrPortUnavailable) {
+			return nil, httperr.WithCode(
+				fmt.Errorf("%w: %w", retriever.ErrInvalidRunConfig, err),
+				http.StatusServiceUnavailable,
+			)
+		}
 		return nil, fmt.Errorf("%w: Failed to build run config: %w", retriever.ErrInvalidRunConfig, err)
 	}
 

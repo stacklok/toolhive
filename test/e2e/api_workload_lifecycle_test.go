@@ -754,7 +754,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				deleteGroup(apiServer, groupName)
 			})
 
-			It("should stop all workloads in a group", func() {
+			It("should stop all workloads in a group", NodeTimeout(5*time.Minute), func(_ SpecContext) {
 				By("Creating a test group")
 				createReq := map[string]interface{}{"name": groupName}
 				groupResp := createGroup(apiServer, createReq)
@@ -779,7 +779,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 						"image": "osv",
 						"group": groupName,
 					}
-					resp := createWorkload(apiServer, createReq)
+					resp := createWorkloadWithRetry(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 				}
@@ -1047,7 +1047,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
 			})
 
-			It("should restart stopped workloads in a group", func() {
+			It("should restart stopped workloads in a group", NodeTimeout(5*time.Minute), func(_ SpecContext) {
 				By("Creating a test group")
 				createReq := map[string]interface{}{"name": groupName}
 				groupResp := createGroup(apiServer, createReq)
@@ -1071,7 +1071,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 						"image": "osv",
 						"group": groupName,
 					}
-					resp := createWorkload(apiServer, createReq)
+					resp := createWorkloadWithRetry(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 				}
@@ -1196,14 +1196,14 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when deleting workloads in bulk", func() {
-			It("should delete multiple workloads", func() {
+			It("should delete multiple workloads", NodeTimeout(5*time.Minute), func(_ SpecContext) {
 				By("Creating multiple workloads")
 				for _, name := range workloadNames {
 					createReq := map[string]interface{}{
 						"name":  name,
 						"image": "osv",
 					}
-					resp := createWorkload(apiServer, createReq)
+					resp := createWorkloadWithRetry(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 				}

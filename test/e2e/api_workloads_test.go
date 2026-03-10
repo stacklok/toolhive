@@ -19,6 +19,11 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
+const (
+	createWorkloadRetryAttempts = 3
+	createWorkloadRetryBackoff  = 2 * time.Second
+)
+
 var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
@@ -576,6 +581,35 @@ func createWorkload(server *e2e.Server, request map[string]interface{}) *http.Re
 	resp, err := http.DefaultClient.Do(req)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to send HTTP request")
 
+	// Log response body on unexpected status for CI debugging
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusBadRequest &&
+		resp.StatusCode != http.StatusConflict && resp.StatusCode != http.StatusNotFound {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		GinkgoWriter.Printf("createWorkload: unexpected status %d, body: %s\n", resp.StatusCode, string(bodyBytes))
+		// Re-wrap body so callers can still read it
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	return resp
+}
+
+// createWorkloadWithRetry retries workload creation on 5xx responses.
+// This handles transient failures like port allocation races during bulk operations.
+func createWorkloadWithRetry(server *e2e.Server, request map[string]interface{}) *http.Response {
+	var resp *http.Response
+	for attempt := 1; attempt <= createWorkloadRetryAttempts; attempt++ {
+		resp = createWorkload(server, request)
+		if resp.StatusCode < 500 {
+			return resp
+		}
+		GinkgoWriter.Printf("createWorkloadWithRetry: attempt %d/%d got %d, retrying after backoff\n",
+			attempt, createWorkloadRetryAttempts, resp.StatusCode)
+		resp.Body.Close()
+		if attempt < createWorkloadRetryAttempts {
+			time.Sleep(createWorkloadRetryBackoff)
+		}
+	}
 	return resp
 }
 

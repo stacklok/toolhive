@@ -11,8 +11,20 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"sync"
+	"time"
 
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
+)
+
+var (
+	// portMu protects recentlyAllocated from concurrent access
+	portMu sync.Mutex
+	// recentlyAllocated tracks ports returned by FindAvailable/FindOrUsePort
+	// to prevent TOCTOU races when multiple goroutines allocate ports concurrently.
+	recentlyAllocated = map[int]time.Time{}
+	// portReservationTTL is how long a port stays reserved in recentlyAllocated
+	portReservationTTL = 30 * time.Second
 )
 
 const (
@@ -94,8 +106,15 @@ func IsIPv6Available() bool {
 	return false
 }
 
-// FindAvailable finds an available port
+// FindAvailable finds an available port.
+// It holds a process-level lock while checking availability and records the
+// port so that concurrent callers cannot receive the same port.
 func FindAvailable() int {
+	portMu.Lock()
+	defer portMu.Unlock()
+
+	purgeExpiredReservations()
+
 	for i := 0; i < MaxAttempts; i++ {
 		// Generate a cryptographically secure random number
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(MaxPort-MinPort)))
@@ -104,14 +123,22 @@ func FindAvailable() int {
 			break
 		}
 		port := int(n.Int64()) + MinPort
+		if _, reserved := recentlyAllocated[port]; reserved {
+			continue
+		}
 		if IsAvailable(port) {
+			recentlyAllocated[port] = time.Now()
 			return port
 		}
 	}
 
 	// If we can't find a random port, try sequential ports
 	for port := MinPort; port <= MaxPort; port++ {
+		if _, reserved := recentlyAllocated[port]; reserved {
+			continue
+		}
 		if IsAvailable(port) {
+			recentlyAllocated[port] = time.Now()
 			return port
 		}
 	}
@@ -126,7 +153,7 @@ func FindAvailable() int {
 // Returns the selected port and an error if any.
 func FindOrUsePort(port int) (int, error) {
 	if port == 0 {
-		// Find an available port
+		// Find an available port (FindAvailable handles its own locking)
 		port = FindAvailable()
 		if port == 0 {
 			return 0, fmt.Errorf("could not find an available port")
@@ -134,16 +161,44 @@ func FindOrUsePort(port int) (int, error) {
 		return port, nil
 	}
 
-	if IsAvailable(port) {
+	portMu.Lock()
+	defer portMu.Unlock()
+	purgeExpiredReservations()
+
+	if _, reserved := recentlyAllocated[port]; !reserved && IsAvailable(port) {
+		recentlyAllocated[port] = time.Now()
 		return port, nil
 	}
 
-	// Requested port is busy — find an alternative
-	alt := FindAvailable()
-	if alt == 0 {
-		return 0, fmt.Errorf("failed to find an alternative port after requested port %d was unavailable", port)
+	// Requested port is busy — find an alternative without holding lock twice.
+	// We inline the search here since FindAvailable also takes the lock.
+	for i := 0; i < MaxAttempts; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(MaxPort-MinPort)))
+		if err != nil {
+			break
+		}
+		alt := int(n.Int64()) + MinPort
+		if _, reserved := recentlyAllocated[alt]; reserved {
+			continue
+		}
+		if IsAvailable(alt) {
+			recentlyAllocated[alt] = time.Now()
+			return alt, nil
+		}
 	}
-	return alt, nil
+
+	return 0, fmt.Errorf("failed to find an alternative port after requested port %d was unavailable", port)
+}
+
+// purgeExpiredReservations removes entries older than portReservationTTL.
+// Must be called with portMu held.
+func purgeExpiredReservations() {
+	cutoff := time.Now().Add(-portReservationTTL)
+	for p, t := range recentlyAllocated {
+		if t.Before(cutoff) {
+			delete(recentlyAllocated, p)
+		}
+	}
 }
 
 // ValidateCallbackPort validates that the specified callback port is valid and available.

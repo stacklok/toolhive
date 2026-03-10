@@ -6,6 +6,7 @@
 package keyring
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
@@ -71,6 +72,11 @@ func (k *keyctlProvider) Get(service, key string) (string, error) {
 	buf := make([]byte, bufSize)
 	readBytes, err := unix.KeyctlBuffer(unix.KEYCTL_READ, keyID, buf, bufSize)
 	if err != nil {
+		// If the key was revoked or expired (e.g. after DeleteAll), treat it as not found.
+		// The kernel may still return the key in a search briefly after KEYCTL_UNLINK + KEYCTL_REVOKE.
+		if errors.Is(err, unix.EKEYREVOKED) || errors.Is(err, unix.EKEYEXPIRED) {
+			return "", ErrNotFound
+		}
 		return "", fmt.Errorf("read of key '%s' failed: %w", keyName, err)
 	}
 

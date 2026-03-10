@@ -5,17 +5,29 @@ package gitresolver
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/git"
 )
+
+const validSkillMD = `---
+name: my-skill
+description: A test skill
+version: "1.0.0"
+---
+# My Skill
+
+This is a test skill.
+`
 
 // createTestRepo creates a local git repo with a skill at the given path.
 // Returns the repo directory path.
@@ -58,18 +70,25 @@ func createTestRepo(t *testing.T, skillPath string, skillMD string) string {
 	return dir
 }
 
+// createTaggedTestRepo creates a local git repo with a tag, for testing tag-based clones.
+func createTaggedTestRepo(t *testing.T, skillMD, tagName string) string {
+	t.Helper()
+
+	dir := createTestRepo(t, "", skillMD)
+	repo, err := gogit.PlainOpen(dir)
+	require.NoError(t, err)
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	_, err = repo.CreateTag(tagName, head.Hash(), nil)
+	require.NoError(t, err)
+
+	return dir
+}
+
 func TestResolver_Resolve(t *testing.T) {
 	t.Parallel()
-
-	validSkillMD := `---
-name: my-skill
-description: A test skill
-version: "1.0.0"
----
-# My Skill
-
-This is a test skill.
-`
 
 	tests := []struct {
 		name        string
@@ -154,6 +173,46 @@ description: bad name
 	}
 }
 
+func TestResolver_Resolve_TagRef(t *testing.T) {
+	t.Parallel()
+
+	repoDir := createTaggedTestRepo(t, validSkillMD, "v1.0.0")
+	gitClient := git.NewDefaultGitClient()
+	resolver := NewResolver(WithGitClient(gitClient))
+
+	ref := &GitReference{URL: repoDir, Ref: "v1.0.0"}
+
+	result, err := resolver.Resolve(t.Context(), ref)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "my-skill", result.SkillConfig.Name)
+	assert.NotEmpty(t, result.CommitHash)
+}
+
+func TestResolver_Resolve_CommitRef(t *testing.T) {
+	t.Parallel()
+
+	repoDir := createTestRepo(t, "", validSkillMD)
+
+	// Get the HEAD commit hash
+	repo, err := gogit.PlainOpen(repoDir)
+	require.NoError(t, err)
+	head, err := repo.Head()
+	require.NoError(t, err)
+	commitHash := head.Hash().String()
+
+	gitClient := git.NewDefaultGitClient()
+	resolver := NewResolver(WithGitClient(gitClient))
+
+	ref := &GitReference{URL: repoDir, Ref: commitHash}
+
+	result, err := resolver.Resolve(t.Context(), ref)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "my-skill", result.SkillConfig.Name)
+	assert.Equal(t, commitHash, result.CommitHash)
+}
+
 func TestResolver_Resolve_MissingSkillMD(t *testing.T) {
 	t.Parallel()
 
@@ -191,15 +250,127 @@ func TestResolver_Resolve_MissingSkillMD(t *testing.T) {
 func TestResolver_Resolve_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	resolver := NewResolver(WithGitClient(git.NewDefaultGitClient()))
-	ref := &GitReference{URL: "https://github.com/nonexistent/nonexistent-repo-12345"}
+	// Use a mock client that blocks on Clone until context is cancelled,
+	// so we deterministically test context cancellation without network access.
+	mockClient := &blockingCloneClient{}
+	resolver := NewResolver(WithGitClient(mockClient))
+	ref := &GitReference{URL: "https://example.com/org/repo"}
 
-	// Create a context derived from the test context and cancel it immediately.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	// Should fail from context cancellation (or network error).
 	result, err := resolver.Resolve(ctx, ref)
 	require.Error(t, err)
 	assert.Nil(t, result)
+}
+
+// blockingCloneClient is a mock git.Client that respects context cancellation.
+type blockingCloneClient struct{}
+
+func (*blockingCloneClient) Clone(ctx context.Context, _ *git.CloneConfig) (*git.RepositoryInfo, error) {
+	<-ctx.Done()
+	return nil, fmt.Errorf("clone cancelled: %w", ctx.Err())
+}
+
+func (*blockingCloneClient) GetFileContent(_ *git.RepositoryInfo, _ string) ([]byte, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (*blockingCloneClient) HeadCommitHash(_ *git.RepositoryInfo) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+func (*blockingCloneClient) Cleanup(_ context.Context, _ *git.RepositoryInfo) error {
+	return nil
+}
+
+func TestResolver_SemverDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		ref      string
+		wantTag  bool
+		wantHex  bool
+		wantBrnc bool
+	}{
+		{ref: "v1.0.0", wantTag: true},
+		{ref: "v2", wantTag: true},
+		{ref: "v1.2.3-rc1", wantTag: true},
+		{ref: "main", wantBrnc: true},
+		{ref: "feature/foo", wantBrnc: true},
+		{ref: "abc123", wantBrnc: true}, // too short for commit hash
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			t.Parallel()
+			isCommit := len(tt.ref) == 40 && isHex(tt.ref)
+			isSemver := semverLike.MatchString(tt.ref)
+
+			assert.Equal(t, tt.wantHex, isCommit, "commit detection")
+			assert.Equal(t, tt.wantTag, isSemver, "semver detection")
+			if !isCommit && !isSemver {
+				assert.True(t, tt.wantBrnc, "should be treated as branch")
+			}
+		})
+	}
+}
+
+func TestIsHex(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"", false},
+		{"abc123", true},
+		{"ABCDEF", true},
+		{"0123456789abcdef", true},
+		{"xyz", false},
+		{"abc 123", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, isHex(tt.input))
+		})
+	}
+}
+
+func TestResolver_Resolve_BranchRef(t *testing.T) {
+	t.Parallel()
+
+	validSkillMD := `---
+name: my-skill
+description: A test skill
+version: "1.0.0"
+---
+# My Skill
+`
+	// Create a repo with a feature branch
+	repoDir := createTestRepo(t, "", validSkillMD)
+	repo, err := gogit.PlainOpen(repoDir)
+	require.NoError(t, err)
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Create a new branch
+	err = wt.Checkout(&gogit.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("feature/test"),
+		Create: true,
+	})
+	require.NoError(t, err)
+
+	gitClient := git.NewDefaultGitClient()
+	resolver := NewResolver(WithGitClient(gitClient))
+
+	ref := &GitReference{URL: repoDir, Ref: "feature/test"}
+
+	result, err := resolver.Resolve(t.Context(), ref)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "my-skill", result.SkillConfig.Name)
 }

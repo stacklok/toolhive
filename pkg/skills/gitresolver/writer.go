@@ -8,13 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-)
 
-const (
-	// dirPermissions is the permission mode for created directories.
-	dirPermissions os.FileMode = 0750
-	// filePermissionMask caps file permissions at 0644 (strips setuid/setgid/sticky).
-	filePermissionMask os.FileMode = 0644
+	"github.com/stacklok/toolhive/pkg/skills"
 )
 
 // WriteFiles writes resolved skill files to the target directory.
@@ -38,15 +33,17 @@ func WriteFiles(files []FileEntry, targetDir string, force bool) error {
 	}
 
 	// Pre-extraction: validate that no existing path components are symlinks.
-	if err := validatePathNoSymlinks(targetDir); err != nil {
+	// Reuses the same check as the OCI installer (pkg/skills/installer.go).
+	if err := skills.ValidatePathNoSymlinks(targetDir); err != nil {
 		return fmt.Errorf("target path validation: %w", err)
 	}
 
-	if err := os.MkdirAll(targetDir, dirPermissions); err != nil { // lgtm[go/path-injection] #nosec G304
+	if err := os.MkdirAll(targetDir, skills.DirPermissions); err != nil { // lgtm[go/path-injection] #nosec G304
 		return fmt.Errorf("creating target directory: %w", err)
 	}
 
-	cleanTarget := filepath.Clean(targetDir) + string(os.PathSeparator)
+	// Containment and write logic mirrors pkg/skills/installer.go:writeFiles.
+	cleanTarget := targetDir + string(os.PathSeparator)
 
 	for _, f := range files {
 		destPath := filepath.Clean(filepath.Join(targetDir, filepath.FromSlash(f.Path)))
@@ -57,49 +54,17 @@ func WriteFiles(files []FileEntry, targetDir string, force bool) error {
 		}
 
 		parentDir := filepath.Dir(destPath)
-		if err := os.MkdirAll(parentDir, dirPermissions); err != nil {
+		if err := os.MkdirAll(parentDir, skills.DirPermissions); err != nil {
 			return fmt.Errorf("creating directory %q: %w", parentDir, err)
 		}
 
 		// Sanitize file permissions: strip setuid/setgid/sticky, cap at 0644
-		mode := (f.Mode & 0o777) & filePermissionMask
+		mode := (f.Mode & 0o777) & skills.FilePermissionMask
 
 		if err := os.WriteFile(destPath, f.Content, mode); err != nil {
 			return fmt.Errorf("writing file %q: %w", f.Path, err)
 		}
 	}
 
-	return nil
-}
-
-// validatePathNoSymlinks walks up from the target path checking each existing
-// path component for symlinks.
-func validatePathNoSymlinks(targetDir string) error {
-	absTarget, err := filepath.Abs(targetDir)
-	if err != nil {
-		return fmt.Errorf("resolving absolute path: %w", err)
-	}
-
-	current := func() string {
-		if vol := filepath.VolumeName(absTarget); vol != "" {
-			return vol + string(os.PathSeparator)
-		}
-		return string(os.PathSeparator)
-	}()
-	for _, component := range strings.Split(absTarget, string(os.PathSeparator)) {
-		if component == "" {
-			continue
-		}
-		current = filepath.Join(current, component)
-
-		info, err := os.Lstat(current) // lgtm[go/path-injection] #nosec G304 -- built from filepath.Abs of cleaned targetDir
-		if err != nil {
-			// Path doesn't exist yet — remaining components will be created by MkdirAll.
-			break
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink found at %q: refusing to write through symlinks", current)
-		}
-	}
 	return nil
 }

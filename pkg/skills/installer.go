@@ -21,10 +21,10 @@ const (
 	// MaxExtractFileCount is the maximum number of files allowed in an archive.
 	MaxExtractFileCount = 1000
 
-	// dirPermissions is the permission mode for created directories.
-	dirPermissions os.FileMode = 0750
-	// filePermissionMask strips setuid, setgid, sticky bits and caps at 0644.
-	filePermissionMask os.FileMode = 0644
+	// DirPermissions is the permission mode for created directories.
+	DirPermissions os.FileMode = 0750
+	// FilePermissionMask strips setuid, setgid, sticky bits and caps at 0644.
+	FilePermissionMask os.FileMode = 0644
 )
 
 // ExtractResult contains the outcome of an Extract operation.
@@ -85,11 +85,11 @@ func Extract(layerData []byte, targetDir string, force bool) (*ExtractResult, er
 	// Pre-extraction: validate that no existing path components are symlinks.
 	// This prevents an attacker from placing a symlink at a parent directory
 	// that would cause MkdirAll/writes to follow through to an unintended location.
-	if err := validatePathNoSymlinks(targetDir); err != nil {
+	if err := ValidatePathNoSymlinks(targetDir); err != nil {
 		return nil, fmt.Errorf("target path validation: %w", err)
 	}
 
-	if err := os.MkdirAll(targetDir, dirPermissions); err != nil {
+	if err := os.MkdirAll(targetDir, DirPermissions); err != nil {
 		return nil, fmt.Errorf("creating target directory: %w", err)
 	}
 
@@ -125,12 +125,12 @@ func writeFiles(files []ociskills.FileEntry, targetDir string) error {
 		}
 
 		parentDir := filepath.Dir(destPath)
-		if err := os.MkdirAll(parentDir, dirPermissions); err != nil {
+		if err := os.MkdirAll(parentDir, DirPermissions); err != nil {
 			return fmt.Errorf("creating directory %q: %w", parentDir, err)
 		}
 
 		// Sanitize file permissions: strip setuid/setgid/sticky, cap at 0644
-		mode := os.FileMode(f.Mode&0o777) & filePermissionMask //nolint:gosec // mode is masked to 9 bits before conversion
+		mode := os.FileMode(f.Mode&0o777) & FilePermissionMask //nolint:gosec // mode is masked to 9 bits before conversion
 
 		if err := os.WriteFile(destPath, f.Content, mode); err != nil {
 			return fmt.Errorf("writing file %q: %w", f.Path, err)
@@ -193,10 +193,10 @@ func Remove(skillDir string) error {
 	return os.RemoveAll(absPath)
 }
 
-// validatePathNoSymlinks walks up from the target path checking each existing
+// ValidatePathNoSymlinks walks up from the target path checking each existing
 // path component for symlinks. This prevents symlink attacks where an attacker
 // places a symlink at a parent directory before extraction.
-func validatePathNoSymlinks(targetDir string) error {
+func ValidatePathNoSymlinks(targetDir string) error {
 	absTarget, err := filepath.Abs(targetDir)
 	if err != nil {
 		return fmt.Errorf("resolving absolute path: %w", err)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"regexp"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/git"
@@ -17,6 +18,9 @@ import (
 
 // cloneTimeout is the maximum time allowed for cloning a git repository.
 const cloneTimeout = 2 * time.Minute
+
+// semverLike matches refs that look like semantic version tags (v1, v1.2, v1.2.3, etc.).
+var semverLike = regexp.MustCompile(`^v\d+(\.\d+)*`)
 
 // Resolver clones a git repository and extracts skill files.
 type Resolver interface {
@@ -94,11 +98,15 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 		URL: ref.URL,
 	}
 	if ref.Ref != "" {
-		// Try as branch/tag first (go-git will determine the correct one).
-		// If the ref looks like a full commit hash, use commit checkout instead.
-		if len(ref.Ref) == 40 && isHex(ref.Ref) {
+		switch {
+		case len(ref.Ref) == 40 && isHex(ref.Ref):
+			// Full commit hash → checkout specific commit
 			cloneConfig.Commit = ref.Ref
-		} else {
+		case semverLike.MatchString(ref.Ref):
+			// Semver-like pattern (v1.0.0) → clone as tag
+			cloneConfig.Tag = ref.Ref
+		default:
+			// Everything else → treat as branch
 			cloneConfig.Branch = ref.Ref
 		}
 	}
@@ -112,7 +120,7 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 	defer client.Cleanup(ctx, repoInfo) //nolint:errcheck // best-effort cleanup
 
 	// Get commit hash for digest tracking
-	commitHash, err := git.HeadCommitHash(repoInfo)
+	commitHash, err := client.HeadCommitHash(repoInfo)
 	if err != nil {
 		return nil, fmt.Errorf("getting commit hash: %w", err)
 	}
@@ -210,8 +218,11 @@ func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath stri
 	return files, nil
 }
 
-// isHex checks if a string is a valid hexadecimal string.
+// isHex checks if a string is a valid non-empty hexadecimal string.
 func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
 	for _, c := range s {
 		switch {
 		case c >= '0' && c <= '9',

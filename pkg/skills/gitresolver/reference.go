@@ -8,6 +8,8 @@ import (
 	"net"
 	"path"
 	"strings"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 const gitScheme = "git://"
@@ -113,6 +115,7 @@ func (r *GitReference) SkillName() string {
 }
 
 // validateHost checks the host is not localhost, a private IP, or empty.
+// Reuses pkg/networking SSRF utilities as the single source of truth.
 func validateHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("host must not be empty")
@@ -124,15 +127,14 @@ func validateHost(host string) error {
 		hostname = h
 	}
 
-	// Reject localhost variants
-	lower := strings.ToLower(hostname)
-	if lower == "localhost" || lower == "127.0.0.1" || lower == "::1" || lower == "[::1]" || lower == "0.0.0.0" {
+	// Reject localhost variants using the shared networking utility.
+	if networking.IsLocalhost(hostname) {
 		return fmt.Errorf("host %q is not allowed: localhost is rejected for SSRF prevention", host)
 	}
 
-	// Reject private IPs
+	// Reject private/loopback IPs using the shared networking utility.
 	ip := net.ParseIP(hostname)
-	if ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+	if ip != nil && networking.IsPrivateIP(ip) {
 		return fmt.Errorf("host %q is not allowed: private/loopback IPs are rejected for SSRF prevention", host)
 	}
 

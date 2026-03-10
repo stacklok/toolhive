@@ -52,7 +52,14 @@ func ResolveAuthWith(getenv EnvFunc, cloneURL string) transport.AuthMethod {
 		if len(mapping.hosts) > 0 && !hostMatches(host, mapping.hosts) {
 			continue
 		}
-		slog.Debug("Using git authentication from environment", "env_var", mapping.envVar)
+		// Log when the fallback GIT_TOKEN is used for non-standard hosts so
+		// users can audit credential usage.
+		if len(mapping.hosts) == 0 {
+			slog.Debug("Using fallback GIT_TOKEN for non-standard host — verify this is intended",
+				"env_var", mapping.envVar, "host", host)
+		} else {
+			slog.Debug("Using git authentication from environment", "env_var", mapping.envVar)
+		}
 		return &githttp.BasicAuth{
 			Username: "x-access-token",
 			Password: token,

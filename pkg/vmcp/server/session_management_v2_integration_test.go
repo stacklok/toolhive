@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ func (f *v2FakeMultiSessionFactory) MakeSession(
 
 	// Set basic metadata to indicate whether this is an anonymous session.
 	// Integration tests don't need to verify crypto implementation details.
-	allowAnonymous := vmcpsession.ShouldAllowAnonymous(identity)
+	allowAnonymous := sessiontypes.ShouldAllowAnonymous(identity)
 	if !allowAnonymous {
 		// Authenticated session - set non-empty hash placeholder
 		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "fake-hash-for-testing")

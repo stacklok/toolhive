@@ -659,13 +659,19 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 		})
 	})
 
-	t.Run("expired tokens return ErrExpired", func(t *testing.T) {
+	t.Run("expired tokens return ErrExpired with token data", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-exp", &UpstreamTokens{
-				AccessToken: "expired", ExpiresAt: time.Now().Add(-time.Hour),
+				AccessToken:  "expired-token",
+				RefreshToken: "expired-refresh",
+				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
-			_, err := s.GetUpstreamTokens(ctx, "sess-exp")
+			tokens, err := s.GetUpstreamTokens(ctx, "sess-exp")
 			assert.ErrorIs(t, err, ErrExpired)
+			// Expired tokens should still return the data (needed for refresh)
+			require.NotNil(t, tokens, "expired tokens should return data for refresh")
+			assert.Equal(t, "expired-token", tokens.AccessToken)
+			assert.Equal(t, "expired-refresh", tokens.RefreshToken)
 		})
 	})
 

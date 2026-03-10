@@ -1290,3 +1290,142 @@ func CleanupMockHTTPServer(ctx context.Context, c client.Client, name, namespace
 		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
 	})
 }
+
+// fakeEmbeddingServerScript is a minimal Python HTTP server that mimics the
+// text-embeddings-inference (TEI) API. It provides:
+//   - GET /info  → {"max_client_batch_size": 32}
+//   - POST /embed → 384-dim constant vectors (one per input)
+//
+// This is sufficient for the optimizer because FTS5 keyword search works
+// without real embeddings, and the SQLite store stores the dummy embeddings
+// without errors.
+const fakeEmbeddingServerScript = `
+python3 -c '
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/info":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"max_client_batch_size": 32}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/embed":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            inputs = body.get("inputs", [])
+            n = len(inputs) if isinstance(inputs, list) else 1
+            embeddings = [[0.1] * 384 for _ in range(n)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(embeddings).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # suppress request logs
+
+HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+'
+`
+
+// DeployFakeEmbeddingServer deploys a lightweight fake embedding server that
+// mimics the TEI API. This avoids pulling the heavyweight TEI container image
+// while satisfying the optimizer's embedding service requirement.
+// Returns the in-cluster service URL (http://<name>.<namespace>.svc.cluster.local:8080).
+func DeployFakeEmbeddingServer(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) string {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app": name},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": name},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": name},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:    "fake-embedding",
+							Image:   images.PythonImage,
+							Command: []string{"sh", "-c"},
+							Args:    []string{fakeEmbeddingServerScript},
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 8080, Name: "http"},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt(8080),
+									},
+								},
+								InitialDelaySeconds: 2,
+								PeriodSeconds:       2,
+								TimeoutSeconds:      5,
+								SuccessThreshold:    1,
+								FailureThreshold:    15,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": name},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       8080,
+					TargetPort: intstr.FromInt(8080),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for fake embedding server to be ready")
+	gomega.Eventually(func() bool {
+		dep := &appsv1.Deployment{}
+		err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep)
+		return err == nil && dep.Status.ReadyReplicas > 0
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "Fake embedding server should be ready")
+
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", name, namespace)
+}
+
+// CleanupFakeEmbeddingServer removes the fake embedding server Deployment and Service.
+func CleanupFakeEmbeddingServer(ctx context.Context, c client.Client, name, namespace string) {
+	_ = c.Delete(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
+	_ = c.Delete(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
+}

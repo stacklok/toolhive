@@ -201,13 +201,25 @@ type UpstreamTokenStorage interface {
 
 	// GetUpstreamTokens retrieves the upstream IDP tokens for a session.
 	// Returns ErrNotFound if the session does not exist.
-	// Returns ErrExpired if the tokens have expired.
+	// Returns ErrExpired if the tokens have expired. When ErrExpired is returned,
+	// the token data (including refresh token) is also returned to allow callers
+	// to attempt a token refresh.
 	// Returns ErrInvalidBinding if binding validation fails.
 	GetUpstreamTokens(ctx context.Context, sessionID string) (*UpstreamTokens, error)
 
 	// DeleteUpstreamTokens removes the upstream IDP tokens for a session.
 	// Returns ErrNotFound if the session does not exist.
 	DeleteUpstreamTokens(ctx context.Context, sessionID string) error
+}
+
+// UpstreamTokenRefresher can refresh expired upstream tokens using their stored refresh token.
+// This is implemented by the auth server and used by the upstreamswap middleware to
+// transparently refresh tokens without forcing re-authentication.
+type UpstreamTokenRefresher interface {
+	// RefreshAndStore refreshes the upstream tokens for the given session using
+	// the stored refresh token, stores the new tokens, and returns them.
+	// Returns an error if the refresh token is empty, revoked, or the refresh fails.
+	RefreshAndStore(ctx context.Context, sessionID string, expired *UpstreamTokens) (*UpstreamTokens, error)
 }
 
 // UserStorage provides user and provider identity management operations.

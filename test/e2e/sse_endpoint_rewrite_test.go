@@ -24,7 +24,7 @@ const (
 	sseEndpoint = "/sse"
 )
 
-var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", "e2e"), Serial, func() {
+var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-rewrite", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

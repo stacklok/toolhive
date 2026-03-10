@@ -123,6 +123,20 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetConfig))
 }
 
+// GetUpstreamTokenRefresher mocks base method.
+func (m *MockMiddlewareRunner) GetUpstreamTokenRefresher() func() storage.UpstreamTokenRefresher {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUpstreamTokenRefresher")
+	ret0, _ := ret[0].(func() storage.UpstreamTokenRefresher)
+	return ret0
+}
+
+// GetUpstreamTokenRefresher indicates an expected call of GetUpstreamTokenRefresher.
+func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenRefresher() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenRefresher", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenRefresher))
+}
+
 // GetUpstreamTokenStorage mocks base method.
 func (m *MockMiddlewareRunner) GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage {
 	m.ctrl.T.Helper()

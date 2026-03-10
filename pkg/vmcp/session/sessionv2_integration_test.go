@@ -488,7 +488,7 @@ func TestSessionManagementV2_MetadataEncoding(t *testing.T) {
 	assert.Len(t, hashBytes, 32, "decoded token hash should be 32 bytes (SHA256)")
 
 	// Get token salt from session metadata
-	tokenSalt := sess.GetMetadata()[MetadataKeyTokenSalt]
+	tokenSalt := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
 	require.NotEmpty(t, tokenSalt)
 
 	// Verify salt is valid hex encoding

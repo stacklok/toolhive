@@ -5,7 +5,6 @@ package session
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -20,7 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 )
 
 const (
@@ -36,18 +35,6 @@ const (
 	// a comma-separated, sorted list of successfully-connected backend IDs.
 	// The key is omitted entirely when no backends connected.
 	MetadataKeyBackendIDs = "vmcp.backend.ids"
-
-	// MetadataKeyTokenHash is the transport-session metadata key that holds
-	// the HMAC-SHA256 hash of the bearer token used to create the session.
-	// For authenticated sessions this is hex(HMAC-SHA256(bearerToken)).
-	// For anonymous sessions (no bearer token) this is the empty string sentinel.
-	// The raw token is never stored — only the hash.
-	MetadataKeyTokenHash = "vmcp.token.hash" //nolint:gosec // This is a metadata key name, not a credential.
-
-	// MetadataKeyTokenSalt is the transport-session metadata key that holds
-	// the hex-encoded random salt used for HMAC-SHA256 token hashing.
-	// Each session has a unique salt to prevent attacks across multiple sessions.
-	MetadataKeyTokenSalt = "vmcp.token.salt" //nolint:gosec // This is a metadata key name, not a credential.
 )
 
 var (
@@ -275,28 +262,13 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 	return rt, tools, resources, prompts
 }
 
-// ShouldAllowAnonymous determines if a session should allow anonymous access
-// based on the creator's identity. Sessions without an identity (nil) or with
-// an empty token are anonymous; sessions with a non-empty bearer token are
-// bound to that token.
-//
-// This helper consolidates the anonymous session logic used by both
-// MakeSession and external callers like SessionManager, and aligns with the
-// validation logic in MakeSessionWithID.
-func ShouldAllowAnonymous(identity *auth.Identity) bool {
-	return identity == nil || identity.Token == ""
-}
-
 // MakeSession implements MultiSessionFactory.
 func (f *defaultMultiSessionFactory) MakeSession(
 	ctx context.Context,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
-	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
-	allowAnonymous := ShouldAllowAnonymous(identity)
-	return f.makeSession(ctx, uuid.New().String(), identity, allowAnonymous, backends)
+	return f.makeSession(ctx, uuid.New().String(), identity, backends)
 }
 
 // MakeSessionWithID implements MultiSessionFactory.
@@ -327,7 +299,7 @@ func (f *defaultMultiSessionFactory) MakeSessionWithID(
 		)
 	}
 
-	return f.makeSession(ctx, id, identity, allowAnonymous, backends)
+	return f.makeSession(ctx, id, identity, backends)
 }
 
 // validateSessionID checks that id is non-empty and contains only visible
@@ -343,25 +315,6 @@ func validateSessionID(id string) error {
 		}
 	}
 	return nil
-}
-
-// computeTokenBinding computes the token hash and salt for session-level binding security.
-// For authenticated sessions this returns hex(HMAC-SHA256(bearerToken)) and a random salt.
-// For anonymous sessions empty values are returned. The raw token is never stored.
-func (f *defaultMultiSessionFactory) computeTokenBinding(
-	identity *auth.Identity,
-	allowAnonymous bool,
-) (boundTokenHash string, tokenSalt []byte, err error) {
-	if !allowAnonymous && identity != nil && identity.Token != "" {
-		// Generate unique salt for this session
-		tokenSalt, err = security.GenerateSalt()
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to generate token salt: %w", err)
-		}
-		// Compute HMAC-SHA256 hash with server secret and per-session salt
-		boundTokenHash = security.HashToken(identity.Token, f.hmacSecret, tokenSalt)
-	}
-	return boundTokenHash, tokenSalt, nil
 }
 
 // populateBackendMetadata adds backend IDs to session metadata.
@@ -383,7 +336,6 @@ func (f *defaultMultiSessionFactory) makeSession(
 	ctx context.Context,
 	sessID string,
 	identity *auth.Identity,
-	allowAnonymous bool,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
 	// Filter nil entries upfront so that every downstream dereference of a
@@ -450,24 +402,9 @@ func (f *defaultMultiSessionFactory) makeSession(
 		transportSess.SetMetadata(MetadataKeyIdentitySubject, identity.Subject)
 	}
 
-	// Compute token hash and salt once for session-level binding security.
-	// These values are used in TWO places:
-	// 1. Passed to HijackPreventionDecorator for runtime validation in validateCaller()
-	// 2. Stored in session metadata for persistence, auditing, and backward compatibility
-	// Computing once ensures consistency between validation and stored metadata.
-	boundTokenHash, tokenSalt, err := f.computeTokenBinding(identity, allowAnonymous)
-	if err != nil {
-		return nil, err
-	}
-	// Store in metadata for persistence, auditing, and backward compatibility
-	transportSess.SetMetadata(MetadataKeyTokenHash, boundTokenHash)
-	if len(tokenSalt) > 0 {
-		transportSess.SetMetadata(MetadataKeyTokenSalt, hex.EncodeToString(tokenSalt))
-	}
-
 	populateBackendMetadata(transportSess, results)
 
-	// Create the base session without token binding
+	// Create the base session
 	baseSession := &defaultMultiSession{
 		Session:         transportSess,
 		connections:     connections,
@@ -479,16 +416,14 @@ func (f *defaultMultiSessionFactory) makeSession(
 		queue:           newAdmissionQueue(),
 	}
 
-	// Wrap with HijackPreventionDecorator for token binding validation
-	// The decorator adds validation logic without modifying the core session
-	// Pass the already-computed hash and salt to ensure consistency with metadata
-	decorated := NewHijackPreventionDecorator(
-		baseSession,
-		allowAnonymous,
-		f.hmacSecret,
-		boundTokenHash,
-		tokenSalt,
-	)
+	// Apply hijack prevention: computes token binding, stores metadata, and wraps
+	// the session with validation logic. This encapsulates all security initialization.
+	decorated, err := security.PreventSessionHijacking(baseSession, f.hmacSecret, identity)
+	if err != nil {
+		return nil, err
+	}
 
+	// The decorator implements MultiSession through pass-through methods, so it can
+	// be returned directly without a runtime cast.
 	return decorated, nil
 }

@@ -387,6 +387,17 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
+	// Clean up session on successful DELETE so the transparent proxy's
+	// session manager doesn't hold references until TTL expiry (#4062).
+	if req.Method == http.MethodDelete && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if sid := req.Header.Get("Mcp-Session-Id"); sid != "" {
+			if err := t.p.sessionManager.Delete(sid); err != nil {
+				slog.Debug("failed to delete session from transparent proxy",
+					"session_id", sid, "error", err)
+			}
+		}
+	}
+
 	if resp.StatusCode == http.StatusOK {
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")

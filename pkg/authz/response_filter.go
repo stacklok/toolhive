@@ -61,14 +61,14 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	// If it's not a successful response, just pass it through
 	if rfw.statusCode != http.StatusOK && rfw.statusCode != http.StatusAccepted {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
+		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes()) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
 	}
 
 	// Check if this is a list operation that needs filtering
 	if !isListOperation(rfw.method) {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
+		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes()) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
 	}
 
@@ -77,7 +77,7 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	// Skip filtering for empty responses (common in SSE scenarios where actual data comes via SSE stream)
 	if len(rawResponse) == 0 {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rawResponse)
+		_, err := rfw.ResponseWriter.Write(rawResponse) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
 	}
 

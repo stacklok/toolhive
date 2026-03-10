@@ -237,7 +237,35 @@ spec:
               key: hmac-secret
 ```
 
-**Note**: Kubernetes deployments **require** `VMCP_SESSION_HMAC_SECRET` to be set (the server will fail to start without it). For non-Kubernetes environments (local development/testing), a default insecure secret is used as a fallback, but this is **NOT recommended for production**.
+**Note**: When **Session Management V2 is enabled**, Kubernetes deployments **require** `VMCP_SESSION_HMAC_SECRET` to be set (the server will fail to start without it). For non-Kubernetes environments (local development/testing), a default insecure secret is used as a fallback, but this is **NOT recommended for production**. If Session Management V2 is disabled, this environment variable is not required.
+
+### Automatic Secret Management (ToolHive Operator)
+
+When deploying vMCP via the **ToolHive operator** with Session Management V2 enabled, the HMAC secret is **automatically generated and managed** for you:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: my-vmcp
+spec:
+  config:
+    operational:
+      sessionManagementV2: true  # Enables automatic HMAC secret creation
+    group: my-group
+```
+
+The operator will:
+
+- ✅ Automatically generate a cryptographically secure 32-byte HMAC secret
+- ✅ Store it in a Kubernetes Secret named `{vmcp-name}-hmac-secret`
+- ✅ Inject it into the vMCP deployment as `VMCP_SESSION_HMAC_SECRET`
+- ✅ Validate existing secrets (ownership, structure, and content)
+- ✅ Automatically delete the secret when the VirtualMCPServer is removed
+
+**No manual secret generation or management required!** The operator handles all of this automatically when you enable Session Management V2.
+
+> **Note**: The secret is generated once at creation time and persists for the lifetime of the VirtualMCPServer. Secret rotation is not currently supported but may be added in a future release.
 
 ## Tool Aggregation & Conflict Resolution
 

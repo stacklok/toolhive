@@ -241,7 +241,7 @@ func (m *Monitor) Start(ctx context.Context) error {
 	for i := range m.backends {
 		backend := &m.backends[i] // Capture backend pointer for this iteration
 
-		backendCtx, cancel := context.WithCancel(m.ctx)
+		backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
 		m.activeChecks[backend.ID] = cancel
 		m.wg.Add(1)
 		m.initialCheckWg.Add(1)                        // Track initial health check
@@ -331,7 +331,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 
 			// Circuit breaker will be lazily initialized on first health check
 
-			backendCtx, cancel := context.WithCancel(m.ctx)
+			backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
 			m.activeChecks[id] = cancel
 			m.wg.Add(1)
 			// Clear the "removed" flag if this backend was previously removed

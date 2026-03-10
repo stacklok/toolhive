@@ -137,3 +137,70 @@ func TestStartStop(t *testing.T) {
 		t.Fatal("Shutdown channel was not closed")
 	}
 }
+
+// TestResolveRequestTimeout tests the resolveRequestTimeout function.
+func TestResolveRequestTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		want     time.Duration
+	}{
+		{
+			name:     "no env var returns default",
+			envValue: "",
+			want:     defaultRequestTimeout,
+		},
+		{
+			name:     "valid duration string",
+			envValue: "10m",
+			want:     10 * time.Minute,
+		},
+		{
+			name:     "valid short duration",
+			envValue: "45s",
+			want:     45 * time.Second,
+		},
+		{
+			name:     "invalid string returns default",
+			envValue: "garbage",
+			want:     defaultRequestTimeout,
+		},
+		{
+			name:     "zero duration returns default",
+			envValue: "0s",
+			want:     defaultRequestTimeout,
+		},
+		{
+			name:     "negative duration returns default",
+			envValue: "-5m",
+			want:     defaultRequestTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Always call t.Setenv to ensure the env var is in a known state,
+			// even for the "unset" case (empty string is treated as unset).
+			t.Setenv(proxyRequestTimeoutEnv, tt.envValue)
+			got := resolveRequestTimeout()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestNewHTTPProxyUsesResolvedTimeout verifies the constructor wires the
+// resolved timeout into the proxy struct.
+func TestNewHTTPProxyUsesResolvedTimeout(t *testing.T) {
+	t.Setenv(proxyRequestTimeoutEnv, "7m")
+	proxy := NewHTTPProxy("localhost", 0, nil)
+	assert.Equal(t, 7*time.Minute, proxy.requestTimeout)
+}
+
+// TestNewHTTPProxyDefaultTimeout verifies the default timeout when no env var
+// is set. Not parallel because t.Setenv is needed to clear any ambient
+// TOOLHIVE_PROXY_REQUEST_TIMEOUT from the test runner's environment.
+func TestNewHTTPProxyDefaultTimeout(t *testing.T) { //nolint:paralleltest
+	t.Setenv(proxyRequestTimeoutEnv, "")
+	proxy := NewHTTPProxy("localhost", 0, nil)
+	assert.Equal(t, defaultRequestTimeout, proxy.requestTimeout)
+}

@@ -440,6 +440,7 @@ func buildStorageRunConfig(
 			DialTimeout:  redisConfig.DialTimeout,
 			ReadTimeout:  redisConfig.ReadTimeout,
 			WriteTimeout: redisConfig.WriteTimeout,
+			TLSEnabled:   redisConfig.TLSEnabled,
 		},
 	}, nil
 }

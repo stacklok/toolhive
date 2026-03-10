@@ -89,6 +89,9 @@ type RedisRunConfig struct {
 
 	// WriteTimeout is the timeout for write operations (e.g., "3s").
 	WriteTimeout string `json:"write_timeout,omitempty" yaml:"write_timeout,omitempty"`
+
+	// TLSEnabled enables TLS for connections to the Redis master.
+	TLSEnabled bool `json:"tls_enabled,omitempty" yaml:"tls_enabled,omitempty"`
 }
 
 // SentinelRunConfig contains Redis Sentinel configuration.

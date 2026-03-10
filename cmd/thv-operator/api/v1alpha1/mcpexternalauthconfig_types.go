@@ -481,6 +481,11 @@ type RedisStorageConfig struct {
 	// +kubebuilder:default="3s"
 	// +optional
 	WriteTimeout string `json:"writeTimeout,omitempty"`
+
+	// TLSEnabled enables TLS for connections to the Redis master.
+	// Required when the Redis/Valkey cluster has transit encryption enabled.
+	// +optional
+	TLSEnabled bool `json:"tlsEnabled,omitempty"`
 }
 
 // RedisSentinelConfig configures Redis Sentinel connection.

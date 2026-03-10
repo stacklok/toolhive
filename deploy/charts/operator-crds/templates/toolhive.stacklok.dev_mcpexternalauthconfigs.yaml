@@ -335,6 +335,11 @@ spec:
                             required:
                             - masterName
                             type: object
+                          tlsEnabled:
+                            description: |-
+                              TLSEnabled enables TLS for connections to the Redis master.
+                              Required when the Redis/Valkey cluster has transit encryption enabled.
+                            type: boolean
                           writeTimeout:
                             default: 3s
                             description: |-

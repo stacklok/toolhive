@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,6 +63,9 @@ type RedisConfig struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+
+	// TLSEnabled enables TLS for connections to the Redis master.
+	TLSEnabled bool
 }
 
 // SentinelConfig contains Redis Sentinel configuration.
@@ -117,7 +121,7 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		cfg.WriteTimeout = DefaultWriteTimeout
 	}
 
-	client := redis.NewFailoverClient(&redis.FailoverOptions{
+	opts := &redis.FailoverOptions{
 		MasterName:    cfg.SentinelConfig.MasterName,
 		SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
 		DB:            cfg.SentinelConfig.DB,
@@ -126,7 +130,15 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		DialTimeout:   cfg.DialTimeout,
 		ReadTimeout:   cfg.ReadTimeout,
 		WriteTimeout:  cfg.WriteTimeout,
-	})
+	}
+
+	if cfg.TLSEnabled {
+		opts.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+
+	client := redis.NewFailoverClient(opts)
 
 	// Test connection
 	if err := client.Ping(ctx).Err(); err != nil {

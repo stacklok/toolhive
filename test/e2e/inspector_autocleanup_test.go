@@ -111,7 +111,7 @@ func (h *inspectorAutoCleanupTestHelper) cleanup() {
 	}
 }
 
-var _ = Describe("Inspector Auto-Cleanup", Label("mcp", "e2e", "inspector", "cleanup"), func() {
+var _ = Describe("Inspector Auto-Cleanup", Label("mcp", "mcp-protocol", "e2e", "inspector", "cleanup"), func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

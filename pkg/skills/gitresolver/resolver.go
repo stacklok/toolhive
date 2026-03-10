@@ -19,8 +19,10 @@ import (
 // cloneTimeout is the maximum time allowed for cloning a git repository.
 const cloneTimeout = 2 * time.Minute
 
-// semverLike matches refs that look like semantic version tags (v1, v1.2, v1.2.3, etc.).
-var semverLike = regexp.MustCompile(`^v\d+(\.\d+)*`)
+// semverLike matches refs that look like semantic version tags (v1.0, v1.2.3, v1.2.3-rc1, etc.).
+// Requires at least one dot-separated numeric segment after the major version to avoid matching
+// branch names like "v1-beta-branch".
+var semverLike = regexp.MustCompile(`^v\d+\.\d+(\.\d+)*(-[a-zA-Z0-9._-]+)?$`)
 
 // Resolver clones a git repository and extracts skill files.
 type Resolver interface {
@@ -190,7 +192,8 @@ func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath stri
 	var files []FileEntry
 	for _, entry := range tree.Entries {
 		// Skip directories — we only want files at the top level of the skill dir.
-		// Nested subdirectories are not part of the skill spec.
+		// Nested subdirectories are not part of the skill spec today.
+		// WriteFiles includes MkdirAll as defense-in-depth for containment safety.
 		if entry.Mode == 0040000 {
 			continue
 		}

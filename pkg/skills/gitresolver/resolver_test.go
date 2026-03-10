@@ -294,11 +294,14 @@ func TestResolver_SemverDetection(t *testing.T) {
 		wantBrnc bool
 	}{
 		{ref: "v1.0.0", wantTag: true},
-		{ref: "v2", wantTag: true},
+		{ref: "v1.0", wantTag: true},
 		{ref: "v1.2.3-rc1", wantTag: true},
+		{ref: "v2", wantBrnc: true}, // no dot, treated as branch
 		{ref: "main", wantBrnc: true},
 		{ref: "feature/foo", wantBrnc: true},
-		{ref: "abc123", wantBrnc: true}, // too short for commit hash
+		{ref: "abc123", wantBrnc: true},          // too short for commit hash
+		{ref: "v1-beta-branch", wantBrnc: true},  // not semver, treated as branch
+		{ref: "v2-experimental", wantBrnc: true}, // not semver, treated as branch
 	}
 
 	for _, tt := range tests {

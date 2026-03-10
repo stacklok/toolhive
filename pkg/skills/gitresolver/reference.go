@@ -116,6 +116,11 @@ func (r *GitReference) SkillName() string {
 
 // validateHost checks the host is not localhost, a private IP, or empty.
 // Reuses pkg/networking SSRF utilities as the single source of truth.
+//
+// NOTE: This check only validates literal IPs and known localhost strings.
+// Hostnames that DNS-resolve to private IPs (DNS rebinding) are NOT caught here
+// because go-git does not expose a DialContext hook. A pre-clone DNS resolution
+// check could be added as defense-in-depth.
 func validateHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("host must not be empty")

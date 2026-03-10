@@ -479,7 +479,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 	}
 
-	testTimeout := 100 * time.Millisecond
+	testTimeout := 10 * time.Millisecond
 
 	// Simulate slow discovery that takes longer than timeout
 	mockMgr.EXPECT().
@@ -494,7 +494,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(5 * time.Second):
+			case <-time.After(1 * time.Second):
 				return nil, errors.New("operation completed without timeout")
 			}
 		})

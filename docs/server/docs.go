@@ -1217,6 +1217,10 @@ const docTemplate = `{
                     "sentinel_config": {
                         "$ref": "#/components/schemas/storage.SentinelRunConfig"
                     },
+                    "tls_enabled": {
+                        "description": "TLSEnabled enables TLS for connections to the Redis master.",
+                        "type": "boolean"
+                    },
                     "write_timeout": {
                         "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
                         "type": "string"

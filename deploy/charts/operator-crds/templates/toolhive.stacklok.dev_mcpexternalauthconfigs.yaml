@@ -335,11 +335,66 @@ spec:
                             required:
                             - masterName
                             type: object
-                          tlsEnabled:
+                          sentinelTls:
                             description: |-
-                              TLSEnabled enables TLS for connections to the Redis master.
-                              Required when the Redis/Valkey cluster has transit encryption enabled.
-                            type: boolean
+                              SentinelTLS configures TLS for connections to Sentinel instances.
+                              When not specified, falls back to the TLS config.
+                            properties:
+                              caCertSecretRef:
+                                description: |-
+                                  CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                                  for verifying the server. When not specified, system root CAs are used.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              enabled:
+                                description: Enabled activates TLS for this connection
+                                  type.
+                                type: boolean
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify skips TLS certificate verification.
+                                  Use when connecting to services with self-signed certificates.
+                                type: boolean
+                            type: object
+                          tls:
+                            description: |-
+                              TLS configures TLS for connections to the Redis/Valkey master.
+                              Required when the cluster has transit encryption enabled.
+                            properties:
+                              caCertSecretRef:
+                                description: |-
+                                  CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                                  for verifying the server. When not specified, system root CAs are used.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              enabled:
+                                description: Enabled activates TLS for this connection
+                                  type.
+                                type: boolean
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify skips TLS certificate verification.
+                                  Use when connecting to services with self-signed certificates.
+                                type: boolean
+                            type: object
                           writeTimeout:
                             default: 3s
                             description: |-

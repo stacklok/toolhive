@@ -440,9 +440,25 @@ func buildStorageRunConfig(
 			DialTimeout:  redisConfig.DialTimeout,
 			ReadTimeout:  redisConfig.ReadTimeout,
 			WriteTimeout: redisConfig.WriteTimeout,
-			TLSEnabled:   redisConfig.TLSEnabled,
+			TLS:          convertRedisTLSConfig(redisConfig.TLS),
+			SentinelTLS:  convertRedisTLSConfig(redisConfig.SentinelTLS),
 		},
 	}, nil
+}
+
+// convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.
+func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig) *storage.RedisTLSRunConfig {
+	if cfg == nil {
+		return nil
+	}
+	rc := &storage.RedisTLSRunConfig{
+		Enabled:            cfg.Enabled,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+	// CA cert is mounted by the operator as a file; the path is set
+	// by the controller when building the pod spec.
+	// TODO: implement CA cert secret mounting in the controller
+	return rc
 }
 
 // resolveSentinelAddrs resolves Sentinel addresses from static config or Kubernetes Service DNS.

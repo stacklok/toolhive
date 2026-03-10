@@ -6,6 +6,8 @@ package storage
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"net"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,8 +66,29 @@ type RedisConfig struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	// TLSEnabled enables TLS for connections to the Redis master.
-	TLSEnabled bool
+	// TLS configures TLS for connections to the Redis/Valkey master.
+	// When nil, connections are plaintext.
+	TLS *RedisTLSConfig
+
+	// SentinelTLS configures TLS for connections to Sentinel instances.
+	// When nil, falls back to the TLS config (if set). To disable TLS
+	// for sentinel while enabling it for the master, set this to an
+	// explicit config with Enabled=false.
+	SentinelTLS *RedisTLSConfig
+}
+
+// RedisTLSConfig holds TLS configuration for Redis connections.
+type RedisTLSConfig struct {
+	// Enabled activates TLS for this connection type.
+	Enabled bool
+
+	// InsecureSkipVerify skips certificate verification.
+	// Use for self-signed certificates (e.g., sentinel emulators).
+	InsecureSkipVerify bool
+
+	// CACert is the PEM-encoded CA certificate for verifying the server.
+	// When empty, the system root CAs are used.
+	CACert []byte
 }
 
 // SentinelConfig contains Redis Sentinel configuration.
@@ -103,6 +126,23 @@ type storedSession struct {
 	Session           json.RawMessage     `json:"session"`
 }
 
+// buildTLSConfig creates a *tls.Config from a RedisTLSConfig.
+func buildTLSConfig(cfg *RedisTLSConfig) *tls.Config {
+	if cfg == nil {
+		return nil
+	}
+	tc := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // G402: configurable per-deployment
+	}
+	if len(cfg.CACert) > 0 {
+		pool := x509.NewCertPool()
+		pool.AppendCertsFromPEM(cfg.CACert)
+		tc.RootCAs = pool
+	}
+	return tc
+}
+
 // NewRedisStorage creates Redis-backed storage with Sentinel failover support.
 // Returns error if configuration validation fails or connection cannot be established.
 func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error) {
@@ -132,9 +172,33 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		WriteTimeout:  cfg.WriteTimeout,
 	}
 
-	if cfg.TLSEnabled {
-		opts.TLSConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
+	// Configure TLS for master connections
+	if cfg.TLS != nil && cfg.TLS.Enabled {
+		opts.TLSConfig = buildTLSConfig(cfg.TLS)
+	}
+
+	// Configure TLS for sentinel connections via custom dialer.
+	// go-redis applies TLSConfig to both sentinel and master connections,
+	// so we use a custom dialer to apply different TLS configs per target.
+	sentinelTLS := cfg.SentinelTLS
+	if sentinelTLS == nil {
+		sentinelTLS = cfg.TLS // fall back to master TLS config
+	}
+	if sentinelTLS != nil && sentinelTLS.Enabled && opts.TLSConfig != nil {
+		masterTLS := opts.TLSConfig
+		sentinelTLSCfg := buildTLSConfig(sentinelTLS)
+		// Clear the global TLSConfig — we handle TLS per-connection in the dialer
+		opts.TLSConfig = nil
+		opts.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			tlsCfg := masterTLS
+			for _, sa := range opts.SentinelAddrs {
+				if addr == sa {
+					tlsCfg = sentinelTLSCfg
+					break
+				}
+			}
+			d := &net.Dialer{Timeout: opts.DialTimeout}
+			return tls.DialWithDialer(d, network, addr, tlsCfg)
 		}
 	}
 

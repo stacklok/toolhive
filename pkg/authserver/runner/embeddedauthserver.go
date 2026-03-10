@@ -475,9 +475,32 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 		cfg.WriteTimeout = d
 	}
 
-	cfg.TLSEnabled = rc.TLSEnabled
+	cfg.TLS = convertRedisTLSRunConfig(rc.TLS)
+	cfg.SentinelTLS = convertRedisTLSRunConfig(rc.SentinelTLS)
 
 	return cfg, nil
+}
+
+// convertRedisTLSRunConfig converts a RedisTLSRunConfig to runtime RedisTLSConfig.
+func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) *storage.RedisTLSConfig {
+	if rc == nil {
+		return nil
+	}
+	cfg := &storage.RedisTLSConfig{
+		Enabled:            rc.Enabled,
+		InsecureSkipVerify: rc.InsecureSkipVerify,
+	}
+	if rc.CACertFile != "" {
+		// #nosec G304 - file path is from configuration, not user input
+		data, err := os.ReadFile(rc.CACertFile)
+		if err != nil {
+			slog.Warn("Failed to read Redis CA cert file, using system CAs",
+				"file", rc.CACertFile, "error", err)
+		} else {
+			cfg.CACert = data
+		}
+	}
+	return cfg
 }
 
 // resolveEnvVar reads a value from the named environment variable.

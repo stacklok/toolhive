@@ -482,10 +482,15 @@ type RedisStorageConfig struct {
 	// +optional
 	WriteTimeout string `json:"writeTimeout,omitempty"`
 
-	// TLSEnabled enables TLS for connections to the Redis master.
-	// Required when the Redis/Valkey cluster has transit encryption enabled.
+	// TLS configures TLS for connections to the Redis/Valkey master.
+	// Required when the cluster has transit encryption enabled.
 	// +optional
-	TLSEnabled bool `json:"tlsEnabled,omitempty"`
+	TLS *RedisTLSConfig `json:"tls,omitempty"`
+
+	// SentinelTLS configures TLS for connections to Sentinel instances.
+	// When not specified, falls back to the TLS config.
+	// +optional
+	SentinelTLS *RedisTLSConfig `json:"sentinelTls,omitempty"`
 }
 
 // RedisSentinelConfig configures Redis Sentinel connection.
@@ -524,6 +529,23 @@ type SentinelServiceRef struct {
 	// +kubebuilder:default=26379
 	// +optional
 	Port int32 `json:"port,omitempty"`
+}
+
+// RedisTLSConfig configures TLS for Redis connections.
+type RedisTLSConfig struct {
+	// Enabled activates TLS for this connection type.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// InsecureSkipVerify skips TLS certificate verification.
+	// Use when connecting to services with self-signed certificates.
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+
+	// CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+	// for verifying the server. When not specified, system root CAs are used.
+	// +optional
+	CACertSecretRef *SecretKeyRef `json:"caCertSecretRef,omitempty"`
 }
 
 // RedisACLUserConfig configures Redis ACL user authentication.

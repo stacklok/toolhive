@@ -45,6 +45,7 @@ const (
 // middlewareConfig holds optional configuration for Middleware.
 type middlewareConfig struct {
 	sessionScopedRouting bool
+	timeout              time.Duration
 }
 
 // MiddlewareOption configures Middleware behaviour.
@@ -57,6 +58,13 @@ type MiddlewareOption func(*middlewareConfig)
 func WithSessionScopedRouting() MiddlewareOption {
 	return func(c *middlewareConfig) {
 		c.sessionScopedRouting = true
+	}
+}
+
+// WithDiscoveryTimeout overrides the default discovery timeout.
+func WithDiscoveryTimeout(timeout time.Duration) MiddlewareOption {
+	return func(c *middlewareConfig) {
+		c.timeout = timeout
 	}
 }
 
@@ -84,7 +92,9 @@ func Middleware(
 	healthStatusProvider health.StatusProvider,
 	opts ...MiddlewareOption,
 ) func(http.Handler) http.Handler {
-	cfg := middlewareConfig{}
+	cfg := middlewareConfig{
+		timeout: discoveryTimeout,
+	}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -102,7 +112,7 @@ func Middleware(
 					return
 				}
 				// Initialize request: discover and cache capabilities in session.
-				ctx, err = handleInitializeRequest(ctx, r, manager, registry, healthStatusProvider)
+				ctx, err = handleInitializeRequest(ctx, r, manager, registry, healthStatusProvider, cfg.timeout)
 			} else {
 				// Subsequent request: retrieve cached capabilities from session.
 				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
@@ -207,8 +217,9 @@ func handleInitializeRequest(
 	manager Manager,
 	registry vmcp.BackendRegistry,
 	healthStatusProvider health.StatusProvider,
+	timeout time.Duration,
 ) (context.Context, error) {
-	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	discoveryCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Get current backend list from registry (supports dynamic backend changes)

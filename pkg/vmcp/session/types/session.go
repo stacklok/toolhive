@@ -146,6 +146,13 @@ const (
 	MetadataKeyTokenSalt = "vmcp.token.salt" //nolint:gosec // This is a metadata key name, not a credential.
 )
 
+// ShouldAllowAnonymous determines if a session should allow anonymous access
+// based on the creator's identity. Sessions without an identity (nil) or with
+// an empty token are treated as anonymous.
+func ShouldAllowAnonymous(identity *auth.Identity) bool {
+	return identity == nil || identity.Token == ""
+}
+
 // Token binding errors returned by Caller methods when caller identity
 // validation fails.
 var (

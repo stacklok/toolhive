@@ -15,16 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 )
 
-// isCallerDrivenError reports whether err reflects the caller cancelling or
-// timing out the request rather than a backend failure. These errors should
-// not be labelled "unavailable" because the backend may be healthy.
-func isCallerDrivenError(err error) bool {
-	return errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, vmcp.ErrCancelled) ||
-		errors.Is(err, vmcp.ErrTimeout)
-}
-
 // Compile-time assertions: defaultMultiSession must implement both interfaces.
 var _ MultiSession = (*defaultMultiSession)(nil)
 var _ transportsession.Session = (*defaultMultiSession)(nil)
@@ -153,10 +143,7 @@ func (s *defaultMultiSession) CallTool(
 	defer done()
 	result, err := conn.CallTool(ctx, toolName, arguments, meta)
 	if err != nil {
-		if isCallerDrivenError(err) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("backend %s unavailable: %w", target.WorkloadID, err)
+		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}
 	return result, nil
 }
@@ -174,10 +161,7 @@ func (s *defaultMultiSession) ReadResource(
 	defer done()
 	result, err := conn.ReadResource(ctx, uri)
 	if err != nil {
-		if isCallerDrivenError(err) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("backend %s unavailable: %w", target.WorkloadID, err)
+		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}
 	return result, nil
 }
@@ -198,10 +182,7 @@ func (s *defaultMultiSession) GetPrompt(
 	defer done()
 	result, err := conn.GetPrompt(ctx, name, arguments)
 	if err != nil {
-		if isCallerDrivenError(err) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("backend %s unavailable: %w", target.WorkloadID, err)
+		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}
 	return result, nil
 }

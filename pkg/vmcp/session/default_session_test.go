@@ -194,7 +194,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 				// Backend errors must identify the backend by ID.
 				if tt.mockFn != nil {
 					assert.Contains(t, err.Error(), "b1", "error must identify the backend")
-					assert.Contains(t, err.Error(), "unavailable")
+					assert.Contains(t, err.Error(), "request failure")
 				}
 				return
 			}
@@ -1173,7 +1173,7 @@ func TestDefaultSession_BackendCrashResilience(t *testing.T) {
 
 	crashErr := errors.New("connection reset by peer")
 
-	t.Run("context cancellation is not labelled unavailable", func(t *testing.T) {
+	t.Run("context cancellation is wrapped with backend ID and unwrappable", func(t *testing.T) {
 		t.Parallel()
 
 		conn := &mockConnectedBackend{
@@ -1189,11 +1189,11 @@ func TestDefaultSession_BackendCrashResilience(t *testing.T) {
 		_, err := sess.CallTool(context.Background(), nil, "search", nil, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
-		assert.NotContains(t, err.Error(), "unavailable",
-			"cancelled requests must not be labelled as backend unavailable")
+		assert.Contains(t, err.Error(), "b1")
+		assert.Contains(t, err.Error(), "request failure")
 	})
 
-	t.Run("deadline exceeded is not labelled unavailable", func(t *testing.T) {
+	t.Run("deadline exceeded is wrapped with backend ID and unwrappable", func(t *testing.T) {
 		t.Parallel()
 
 		conn := &mockConnectedBackend{
@@ -1209,8 +1209,8 @@ func TestDefaultSession_BackendCrashResilience(t *testing.T) {
 		_, err := sess.CallTool(context.Background(), nil, "search", nil, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
-		assert.NotContains(t, err.Error(), "unavailable",
-			"timed-out requests must not be labelled as backend unavailable")
+		assert.Contains(t, err.Error(), "b1")
+		assert.Contains(t, err.Error(), "request failure")
 	})
 
 	t.Run("ReadResource error includes backend ID and wraps original cause", func(t *testing.T) {
@@ -1231,7 +1231,7 @@ func TestDefaultSession_BackendCrashResilience(t *testing.T) {
 		_, err := sess.ReadResource(context.Background(), nil, "file://data")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "b1", "error must identify the backend")
-		assert.Contains(t, err.Error(), "unavailable")
+		assert.Contains(t, err.Error(), "request failure")
 		assert.ErrorIs(t, err, sentinel, "original error must be unwrappable via errors.Is")
 	})
 
@@ -1252,7 +1252,7 @@ func TestDefaultSession_BackendCrashResilience(t *testing.T) {
 		_, err := sess.GetPrompt(context.Background(), nil, "greet", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "b1", "error must identify the backend")
-		assert.Contains(t, err.Error(), "unavailable")
+		assert.Contains(t, err.Error(), "request failure")
 		assert.ErrorIs(t, err, sentinel, "original error must be unwrappable via errors.Is")
 	})
 
@@ -1275,7 +1275,7 @@ func TestDefaultSession_BackendCrashResilience(t *testing.T) {
 		_, err := sess.CallTool(context.Background(), nil, "tool-a", nil, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "backend-a", "error must identify the failing backend")
-		assert.Contains(t, err.Error(), "unavailable")
+		assert.Contains(t, err.Error(), "request failure")
 
 		// tool-b (backend-b) must still work.
 		result, err := sess.CallTool(context.Background(), nil, "tool-b", nil, nil)
@@ -1328,6 +1328,6 @@ func TestDefaultSession_BackendCrashResilience(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, sentinel, "original error must be unwrappable via errors.Is")
 		assert.Contains(t, err.Error(), "b1")
-		assert.Contains(t, err.Error(), "unavailable")
+		assert.Contains(t, err.Error(), "request failure")
 	})
 }

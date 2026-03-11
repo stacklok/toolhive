@@ -108,6 +108,17 @@ jobs:
           # Start Docker daemon if not running
           sudo systemctl start docker
 
+      - name: Pre-pull container images
+        run: |
+          # Pre-pull images used by E2E tests so that workload creation
+          # does not pay the image-pull cost inside the 60s API timeout.
+          docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.0 &
+          docker pull ghcr.io/stackloklabs/gofetch/server:1.0.2 &
+          docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
+          wait
+          echo "Pre-pulled images:"
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy'
+
       - name: Run E2E tests (${{ matrix.title }})
         env:
           THV_BINARY: ${{ github.workspace }}/bin/thv

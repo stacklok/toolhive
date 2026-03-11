@@ -157,8 +157,17 @@ func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) 
 		return nil, fmt.Errorf("%w: %w", ErrDiscoveryFailed, err)
 	}
 
-	// Cache the result (skips caching if at capacity and key doesn't exist)
-	m.cacheCapabilities(cacheKey, caps)
+	// Only cache complete aggregation results. When some backends fail to respond,
+	// the result is partial and should not be cached — otherwise subsequent requests
+	// would keep hitting the stale cache entry until it expires (5 min TTL),
+	// preventing newly added backends from being discovered.
+	if caps.Metadata != nil && caps.Metadata.QueriedBackendCount < caps.Metadata.BackendCount {
+		slog.Debug("skipping cache for partial aggregation result",
+			"queried_backends", caps.Metadata.QueriedBackendCount,
+			"total_backends", caps.Metadata.BackendCount)
+	} else {
+		m.cacheCapabilities(cacheKey, caps)
+	}
 
 	return caps, nil
 }

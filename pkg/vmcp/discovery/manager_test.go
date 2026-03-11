@@ -886,3 +886,70 @@ func TestDefaultManager_VersionBasedCacheInvalidation(t *testing.T) {
 		assert.True(t, stillExists, "stale entry should remain until accessed")
 	})
 }
+
+func TestDiscover_PartialAggregationNotCached(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockAgg := aggmocks.NewMockAggregator(ctrl)
+	backends := []vmcp.Backend{
+		newTestBackend("backend1"),
+		newTestBackend("backend2"),
+		newTestBackend("backend3"),
+	}
+
+	// First call returns partial result (only 2 of 3 backends queried successfully)
+	partialCaps := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{
+			newTestTool("tool1", "backend1"),
+			newTestTool("tool2", "backend2"),
+		},
+		Metadata: &aggregator.AggregationMetadata{
+			BackendCount:        3,
+			QueriedBackendCount: 2,
+			ToolCount:           2,
+		},
+	}
+
+	// Second call returns complete result (all 3 backends queried)
+	completeCaps := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{
+			newTestTool("tool1", "backend1"),
+			newTestTool("tool2", "backend2"),
+			newTestTool("tool3", "backend3"),
+		},
+		Metadata: &aggregator.AggregationMetadata{
+			BackendCount:        3,
+			QueriedBackendCount: 3,
+			ToolCount:           3,
+		},
+	}
+
+	// Expect two calls: partial result is not cached, so second call hits aggregator
+	gomock.InOrder(
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(partialCaps, nil),
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(completeCaps, nil),
+	)
+
+	mgr, err := NewManager(mockAgg)
+	require.NoError(t, err)
+	defer mgr.Stop()
+
+	identity := &auth.Identity{Subject: "user123"}
+	ctx := auth.WithIdentity(context.Background(), identity)
+
+	// First call - partial result, should NOT be cached
+	caps1, err := mgr.Discover(ctx, backends)
+	require.NoError(t, err)
+	assert.Len(t, caps1.Tools, 2)
+
+	// Second call - should hit aggregator again (not cache), returns complete result
+	caps2, err := mgr.Discover(ctx, backends)
+	require.NoError(t, err)
+	assert.Len(t, caps2.Tools, 3)
+}

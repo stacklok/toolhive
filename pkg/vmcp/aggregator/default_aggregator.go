@@ -475,11 +475,13 @@ func (a *defaultAggregator) AggregateCapabilities(
 		return nil, fmt.Errorf("failed to merge capabilities: %w", err)
 	}
 
-	// Update metadata with backend count
+	// Update metadata with backend counts
 	aggregated.Metadata.BackendCount = len(backends)
+	aggregated.Metadata.QueriedBackendCount = len(capabilities)
 
 	span.SetAttributes(
 		attribute.Int("aggregated.backends", aggregated.Metadata.BackendCount),
+		attribute.Int("aggregated.queried_backends", aggregated.Metadata.QueriedBackendCount),
 		attribute.Int("aggregated.tools", aggregated.Metadata.ToolCount),
 		attribute.Int("aggregated.resources", aggregated.Metadata.ResourceCount),
 		attribute.Int("aggregated.prompts", aggregated.Metadata.PromptCount),
@@ -487,7 +489,9 @@ func (a *defaultAggregator) AggregateCapabilities(
 	)
 
 	slog.Info("capability aggregation complete",
-		"backends", aggregated.Metadata.BackendCount, "tools", aggregated.Metadata.ToolCount,
+		"backends", aggregated.Metadata.BackendCount,
+		"queried_backends", aggregated.Metadata.QueriedBackendCount,
+		"tools", aggregated.Metadata.ToolCount,
 		"resources", aggregated.Metadata.ResourceCount, "prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil

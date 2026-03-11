@@ -706,19 +706,19 @@ func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, ms
 // TOOLHIVE_PROXY_REQUEST_TIMEOUT environment variable if set, otherwise
 // returning defaultRequestTimeout.
 func resolveRequestTimeout() time.Duration {
-	if v := os.Getenv(proxyRequestTimeoutEnv); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			slog.Warn("invalid proxy request timeout, using default",
-				"env_var", proxyRequestTimeoutEnv, "value", v, "default", defaultRequestTimeout)
-			return defaultRequestTimeout
-		}
+	v := os.Getenv(proxyRequestTimeoutEnv)
+	if v == "" {
+		return defaultRequestTimeout
+	}
+	d, _ := time.ParseDuration(v)
+	if d > 0 {
 		slog.Debug("using custom proxy request timeout", "timeout", d)
 		return d
 	}
+	slog.Warn("invalid proxy request timeout, using default",
+		"env_var", proxyRequestTimeoutEnv, "value", v, "default", defaultRequestTimeout)
 	return defaultRequestTimeout
 }
-
 // createWaiter registers a waiter channel for the given request ID and returns cleanup fn.
 func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.Message, func()) {
 	key := idKeyFromID(id)

@@ -595,9 +595,7 @@ func TestGetHealthCheckInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envValue != "" {
-				t.Setenv(HealthCheckIntervalEnvVar, tt.envValue)
-			}
+			t.Setenv(HealthCheckIntervalEnvVar, tt.envValue)
 			assert.Equal(t, tt.expected, getHealthCheckInterval())
 		})
 	}
@@ -619,9 +617,7 @@ func TestGetHealthCheckPingTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envValue != "" {
-				t.Setenv(HealthCheckPingTimeoutEnvVar, tt.envValue)
-			}
+			t.Setenv(HealthCheckPingTimeoutEnvVar, tt.envValue)
 			assert.Equal(t, tt.expected, getHealthCheckPingTimeout())
 		})
 	}
@@ -643,9 +639,7 @@ func TestGetHealthCheckRetryDelay(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envValue != "" {
-				t.Setenv(HealthCheckRetryDelayEnvVar, tt.envValue)
-			}
+			t.Setenv(HealthCheckRetryDelayEnvVar, tt.envValue)
 			assert.Equal(t, tt.expected, getHealthCheckRetryDelay())
 		})
 	}
@@ -668,9 +662,7 @@ func TestGetHealthCheckFailureThreshold(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envValue != "" {
-				t.Setenv(HealthCheckFailureThresholdEnvVar, tt.envValue)
-			}
+			t.Setenv(HealthCheckFailureThresholdEnvVar, tt.envValue)
 			assert.Equal(t, tt.expected, getHealthCheckFailureThreshold())
 		})
 	}
@@ -691,7 +683,10 @@ func TestNewTransparentProxyUsesEnvVars(t *testing.T) {
 }
 
 func TestNewTransparentProxyDefaultValues(t *testing.T) {
-	t.Parallel()
+	t.Setenv(HealthCheckIntervalEnvVar, "")
+	t.Setenv(HealthCheckPingTimeoutEnvVar, "")
+	t.Setenv(HealthCheckRetryDelayEnvVar, "")
+	t.Setenv(HealthCheckFailureThresholdEnvVar, "")
 
 	proxy := newMinimalProxy()
 

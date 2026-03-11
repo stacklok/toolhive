@@ -351,7 +351,7 @@ The transparent proxy health check behavior can be tuned via environment variabl
 
 Duration values use Go's `time.ParseDuration` format (e.g., `10s`, `500ms`, `1m30s`). Invalid values are ignored with a warning log, and the default is used instead.
 
-**Failure window**: With the defaults, the proxy tolerates approximately 60 seconds of consecutive health check failures before shutting down (5 intervals × 10s + retry delays). This is designed to survive transient network disruptions without prematurely killing healthy backends.
+**Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` plus the initial failure tick before shutting down — approximately 70 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends.
 
 **Usage example** (increase tolerance for a flaky network):
 ```bash
@@ -359,7 +359,7 @@ export TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=10
 export TOOLHIVE_HEALTH_CHECK_RETRY_DELAY=10s
 ```
 
-> **Note**: These parameters only affect the transparent proxy (used by SSE and streamable HTTP transports). The stdio transport's streamable HTTP proxy has a separate `TOOLHIVE_PROXY_REQUEST_TIMEOUT` setting. The vMCP server uses its own circuit breaker pattern.
+> **Note**: These parameters only affect the transparent proxy (used by SSE and streamable HTTP transports). The stdio transport's streamable HTTP proxy uses separate timeout settings. The vMCP server uses its own circuit breaker pattern.
 
 ### Kubernetes Support for Remote MCPs
 

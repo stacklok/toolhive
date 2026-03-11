@@ -98,8 +98,8 @@ func (s *defaultMultiSession) BackendSessions() map[string]string {
 }
 
 // lookupBackend resolves capName against table, admits the request via the
-// admission queue, and returns the live backend session together with the done
-// function that the caller MUST invoke when the I/O completes.
+// admission queue, and returns the live backend session, the resolved target,
+// and the done function that the caller MUST invoke when the I/O completes.
 //
 // If the queue is closed, ErrSessionClosed is returned and no done function is
 // provided. On any other lookup error, done is also not provided.
@@ -107,23 +107,23 @@ func (s *defaultMultiSession) lookupBackend(
 	capName string,
 	table map[string]*vmcp.BackendTarget,
 	notFoundErr error,
-) (backend.Session, func(), error) {
+) (backend.Session, *vmcp.BackendTarget, func(), error) {
 	admitted, done := s.queue.TryAdmit()
 	if !admitted {
-		return nil, nil, ErrSessionClosed
+		return nil, nil, nil, ErrSessionClosed
 	}
 
 	target, ok := table[capName]
 	if !ok {
 		done()
-		return nil, nil, fmt.Errorf("%w: %q", notFoundErr, capName)
+		return nil, nil, nil, fmt.Errorf("%w: %q", notFoundErr, capName)
 	}
 	conn, ok := s.connections[target.WorkloadID]
 	if !ok {
 		done()
-		return nil, nil, fmt.Errorf("%w for backend %q", ErrNoBackendClient, target.WorkloadID)
+		return nil, nil, nil, fmt.Errorf("%w for backend %q", ErrNoBackendClient, target.WorkloadID)
 	}
-	return conn, done, nil
+	return conn, target, done, nil
 }
 
 // CallTool invokes toolName on the appropriate backend.
@@ -136,12 +136,16 @@ func (s *defaultMultiSession) CallTool(
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	conn, done, err := s.lookupBackend(toolName, s.routingTable.Tools, ErrToolNotFound)
+	conn, target, done, err := s.lookupBackend(toolName, s.routingTable.Tools, ErrToolNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
-	return conn.CallTool(ctx, toolName, arguments, meta)
+	result, err := conn.CallTool(ctx, toolName, arguments, meta)
+	if err != nil {
+		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
+	}
+	return result, nil
 }
 
 // ReadResource retrieves the resource identified by uri.
@@ -150,12 +154,16 @@ func (s *defaultMultiSession) CallTool(
 func (s *defaultMultiSession) ReadResource(
 	ctx context.Context, _ *auth.Identity, uri string,
 ) (*vmcp.ResourceReadResult, error) {
-	conn, done, err := s.lookupBackend(uri, s.routingTable.Resources, ErrResourceNotFound)
+	conn, target, done, err := s.lookupBackend(uri, s.routingTable.Resources, ErrResourceNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
-	return conn.ReadResource(ctx, uri)
+	result, err := conn.ReadResource(ctx, uri)
+	if err != nil {
+		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
+	}
+	return result, nil
 }
 
 // GetPrompt retrieves the named prompt from the appropriate backend.
@@ -167,12 +175,16 @@ func (s *defaultMultiSession) GetPrompt(
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	conn, done, err := s.lookupBackend(name, s.routingTable.Prompts, ErrPromptNotFound)
+	conn, target, done, err := s.lookupBackend(name, s.routingTable.Prompts, ErrPromptNotFound)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
-	return conn.GetPrompt(ctx, name, arguments)
+	result, err := conn.GetPrompt(ctx, name, arguments)
+	if err != nil {
+		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
+	}
+	return result, nil
 }
 
 // Close releases all resources. CloseAndDrain blocks until in-flight

@@ -186,6 +186,61 @@ func ConvertPromptArguments(arguments map[string]any) map[string]string {
 	return result
 }
 
+// ConvertToolAnnotations converts mcp.ToolAnnotation to *vmcp.ToolAnnotations.
+// Returns nil if all fields are zero-valued (empty Title, all hint pointers nil).
+func ConvertToolAnnotations(ann mcp.ToolAnnotation) *vmcp.ToolAnnotations {
+	if ann.Title == "" && ann.ReadOnlyHint == nil && ann.DestructiveHint == nil &&
+		ann.IdempotentHint == nil && ann.OpenWorldHint == nil {
+		return nil
+	}
+	return &vmcp.ToolAnnotations{
+		Title:           ann.Title,
+		ReadOnlyHint:    ann.ReadOnlyHint,
+		DestructiveHint: ann.DestructiveHint,
+		IdempotentHint:  ann.IdempotentHint,
+		OpenWorldHint:   ann.OpenWorldHint,
+	}
+}
+
+// ConvertToolOutputSchema converts a mcp.ToolOutputSchema to map[string]any via a
+// JSON round-trip, same pattern as ConvertToolInputSchema.
+// Returns nil if the schema has no meaningful type (empty Type field).
+func ConvertToolOutputSchema(schema mcp.ToolOutputSchema) map[string]any {
+	// A zero-valued ToolOutputSchema has Type="" — this means the backend
+	// did not provide an output schema. Return nil to distinguish from a
+	// schema that was explicitly set.
+	if schema.Type == "" {
+		return nil
+	}
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]any)
+	if err := json.Unmarshal(b, &result); err != nil {
+		return nil
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// ToMCPToolAnnotations converts *vmcp.ToolAnnotations back to mcp.ToolAnnotation.
+// Returns a zero-valued mcp.ToolAnnotation if annotations is nil.
+func ToMCPToolAnnotations(annotations *vmcp.ToolAnnotations) mcp.ToolAnnotation {
+	if annotations == nil {
+		return mcp.ToolAnnotation{}
+	}
+	return mcp.ToolAnnotation{
+		Title:           annotations.Title,
+		ReadOnlyHint:    annotations.ReadOnlyHint,
+		DestructiveHint: annotations.DestructiveHint,
+		IdempotentHint:  annotations.IdempotentHint,
+		OpenWorldHint:   annotations.OpenWorldHint,
+	}
+}
+
 // ContentArrayToMap converts a vmcp.Content array to a map for template variable substitution.
 // This is used by composite tool workflows and backend result handling.
 //

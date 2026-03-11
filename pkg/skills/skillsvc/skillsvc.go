@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,10 +27,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
-
-// ociTagRegexp matches valid OCI tag strings per the distribution spec.
-// Reference: https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#pulling-manifests
-var ociTagRegexp = regexp.MustCompile(`^[\w][\w.-]{0,127}$`)
 
 // Option configures the skill service.
 type Option func(*service)
@@ -362,7 +357,7 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	}()
 
 	if tag != "" {
-		if err := validateOCITag(tag); err != nil {
+		if err := validateOCITagOrReference(tag); err != nil {
 			return nil, err
 		}
 	}
@@ -845,11 +840,25 @@ func validateLocalPath(path string) error {
 	return nil
 }
 
-// validateOCITag checks that a tag conforms to the OCI distribution spec format.
-func validateOCITag(tag string) error {
-	if !ociTagRegexp.MatchString(tag) {
+// validateOCITagOrReference accepts either a bare OCI tag ("v1.0.0") or a full
+// OCI reference ("ghcr.io/org/repo:v1.0.0"). The --tag flag in `thv skill build`
+// supports both forms (matching `docker build -t` semantics), so we route to
+// the appropriate parser based on the presence of '/', ':', or '@'.
+func validateOCITagOrReference(value string) error {
+	if strings.ContainsAny(value, "/:@") {
+		// Looks like a full OCI reference — validate as such.
+		if _, err := nameref.ParseReference(value, nameref.StrictValidation); err != nil {
+			return httperr.WithCode(
+				fmt.Errorf("invalid OCI reference or tag %q: %w", value, err),
+				http.StatusBadRequest,
+			)
+		}
+		return nil
+	}
+	// Bare tag — construct a dummy reference to validate the tag portion.
+	if _, err := nameref.NewTag("dummy.invalid/repo:"+value, nameref.StrictValidation); err != nil {
 		return httperr.WithCode(
-			fmt.Errorf("invalid OCI tag %q: must match %s", tag, ociTagRegexp.String()),
+			fmt.Errorf("invalid OCI reference or tag %q: %w", value, err),
 			http.StatusBadRequest,
 		)
 	}

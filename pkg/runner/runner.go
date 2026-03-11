@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -21,7 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -125,35 +126,39 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
-// GetUpstreamTokenStorage returns a lazy accessor for upstream token storage.
-// The returned function should be called at request time to get current storage;
-// it returns nil if storage is unavailable (e.g., embedded auth server not configured
-// or during shutdown).
-//
-// This always returns a non-nil function to allow middleware creation before the
-// embedded auth server is initialized. The actual storage availability is checked
-// at request time when the returned function is called.
-func (r *Runner) GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage {
-	// Return a closure that provides lazy access to the storage.
-	// This closure is always non-nil, allowing middleware to be created before
-	// the embedded auth server is initialized.
-	return func() storage.UpstreamTokenStorage {
-		if r.embeddedAuthServer == nil {
-			return nil
-		}
-		return r.embeddedAuthServer.IDPTokenStorage()
-	}
-}
-
-// GetUpstreamTokenRefresher returns a lazy accessor for the upstream token refresher.
+// GetUpstreamTokenService returns a lazy accessor for the upstream token service.
 // The returned function should be called at request time; it returns nil if
-// the embedded auth server is not configured.
-func (r *Runner) GetUpstreamTokenRefresher() func() storage.UpstreamTokenRefresher {
-	return func() storage.UpstreamTokenRefresher {
+// the embedded auth server is not configured or not yet initialized.
+//
+// The service is created and cached on first successful access. It holds a
+// singleflight.Group for deduplication, so it must be shared across requests.
+func (r *Runner) GetUpstreamTokenService() func() upstreamtoken.Service {
+	var (
+		cached upstreamtoken.Service
+		mu     sync.Mutex
+	)
+
+	return func() upstreamtoken.Service {
+		// Check auth server availability before taking the lock (shutdown safety).
 		if r.embeddedAuthServer == nil {
 			return nil
 		}
-		return r.embeddedAuthServer.UpstreamTokenRefresher()
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if cached != nil {
+			return cached
+		}
+
+		stor := r.embeddedAuthServer.IDPTokenStorage()
+		if stor == nil {
+			return nil
+		}
+
+		refresher := r.embeddedAuthServer.UpstreamTokenRefresher()
+		cached = upstreamtoken.NewInProcessService(stor, refresher)
+		return cached
 	}
 }
 

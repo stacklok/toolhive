@@ -485,7 +485,7 @@ func TestRunner_EmbeddedAuthServer_Integration(t *testing.T) {
 	})
 }
 
-func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
+func TestRunner_GetUpstreamTokenService(t *testing.T) {
 	t.Parallel()
 
 	// createMinimalAuthServerConfig creates a minimal valid RunConfig for the embedded auth server.
@@ -519,14 +519,10 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 
 		runConfig := NewRunConfig()
 		runner := NewRunner(runConfig, mockStatusManager)
-
-		// Ensure embeddedAuthServer is nil
 		runner.embeddedAuthServer = nil
 
-		storageGetter := runner.GetUpstreamTokenStorage()
-
-		// Should always return a non-nil function
-		assert.NotNil(t, storageGetter, "GetUpstreamTokenStorage should always return a non-nil function")
+		serviceGetter := runner.GetUpstreamTokenService()
+		assert.NotNil(t, serviceGetter, "GetUpstreamTokenService should always return a non-nil function")
 	})
 
 	t.Run("returned function returns nil when embeddedAuthServer is nil", func(t *testing.T) {
@@ -539,18 +535,14 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 
 		runConfig := NewRunConfig()
 		runner := NewRunner(runConfig, mockStatusManager)
-
-		// Ensure embeddedAuthServer is nil
 		runner.embeddedAuthServer = nil
 
-		storageGetter := runner.GetUpstreamTokenStorage()
-		storage := storageGetter()
-
-		// Should return nil when embeddedAuthServer is nil
-		assert.Nil(t, storage, "storage should be nil when embeddedAuthServer is nil")
+		serviceGetter := runner.GetUpstreamTokenService()
+		svc := serviceGetter()
+		assert.Nil(t, svc, "service should be nil when embeddedAuthServer is nil")
 	})
 
-	t.Run("returned function returns storage when embeddedAuthServer is set", func(t *testing.T) {
+	t.Run("returned function returns service when embeddedAuthServer is set", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -561,7 +553,6 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 		runConfig := NewRunConfig()
 		runner := NewRunner(runConfig, mockStatusManager)
 
-		// Create a real embedded auth server
 		authServerCfg := createMinimalAuthServerConfig()
 		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
 		require.NoError(t, err)
@@ -570,11 +561,9 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 
 		runner.embeddedAuthServer = embeddedServer
 
-		storageGetter := runner.GetUpstreamTokenStorage()
-		storage := storageGetter()
-
-		// Should return non-nil storage when embeddedAuthServer is set
-		assert.NotNil(t, storage, "storage should not be nil when embeddedAuthServer is set")
+		serviceGetter := runner.GetUpstreamTokenService()
+		svc := serviceGetter()
+		assert.NotNil(t, svc, "service should not be nil when embeddedAuthServer is set")
 	})
 
 	t.Run("returned closure checks embeddedAuthServer at call time not creation time", func(t *testing.T) {
@@ -587,19 +576,14 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 
 		runConfig := NewRunConfig()
 		runner := NewRunner(runConfig, mockStatusManager)
-
-		// Start with nil embeddedAuthServer
 		runner.embeddedAuthServer = nil
 
-		// Get the storage getter while embeddedAuthServer is nil
-		storageGetter := runner.GetUpstreamTokenStorage()
-		assert.NotNil(t, storageGetter, "should return non-nil function even when embeddedAuthServer is nil")
+		serviceGetter := runner.GetUpstreamTokenService()
+		assert.NotNil(t, serviceGetter)
 
-		// First call should return nil
-		storage := storageGetter()
-		assert.Nil(t, storage, "storage should be nil initially")
+		svc := serviceGetter()
+		assert.Nil(t, svc, "service should be nil initially")
 
-		// Now set the embedded auth server
 		authServerCfg := createMinimalAuthServerConfig()
 		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
 		require.NoError(t, err)
@@ -608,9 +592,8 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 
 		runner.embeddedAuthServer = embeddedServer
 
-		// Same closure should now return storage (lazy evaluation)
-		storage = storageGetter()
-		assert.NotNil(t, storage, "storage should be available after embeddedAuthServer is set")
+		svc = serviceGetter()
+		assert.NotNil(t, svc, "service should be available after embeddedAuthServer is set")
 	})
 
 	t.Run("returned closure returns nil after embeddedAuthServer becomes nil", func(t *testing.T) {
@@ -624,7 +607,6 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 		runConfig := NewRunConfig()
 		runner := NewRunner(runConfig, mockStatusManager)
 
-		// Set up embedded auth server
 		authServerCfg := createMinimalAuthServerConfig()
 		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
 		require.NoError(t, err)
@@ -632,20 +614,16 @@ func TestRunner_GetUpstreamTokenStorage(t *testing.T) {
 
 		runner.embeddedAuthServer = embeddedServer
 
-		// Get the storage getter while embeddedAuthServer is set
-		storageGetter := runner.GetUpstreamTokenStorage()
+		serviceGetter := runner.GetUpstreamTokenService()
 
-		// First call should return storage
-		storage := storageGetter()
-		assert.NotNil(t, storage, "storage should be available initially")
+		svc := serviceGetter()
+		assert.NotNil(t, svc, "service should be available initially")
 
-		// Clean up and set to nil (simulating shutdown)
 		err = embeddedServer.Close()
 		require.NoError(t, err)
 		runner.embeddedAuthServer = nil
 
-		// Same closure should now return nil
-		storage = storageGetter()
-		assert.Nil(t, storage, "storage should be nil after embeddedAuthServer becomes nil")
+		svc = serviceGetter()
+		assert.Nil(t, svc, "service should be nil after embeddedAuthServer becomes nil")
 	})
 }

@@ -104,10 +104,12 @@ func processBackendTools(
 
 		// Construct the result tool with processed name/description but original schema
 		result = append(result, vmcp.Tool{
-			Name:        simpleTool.Name,        // Use the processed (potentially overridden) name
-			Description: simpleTool.Description, // Use the processed (potentially overridden) description
-			InputSchema: originalTool.InputSchema,
-			BackendID:   backendID, // Use the backendID parameter (source of truth)
+			Name:         simpleTool.Name,        // Use the processed (potentially overridden) name
+			Description:  simpleTool.Description, // Use the processed (potentially overridden) description
+			InputSchema:  originalTool.InputSchema,
+			OutputSchema: originalTool.OutputSchema,
+			Annotations:  originalTool.Annotations,
+			BackendID:    backendID, // Use the backendID parameter (source of truth)
 		})
 	}
 

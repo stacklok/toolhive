@@ -95,7 +95,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-r
 					"--name", serverName,
 					"--transport", "sse",
 					"--endpoint-prefix", endpointPrefix,
-					"--remote-url", mockSSEServer.URL,
+					mockSSEServer.URL,
 				).ExpectSuccess()
 
 				Expect(stdout+stderr).To(ContainSubstring(serverName), "Output should mention the server name")
@@ -224,7 +224,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-r
 					"--name", serverName,
 					"--transport", "sse",
 					"--trust-proxy-headers",
-					"--remote-url", mockSSEServer.URL,
+					mockSSEServer.URL,
 				).ExpectSuccess()
 
 				Expect(stdout + stderr).To(ContainSubstring(serverName))
@@ -334,7 +334,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-r
 					"--transport", "sse",
 					"--endpoint-prefix", explicitPrefix,
 					"--trust-proxy-headers",
-					"--remote-url", mockSSEServer.URL,
+					mockSSEServer.URL,
 				).ExpectSuccess()
 
 				Expect(stdout + stderr).To(ContainSubstring(serverName))
@@ -419,7 +419,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-r
 				endpointPrefix := "/api/mcp"
 
 				// Check if osv server is available in registry
-				stdout, _ := e2e.NewTHVCommand(config, "list", "--registry").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "registry", "list").ExpectSuccess()
 				if !strings.Contains(stdout, "osv") {
 					Skip("OSV server not available in registry")
 				}

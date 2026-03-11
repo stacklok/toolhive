@@ -719,6 +719,7 @@ func resolveRequestTimeout() time.Duration {
 		"env_var", proxyRequestTimeoutEnv, "value", v, "default", defaultRequestTimeout)
 	return defaultRequestTimeout
 }
+
 // createWaiter registers a waiter channel for the given request ID and returns cleanup fn.
 func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.Message, func()) {
 	key := idKeyFromID(id)

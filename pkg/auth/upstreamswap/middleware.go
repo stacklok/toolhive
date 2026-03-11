@@ -175,12 +175,14 @@ func createMiddlewareFunc(cfg *Config, serviceGetter ServiceGetter) types.Middle
 				return
 			}
 
-			// 3. Get token service
+			// 3. Get token service — fail closed if unavailable.
+			// The tsid claim confirms this request expects upstream token injection;
+			// passing through with the original JWT would leak it to the backend.
 			svc := serviceGetter()
 			if svc == nil {
-				slog.Warn("Token service unavailable, proceeding without swap",
+				slog.Warn("Token service unavailable, cannot perform required upstream swap",
 					"middleware", "upstreamswap")
-				next.ServeHTTP(w, r)
+				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
 

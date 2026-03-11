@@ -19,9 +19,9 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
-	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -47,7 +47,7 @@ func requestWithIdentity(tsid string) *http.Request {
 	identity := &auth.Identity{
 		Subject: "user123",
 		Claims: map[string]any{
-			"sub":                          "user123",
+			"sub":                                "user123",
 			upstreamtoken.TokenSessionIDClaimKey: tsid,
 		},
 	}
@@ -169,7 +169,7 @@ func TestMiddleware_NoTsidClaim(t *testing.T) {
 	assert.True(t, nextCalled, "next handler should be called")
 }
 
-func TestMiddleware_ServiceUnavailable(t *testing.T) {
+func TestMiddleware_ServiceUnavailable_FailsClosed(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
@@ -186,7 +186,8 @@ func TestMiddleware_ServiceUnavailable(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	assert.True(t, nextCalled, "next handler should be called")
+	assert.False(t, nextCalled, "next handler should NOT be called when service is unavailable")
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 }
 
 func TestMiddleware_ClientAttributableErrors_Returns401(t *testing.T) {
@@ -654,7 +655,7 @@ func TestMiddleware_TsidClaimWrongType(t *testing.T) {
 	identity := &auth.Identity{
 		Subject: "user123",
 		Claims: map[string]any{
-			"sub":                          "user123",
+			"sub":                                "user123",
 			upstreamtoken.TokenSessionIDClaimKey: 12345, // Wrong type: int instead of string
 		},
 	}
@@ -978,4 +979,3 @@ func (f *fakeRefresher) RefreshAndStore(_ context.Context, _ string, _ *storage.
 	<-f.proceed
 	return f.result, nil
 }
-

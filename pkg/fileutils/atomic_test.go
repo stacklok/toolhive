@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -116,6 +117,39 @@ func TestAtomicWriteFile_NoTempFileLeftBehind(t *testing.T) {
 	for _, entry := range entries {
 		assert.False(t, strings.HasPrefix(entry.Name(), ".tmp-"),
 			"temp file should not remain: %s", entry.Name())
+	}
+}
+
+func TestAtomicWriteFile_EBUSYFallback(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	targetPath := filepath.Join(tempDir, "bind-mounted-target.json")
+	require.NoError(t, os.WriteFile(targetPath, []byte(`{"before":true}`), 0o600))
+
+	renameCalled := 0
+	renameAlwaysEBUSY := func(oldPath, newPath string) error {
+		renameCalled++
+		return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: syscall.EBUSY}
+	}
+
+	newData := []byte(`{"after":true}`)
+	err := atomicWriteFile(targetPath, newData, 0o640, renameAlwaysEBUSY)
+	require.NoError(t, err)
+	assert.Equal(t, 1, renameCalled)
+
+	content, err := os.ReadFile(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, newData, content)
+
+	info, err := os.Stat(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+
+	entries, err := os.ReadDir(tempDir)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		assert.False(t, strings.HasPrefix(entry.Name(), ".tmp-"), "temp file should not remain: %s", entry.Name())
 	}
 }
 

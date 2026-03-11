@@ -7,6 +7,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 )
@@ -206,6 +207,15 @@ func (m *Manager) UpsertSession(session Session) error {
 func (m *Manager) Delete(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
+
+	if sess, err := m.storage.Load(ctx, id); err == nil {
+		if closer, ok := sess.(io.Closer); ok {
+			if closeErr := closer.Close(); closeErr != nil {
+				slog.Warn("failed to close session during delete", "session_id", id, "error", closeErr)
+			}
+		}
+	}
+
 	return m.storage.Delete(ctx, id)
 }
 

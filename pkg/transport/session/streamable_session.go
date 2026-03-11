@@ -5,6 +5,7 @@ package session
 
 import (
 	"errors"
+	"sync"
 
 	"golang.org/x/exp/jsonrpc2"
 )
@@ -12,9 +13,10 @@ import (
 // StreamableSession represents a Streamable HTTP session
 type StreamableSession struct {
 	*ProxySession
-	MessageCh    chan jsonrpc2.Message
-	ResponseCh   chan jsonrpc2.Message
-	disconnected bool
+	MessageCh      chan jsonrpc2.Message
+	ResponseCh     chan jsonrpc2.Message
+	disconnected   bool
+	disconnectOnce sync.Once
 }
 
 // NewStreamableSession constructs a new streamable session with buffered channels
@@ -42,14 +44,19 @@ func (s *StreamableSession) GetData() interface{} {
 // SetData is a no-op for StreamableSession; channel stats are exposed via GetData.
 func (*StreamableSession) SetData(interface{}) {}
 
-// Disconnect closes channels and marks session as disconnected
+// Disconnect closes channels and marks session as disconnected.
 func (s *StreamableSession) Disconnect() {
-	if s.disconnected {
-		return
-	}
-	close(s.MessageCh)
-	close(s.ResponseCh)
-	s.disconnected = true
+	s.disconnectOnce.Do(func() {
+		close(s.MessageCh)
+		close(s.ResponseCh)
+		s.disconnected = true
+	})
+}
+
+// Close allows StreamableSession to satisfy io.Closer so storage cleanup can eagerly release resources.
+func (s *StreamableSession) Close() error {
+	s.Disconnect()
+	return nil
 }
 
 // SendMessage pushes message to MessageCh

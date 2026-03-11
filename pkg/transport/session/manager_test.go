@@ -74,6 +74,26 @@ func TestDeleteSession(t *testing.T) {
 	assert.False(t, ok, "deleted session should not be found")
 }
 
+func TestDeleteSession_ClosesStreamableSession(t *testing.T) {
+	t.Parallel()
+
+	factory := &stubFactory{fixedTime: time.Now()}
+	m := NewManager(time.Hour, factory.New)
+	defer m.Stop()
+
+	session := NewStreamableSession("stream-del").(*StreamableSession)
+	require.NoError(t, m.AddSession(session))
+	require.NoError(t, m.Delete("stream-del"))
+
+	assert.True(t, session.disconnected, "streamable session should be disconnected on delete")
+
+	_, ok := <-session.MessageCh
+	assert.False(t, ok, "message channel should be closed")
+
+	_, ok = <-session.ResponseCh
+	assert.False(t, ok, "response channel should be closed")
+}
+
 func TestGetUpdatesTimestamp(t *testing.T) {
 	t.Parallel()
 	oldTime := time.Now().Add(-1 * time.Minute)

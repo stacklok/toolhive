@@ -85,8 +85,15 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 	switch mimeType {
 	case "application/json":
+		// Remove the upstream Content-Length header. The reverse proxy copies it
+		// from the backend response via Header() (which we don't override), but
+		// filtering changes the body size. Without this, Go's HTTP server detects
+		// the mismatch and tears down the connection.
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processJSONResponse(rawResponse)
 	case "text/event-stream":
+		// Same issue: filtering changes the SSE payload size.
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processSSEResponse(rawResponse)
 	default:
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -97,8 +104,16 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.
 // This method is required for streaming support (SSE, streamable-http).
+//
+// We must delete the Content-Length header before flushing because
+// httputil.ReverseProxy (with FlushInterval: -1) calls Flush() after copying
+// the backend response. The first Flush() on the underlying writer triggers an
+// implicit WriteHeader(200), sending headers to the wire. If the stale
+// Content-Length is still present at that point, it's too late to remove it in
+// FlushAndFilter().
 func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		flusher.Flush()
 	}
 }

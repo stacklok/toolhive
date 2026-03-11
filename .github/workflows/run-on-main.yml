@@ -50,3 +50,10 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
+  skills-build-and-push:
+    name: Build and Publish Skills
+    needs: [linting, tests, codegen]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/skills-build-and-publish.yml

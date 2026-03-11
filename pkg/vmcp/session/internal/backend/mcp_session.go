@@ -370,10 +370,12 @@ func initAndQueryCapabilities(
 		}
 		for _, t := range toolsResult.Tools {
 			caps.Tools = append(caps.Tools, vmcp.Tool{
-				Name:        t.Name,
-				Description: t.Description,
-				InputSchema: conversion.ConvertToolInputSchema(t.InputSchema),
-				BackendID:   target.WorkloadID,
+				Name:         t.Name,
+				Description:  t.Description,
+				InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
+				OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),
+				Annotations:  conversion.ConvertToolAnnotations(t.Annotations),
+				BackendID:    target.WorkloadID,
 			})
 		}
 	}

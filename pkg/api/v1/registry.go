@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 const (
@@ -80,6 +81,75 @@ func resolveAuthStatus(cfg *config.Config) (authStatus, authType string) {
 // isRegistryAuthError checks if an error is a registry auth required error.
 func isRegistryAuthError(err error) bool {
 	return errors.Is(err, auth.ErrRegistryAuthRequired)
+}
+
+// newSecretsProvider creates a secrets provider from the given config provider.
+func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error) {
+	cfg, err := configProvider.LoadOrCreateConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("getting secrets provider type: %w", err)
+	}
+	return secrets.CreateSecretProvider(providerType)
+}
+
+// registryAuthLogin handles POST /registry/auth/login.
+// It triggers an interactive OAuth flow that opens the user's browser.
+// This endpoint is only available in serve mode.
+func (rr *RegistryRoutes) registryAuthLogin(w http.ResponseWriter, r *http.Request) {
+	secretsProvider, err := newSecretsProvider(rr.configProvider)
+	if err != nil {
+		slog.Error("failed to create secrets provider", "error", err)
+		http.Error(w, "Failed to create secrets provider", http.StatusInternalServerError)
+		return
+	}
+
+	if err := auth.Login(r.Context(), rr.configProvider, secretsProvider, auth.LoginOptions{}); err != nil {
+		if isRegistryAuthError(err) {
+			http.Error(w, "Registry OAuth not configured; use 'thv config set-registry-auth' first", http.StatusBadRequest)
+			return
+		}
+		slog.Error("registry login failed", "error", err)
+		http.Error(w, "Login failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Reset the singleton provider so subsequent registry calls pick up the new token.
+	regpkg.ResetDefaultProvider()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "authenticated"})
+}
+
+// registryAuthLogout handles POST /registry/auth/logout.
+// It clears cached OAuth tokens for the configured registry.
+// This endpoint is only available in serve mode.
+func (rr *RegistryRoutes) registryAuthLogout(w http.ResponseWriter, r *http.Request) {
+	secretsProvider, err := newSecretsProvider(rr.configProvider)
+	if err != nil {
+		slog.Error("failed to create secrets provider", "error", err)
+		http.Error(w, "Failed to create secrets provider", http.StatusInternalServerError)
+		return
+	}
+
+	if err := auth.Logout(r.Context(), rr.configProvider, secretsProvider); err != nil {
+		if isRegistryAuthError(err) {
+			http.Error(w, "Registry OAuth not configured; use 'thv config set-registry-auth' first", http.StatusBadRequest)
+			return
+		}
+		slog.Error("registry logout failed", "error", err)
+		http.Error(w, "Logout failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Reset the singleton provider so subsequent registry calls reflect the logged-out state.
+	regpkg.ResetDefaultProvider()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
 }
 
 const (
@@ -235,6 +305,17 @@ func RegistryRouter(serveMode bool) http.Handler {
 		r.Get("/", routes.listServers)
 		r.Get("/{serverName}", routes.getServer)
 	})
+
+	// Auth routes (serve mode only).
+	// This static route takes priority over the /{name} parameter in Chi,
+	// so it does not conflict with a registry named "auth".
+	if serveMode {
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/login", routes.registryAuthLogin)
+			r.Post("/logout", routes.registryAuthLogout)
+		})
+	}
+
 	return r
 }
 

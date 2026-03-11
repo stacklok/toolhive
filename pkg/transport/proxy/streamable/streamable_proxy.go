@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +30,11 @@ const (
 	// StreamableHTTPEndpoint is the endpoint for streamable HTTP.
 	StreamableHTTPEndpoint = "/mcp"
 
+	// ResponseTimeoutEnvVar overrides the default response timeout for streamable HTTP proxy requests.
+	ResponseTimeoutEnvVar = "TOOLHIVE_PROXY_RESPONSE_TIMEOUT"
+
 	// Default timeouts and buffer sizes
-	defaultResponseTimeout = 30 * time.Second
+	defaultResponseTimeout = 5 * time.Minute
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
@@ -40,6 +44,7 @@ type HTTPProxy struct {
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
+	responseTimeout   time.Duration
 
 	// Message channel for sending JSON-RPC to the container (from HTTP -> runner)
 	messageCh chan jsonrpc2.Message
@@ -61,6 +66,17 @@ type HTTPProxy struct {
 	stopOnce sync.Once
 }
 
+// getResponseTimeout returns the response timeout for streamable HTTP requests.
+// Uses TOOLHIVE_PROXY_RESPONSE_TIMEOUT when set to a valid positive duration.
+func getResponseTimeout() time.Duration {
+	if val := os.Getenv(ResponseTimeoutEnvVar); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultResponseTimeout
+}
+
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
 func NewHTTPProxy(
 	host string,
@@ -77,6 +93,7 @@ func NewHTTPProxy(
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
+		responseTimeout:   getResponseTimeout(),
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
 		sessionManager:    session.NewManager(session.DefaultSessionTTL, sFactory),
@@ -341,7 +358,7 @@ func (p *HTTPProxy) handleSingleRequest(
 	req *jsonrpc2.Request,
 	setSessionHeader bool,
 ) {
-	ctx, cancel := context.WithTimeout(ctx, defaultResponseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, p.responseTimeout)
 	defer cancel()
 
 	msg, err := p.doRequest(ctx, sessID, req)
@@ -373,7 +390,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 	req *jsonrpc2.Request,
 	setSessionHeader bool,
 ) {
-	ctx, cancel := context.WithTimeout(ctx, defaultResponseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, p.responseTimeout)
 	defer cancel()
 
 	// Prepare SSE response headers
@@ -480,7 +497,7 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 		return nil
 	}
 
-	response := p.waitForResponse(waitCh, defaultResponseTimeout)
+	response := p.waitForResponse(waitCh, p.responseTimeout)
 	if response == nil {
 		slog.Warn("streamableHTTP: batch timeout waiting for key", "key", bkey)
 		return nil

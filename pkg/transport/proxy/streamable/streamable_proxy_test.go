@@ -25,6 +25,26 @@ func TestNewHTTPProxy(t *testing.T) {
 	assert.Equal(t, 8080, proxy.port)
 	assert.NotNil(t, proxy.messageCh)
 	assert.NotNil(t, proxy.responseCh)
+	assert.Equal(t, defaultResponseTimeout, proxy.responseTimeout)
+}
+
+func TestGetResponseTimeout(t *testing.T) {
+	t.Run("valid env override", func(t *testing.T) {
+		t.Setenv(ResponseTimeoutEnvVar, "90s")
+		assert.Equal(t, 90*time.Second, getResponseTimeout())
+	})
+
+	t.Run("invalid env falls back", func(t *testing.T) {
+		t.Setenv(ResponseTimeoutEnvVar, "nope")
+		assert.Equal(t, defaultResponseTimeout, getResponseTimeout())
+	})
+
+	t.Run("zero and negative values fall back", func(t *testing.T) {
+		t.Setenv(ResponseTimeoutEnvVar, "0s")
+		assert.Equal(t, defaultResponseTimeout, getResponseTimeout())
+		t.Setenv(ResponseTimeoutEnvVar, "-5s")
+		assert.Equal(t, defaultResponseTimeout, getResponseTimeout())
+	})
 }
 
 // TestProxyChannelCommunication tests basic proxy channel communication

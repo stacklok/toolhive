@@ -80,8 +80,14 @@ func (p *APIRegistryProvider) GetRegistry() (*types.Registry, error) {
 	servers, err := p.client.ListServers(ctx, nil)
 	if err != nil {
 		// Propagate auth errors so API handlers can return structured responses.
-		if errors.Is(err, auth.ErrRegistryAuthRequired) || errors.Is(err, api.ErrRegistryUnauthorized) {
-			return nil, fmt.Errorf("registry authentication failed: %w", auth.ErrRegistryAuthRequired)
+		// ErrRegistryAuthRequired: no token available locally (never tried the registry).
+		// ErrRegistryUnauthorized: token was sent but rejected by the registry (401/403).
+		// Both are wrapped with ErrRegistryAuthRequired so the API layer returns 503.
+		if errors.Is(err, auth.ErrRegistryAuthRequired) {
+			return nil, fmt.Errorf("no registry credentials available: %w", err)
+		}
+		if errors.Is(err, api.ErrRegistryUnauthorized) {
+			return nil, fmt.Errorf("registry rejected credentials: %w", auth.ErrRegistryAuthRequired)
 		}
 		return nil, fmt.Errorf("failed to list servers from API: %w", err)
 	}

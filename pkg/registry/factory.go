@@ -85,33 +85,18 @@ func GetDefaultProvider() (Provider, error) {
 	return GetDefaultProviderWithConfig(config.NewDefaultProvider())
 }
 
-// GetDefaultProviderWithConfig returns a registry provider using the given config provider
-// This allows tests to inject their own config provider
-func GetDefaultProviderWithConfig(configProvider config.Provider) (Provider, error) {
+// GetDefaultProviderWithConfig returns a registry provider using the given config provider.
+// This allows tests to inject their own config provider.
+// The interactive flag controls whether browser-based OAuth flows are allowed.
+// Pass true for CLI contexts, false for headless/serve mode.
+func GetDefaultProviderWithConfig(configProvider config.Provider, opts ...ProviderOption) (Provider, error) {
 	defaultProviderOnce.Do(func() {
 		cfg, err := configProvider.LoadOrCreateConfig()
 		if err != nil {
 			defaultProviderErr = err
 			return
 		}
-		defaultProvider, defaultProviderErr = NewRegistryProvider(cfg)
-	})
-
-	return defaultProvider, defaultProviderErr
-}
-
-// GetNonInteractiveProviderWithConfig returns a registry provider configured for
-// headless/serve mode. Unlike GetDefaultProviderWithConfig, this creates the provider
-// with WithInteractive(false), ensuring browser-based OAuth flows are never triggered.
-// This should be used by thv serve and other non-interactive contexts.
-func GetNonInteractiveProviderWithConfig(configProvider config.Provider) (Provider, error) {
-	defaultProviderOnce.Do(func() {
-		cfg, err := configProvider.LoadOrCreateConfig()
-		if err != nil {
-			defaultProviderErr = err
-			return
-		}
-		defaultProvider, defaultProviderErr = NewRegistryProvider(cfg, WithInteractive(false))
+		defaultProvider, defaultProviderErr = NewRegistryProvider(cfg, opts...)
 	})
 
 	return defaultProvider, defaultProviderErr

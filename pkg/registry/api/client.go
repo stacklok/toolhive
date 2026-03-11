@@ -26,6 +26,11 @@ import (
 // HTTP 401 Unauthorized or 403 Forbidden.
 var ErrRegistryUnauthorized = errors.New("registry requires authentication")
 
+// maxErrorBodySize limits how much of a registry error response body is
+// captured in RegistryHTTPError to prevent excessive memory usage from
+// malicious or misconfigured registries.
+const maxErrorBodySize = 1024
+
 // RegistryHTTPError is returned for non-2xx HTTP responses from the registry API.
 // When StatusCode is 401 or 403, Unwrap returns ErrRegistryUnauthorized so
 // callers can use errors.Is(err, ErrRegistryUnauthorized).
@@ -139,7 +144,7 @@ func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.Ser
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		return nil, &RegistryHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
@@ -279,7 +284,7 @@ func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		return nil, &RegistryHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 

@@ -29,6 +29,11 @@ const (
 	authStatusAuthenticated = "authenticated"
 )
 
+// RegistryAuthRequiredCode is the machine-readable error code returned in the
+// structured JSON 503 response when registry authentication is missing.
+// Desktop clients (Studio) match on this value to display the correct UI.
+const RegistryAuthRequiredCode = "registry_auth_required"
+
 // registryAuthErrorResponse is the JSON body for HTTP 503 auth-required errors.
 // Studio uses the "code" field to detect this specific condition and prompt the user.
 type registryAuthErrorResponse struct {
@@ -42,7 +47,7 @@ type registryAuthErrorResponse struct {
 // issue, not a client auth failure (which would be 401).
 func writeRegistryAuthRequiredError(w http.ResponseWriter) {
 	body := registryAuthErrorResponse{
-		Code:    "registry_auth_required",
+		Code:    RegistryAuthRequiredCode,
 		Message: "Registry authentication required. Run 'thv registry login' to authenticate.",
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -156,13 +161,11 @@ func (rr *RegistryRoutes) getRegistryInfo() (RegistryType, string) {
 // In serve mode, the provider is created with non-interactive auth to prevent
 // browser-based OAuth flows from being triggered by API requests.
 func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
-	var provider regpkg.Provider
-	var err error
+	var opts []regpkg.ProviderOption
 	if rr.serveMode {
-		provider, err = regpkg.GetNonInteractiveProviderWithConfig(rr.configProvider)
-	} else {
-		provider, err = regpkg.GetDefaultProviderWithConfig(rr.configProvider)
+		opts = append(opts, regpkg.WithInteractive(false))
 	}
+	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider, opts...)
 	if err != nil {
 		if isRegistryAuthError(err) {
 			writeRegistryAuthRequiredError(w)
@@ -261,7 +264,10 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 
 	registryType, source := rr.getRegistryInfo()
 
-	cfg, _ := rr.configProvider.LoadOrCreateConfig()
+	cfg, cfgErr := rr.configProvider.LoadOrCreateConfig()
+	if cfgErr != nil {
+		slog.Debug("failed to load config for auth status", "error", cfgErr)
+	}
 	regAuthStatus, regAuthType := resolveAuthStatus(cfg)
 
 	registries := []registryInfo{
@@ -336,7 +342,10 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	registryType, source := rr.getRegistryInfo()
 
-	cfg, _ := rr.configProvider.LoadOrCreateConfig()
+	cfg, cfgErr := rr.configProvider.LoadOrCreateConfig()
+	if cfgErr != nil {
+		slog.Debug("failed to load config for auth status", "error", cfgErr)
+	}
 	regAuthStatus, regAuthType := resolveAuthStatus(cfg)
 
 	response := getRegistryResponse{
@@ -657,10 +666,9 @@ type registryInfo struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// AuthStatus is one of: "none", "configured", "authenticated".
-	// Absent from the response when no auth is configured.
-	AuthStatus string `json:"auth_status,omitempty"`
-	// AuthType is "oauth", "bearer" (future), or absent when no auth.
-	AuthType string `json:"auth_type,omitempty"`
+	AuthStatus string `json:"auth_status"`
+	// AuthType is "oauth", "bearer" (future), or empty string when no auth.
+	AuthType string `json:"auth_type"`
 }
 
 // registryListResponse represents the response for listing registries
@@ -688,9 +696,9 @@ type getRegistryResponse struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// AuthStatus is one of: "none", "configured", "authenticated".
-	AuthStatus string `json:"auth_status,omitempty"`
-	// AuthType is "oauth", "bearer" (future), or absent when no auth.
-	AuthType string `json:"auth_type,omitempty"`
+	AuthStatus string `json:"auth_status"`
+	// AuthType is "oauth", "bearer" (future), or empty string when no auth.
+	AuthType string `json:"auth_type"`
 	// Full registry data
 	Registry *registry.Registry `json:"registry"`
 }

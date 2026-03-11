@@ -57,10 +57,10 @@ func TestRegistryHTTPError(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
-			name           string
-			statusCode     int
-			wantUnwrapped  bool
-			wantIsAuthErr  bool
+			name          string
+			statusCode    int
+			wantUnwrapped bool
+			wantIsAuthErr bool
 		}{
 			{
 				name:          "401 unwraps to ErrRegistryUnauthorized",

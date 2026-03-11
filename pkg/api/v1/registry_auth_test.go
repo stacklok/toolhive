@@ -154,6 +154,6 @@ func TestWriteRegistryAuthRequiredError(t *testing.T) {
 	var body registryAuthErrorResponse
 	err := json.NewDecoder(result.Body).Decode(&body)
 	require.NoError(t, err)
-	require.Equal(t, "registry_auth_required", body.Code)
+	require.Equal(t, RegistryAuthRequiredCode, body.Code)
 	require.NotEmpty(t, body.Message)
 }

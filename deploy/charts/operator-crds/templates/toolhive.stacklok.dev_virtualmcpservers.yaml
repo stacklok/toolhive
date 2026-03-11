@@ -695,6 +695,7 @@ spec:
                         - debug
                         type: string
                       sessionManagementV2:
+                        default: true
                         description: |-
                           SessionManagementV2 enables session-scoped backend client lifecycle.
                           When true, vMCP creates real backend connections per session via MultiSessionFactory

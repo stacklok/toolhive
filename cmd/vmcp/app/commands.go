@@ -297,7 +297,10 @@ func discoverBackends(
 //   - Otherwise: logs warning and creates factory with default insecure secret
 //
 // Returns an error only when running in Kubernetes without a secret (fail-fast for production).
-func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcpsession.MultiSessionFactory, error) {
+func createSessionFactory(
+	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
+	agg aggregator.Aggregator,
+) (vmcpsession.MultiSessionFactory, error) {
 	const (
 		envKey                  = "VMCP_SESSION_HMAC_SECRET"
 		minRecommendedSecretLen = 32
@@ -319,6 +322,7 @@ func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcps
 		return vmcpsession.NewSessionFactory(
 			outgoingRegistry,
 			vmcpsession.WithHMACSecret([]byte(hmacSecret)),
+			vmcpsession.WithAggregator(agg),
 		), nil
 	}
 
@@ -332,7 +336,7 @@ func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcps
 
 	// Development mode: use default insecure secret with warning
 	slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
-	return vmcpsession.NewSessionFactory(outgoingRegistry), nil
+	return vmcpsession.NewSessionFactory(outgoingRegistry, vmcpsession.WithAggregator(agg)), nil
 }
 
 // runServe implements the serve command logic
@@ -527,7 +531,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	sessionManagementV2 := cfg.Operational.SessionManagementV2 == nil || *cfg.Operational.SessionManagementV2
 	var sessionFactory vmcpsession.MultiSessionFactory
 	if sessionManagementV2 {
-		sessionFactory, err = createSessionFactory(outgoingRegistry)
+		sessionFactory, err = createSessionFactory(outgoingRegistry, agg)
 		if err != nil {
 			return err
 		}

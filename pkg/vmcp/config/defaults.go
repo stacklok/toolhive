@@ -91,20 +91,23 @@ func (c *Config) EnsureOperationalDefaults() {
 	}
 
 	// mergo treats the bool zero-value (false) as "unset" even through a pointer,
-	// and overwrites the value at the pointer address. Deep-copy the value before
-	// merging so an explicit *false opt-out can be restored afterwards.
-	var savedSMV2 *bool
-	if c.Operational.SessionManagementV2 != nil {
-		v := *c.Operational.SessionManagementV2
-		savedSMV2 = &v
+	// and overwrites the value at the pointer address. Save the original pointer
+	// and the value it holds so they can be restored after the merge, preserving
+	// pointer identity for any caller that retains a reference.
+	origPtr := c.Operational.SessionManagementV2
+	var origVal bool
+	if origPtr != nil {
+		origVal = *origPtr
 	}
 
 	// Merge defaults into target, only filling zero/nil values.
 	// User-provided values are preserved (except for the *bool caveat above).
 	_ = mergo.Merge(c.Operational, DefaultOperationalConfig())
 
-	// Restore the user-provided value if it was explicitly set (non-nil).
-	if savedSMV2 != nil {
-		c.Operational.SessionManagementV2 = savedSMV2
+	// Restore the user-provided value through the original pointer so that
+	// pointer identity is preserved and the explicit opt-out is not lost.
+	if origPtr != nil {
+		*origPtr = origVal
+		c.Operational.SessionManagementV2 = origPtr
 	}
 }

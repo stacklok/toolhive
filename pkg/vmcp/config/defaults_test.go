@@ -264,4 +264,8 @@ func TestEnsureOperationalDefaults_SessionManagementV2OptOut(t *testing.T) {
 	require.NotNil(t, cfg.Operational.SessionManagementV2, "SessionManagementV2 should not be nil")
 	assert.False(t, *cfg.Operational.SessionManagementV2,
 		"explicit false opt-out must be preserved after EnsureOperationalDefaults")
+	// Pointer identity must be preserved: callers that retain the original *bool
+	// must see the updated value through their existing pointer, not a new allocation.
+	assert.Same(t, &falseBool, cfg.Operational.SessionManagementV2,
+		"EnsureOperationalDefaults must not change the pointer identity of SessionManagementV2")
 }

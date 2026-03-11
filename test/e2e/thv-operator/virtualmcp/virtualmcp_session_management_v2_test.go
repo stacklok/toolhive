@@ -328,14 +328,12 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 		})
 
 		ginkgo.It("Should create HMAC secret by default when no flag is set", func() {
-			gomega.Eventually(func() bool {
-				secret := &corev1.Secret{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
+			gomega.Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      expectedSecretName,
 					Namespace: defaultNamespace,
-				}, secret)
-				return err == nil
-			}, timeout, pollInterval).Should(gomega.BeTrue(), "HMAC secret should be created when no SessionManagementV2 flag is set (default is true)")
+				}, &corev1.Secret{})
+			}, timeout, pollInterval).Should(gomega.Succeed(), "HMAC secret should be created when no SessionManagementV2 flag is set (default is true)")
 		})
 
 		ginkgo.It("Should inject HMAC secret env var by default when no flag is set", func() {
@@ -684,14 +682,19 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 			}, timeout, pollInterval).Should(gomega.Succeed())
 
 			ginkgo.By("Asserting HMAC secret is consistently absent after reconciliation")
-			gomega.Consistently(func() bool {
-				secret := &corev1.Secret{}
+			gomega.Consistently(func() error {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      expectedSecretName,
 					Namespace: defaultNamespace,
-				}, secret)
-				return apierrors.IsNotFound(err)
-			}, 30*time.Second, pollInterval).Should(gomega.BeTrue(),
+				}, &corev1.Secret{})
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				return fmt.Errorf("HMAC secret %s exists but should not when SessionManagementV2 is explicitly false", expectedSecretName)
+			}, 30*time.Second, pollInterval).Should(gomega.Succeed(),
 				"HMAC secret should NOT be created when SessionManagementV2 is explicitly false")
 		})
 

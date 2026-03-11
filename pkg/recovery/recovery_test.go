@@ -59,6 +59,23 @@ func TestRecoveryMiddleware_RecoverFromPanic(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "Internal Server Error")
 }
 
+func TestRecoveryMiddleware_ErrAbortHandlerPanicsThrough(t *testing.T) {
+	t.Parallel()
+
+	testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
+
+	wrappedHandler := Middleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		wrappedHandler.ServeHTTP(rec, req)
+	})
+}
+
 func TestRecoveryMiddleware_PreservesRequestContext(t *testing.T) {
 	t.Parallel()
 

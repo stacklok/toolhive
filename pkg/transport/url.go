@@ -61,6 +61,9 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 		}
 
 		if isSSE {
+			if path == "" {
+				path = ssecommon.HTTPSSEEndpoint
+			}
 			return fmt.Sprintf("%s%s#%s", base, path, url.PathEscape(containerName))
 		}
 		if isStreamable {

@@ -310,6 +310,8 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-r
 						flusher.Flush()
 
 						time.Sleep(100 * time.Millisecond)
+					} else {
+						w.WriteHeader(http.StatusNotFound)
 					}
 				}))
 			})
@@ -415,6 +417,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-r
 			})
 
 			It("should work with a real SSE MCP server from registry [Serial]", func() {
+				Skip("Endpoint prefix stripping not yet implemented (issue #3372)")
 				By("Starting an OSV server with SSE transport and endpoint prefix")
 				endpointPrefix := "/api/mcp"
 

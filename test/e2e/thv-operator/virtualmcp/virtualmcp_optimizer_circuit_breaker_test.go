@@ -151,41 +151,52 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 	})
 
 	It("should find tools from all healthy backends via optimizer", func() {
-		By("Creating MCP client and finding echo tool from unstable backend")
-		mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "opt-cb-test-all-healthy", 30*time.Second)
-		Expect(err).ToNot(HaveOccurred())
-		defer mcpClient.Close()
-
-		findResult, err := callFindTool(mcpClient, "echo back a message")
-		Expect(err).ToNot(HaveOccurred())
-		foundTools := getToolNames(findResult)
-		Expect(foundTools).ToNot(BeEmpty(), "find_tool should return results for echo")
-
-		hasEchoTool := false
-		for _, name := range foundTools {
-			if strings.Contains(name, "echo") {
-				hasEchoTool = true
-				break
+		By("Waiting for both echo and fetch tools to be discoverable via optimizer")
+		Eventually(func() error {
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "opt-cb-test-all-healthy", 30*time.Second)
+			if err != nil {
+				return fmt.Errorf("failed to create MCP client: %w", err)
 			}
-		}
-		Expect(hasEchoTool).To(BeTrue(), "Should find echo tool from unstable backend, got tools: %v", foundTools)
+			defer mcpClient.Close()
 
-		By("Finding fetch tool from stable backend")
-		findResult, err = callFindTool(mcpClient, "fetch content from a URL")
-		Expect(err).ToNot(HaveOccurred())
-		foundTools = getToolNames(findResult)
-		Expect(foundTools).ToNot(BeEmpty(), "find_tool should return results for fetch")
-
-		hasFetchTool := false
-		for _, name := range foundTools {
-			if strings.Contains(name, "fetch") {
-				hasFetchTool = true
-				break
+			// Check for echo tool from unstable backend
+			findResult, err := callFindTool(mcpClient, "echo back a message")
+			if err != nil {
+				return fmt.Errorf("find_tool for echo failed: %w", err)
 			}
-		}
-		Expect(hasFetchTool).To(BeTrue(), "Should find fetch tool from stable backend, got tools: %v", foundTools)
+			foundTools := getToolNames(findResult)
+			hasEcho := false
+			for _, name := range foundTools {
+				if strings.Contains(name, "echo") {
+					hasEcho = true
+					break
+				}
+			}
+			if !hasEcho {
+				return fmt.Errorf("echo tool not found yet, got tools: %v", foundTools)
+			}
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "✓ Both backends' tools found via optimizer: echo and fetch\n")
+			// Check for fetch tool from stable backend
+			findResult, err = callFindTool(mcpClient, "fetch content from a URL")
+			if err != nil {
+				return fmt.Errorf("find_tool for fetch failed: %w", err)
+			}
+			foundTools = getToolNames(findResult)
+			hasFetch := false
+			for _, name := range foundTools {
+				if strings.Contains(name, "fetch") {
+					hasFetch = true
+					break
+				}
+			}
+			if !hasFetch {
+				return fmt.Errorf("fetch tool not found yet, got tools: %v", foundTools)
+			}
+
+			return nil
+		}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Both backends' tools should be discoverable via optimizer")
+
+		_, _ = fmt.Fprintf(GinkgoWriter, "Both backends' tools found via optimizer: echo and fetch\n")
 	})
 
 	It("should exclude unhealthy backend tools from optimizer after circuit breaker opens", func() {
@@ -231,7 +242,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 				if vmcpServer.Status.DiscoveredBackends[i].Name == unstableName {
 					backend := &vmcpServer.Status.DiscoveredBackends[i]
 					if backend.CircuitBreakerState == "open" {
-						GinkgoWriter.Printf("✓ Circuit breaker opened (failures: %d)\n",
+						GinkgoWriter.Printf("Circuit breaker opened (failures: %d)\n",
 							backend.ConsecutiveFailures)
 						return nil
 					}
@@ -271,7 +282,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 				"Tools from unhealthy backend %s should be excluded, but found tool: %s", unstableName, name)
 		}
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "✓ Unhealthy backend tools excluded from optimizer results\n")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Unhealthy backend tools excluded from optimizer results\n")
 	})
 
 	It("should restore backend tools in optimizer after circuit breaker recovers", func() {
@@ -330,7 +341,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 					if backend.CircuitBreakerState == "closed" &&
 						(backend.Status == mcpv1alpha1.BackendStatusReady ||
 							backend.Status == mcpv1alpha1.BackendStatusDegraded) {
-						GinkgoWriter.Printf("✓ Backend recovered: status=%s, circuitState=%s\n",
+						GinkgoWriter.Printf("Backend recovered: status=%s, circuitState=%s\n",
 							backend.Status, backend.CircuitBreakerState)
 						return nil
 					}
@@ -375,7 +386,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 		}
 		Expect(hasFetchTool).To(BeTrue(), "Fetch tool should still be available, got tools: %v", foundTools)
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "✓ Both backends' tools available after recovery\n")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Both backends' tools available after recovery\n")
 	})
 
 	It("should not affect stable backend throughout circuit breaker lifecycle", func() {
@@ -405,7 +416,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 		Expect(strings.ToLower(stableBackend.Message)).NotTo(ContainSubstring("circuit breaker open"),
 			"stable backend should not have circuit breaker open, message: %s", stableBackend.Message)
 
-		GinkgoWriter.Printf("✓ Stable backend remained healthy: status=%s, circuitState=%s\n",
+		GinkgoWriter.Printf("Stable backend remained healthy: status=%s, circuitState=%s\n",
 			stableBackend.Status, stableBackend.CircuitBreakerState)
 	})
 })

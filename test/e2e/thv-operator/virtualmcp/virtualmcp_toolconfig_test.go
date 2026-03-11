@@ -150,25 +150,20 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 
 	Context("when MCPToolConfig is used for filtering", func() {
 		It("should only expose filtered tools from backend1", func() {
-			By("Waiting for VirtualMCPServer to discover backends and expose tools")
-			var tools *mcp.ListToolsResult
-			Eventually(func() error {
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-toolconfig-test", 30*time.Second)
-				if err != nil {
-					return fmt.Errorf("failed to create MCP client: %w", err)
+			By("Waiting for VirtualMCPServer to discover backends and expose the renamed tool")
+			tools := WaitForExpectedTools(vmcpNodePort, "toolhive-toolconfig-test", func(tools []mcp.Tool) error {
+				// Must have at least one tool with both backend1Name and "renamed_fetch" in its name
+				for _, tool := range tools {
+					if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "renamed_fetch") {
+						return nil
+					}
 				}
-				defer mcpClient.Close()
-
-				listRequest := mcp.ListToolsRequest{}
-				tools, err = mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				if err != nil {
-					return fmt.Errorf("failed to list tools: %w", err)
+				toolNames := make([]string, len(tools))
+				for i, t := range tools {
+					toolNames[i] = t.Name
 				}
-				if len(tools.Tools) == 0 {
-					return fmt.Errorf("no tools available yet (backends may still be connecting)")
-				}
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "VirtualMCPServer should expose tools once backends are connected")
+				return fmt.Errorf("expected tool containing %q and %q, got tools: %v", backend1Name, "renamed_fetch", toolNames)
+			})
 
 			By(fmt.Sprintf("VirtualMCPServer exposes %d tools after MCPToolConfig filtering", len(tools.Tools)))
 			for _, tool := range tools.Tools {
@@ -180,15 +175,6 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 			for i, tool := range tools.Tools {
 				toolNames[i] = tool.Name
 			}
-
-			// Should have tool from backend1 with renamed name
-			hasBackend1Tool := false
-			for _, name := range toolNames {
-				if strings.Contains(name, backend1Name) && strings.Contains(name, "renamed_fetch") {
-					hasBackend1Tool = true
-				}
-			}
-			Expect(hasBackend1Tool).To(BeTrue(), "Should have renamed_fetch tool from backend1")
 
 			// Should NOT have the original 'fetch' name
 			hasOriginalFetch := false
@@ -220,25 +206,15 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		})
 
 		It("should apply tool overrides from MCPToolConfig", func() {
-			By("Waiting for tools to be available")
-			var tools *mcp.ListToolsResult
-			Eventually(func() error {
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-toolconfig-test", 30*time.Second)
-				if err != nil {
-					return fmt.Errorf("failed to create MCP client: %w", err)
+			By("Waiting for tools to be available with the renamed tool")
+			tools := WaitForExpectedTools(vmcpNodePort, "toolhive-toolconfig-test", func(tools []mcp.Tool) error {
+				for _, tool := range tools {
+					if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "renamed_fetch") {
+						return nil
+					}
 				}
-				defer mcpClient.Close()
-
-				listRequest := mcp.ListToolsRequest{}
-				tools, err = mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				if err != nil {
-					return fmt.Errorf("failed to list tools: %w", err)
-				}
-				if len(tools.Tools) == 0 {
-					return fmt.Errorf("no tools available yet")
-				}
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Should have tools available")
+				return fmt.Errorf("renamed_fetch tool from %s not found yet (got %d tools)", backend1Name, len(tools))
+			})
 
 			// Find the renamed tool
 			var renamedTool *mcp.Tool
@@ -255,25 +231,15 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		})
 
 		It("should still allow calling the renamed tool", func() {
-			By("Waiting for tools to be available")
-			var tools *mcp.ListToolsResult
-			Eventually(func() error {
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-toolconfig-test", 30*time.Second)
-				if err != nil {
-					return fmt.Errorf("failed to create MCP client: %w", err)
+			By("Waiting for tools to be available with the renamed tool")
+			tools := WaitForExpectedTools(vmcpNodePort, "toolhive-toolconfig-test", func(tools []mcp.Tool) error {
+				for _, tool := range tools {
+					if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "renamed_fetch") {
+						return nil
+					}
 				}
-				defer mcpClient.Close()
-
-				listRequest := mcp.ListToolsRequest{}
-				tools, err = mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				if err != nil {
-					return fmt.Errorf("failed to list tools: %w", err)
-				}
-				if len(tools.Tools) == 0 {
-					return fmt.Errorf("no tools available yet")
-				}
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Should have tools available")
+				return fmt.Errorf("renamed_fetch tool from %s not found yet (got %d tools)", backend1Name, len(tools))
+			})
 
 			// Find the renamed tool
 			var targetToolName string
@@ -466,18 +432,24 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 
 	Context("when MCPToolConfig is updated", func() {
 		It("should initially only expose the fetch tool", func() {
-			By("Creating and initializing MCP client for VirtualMCPServer")
-			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-toolconfig-update-test", 30*time.Second)
-			Expect(err).ToNot(HaveOccurred())
-			defer mcpClient.Close()
-
-			By("Listing tools from VirtualMCPServer")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
+			By("Waiting for VirtualMCPServer to discover backends and expose the fetch tool")
+			tools := WaitForExpectedTools(vmcpNodePort, "toolhive-toolconfig-update-test", func(tools []mcp.Tool) error {
+				if len(tools) == 0 {
+					return fmt.Errorf("no tools available yet (backends may still be connecting)")
+				}
+				for _, tool := range tools {
+					if strings.Contains(tool.Name, "fetch") {
+						return nil
+					}
+				}
+				toolNames := make([]string, len(tools))
+				for i, t := range tools {
+					toolNames[i] = t.Name
+				}
+				return fmt.Errorf("expected a tool containing 'fetch', got tools: %v", toolNames)
+			})
 
 			// Should only have fetch tool
-			Expect(tools.Tools).ToNot(BeEmpty())
 			for _, tool := range tools.Tools {
 				Expect(tool.Name).To(ContainSubstring("fetch"), "Should only have fetch tool")
 			}

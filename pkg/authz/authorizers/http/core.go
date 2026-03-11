@@ -114,6 +114,16 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	// Build PORC expression using identity claims
 	porc := a.porcBuilder.Build(feature, operation, resourceID, identity.Claims, arguments)
 
+	// Enrich PORC context with tool annotations for tool-call operations only.
+	// Annotations are MCP tool-specific metadata and should not be injected
+	// for prompt or resource operations.
+	if feature == authorizers.MCPFeatureTool {
+		annotations := authorizers.ToolAnnotationsFromContext(ctx)
+		if annotationMap := authorizers.AnnotationsToMap(annotations); annotationMap != nil {
+			enrichPORCWithAnnotations(porc, annotationMap)
+		}
+	}
+
 	// Log the authorization request
 	slog.Debug("HTTP PDP authorization check",
 		"operation", porc["operation"], "resource", porc["resource"])
@@ -136,4 +146,37 @@ func (a *Authorizer) Close() error {
 		return a.pdp.Close()
 	}
 	return nil
+}
+
+// enrichPORCWithAnnotations adds tool annotation data into the PORC context
+// under the "context.mcp.annotations" path. It navigates and creates the
+// nested map structure as needed.
+//
+// PORCBuilder.Build always sets porc["context"] to a map[string]interface{}
+// and the "mcp" sub-key (when present) to the same type, so the type
+// assertions below are expected to succeed. If they don't (e.g. a future
+// refactor changes the types), we log a warning and create fresh maps rather
+// than silently dropping existing context data.
+func enrichPORCWithAnnotations(porc PORC, annotationMap map[string]interface{}) {
+	porcCtx, ok := porc["context"].(map[string]interface{})
+	if !ok {
+		if porc["context"] != nil {
+			slog.Warn("enrichPORCWithAnnotations: porc[\"context\"] has unexpected type, creating fresh context")
+		}
+		porc["context"] = map[string]interface{}{
+			"mcp": map[string]interface{}{"annotations": annotationMap},
+		}
+		return
+	}
+
+	mcpCtx, ok := porcCtx["mcp"].(map[string]interface{})
+	if !ok {
+		if porcCtx["mcp"] != nil {
+			slog.Warn("enrichPORCWithAnnotations: porc[\"context\"][\"mcp\"] has unexpected type, creating fresh mcp context")
+		}
+		porcCtx["mcp"] = map[string]interface{}{"annotations": annotationMap}
+		return
+	}
+
+	mcpCtx["annotations"] = annotationMap
 }

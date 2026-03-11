@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
@@ -24,6 +26,12 @@ import (
 const (
 	// maxAPILogLines is the maximum number of log lines returned by API endpoints
 	maxAPILogLines = 1000
+
+	// standardRouteTimeout is the timeout for quick read/action routes.
+	standardRouteTimeout = 60 * time.Second
+	// longRunningRouteTimeout is the timeout for routes that may pull container images.
+	// Slightly longer than imageRetrievalTimeout to let the specific error surface first.
+	longRunningRouteTimeout = imageRetrievalTimeout + 1*time.Minute
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -64,20 +72,23 @@ func WorkloadRouter(
 	}
 
 	r := chi.NewRouter()
-	r.Get("/", apierrors.ErrorHandler(routes.listWorkloads))
-	r.Post("/", apierrors.ErrorHandler(routes.createWorkload))
-	r.Post("/stop", apierrors.ErrorHandler(routes.stopWorkloadsBulk))
-	r.Post("/restart", apierrors.ErrorHandler(routes.restartWorkloadsBulk))
-	r.Post("/delete", apierrors.ErrorHandler(routes.deleteWorkloadsBulk))
-	r.Get("/{name}", apierrors.ErrorHandler(routes.getWorkload))
-	r.Post("/{name}/edit", apierrors.ErrorHandler(routes.updateWorkload))
-	r.Post("/{name}/stop", apierrors.ErrorHandler(routes.stopWorkload))
-	r.Post("/{name}/restart", apierrors.ErrorHandler(routes.restartWorkload))
-	r.Get("/{name}/status", apierrors.ErrorHandler(routes.getWorkloadStatus))
-	r.Get("/{name}/logs", apierrors.ErrorHandler(routes.getLogsForWorkload))
-	r.Get("/{name}/proxy-logs", apierrors.ErrorHandler(routes.getProxyLogsForWorkload))
-	r.Get("/{name}/export", apierrors.ErrorHandler(routes.exportWorkload))
-	r.Delete("/{name}", apierrors.ErrorHandler(routes.deleteWorkload))
+	stdTimeout := middleware.Timeout(standardRouteTimeout)
+	longTimeout := middleware.Timeout(longRunningRouteTimeout)
+
+	r.With(stdTimeout).Get("/", apierrors.ErrorHandler(routes.listWorkloads))
+	r.With(longTimeout).Post("/", apierrors.ErrorHandler(routes.createWorkload))
+	r.With(stdTimeout).Post("/stop", apierrors.ErrorHandler(routes.stopWorkloadsBulk))
+	r.With(stdTimeout).Post("/restart", apierrors.ErrorHandler(routes.restartWorkloadsBulk))
+	r.With(stdTimeout).Post("/delete", apierrors.ErrorHandler(routes.deleteWorkloadsBulk))
+	r.With(stdTimeout).Get("/{name}", apierrors.ErrorHandler(routes.getWorkload))
+	r.With(longTimeout).Post("/{name}/edit", apierrors.ErrorHandler(routes.updateWorkload))
+	r.With(stdTimeout).Post("/{name}/stop", apierrors.ErrorHandler(routes.stopWorkload))
+	r.With(stdTimeout).Post("/{name}/restart", apierrors.ErrorHandler(routes.restartWorkload))
+	r.With(stdTimeout).Get("/{name}/status", apierrors.ErrorHandler(routes.getWorkloadStatus))
+	r.With(stdTimeout).Get("/{name}/logs", apierrors.ErrorHandler(routes.getLogsForWorkload))
+	r.With(stdTimeout).Get("/{name}/proxy-logs", apierrors.ErrorHandler(routes.getProxyLogsForWorkload))
+	r.With(stdTimeout).Get("/{name}/export", apierrors.ErrorHandler(routes.exportWorkload))
+	r.With(stdTimeout).Delete("/{name}", apierrors.ErrorHandler(routes.deleteWorkload))
 
 	return r
 }

@@ -74,6 +74,8 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 				OriginalName:              toolName,
 				Description:               candidate.Tool.Description,
 				InputSchema:               candidate.Tool.InputSchema,
+				OutputSchema:              candidate.Tool.OutputSchema,
+				Annotations:               candidate.Tool.Annotations,
 				BackendID:                 candidate.BackendID,
 				ConflictResolutionApplied: vmcp.ConflictStrategyPriority,
 			}
@@ -100,6 +102,8 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 					OriginalName:              toolName,
 					Description:               candidate.Tool.Description,
 					InputSchema:               candidate.Tool.InputSchema,
+					OutputSchema:              candidate.Tool.OutputSchema,
+					Annotations:               candidate.Tool.Annotations,
 					BackendID:                 candidate.BackendID,
 					ConflictResolutionApplied: vmcp.ConflictStrategyPrefix, // Fallback used prefix
 				}
@@ -112,6 +116,8 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 			OriginalName:              toolName,
 			Description:               winner.Tool.Description,
 			InputSchema:               winner.Tool.InputSchema,
+			OutputSchema:              winner.Tool.OutputSchema,
+			Annotations:               winner.Tool.Annotations,
 			BackendID:                 winner.BackendID,
 			ConflictResolutionApplied: vmcp.ConflictStrategyPriority,
 		}

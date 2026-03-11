@@ -370,9 +370,6 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 
 	ginkgo.Context("Session token binding prevents session hijacking", ginkgo.Ordered, func() {
 		const (
-			// oidcNodePort is fixed so the test client can reach the in-cluster OIDC server.
-			// Must not conflict with other tests (e.g. auth_discovery_test.go uses 30010).
-			oidcNodePort    = int32(30013)
 			oidcServiceName = "mock-oidc-session-test"
 		)
 
@@ -381,6 +378,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 			vmcpName     string
 			backendName  string
 			vmcpNodePort int32
+			oidcNodePort int32
 			oidcIssuer   string
 			oidcCleanup  func()
 		)
@@ -426,8 +424,8 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 			backendName = fmt.Sprintf("e2e-yardstick-hijack-%d", timestamp)
 
 			// ---- Deploy parameterized mock OIDC server ----
-			oidcIssuer, oidcCleanup = DeployParameterizedOIDCServer(
-				ctx, k8sClient, oidcServiceName, defaultNamespace, oidcNodePort, 3*time.Minute, pollInterval,
+			oidcIssuer, oidcNodePort, oidcCleanup = DeployParameterizedOIDCServer(
+				ctx, k8sClient, oidcServiceName, defaultNamespace, 3*time.Minute, pollInterval,
 			)
 
 			// ---- Deploy yardstick backend ----

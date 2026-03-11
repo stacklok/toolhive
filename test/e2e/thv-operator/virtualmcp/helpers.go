@@ -1352,9 +1352,8 @@ func DeployParameterizedOIDCServer(
 	ctx context.Context,
 	c client.Client,
 	name, namespace string,
-	nodePort int32,
 	timeout, pollingInterval time.Duration,
-) (issuerURL string, cleanup func()) {
+) (issuerURL string, allocatedNodePort int32, cleanup func()) {
 	configMapName := name + "-code"
 
 	// Patch the placeholder issuer into the script so the JWT iss claim and
@@ -1408,8 +1407,8 @@ func DeployParameterizedOIDCServer(
 		},
 	})).To(gomega.Succeed())
 
-	ginkgo.By("Creating parameterized OIDC server service with NodePort")
-	gomega.Expect(c.Create(ctx, &corev1.Service{
+	ginkgo.By("Creating parameterized OIDC server service with auto-assigned NodePort")
+	oidcSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
@@ -1418,10 +1417,15 @@ func DeployParameterizedOIDCServer(
 				Port:       80,
 				TargetPort: intstr.FromInt(8080),
 				Protocol:   corev1.ProtocolTCP,
-				NodePort:   nodePort,
 			}},
 		},
-	})).To(gomega.Succeed())
+	}
+	gomega.Expect(c.Create(ctx, oidcSvc)).To(gomega.Succeed())
+
+	// Read back the auto-assigned NodePort
+	gomega.Expect(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, oidcSvc)).To(gomega.Succeed())
+	allocatedNodePort = oidcSvc.Spec.Ports[0].NodePort
+	gomega.Expect(allocatedNodePort).NotTo(gomega.BeZero(), "Kubernetes should auto-assign a NodePort")
 
 	ginkgo.By("Waiting for parameterized OIDC server to be ready")
 	gomega.Eventually(func() bool {
@@ -1454,7 +1458,7 @@ func DeployParameterizedOIDCServer(
 			return podGone && svcGone
 		}, timeout, pollingInterval).Should(gomega.BeTrue(), "OIDC server pod and service should be fully deleted")
 	}
-	return issuerURL, cleanup
+	return issuerURL, allocatedNodePort, cleanup
 }
 
 // CleanupMockHTTPServer removes the mock HTTP server resources

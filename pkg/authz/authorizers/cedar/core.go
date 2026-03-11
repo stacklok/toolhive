@@ -460,15 +460,18 @@ func (a *Authorizer) authorizeToolCall(
 	// Resource is the tool being called
 	resource := fmt.Sprintf("Tool::%s", toolName)
 
-	// Read tool annotations from context and include in resource attributes
+	// Read tool annotations from context and include in resource attributes.
+	// Annotations are merged first so that the standard attributes ("name",
+	// "operation", "feature") always take precedence and cannot be overwritten
+	// by annotation keys — intentionally or accidentally.
 	annotationAttrs := authorizers.AnnotationsToMap(authorizers.ToolAnnotationsFromContext(ctx))
 
 	// Create attributes for the entities
-	attributes := mergeContexts(map[string]interface{}{
+	attributes := mergeContexts(annotationAttrs, attrsMap, map[string]interface{}{
 		"name":      toolName,
 		"operation": "call",
 		"feature":   "tool",
-	}, annotationAttrs, attrsMap)
+	})
 
 	// Create Cedar entities
 	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)

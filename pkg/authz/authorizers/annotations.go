@@ -9,6 +9,22 @@ import "context"
 // decisions. The fields match the MCP specification's tool annotation schema.
 // Pointer types are used so callers can distinguish "not set" (nil) from
 // an explicit false value.
+//
+// # Trust Boundary
+//
+// Annotations MUST be sourced from the server-side tool registry (the MCP
+// tools/list response), NOT from the client's tools/call request body.
+// Allowing clients to supply their own annotations would let a malicious
+// caller set readOnlyHint=true on a destructive tool and bypass policies
+// that rely on annotations.
+//
+// # Authorizer Exposure Paths
+//
+// The two authorizer implementations expose annotations at different
+// locations so that policy authors can reference them:
+//
+//   - Cedar authorizer: flat on the resource entity — e.g. resource.readOnlyHint
+//   - HTTP PDP authorizer: nested in the PORC context — context.mcp.annotations.readOnlyHint
 type ToolAnnotations struct {
 	ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
 	DestructiveHint *bool `json:"destructiveHint,omitempty"`

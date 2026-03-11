@@ -64,6 +64,8 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 				OriginalName:              tool.Name,
 				Description:               tool.Description,
 				InputSchema:               tool.InputSchema,
+				OutputSchema:              tool.OutputSchema,
+				Annotations:               tool.Annotations,
 				BackendID:                 backendID,
 				ConflictResolutionApplied: vmcp.ConflictStrategyPrefix,
 			}

@@ -295,8 +295,28 @@ type Tool struct {
 	// Per MCP specification, this describes the structure of the tool's response.
 	OutputSchema map[string]any
 
+	// Annotations describes behavioral hints for the tool (optional).
+	// Per MCP specification, these include readOnlyHint, destructiveHint, etc.
+	Annotations *ToolAnnotations
+
 	// BackendID identifies the backend that provides this tool.
 	BackendID string
+}
+
+// ToolAnnotations describes behavioral hints for a tool.
+// These are the vmcp-domain equivalents of mcp.ToolAnnotation, following the
+// Anti-Corruption Layer pattern (vmcp types are decoupled from mcp-go).
+type ToolAnnotations struct {
+	// Title is a human-readable title for the tool.
+	Title string `json:"title,omitempty"`
+	// ReadOnlyHint indicates whether the tool does not modify its environment.
+	ReadOnlyHint *bool `json:"readOnlyHint,omitempty"`
+	// DestructiveHint indicates whether the tool may perform destructive updates.
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
+	// IdempotentHint indicates whether repeated calls with same args have no additional effect.
+	IdempotentHint *bool `json:"idempotentHint,omitempty"`
+	// OpenWorldHint indicates whether the tool interacts with external entities.
+	OpenWorldHint *bool `json:"openWorldHint,omitempty"`
 }
 
 // Resource represents an MCP resource capability.

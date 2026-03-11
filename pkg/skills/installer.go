@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	"github.com/stacklok/toolhive/pkg/fileutils"
 )
 
 const (
@@ -112,28 +113,15 @@ func Extract(layerData []byte, targetDir string, force bool) (*ExtractResult, er
 // writeFiles writes extracted file entries to targetDir with containment checks
 // and sanitized permissions.
 func writeFiles(files []ociskills.FileEntry, targetDir string) error {
-	cleanTarget := filepath.Clean(targetDir) + string(os.PathSeparator)
+	cleanTarget := filepath.Clean(targetDir)
 
 	for _, f := range files {
-		destPath := filepath.Clean(filepath.Join(targetDir, filepath.FromSlash(f.Path)))
-
-		// Pre-write containment check: ensure destPath is beneath targetDir.
-		// This is defense-in-depth — toolhive-core already validates paths,
-		// but an escaped file would NOT be cleaned up by CheckFilesystem.
-		if !strings.HasPrefix(destPath, cleanTarget) {
-			return fmt.Errorf("path traversal detected: file %q escapes target directory", f.Path)
-		}
-
-		parentDir := filepath.Dir(destPath)
-		if err := os.MkdirAll(parentDir, DirPermissions); err != nil {
-			return fmt.Errorf("creating directory %q: %w", parentDir, err)
-		}
-
-		// Sanitize file permissions: strip setuid/setgid/sticky, cap at 0644
+		// Sanitize file permissions: strip setuid/setgid/sticky, cap at 0644.
+		// Pre-write containment check is handled by WriteContainedFile.
 		mode := os.FileMode(f.Mode&0o777) & FilePermissionMask //nolint:gosec // mode is masked to 9 bits before conversion
 
-		if err := os.WriteFile(destPath, f.Content, mode); err != nil {
-			return fmt.Errorf("writing file %q: %w", f.Path, err)
+		if err := fileutils.WriteContainedFile(cleanTarget, f.Path, f.Content, DirPermissions, mode); err != nil {
+			return err
 		}
 	}
 	return nil

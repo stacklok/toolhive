@@ -484,6 +484,13 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 			pr.SetURL(targetURL)
 			pr.SetXForwarded()
 
+			// Stash the original inbound request in the outbound request's
+			// context so that ModifyResponse (SSE response processor) can
+			// read the client's real headers instead of the auto-injected
+			// X-Forwarded-* values that SetXForwarded() wrote to pr.Out.
+			ctx := InboundRequestToContext(pr.Out.Context(), pr.In)
+			pr.Out = pr.Out.WithContext(ctx)
+
 			// Rewrite path to the remote server's path when configured.
 			// When the remote URL has a path (e.g., /v2/mcp), the target URI only
 			// contains the scheme+host. The client sends to /mcp (default MCP

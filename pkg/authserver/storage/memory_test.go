@@ -133,7 +133,7 @@ func withStorage(t *testing.T, fn func(context.Context, *MemoryStorage)) {
 	t.Parallel()
 	storage := NewMemoryStorage()
 	defer storage.Close()
-	fn(context.Background(), storage)
+	fn(t.Context(), storage)
 }
 
 func requireNotFoundError(t *testing.T, err error) {
@@ -715,7 +715,7 @@ func TestMemoryStorage_CleanupLoop(t *testing.T) {
 
 	t.Run("cleanup runs periodically", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
+		ctx := t.Context()
 		storage := NewMemoryStorage(WithCleanupInterval(50 * time.Millisecond))
 		defer storage.Close()
 
@@ -724,8 +724,9 @@ func TestMemoryStorage_CleanupLoop(t *testing.T) {
 		require.NoError(t, storage.CreateAuthorizeCodeSession(ctx, "expired", expiredRequest))
 		assert.Equal(t, 1, storage.Stats().AuthCodes)
 
-		time.Sleep(100 * time.Millisecond)
-		assert.Equal(t, 0, storage.Stats().AuthCodes)
+		require.Eventually(t, func() bool {
+			return storage.Stats().AuthCodes == 0
+		}, 2*time.Second, 25*time.Millisecond, "expired auth code should be cleaned up")
 	})
 
 	t.Run("close stops cleanup goroutine", func(t *testing.T) {

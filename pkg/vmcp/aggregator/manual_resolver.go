@@ -143,6 +143,8 @@ func (r *ManualConflictResolver) resolveToolWithOverride(backendID string, tool 
 		OriginalName:              tool.Name,
 		Description:               description,
 		InputSchema:               tool.InputSchema,
+		OutputSchema:              tool.OutputSchema,
+		Annotations:               tool.Annotations,
 		BackendID:                 backendID,
 		ConflictResolutionApplied: vmcp.ConflictStrategyManual,
 	}

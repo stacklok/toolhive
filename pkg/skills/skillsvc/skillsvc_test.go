@@ -1942,7 +1942,7 @@ func TestUninstallRemovesSkillFromGroups(t *testing.T) {
 	}
 }
 
-func TestValidateOCITag(t *testing.T) {
+func TestValidateOCITagOrReference(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1950,7 +1950,7 @@ func TestValidateOCITag(t *testing.T) {
 		tag     string
 		wantErr bool
 	}{
-		// Valid tags
+		// Valid bare tags
 		{name: "simple version", tag: "v1.0.0", wantErr: false},
 		{name: "latest", tag: "latest", wantErr: false},
 		{name: "numeric", tag: "123", wantErr: false},
@@ -1963,23 +1963,32 @@ func TestValidateOCITag(t *testing.T) {
 		{name: "max length 128 chars", tag: strings.Repeat("a", 128), wantErr: false},
 		{name: "exceeds max length 129 chars", tag: strings.Repeat("a", 129), wantErr: true},
 
-		// Invalid tags
+		// Valid full OCI references
+		{name: "ghcr tagged reference", tag: "ghcr.io/stacklok/toolhive-skills/my-skill:v1.0.0", wantErr: false},
+		{name: "CI format tag", tag: "ghcr.io/stacklok/toolhive-skills/my-skill:0.0.1-dev.123_abc1234", wantErr: false},
+		{name: "docker hub reference", tag: "docker.io/library/nginx:1.25", wantErr: false},
+		{name: "localhost with port", tag: "localhost:5000/my-skill:v1", wantErr: false},
+		{name: "digest reference", tag: "ghcr.io/org/repo@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", wantErr: false},
+
+		// Invalid bare tags
 		{name: "empty string", tag: "", wantErr: true},
 		{name: "contains space", tag: "invalid tag", wantErr: true},
 		{name: "contains exclamation", tag: "invalid!", wantErr: true},
-		{name: "contains at", tag: "invalid@tag", wantErr: true},
 		{name: "contains hash", tag: "invalid#tag", wantErr: true},
-		{name: "contains slash", tag: "invalid/tag", wantErr: true},
+
+		// Invalid full references
+		{name: "space in tag of reference", tag: "ghcr.io/org/repo:invalid tag", wantErr: true},
+		{name: "empty tag after colon", tag: "ghcr.io/org/repo:", wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validateOCITag(tt.tag)
+			err := validateOCITagOrReference(tt.tag)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "invalid OCI tag")
+				assert.Contains(t, err.Error(), "invalid OCI reference or tag")
 				// Verify it returns a proper HTTP status code.
 				var coded *httperr.CodedError
 				require.ErrorAs(t, err, &coded)

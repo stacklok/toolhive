@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -360,29 +360,6 @@ func (m *mockMiddlewareImpl) Close() error {
 func TestRunner_EmbeddedAuthServer_Integration(t *testing.T) {
 	t.Parallel()
 
-	// createMinimalAuthServerConfig creates a minimal valid RunConfig for the embedded auth server.
-	// It uses development mode defaults (no signing keys, no HMAC secrets) and
-	// a pure OAuth2 upstream to avoid OIDC discovery.
-	createMinimalAuthServerConfig := func() *authserver.RunConfig {
-		return &authserver.RunConfig{
-			SchemaVersion: authserver.CurrentSchemaVersion,
-			Issuer:        "http://localhost:8080",
-			Upstreams: []authserver.UpstreamRunConfig{
-				{
-					Name: "test-upstream",
-					Type: authserver.UpstreamProviderTypeOAuth2,
-					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-						AuthorizationEndpoint: "https://example.com/authorize",
-						TokenEndpoint:         "https://example.com/token",
-						ClientID:              "test-client-id",
-						RedirectURI:           "http://localhost:8080/oauth/callback",
-					},
-				},
-			},
-			AllowedAudiences: []string{"https://mcp.example.com"},
-		}
-	}
-
 	t.Run("Cleanup closes embedded auth server", func(t *testing.T) {
 		t.Parallel()
 
@@ -488,28 +465,7 @@ func TestRunner_EmbeddedAuthServer_Integration(t *testing.T) {
 func TestRunner_GetUpstreamTokenService(t *testing.T) {
 	t.Parallel()
 
-	// createMinimalAuthServerConfig creates a minimal valid RunConfig for the embedded auth server.
-	createMinimalAuthServerConfig := func() *authserver.RunConfig {
-		return &authserver.RunConfig{
-			SchemaVersion: authserver.CurrentSchemaVersion,
-			Issuer:        "http://localhost:8080",
-			Upstreams: []authserver.UpstreamRunConfig{
-				{
-					Name: "test-upstream",
-					Type: authserver.UpstreamProviderTypeOAuth2,
-					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-						AuthorizationEndpoint: "https://example.com/authorize",
-						TokenEndpoint:         "https://example.com/token",
-						ClientID:              "test-client-id",
-						RedirectURI:           "http://localhost:8080/oauth/callback",
-					},
-				},
-			},
-			AllowedAudiences: []string{"https://mcp.example.com"},
-		}
-	}
-
-	t.Run("always returns non-nil function", func(t *testing.T) {
+	t.Run("returns nil when no auth server configured", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -519,30 +475,15 @@ func TestRunner_GetUpstreamTokenService(t *testing.T) {
 
 		runConfig := NewRunConfig()
 		runner := NewRunner(runConfig, mockStatusManager)
-		runner.embeddedAuthServer = nil
 
 		serviceGetter := runner.GetUpstreamTokenService()
 		assert.NotNil(t, serviceGetter, "GetUpstreamTokenService should always return a non-nil function")
-	})
 
-	t.Run("returned function returns nil when embeddedAuthServer is nil", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
-
-		runConfig := NewRunConfig()
-		runner := NewRunner(runConfig, mockStatusManager)
-		runner.embeddedAuthServer = nil
-
-		serviceGetter := runner.GetUpstreamTokenService()
 		svc := serviceGetter()
-		assert.Nil(t, svc, "service should be nil when embeddedAuthServer is nil")
+		assert.Nil(t, svc, "service should be nil when no auth server is configured")
 	})
 
-	t.Run("returned function returns service when embeddedAuthServer is set", func(t *testing.T) {
+	t.Run("returns service when upstreamTokenService is set", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -553,6 +494,7 @@ func TestRunner_GetUpstreamTokenService(t *testing.T) {
 		runConfig := NewRunConfig()
 		runner := NewRunner(runConfig, mockStatusManager)
 
+		// Simulate what Run() does: create auth server, then set the service
 		authServerCfg := createMinimalAuthServerConfig()
 		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
 		require.NoError(t, err)
@@ -561,69 +503,12 @@ func TestRunner_GetUpstreamTokenService(t *testing.T) {
 
 		runner.embeddedAuthServer = embeddedServer
 
-		serviceGetter := runner.GetUpstreamTokenService()
-		svc := serviceGetter()
-		assert.NotNil(t, svc, "service should not be nil when embeddedAuthServer is set")
-	})
-
-	t.Run("returned closure checks embeddedAuthServer at call time not creation time", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
-
-		runConfig := NewRunConfig()
-		runner := NewRunner(runConfig, mockStatusManager)
-		runner.embeddedAuthServer = nil
+		stor := embeddedServer.IDPTokenStorage()
+		refresher := embeddedServer.UpstreamTokenRefresher()
+		runner.upstreamTokenService = upstreamtoken.NewInProcessService(stor, refresher)
 
 		serviceGetter := runner.GetUpstreamTokenService()
-		assert.NotNil(t, serviceGetter)
-
 		svc := serviceGetter()
-		assert.Nil(t, svc, "service should be nil initially")
-
-		authServerCfg := createMinimalAuthServerConfig()
-		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
-		require.NoError(t, err)
-		require.NotNil(t, embeddedServer)
-		defer func() { _ = embeddedServer.Close() }()
-
-		runner.embeddedAuthServer = embeddedServer
-
-		svc = serviceGetter()
-		assert.NotNil(t, svc, "service should be available after embeddedAuthServer is set")
-	})
-
-	t.Run("returned closure returns nil after embeddedAuthServer becomes nil", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
-
-		runConfig := NewRunConfig()
-		runner := NewRunner(runConfig, mockStatusManager)
-
-		authServerCfg := createMinimalAuthServerConfig()
-		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
-		require.NoError(t, err)
-		require.NotNil(t, embeddedServer)
-
-		runner.embeddedAuthServer = embeddedServer
-
-		serviceGetter := runner.GetUpstreamTokenService()
-
-		svc := serviceGetter()
-		assert.NotNil(t, svc, "service should be available initially")
-
-		err = embeddedServer.Close()
-		require.NoError(t, err)
-		runner.embeddedAuthServer = nil
-
-		svc = serviceGetter()
-		assert.Nil(t, svc, "service should be nil after embeddedAuthServer becomes nil")
+		assert.NotNil(t, svc, "service should not be nil when upstreamTokenService is set")
 	})
 }

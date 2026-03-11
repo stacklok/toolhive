@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -21,8 +20,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
-	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -76,6 +75,11 @@ type Runner struct {
 	// embeddedAuthServer is the embedded OAuth/OIDC authorization server.
 	// Only initialized when Config.EmbeddedAuthServerConfig is set.
 	embeddedAuthServer *authserverrunner.EmbeddedAuthServer
+
+	// upstreamTokenService is the upstream token service, created eagerly
+	// after the embedded auth server is initialized in Run().
+	// Nil when no embedded auth server is configured.
+	upstreamTokenService upstreamtoken.Service
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -126,39 +130,15 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
-// GetUpstreamTokenService returns a lazy accessor for the upstream token service.
+// GetUpstreamTokenService returns an accessor for the upstream token service.
 // The returned function should be called at request time; it returns nil if
-// the embedded auth server is not configured or not yet initialized.
+// the embedded auth server is not configured.
 //
-// The service is created and cached on first successful access. It holds a
-// singleflight.Group for deduplication, so it must be shared across requests.
+// This method always returns a non-nil function. Service availability is
+// determined at request time when the returned function is called.
 func (r *Runner) GetUpstreamTokenService() func() upstreamtoken.Service {
-	var (
-		cached upstreamtoken.Service
-		mu     sync.Mutex
-	)
-
 	return func() upstreamtoken.Service {
-		// Check auth server availability before taking the lock (shutdown safety).
-		if r.embeddedAuthServer == nil {
-			return nil
-		}
-
-		mu.Lock()
-		defer mu.Unlock()
-
-		if cached != nil {
-			return cached
-		}
-
-		stor := r.embeddedAuthServer.IDPTokenStorage()
-		if stor == nil {
-			return nil
-		}
-
-		refresher := r.embeddedAuthServer.UpstreamTokenRefresher()
-		cached = upstreamtoken.NewInProcessService(stor, refresher)
-		return cached
+		return r.upstreamTokenService
 	}
 }
 
@@ -251,6 +231,36 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Initialize embedded auth server if configured.
+	// This must happen before middleware creation so that the upstream token
+	// service is available to middleware factories (e.g., upstreamswap).
+	if r.Config.EmbeddedAuthServerConfig != nil {
+		var err error
+		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create embedded auth server: %w", err)
+		}
+		slog.Debug("embedded authorization server initialized")
+
+		// Create the upstream token service eagerly now that the auth server exists.
+		// IDPTokenStorage is guaranteed non-nil after successful construction.
+		// UpstreamTokenRefresher may be nil if no upstream IDP is configured;
+		// InProcessService handles this gracefully (returns ErrNoRefreshToken).
+		stor := r.embeddedAuthServer.IDPTokenStorage()
+		refresher := r.embeddedAuthServer.UpstreamTokenRefresher()
+		r.upstreamTokenService = upstreamtoken.NewInProcessService(stor, refresher)
+
+		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
+		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
+		handler := r.embeddedAuthServer.Handler()
+		transportConfig.PrefixHandlers = map[string]http.Handler{
+			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
+			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
+			"/.well-known/openid-configuration":       handler, // OIDC Discovery
+			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
+		}
+	}
+
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
 	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
 		// First, get the correct factory function for the middleware type.
@@ -270,26 +280,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
-
-	// Initialize embedded auth server if configured
-	if r.Config.EmbeddedAuthServerConfig != nil {
-		var err error
-		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
-		if err != nil {
-			return fmt.Errorf("failed to create embedded auth server: %w", err)
-		}
-		slog.Debug("embedded authorization server initialized")
-
-		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
-		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
-		handler := r.embeddedAuthServer.Handler()
-		transportConfig.PrefixHandlers = map[string]http.Handler{
-			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
-			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
-			"/.well-known/openid-configuration":       handler, // OIDC Discovery
-			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
-		}
-	}
 
 	// Set up the transport
 	slog.Debug("setting up transport", "transport", r.Config.Transport)

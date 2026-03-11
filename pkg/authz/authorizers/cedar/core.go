@@ -326,60 +326,6 @@ func (a *Authorizer) IsAuthorized(
 	return decision == cedar.Allow, nil
 }
 
-// AuthorizeWithJWTClaims demonstrates how to use JWT claims with the Cedar authorization middleware.
-// This method:
-// 1. Extracts JWT claims from the context
-// 2. Extracts the client ID from the claims
-// 3. Includes the JWT claims in the Cedar context
-// 4. Creates entities with appropriate attributes
-// 5. Authorizes the operation using the client ID and claims
-func (a *Authorizer) AuthorizeWithJWTClaims(
-	ctx context.Context,
-	feature authorizers.MCPFeature,
-	operation authorizers.MCPOperation,
-	resourceID string,
-	arguments map[string]interface{},
-) (bool, error) {
-	// Extract Identity from the context
-	identity, ok := auth.IdentityFromContext(ctx)
-	if !ok {
-		return false, ErrMissingPrincipal
-	}
-
-	// Extract client ID from Identity claims
-	claims := jwt.MapClaims(identity.Claims)
-	clientID, ok := extractClientIDFromClaims(claims)
-	if !ok {
-		return false, ErrMissingPrincipal
-	}
-
-	// Preprocess claims and arguments
-	processedClaims := preprocessClaims(claims)
-	processedArgs := preprocessArguments(arguments)
-
-	// Authorize based on the feature and operation
-	switch {
-	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
-		// Use the authorizeToolCall function for tool call operations
-		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs)
-
-	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
-		// Use the authorizePromptGet function for prompt get operations
-		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs)
-
-	case feature == authorizers.MCPFeatureResource && operation == authorizers.MCPOperationRead:
-		// Use the authorizeResourceRead function for resource read operations
-		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs)
-
-	case operation == authorizers.MCPOperationList:
-		// Use the authorizeFeatureList function for list operations
-		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs)
-
-	default:
-		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)
-	}
-}
-
 // extractClientIDFromClaims extracts the client ID from JWT claims.
 // By default, it uses the "sub" (subject) claim as the client ID.
 // This can be customized based on your JWT token structure.
@@ -623,4 +569,58 @@ func sanitizeURIForCedar(uri string) string {
 		".", "_",
 	)
 	return replacer.Replace(uri)
+}
+
+// AuthorizeWithJWTClaims demonstrates how to use JWT claims with the Cedar authorization middleware.
+// This method:
+// 1. Extracts JWT claims from the context
+// 2. Extracts the client ID from the claims
+// 3. Includes the JWT claims in the Cedar context
+// 4. Creates entities with appropriate attributes
+// 5. Authorizes the operation using the client ID and claims
+func (a *Authorizer) AuthorizeWithJWTClaims(
+	ctx context.Context,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
+	resourceID string,
+	arguments map[string]interface{},
+) (bool, error) {
+	// Extract Identity from the context
+	identity, ok := auth.IdentityFromContext(ctx)
+	if !ok {
+		return false, ErrMissingPrincipal
+	}
+
+	// Extract client ID from Identity claims
+	claims := jwt.MapClaims(identity.Claims)
+	clientID, ok := extractClientIDFromClaims(claims)
+	if !ok {
+		return false, ErrMissingPrincipal
+	}
+
+	// Preprocess claims and arguments
+	processedClaims := preprocessClaims(claims)
+	processedArgs := preprocessArguments(arguments)
+
+	// Authorize based on the feature and operation
+	switch {
+	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
+		// Use the authorizeToolCall function for tool call operations
+		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs)
+
+	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
+		// Use the authorizePromptGet function for prompt get operations
+		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs)
+
+	case feature == authorizers.MCPFeatureResource && operation == authorizers.MCPOperationRead:
+		// Use the authorizeResourceRead function for resource read operations
+		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs)
+
+	case operation == authorizers.MCPOperationList:
+		// Use the authorizeFeatureList function for list operations
+		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs)
+
+	default:
+		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)
+	}
 }

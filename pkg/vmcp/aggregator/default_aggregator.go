@@ -475,7 +475,10 @@ func (a *defaultAggregator) AggregateCapabilities(
 		return nil, fmt.Errorf("failed to merge capabilities: %w", err)
 	}
 
-	// Update metadata with backend counts
+	// Update metadata with backend counts.
+	// capabilities is a map[backendID]*BackendCapabilities — backends that fail
+	// to respond in QueryAllCapabilities are silently skipped (not added to the map),
+	// so len(capabilities) reflects only the successfully queried backends.
 	aggregated.Metadata.BackendCount = len(backends)
 	aggregated.Metadata.QueriedBackendCount = len(capabilities)
 

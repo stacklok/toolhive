@@ -724,8 +724,9 @@ func TestMemoryStorage_CleanupLoop(t *testing.T) {
 		require.NoError(t, storage.CreateAuthorizeCodeSession(ctx, "expired", expiredRequest))
 		assert.Equal(t, 1, storage.Stats().AuthCodes)
 
-		time.Sleep(100 * time.Millisecond)
-		assert.Equal(t, 0, storage.Stats().AuthCodes)
+		require.Eventually(t, func() bool {
+			return storage.Stats().AuthCodes == 0
+		}, 2*time.Second, 25*time.Millisecond, "expired auth code should be cleaned up")
 	})
 
 	t.Run("close stops cleanup goroutine", func(t *testing.T) {

@@ -58,8 +58,8 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 				return nil, fmt.Errorf(
 					"registry at %s returned 401 Unauthorized\n\n"+
 						"If this registry requires authentication, configure it with:\n"+
-						"  thv config set-registry-auth --issuer <issuer-url> --client-id <client-id>",
-					apiURL,
+						"  thv config set-registry-auth --issuer <issuer-url> --client-id <client-id>: %w",
+					apiURL, auth.ErrRegistryAuthRequired,
 				)
 			}
 			return nil, fmt.Errorf("API endpoint not functional: %w", err)

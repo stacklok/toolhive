@@ -234,6 +234,45 @@ func (mr *MockUpstreamTokenStorageMockRecorder) StoreUpstreamTokens(ctx, session
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).StoreUpstreamTokens), ctx, sessionID, tokens)
 }
 
+// MockUpstreamTokenRefresher is a mock of UpstreamTokenRefresher interface.
+type MockUpstreamTokenRefresher struct {
+	ctrl     *gomock.Controller
+	recorder *MockUpstreamTokenRefresherMockRecorder
+	isgomock struct{}
+}
+
+// MockUpstreamTokenRefresherMockRecorder is the mock recorder for MockUpstreamTokenRefresher.
+type MockUpstreamTokenRefresherMockRecorder struct {
+	mock *MockUpstreamTokenRefresher
+}
+
+// NewMockUpstreamTokenRefresher creates a new mock instance.
+func NewMockUpstreamTokenRefresher(ctrl *gomock.Controller) *MockUpstreamTokenRefresher {
+	mock := &MockUpstreamTokenRefresher{ctrl: ctrl}
+	mock.recorder = &MockUpstreamTokenRefresherMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockUpstreamTokenRefresher) EXPECT() *MockUpstreamTokenRefresherMockRecorder {
+	return m.recorder
+}
+
+// RefreshAndStore mocks base method.
+func (m *MockUpstreamTokenRefresher) RefreshAndStore(ctx context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RefreshAndStore", ctx, sessionID, expired)
+	ret0, _ := ret[0].(*storage.UpstreamTokens)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RefreshAndStore indicates an expected call of RefreshAndStore.
+func (mr *MockUpstreamTokenRefresherMockRecorder) RefreshAndStore(ctx, sessionID, expired any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RefreshAndStore", reflect.TypeOf((*MockUpstreamTokenRefresher)(nil).RefreshAndStore), ctx, sessionID, expired)
+}
+
 // MockUserStorage is a mock of UserStorage interface.
 type MockUserStorage struct {
 	ctrl     *gomock.Controller

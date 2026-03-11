@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "e2e"), Serial, func() {
+var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "mcp-protocol", "streamable-http", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

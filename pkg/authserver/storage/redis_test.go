@@ -622,19 +622,24 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
-	t.Run("get expired tokens returns ErrExpired", func(t *testing.T) {
+	t.Run("get expired tokens returns ErrExpired with token data", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			// Store with an ExpiresAt that's already in the past.
-			// The TTL will be set to DefaultAccessTokenTTL, but the stored
-			// ExpiresAt will be checked and return ErrExpired.
+			// The TTL includes DefaultRefreshTokenTTL so the key survives
+			// past access token expiry, allowing refresh token retrieval.
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{
-				AccessToken: "expired-token", ExpiresAt: time.Now().Add(-time.Hour),
+				AccessToken:  "expired-token",
+				RefreshToken: "refresh-token",
+				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
 
 			retrieved, err := s.GetUpstreamTokens(ctx, "expired")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
-			assert.Nil(t, retrieved)
+			// Tokens should be returned alongside ErrExpired for refresh purposes
+			require.NotNil(t, retrieved)
+			assert.Equal(t, "expired-token", retrieved.AccessToken)
+			assert.Equal(t, "refresh-token", retrieved.RefreshToken)
 		})
 	})
 

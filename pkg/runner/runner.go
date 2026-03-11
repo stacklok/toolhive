@@ -145,6 +145,18 @@ func (r *Runner) GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage {
 	}
 }
 
+// GetUpstreamTokenRefresher returns a lazy accessor for the upstream token refresher.
+// The returned function should be called at request time; it returns nil if
+// the embedded auth server is not configured.
+func (r *Runner) GetUpstreamTokenRefresher() func() storage.UpstreamTokenRefresher {
+	return func() storage.UpstreamTokenRefresher {
+		if r.embeddedAuthServer == nil {
+			return nil
+		}
+		return r.embeddedAuthServer.UpstreamTokenRefresher()
+	}
+}
+
 // GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
 func (c *RunConfig) GetName() string {
 	return c.Name

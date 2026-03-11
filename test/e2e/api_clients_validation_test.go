@@ -18,7 +18,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Clients API Validation", Label("api", "clients", "validation", "e2e"), func() {
+var _ = Describe("Clients API Validation", Label("api", "api-clients", "clients", "validation", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server

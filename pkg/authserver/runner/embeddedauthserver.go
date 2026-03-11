@@ -135,6 +135,12 @@ func (e *EmbeddedAuthServer) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return e.server.IDPTokenStorage()
 }
 
+// UpstreamTokenRefresher returns a refresher that can refresh expired upstream
+// tokens using the upstream provider's refresh token grant.
+func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
+	return e.server.UpstreamTokenRefresher()
+}
+
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
 // Returns a GeneratingProvider if config is nil or empty (development mode).
 func createKeyProvider(cfg *authserver.SigningKeyRunConfig) (keys.KeyProvider, error) {

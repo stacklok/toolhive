@@ -10,7 +10,7 @@ permissions:
 jobs:
   operator-tests:
     name: Operator Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -31,7 +31,7 @@ jobs:
 
   operator-tests-integration:
     name: Operator Tests Integration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -52,7 +52,7 @@ jobs:
 
   build-operator:
     name: Build Operator
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -139,7 +139,7 @@ jobs:
 
   e2e-tests-operator:
     name: E2E Tests Operator
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     timeout-minutes: 30
     defaults:
       run:

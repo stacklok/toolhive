@@ -114,6 +114,12 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	// Build PORC expression using identity claims
 	porc := a.porcBuilder.Build(feature, operation, resourceID, identity.Claims, arguments)
 
+	// Enrich PORC context with tool annotations if present
+	annotations := authorizers.ToolAnnotationsFromContext(ctx)
+	if annotationMap := authorizers.AnnotationsToMap(annotations); annotationMap != nil {
+		enrichPORCWithAnnotations(porc, annotationMap)
+	}
+
 	// Log the authorization request
 	slog.Debug("HTTP PDP authorization check",
 		"operation", porc["operation"], "resource", porc["resource"])
@@ -136,4 +142,21 @@ func (a *Authorizer) Close() error {
 		return a.pdp.Close()
 	}
 	return nil
+}
+
+// enrichPORCWithAnnotations adds tool annotation data into the PORC context
+// under the "mcp.annotations" path. It safely navigates and creates the nested
+// map structure as needed.
+func enrichPORCWithAnnotations(porc PORC, annotationMap map[string]interface{}) {
+	if porcCtx, ok := porc["context"].(map[string]interface{}); ok {
+		if mcpCtx, ok := porcCtx["mcp"].(map[string]interface{}); ok {
+			mcpCtx["annotations"] = annotationMap
+		} else {
+			porcCtx["mcp"] = map[string]interface{}{"annotations": annotationMap}
+		}
+	} else {
+		porc["context"] = map[string]interface{}{
+			"mcp": map[string]interface{}{"annotations": annotationMap},
+		}
+	}
 }

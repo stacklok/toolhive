@@ -1765,6 +1765,14 @@
             "pkg_api_v1.getRegistryResponse": {
                 "description": "Response containing registry details",
                 "properties": {
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or absent when no auth.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"
@@ -2015,6 +2023,14 @@
             "pkg_api_v1.registryInfo": {
                 "description": "Basic information about a registry",
                 "properties": {
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nAbsent from the response when no auth is configured.",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or absent when no auth.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"

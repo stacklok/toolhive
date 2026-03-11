@@ -7,11 +7,11 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"net"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"slices"
 	"time"
@@ -132,7 +132,7 @@ func buildTLSConfig(cfg *RedisTLSConfig) *tls.Config {
 		return nil
 	}
 	tc := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // G402: configurable per-deployment
 	}
 	if len(cfg.CACert) > 0 {
@@ -189,7 +189,7 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		sentinelTLSCfg := buildTLSConfig(sentinelTLS)
 		// Clear the global TLSConfig — we handle TLS per-connection in the dialer
 		opts.TLSConfig = nil
-		opts.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		opts.Dialer = func(_ context.Context, network, addr string) (net.Conn, error) {
 			tlsCfg := masterTLS
 			for _, sa := range opts.SentinelAddrs {
 				if addr == sa {

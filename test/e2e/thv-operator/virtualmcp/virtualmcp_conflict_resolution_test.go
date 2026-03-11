@@ -147,15 +147,10 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 
 		Context("when tools from multiple backends have the same name", func() {
 			It("should prefix tool names with workload identifier", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-prefix-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing tools from VirtualMCPServer")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
+				By("Waiting for tools from both backends to be discovered")
+				tools := WaitForExpectedTools(vmcpNodePort, "toolhive-prefix-test", func(tools []mcp.Tool) error {
+					return ToolsHavePrefix(tools, backend1Name+"_", backend2Name+"_")
+				})
 
 				By(fmt.Sprintf("VirtualMCPServer exposes %d tools", len(tools.Tools)))
 				for _, tool := range tools.Tools {
@@ -186,15 +181,10 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should expose tools from both backends with different prefixes", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-prefix-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing tools from VirtualMCPServer")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
+				By("Waiting for tools from both backends to be discovered")
+				tools := WaitForExpectedTools(vmcpNodePort, "toolhive-prefix-test", func(tools []mcp.Tool) error {
+					return ToolsHavePrefix(tools, backend1Name+"_", backend2Name+"_")
+				})
 
 				// Count tools by prefix
 				backend1Count := 0
@@ -230,15 +220,10 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should handle conflicting tool names by prefixing both", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-prefix-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing tools from VirtualMCPServer")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
+				By("Waiting for tools from both backends to be discovered")
+				tools := WaitForExpectedTools(vmcpNodePort, "toolhive-prefix-test", func(tools []mcp.Tool) error {
+					return ToolsHavePrefix(tools, backend1Name+"_", backend2Name+"_")
+				})
 
 				// Look for the same tool name with different prefixes (e.g., echo)
 				// Since both backends are identical yardstick, they'll have the same tools
@@ -305,15 +290,19 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 
 		Context("when tools from multiple backends have the same name", func() {
 			It("should expose tools from highest priority backend without prefix", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-priority-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing tools from VirtualMCPServer")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
+				By("Waiting for tools to be discovered (priority strategy should expose unprefixed tools)")
+				tools := WaitForExpectedTools(vmcpNodePort, "toolhive-priority-test", func(tools []mcp.Tool) error {
+					if len(tools) == 0 {
+						return fmt.Errorf("no tools available yet")
+					}
+					// Priority strategy should have at least one unprefixed tool
+					for _, tool := range tools {
+						if !strings.HasPrefix(tool.Name, backend1Name+"_") && !strings.HasPrefix(tool.Name, backend2Name+"_") {
+							return nil
+						}
+					}
+					return fmt.Errorf("expected unprefixed tools from priority resolution, got %d tools all prefixed", len(tools))
+				})
 
 				By(fmt.Sprintf("VirtualMCPServer exposes %d tools with priority strategy", len(tools.Tools)))
 				for _, tool := range tools.Tools {
@@ -321,10 +310,8 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				}
 
 				// Verify that tools are NOT prefixed (priority strategy doesn't prefix)
-				// Both backends should have tools, but conflicting tools should come from backend1 (higher priority)
 				hasToolsWithoutPrefix := false
 				for _, tool := range tools.Tools {
-					// Tools should not have workload prefixes
 					if !strings.HasPrefix(tool.Name, backend1Name+"_") && !strings.HasPrefix(tool.Name, backend2Name+"_") {
 						hasToolsWithoutPrefix = true
 						By(fmt.Sprintf("Found tool without prefix: %s", tool.Name))
@@ -340,15 +327,13 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should resolve conflicts by using highest priority backend", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-priority-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing tools from VirtualMCPServer")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
+				By("Waiting for tools to be discovered")
+				tools := WaitForExpectedTools(vmcpNodePort, "toolhive-priority-test", func(tools []mcp.Tool) error {
+					if len(tools) == 0 {
+						return fmt.Errorf("no tools available yet")
+					}
+					return nil
+				})
 
 				By(fmt.Sprintf("VirtualMCPServer exposes %d tools total", len(tools.Tools)))
 
@@ -375,15 +360,13 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should expose non-conflicting tools from all backends", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-priority-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing tools from VirtualMCPServer")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
+				By("Waiting for tools to be discovered")
+				tools := WaitForExpectedTools(vmcpNodePort, "toolhive-priority-test", func(tools []mcp.Tool) error {
+					if len(tools) == 0 {
+						return fmt.Errorf("no tools available yet")
+					}
+					return nil
+				})
 
 				// Since both backends have identical tools (same yardstick image),
 				// we should have exactly the same number of tools as a single backend would expose
@@ -455,15 +438,10 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 
 		Context("when tools from multiple backends have explicit overrides", func() {
 			It("should expose tools with manually specified names", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-manual-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing tools from VirtualMCPServer")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
+				By("Waiting for tools with manually overridden names to be discovered")
+				tools := WaitForExpectedTools(vmcpNodePort, "toolhive-manual-test", func(tools []mcp.Tool) error {
+					return ToolsContainAll(tools, "echo_backend1", "echo_backend2")
+				})
 
 				By(fmt.Sprintf("VirtualMCPServer exposes %d tools with manual strategy", len(tools.Tools)))
 				for _, tool := range tools.Tools {

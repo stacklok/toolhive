@@ -161,10 +161,12 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r.Use(recovery.Middleware)
 
 	// Apply default middleware
+	// NOTE: Timeout is NOT applied globally because workload create/update routes
+	// pull container images, which can take minutes. Instead, timeouts are applied
+	// per-route group in setupDefaultRoutes and within WorkloadRouter.
 	r.Use(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
-		middleware.Timeout(middlewareTimeout),
 		requestBodySizeLimitMiddleware(maxRequestBodySize),
 		headersMiddleware,
 	)
@@ -192,7 +194,7 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	// Setup default routes
 	b.setupDefaultRoutes(r)
 
-	// Add custom routes
+	// Add custom routes (callers of WithRoute are responsible for their own timeout management)
 	for prefix, handler := range b.customRoutes {
 		r.Mount(prefix, handler)
 	}
@@ -271,15 +273,20 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 
 // setupDefaultRoutes sets up the default API routes
 func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
-	routers := map[string]http.Handler{
-		"/health":             v1.HealthcheckRouter(b.containerRuntime),
-		"/api/v1beta/version": v1.VersionRouter(),
-		"/api/v1beta/workloads": v1.WorkloadRouter(
-			b.workloadManager,
-			b.containerRuntime,
-			b.groupManager,
-			b.debugMode,
-		),
+	standardTimeout := middleware.Timeout(middlewareTimeout)
+
+	// Workload router manages its own per-route timeouts (image pulls can take minutes)
+	r.Mount("/api/v1beta/workloads", v1.WorkloadRouter(
+		b.workloadManager,
+		b.containerRuntime,
+		b.groupManager,
+		b.debugMode,
+	))
+
+	// All other routes get standard timeout
+	standardRouters := map[string]http.Handler{
+		"/health":               v1.HealthcheckRouter(b.containerRuntime),
+		"/api/v1beta/version":   v1.VersionRouter(),
 		"/api/v1beta/registry":  v1.RegistryRouter(),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
@@ -287,14 +294,13 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
 		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
 	}
+	for prefix, router := range standardRouters {
+		r.Mount(prefix, standardTimeout(router))
+	}
 
 	// Only mount docs router if enabled
 	if b.enableDocs {
-		routers["/api/"] = DocsRouter()
-	}
-
-	for prefix, router := range routers {
-		r.Mount(prefix, router)
+		r.Mount("/api/", standardTimeout(DocsRouter()))
 	}
 }
 

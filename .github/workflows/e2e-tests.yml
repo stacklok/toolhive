@@ -9,7 +9,7 @@ permissions:
 jobs:
   build-binary:
     name: Build ToolHive Binary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -41,7 +41,7 @@ jobs:
 
   e2e-tests-core:
     name: E2E Tests Core (${{ matrix.title }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     needs: build-binary
     strategy:
       fail-fast: false
@@ -103,10 +103,21 @@ jobs:
 
       - name: Set up container runtime (Docker)
         run: |
-          # Docker is already installed on ubuntu-latest
+          # Docker is already installed on ubuntu-8cores-32gb
           docker --version
           # Start Docker daemon if not running
           sudo systemctl start docker
+
+      - name: Pre-pull container images
+        run: |
+          # Pre-pull images used by E2E tests so that workload creation
+          # does not pay the image-pull cost inside the 60s API timeout.
+          docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.0 &
+          docker pull ghcr.io/stackloklabs/gofetch/server:1.0.2 &
+          docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
+          wait
+          echo "Pre-pulled images:"
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy'
 
       - name: Run E2E tests (${{ matrix.title }})
         env:

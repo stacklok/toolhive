@@ -37,6 +37,9 @@ type Client interface {
 	// GetFileContent retrieves the content of a file from the repository
 	GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error)
 
+	// HeadCommitHash returns the commit hash of the HEAD reference.
+	HeadCommitHash(repoInfo *RepositoryInfo) (string, error)
+
 	// Cleanup removes local repository directory
 	Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error
 }
@@ -246,4 +249,18 @@ func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
 	}
 
 	return nil
+}
+
+// HeadCommitHash returns the commit hash of the HEAD reference.
+func (*DefaultGitClient) HeadCommitHash(repoInfo *RepositoryInfo) (string, error) {
+	if repoInfo == nil || repoInfo.Repository == nil {
+		return "", ErrNilRepository
+	}
+
+	ref, err := repoInfo.Repository.Head()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD reference: %w", err)
+	}
+
+	return ref.Hash().String(), nil
 }

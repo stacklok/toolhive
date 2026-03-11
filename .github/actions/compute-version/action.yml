@@ -10,17 +10,23 @@ runs:
     - name: Compute version number
       id: version-string
       shell: bash
+      env:
+        GH_REF: ${{ github.ref }}
+        GH_REF_NAME: ${{ github.ref_name }}
       run: |
-        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+        if [[ "$GH_REF" == "refs/heads/main" ]]; then
           # For main branch, use semver with -dev suffix
           echo "tag=0.0.1-dev.${GITHUB_RUN_NUMBER}_$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-        elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+        elif [[ "$GH_REF" == refs/tags/* ]]; then
           # For tags, use the tag as is (assuming it's semver)
-          TAG="${{ github.ref_name }}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$GH_REF_NAME" >> "$GITHUB_OUTPUT"
+        elif [[ "$GH_REF" == refs/pull/* ]]; then
+          # For pull requests, use PR number (ref_name is "NNN/merge")
+          PR_NUM="${GH_REF_NAME%%/*}"
+          echo "tag=0.0.1-pr${PR_NUM}.${GITHUB_RUN_NUMBER}_$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
         else
-          # For other branches, use branch name and run number
-          BRANCH="${{ github.ref_name }}"
+          # For other branches, sanitize name for OCI tag compatibility
+          BRANCH=$(echo "$GH_REF_NAME" | tr '/' '-')
           echo "tag=0.0.1-$BRANCH.${GITHUB_RUN_NUMBER}_$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
         fi
 

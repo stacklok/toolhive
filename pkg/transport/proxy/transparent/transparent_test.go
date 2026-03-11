@@ -799,15 +799,22 @@ func TestGetSSERewriteConfig(t *testing.T) {
 				tt.endpointPrefix, tt.trustProxyHeaders,
 			)
 
-			req := httptest.NewRequest("GET", "/sse", nil)
+			// Build the inbound request with the client's headers
+			inbound := httptest.NewRequest("GET", "/sse", nil)
 			for k, v := range tt.headers {
-				req.Header.Set(k, v)
+				inbound.Header.Set(k, v)
 			}
+
+			// Build the outbound request with the inbound stashed in context,
+			// mirroring what the Rewrite function does in production.
+			outbound := httptest.NewRequest("GET", "/sse", nil)
+			ctx := InboundRequestToContext(outbound.Context(), inbound)
+			outbound = outbound.WithContext(ctx)
 
 			// Access the SSE response processor to test configuration
 			sseProcessor, ok := proxy.responseProcessor.(*SSEResponseProcessor)
 			assert.True(t, ok, "expected SSE response processor")
-			config := sseProcessor.getSSERewriteConfig(req)
+			config := sseProcessor.getSSERewriteConfig(outbound)
 
 			assert.Equal(t, tt.expectedPrefix, config.prefix)
 			assert.Equal(t, tt.expectedScheme, config.scheme)

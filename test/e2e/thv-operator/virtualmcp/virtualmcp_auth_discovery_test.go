@@ -613,7 +613,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 						Port:       80,
 						TargetPort: intstr.FromInt(8080),
 						Protocol:   corev1.ProtocolTCP,
-						NodePort:   30010, // Fixed NodePort for test client access
+						NodePort:   30910, // Fixed NodePort for test client access (high to avoid auto-assign collisions)
 					},
 				},
 			},
@@ -1134,7 +1134,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 
 		// Helper function to get OIDC token from mock server via client credentials flow
 		getOIDCToken := func() string {
-			tokenURL := "http://localhost:30010/token"
+			tokenURL := "http://localhost:30910/token"
 			resp, err := http.PostForm(tokenURL, nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer resp.Body.Close()

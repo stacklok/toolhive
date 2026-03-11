@@ -371,8 +371,9 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 	ginkgo.Context("Session token binding prevents session hijacking", ginkgo.Ordered, func() {
 		const (
 			// oidcNodePort is fixed so the test client can reach the in-cluster OIDC server.
-			// Must not conflict with other tests (e.g. auth_discovery_test.go uses 30010).
-			oidcNodePort    = int32(30013)
+			// Use a high port to avoid collisions with auto-assigned NodePorts (which start low).
+			// Must not conflict with other tests (e.g. auth_discovery_test.go uses 30910).
+			oidcNodePort    = int32(30913)
 			oidcServiceName = "mock-oidc-session-test"
 		)
 

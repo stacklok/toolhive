@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"maps"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -1065,6 +1067,10 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 			continue
 		}
 
+		if err := b.validateVolumeSourcePath(source); err != nil {
+			return err
+		}
+
 		// Add the mount to the appropriate permission list
 		if readOnly {
 			b.config.PermissionProfile.Read = append(b.config.PermissionProfile.Read, mount)
@@ -1077,6 +1083,30 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 
 		slog.Debug("Adding volume mount", "source", source, "target", target,
 			"mode", map[bool]string{true: "read-only", false: "read-write"}[readOnly])
+	}
+
+	return nil
+}
+
+func (b *runConfigBuilder) validateVolumeSourcePath(source string) error {
+	if b.buildContext == BuildContextOperator || strings.HasPrefix(source, "resource://") {
+		return nil
+	}
+
+	resolved := source
+	if !filepath.IsAbs(resolved) {
+		absPath, err := filepath.Abs(resolved)
+		if err != nil {
+			return fmt.Errorf("failed to resolve volume source path %q: %w", source, err)
+		}
+		resolved = absPath
+	}
+
+	if _, err := os.Stat(resolved); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("volume source path does not exist: %s", resolved)
+		}
+		return fmt.Errorf("failed to access volume source path %s: %w", resolved, err)
 	}
 
 	return nil

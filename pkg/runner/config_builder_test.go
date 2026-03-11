@@ -6,7 +6,9 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -242,6 +244,22 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
+	createVolumeSource := func(t *testing.T, prefix string) string {
+		t.Helper()
+
+		dir, err := os.MkdirTemp(".", prefix)
+		require.NoError(t, err, "failed to create temporary volume source")
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+		return filepath.ToSlash(dir)
+	}
+
+	sourceA := createVolumeSource(t, "volume-src-a-")
+	sourceB := createVolumeSource(t, "volume-src-b-")
+	sourceC := createVolumeSource(t, "volume-src-c-")
+	sourceD := createVolumeSource(t, "volume-src-d-")
+	missingSource := filepath.ToSlash(filepath.Join(sourceA, "does-not-exist"))
+
 	testCases := []struct {
 		name                string
 		builderOptions      []RunConfigBuilderOption
@@ -261,7 +279,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Volumes without permission profile but with profile name",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{fmt.Sprintf("%s:/container", sourceA)}),
 				WithPermissionProfileNameOrPath(permissions.ProfileNone),
 			},
 			expectError:         false,
@@ -271,7 +289,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-only volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container:ro"}),
+				WithVolumes([]string{fmt.Sprintf("%s:/container:ro", sourceB)}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -281,7 +299,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-write volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{fmt.Sprintf("%s:/container", sourceC)}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -292,15 +310,23 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			name: "Multiple volumes with existing profile",
 			builderOptions: []RunConfigBuilderOption{
 				WithVolumes([]string{
-					"/host1:/container1:ro",
-					"/host2:/container2",
-					"/host3:/container3:ro",
+					fmt.Sprintf("%s:/container1:ro", sourceA),
+					fmt.Sprintf("%s:/container2", sourceB),
+					fmt.Sprintf("%s:/container3:ro", sourceD),
 				}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
 			expectedReadMounts:  2,
 			expectedWriteMounts: 1,
+		},
+		{
+			name: "Invalid volume source path",
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{fmt.Sprintf("%s:/container", missingSource)}),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
+			},
+			expectError: true,
 		},
 		{
 			name: "Invalid volume format",
@@ -346,6 +372,28 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunConfigBuilder_BuildForOperator_WithNonexistentVolumeSource(t *testing.T) {
+	t.Parallel()
+
+	mockValidator := &mockEnvVarValidator{}
+	missingSource := filepath.ToSlash(filepath.Join("does-not-exist", "source"))
+
+	config, err := NewOperatorRunConfigBuilder(
+		context.Background(),
+		nil,
+		nil,
+		mockValidator,
+		WithName("test-server"),
+		WithImage("test-image:latest"),
+		WithVolumes([]string{fmt.Sprintf("%s:/container", missingSource)}),
+		WithPermissionProfile(permissions.BuiltinNoneProfile()),
+	)
+	require.NoError(t, err, "operator build should skip local host path validation")
+	require.NotNil(t, config)
+	require.NotNil(t, config.PermissionProfile)
+	assert.Len(t, config.PermissionProfile.Write, 1)
 }
 
 // createTempProfileFile creates a temporary JSON profile file with the provided content

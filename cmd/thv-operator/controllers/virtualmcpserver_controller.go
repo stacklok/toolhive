@@ -681,8 +681,10 @@ func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Only ensure HMAC secret if Session Management V2 is enabled
-	if vmcp.Spec.Config.Operational == nil || !vmcp.Spec.Config.Operational.SessionManagementV2 {
+	// Skip HMAC secret creation only when SessionManagementV2 is explicitly set to false.
+	// nil means "unset" which defaults to true (v2 enabled).
+	op := vmcp.Spec.Config.Operational
+	if op != nil && op.SessionManagementV2 != nil && !*op.SessionManagementV2 {
 		return nil
 	}
 

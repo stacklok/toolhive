@@ -522,9 +522,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
-	// Create session factory only when SessionManagementV2 is enabled
+	// Create session factory only when SessionManagementV2 is enabled.
+	// nil means "unset" which defaults to true; explicit *false opts out.
+	sessionManagementV2 := cfg.Operational.SessionManagementV2 == nil || *cfg.Operational.SessionManagementV2
 	var sessionFactory vmcpsession.MultiSessionFactory
-	if cfg.Operational.SessionManagementV2 {
+	if sessionManagementV2 {
 		sessionFactory, err = createSessionFactory(outgoingRegistry)
 		if err != nil {
 			return err
@@ -546,7 +548,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
-		SessionManagementV2:     cfg.Operational.SessionManagementV2,
+		SessionManagementV2:     sessionManagementV2,
 		SessionFactory:          sessionFactory,
 	}
 

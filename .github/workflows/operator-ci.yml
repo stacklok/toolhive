@@ -185,7 +185,7 @@ jobs:
     - name: Install Chainsaw
       uses: kyverno/action-install-chainsaw@06560d18422209e9c1e08e931d477d04bf2674c1 # v0.2.14
       with:
-        release: v0.2.12
+        release: v0.2.14 # chainsaw
 
     - name: Disable containerd image store
       # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795
@@ -204,7 +204,7 @@ jobs:
       uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # pin@v1.12.0
       with:
         cluster_name: toolhive
-        version: v0.29.0
+        version: v0.31.0 # kind
         cloud_provider: true
         node_image: ${{ matrix.version }}
 

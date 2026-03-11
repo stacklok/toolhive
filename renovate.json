@@ -180,6 +180,13 @@
         "github.com/mark3labs/mcp-go",
         "github.com/modelcontextprotocol/registry"
       ]
+    },
+    {
+      "description": "Only allow minor and patch updates for Helm CLI (avoid v4.x)",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["helm/helm"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
     }
   ],
   "customManagers": [
@@ -228,6 +235,31 @@
       "depNameTemplate": "golang",
       "datasourceTemplate": "golang-version",
       "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "Update Kind CLI version in GitHub workflows",
+      "managerFilePatterns": [".github/workflows/*.yml"],
+      "matchStrings": ["version:\\s+v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+#\\s+kind"],
+      "depNameTemplate": "kubernetes-sigs/kind",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Update Chainsaw release version in GitHub workflows",
+      "managerFilePatterns": [".github/workflows/*.yml"],
+      "matchStrings": ["release:\\s+v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+#\\s+chainsaw"],
+      "depNameTemplate": "kyverno/chainsaw",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Update Helm CLI version in GitHub workflows",
+      "managerFilePatterns": [".github/workflows/*.yml"],
+      "matchStrings": ["version:\\s+v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+#\\s+helm"],
+      "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ],
   "postUpdateOptions": ["gomodTidy"]

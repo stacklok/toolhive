@@ -8,9 +8,12 @@ package registry
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var (
@@ -24,17 +27,40 @@ var (
 	defaultProviderMu sync.Mutex
 )
 
+// ProviderOption configures optional behavior for NewRegistryProvider.
+type ProviderOption func(*providerOptions)
+
+type providerOptions struct {
+	interactive bool
+}
+
+// WithInteractive sets whether browser-based OAuth flows are allowed.
+// Defaults to true (CLI mode). Pass false for headless/serve mode.
+func WithInteractive(interactive bool) ProviderOption {
+	return func(o *providerOptions) { o.interactive = interactive }
+}
+
 // NewRegistryProvider creates a new registry provider based on the configuration.
 // Returns an error if a custom registry is configured but cannot be reached.
-func NewRegistryProvider(cfg *config.Config) (Provider, error) {
+func NewRegistryProvider(cfg *config.Config, opts ...ProviderOption) (Provider, error) {
+	options := &providerOptions{interactive: true}
+	for _, opt := range opts {
+		opt(options)
+	}
+
 	// Priority order:
 	// 1. API URL (if configured) - for live MCP Registry API queries
 	// 2. Remote URL (if configured) - for static JSON over HTTP
 	// 3. Local file path (if configured) - for local JSON file
 	// 4. Default - embedded registry data
 
+	// Create token source if registry auth is configured.
+	// Auth only applies to API registry providers; remote URL and local file
+	// providers do not support authentication.
+	tokenSource := resolveTokenSource(cfg, options.interactive)
+
 	if cfg != nil && len(cfg.RegistryApiUrl) > 0 {
-		provider, err := NewCachedAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true)
+		provider, err := NewCachedAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true, tokenSource)
 		if err != nil {
 			return nil, fmt.Errorf("custom registry API at %s is not reachable: %w", cfg.RegistryApiUrl, err)
 		}
@@ -87,4 +113,37 @@ func ResetDefaultProvider() {
 	defaultProviderOnce = sync.Once{}
 	defaultProvider = nil
 	defaultProviderErr = nil
+}
+
+// resolveTokenSource creates a TokenSource from the config if registry auth is configured.
+// Returns nil if no auth is configured or if token source creation fails (logs warning).
+func resolveTokenSource(cfg *config.Config, interactive bool) auth.TokenSource {
+	if cfg == nil || cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
+		return nil
+	}
+
+	// Try to create secrets provider for token persistence
+	var secretsProvider secrets.Provider
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		slog.Debug("Secrets provider not available for registry auth token persistence",
+			"error", err)
+	} else {
+		secretsProvider, err = secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			slog.Warn("Failed to create secrets provider for registry auth, tokens will not be persisted",
+				"error", err)
+		} else {
+			slog.Debug("Secrets provider created for registry auth token persistence",
+				"provider_type", providerType)
+		}
+	}
+
+	tokenSource, err := auth.NewTokenSource(cfg.RegistryAuth.OAuth, cfg.RegistryApiUrl, secretsProvider, interactive)
+	if err != nil {
+		slog.Warn("Failed to create registry auth token source", "error", err)
+		return nil
+	}
+
+	return tokenSource
 }

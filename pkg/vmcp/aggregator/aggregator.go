@@ -118,6 +118,12 @@ type ResolvedTool struct {
 	// InputSchema is the JSON Schema for parameters.
 	InputSchema map[string]any
 
+	// OutputSchema is the JSON Schema for tool output (optional).
+	OutputSchema map[string]any
+
+	// Annotations describes behavioral hints for the tool (optional).
+	Annotations *vmcp.ToolAnnotations
+
 	// BackendID identifies the backend providing this tool.
 	BackendID string
 

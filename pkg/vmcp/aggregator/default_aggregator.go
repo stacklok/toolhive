@@ -244,6 +244,8 @@ func (a *defaultAggregator) ResolveConflicts(
 					OriginalName: tool.Name,
 					Description:  tool.Description,
 					InputSchema:  tool.InputSchema,
+					OutputSchema: tool.OutputSchema,
+					Annotations:  tool.Annotations,
 					BackendID:    backendID,
 				}
 			}
@@ -321,10 +323,12 @@ func (a *defaultAggregator) MergeCapabilities(
 
 		if shouldAdvertise {
 			tools = append(tools, vmcp.Tool{
-				Name:        resolvedTool.ResolvedName,
-				Description: resolvedTool.Description,
-				InputSchema: resolvedTool.InputSchema,
-				BackendID:   resolvedTool.BackendID,
+				Name:         resolvedTool.ResolvedName,
+				Description:  resolvedTool.Description,
+				InputSchema:  resolvedTool.InputSchema,
+				OutputSchema: resolvedTool.OutputSchema,
+				Annotations:  resolvedTool.Annotations,
+				BackendID:    resolvedTool.BackendID,
 			})
 		}
 

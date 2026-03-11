@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // TestShouldAllowAnonymous_EdgeCases tests the ShouldAllowAnonymous helper.
@@ -46,7 +46,7 @@ func TestShouldAllowAnonymous_EdgeCases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := session.ShouldAllowAnonymous(tt.identity)
+			got := sessiontypes.ShouldAllowAnonymous(tt.identity)
 			assert.Equal(t, tt.want, got)
 		})
 	}

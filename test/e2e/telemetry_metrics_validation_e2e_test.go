@@ -22,7 +22,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-var _ = Describe("Telemetry Metrics Validation E2E", Label("telemetry", "metrics", "validation", "e2e"), Serial, func() {
+var _ = Describe("Telemetry Metrics Validation E2E", Label("middleware", "telemetry", "metrics", "validation", "e2e"), Serial, func() {
 	var (
 		config       *e2e.TestConfig
 		workloadName string

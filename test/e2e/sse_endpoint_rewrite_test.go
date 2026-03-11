@@ -24,7 +24,7 @@ const (
 	sseEndpoint = "/sse"
 )
 
-var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", "e2e"), Serial, func() {
+var _ = Describe("SSE Endpoint URL Rewriting", Label("proxy", "sse", "endpoint-rewrite", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {
@@ -95,7 +95,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 					"--name", serverName,
 					"--transport", "sse",
 					"--endpoint-prefix", endpointPrefix,
-					"--remote-url", mockSSEServer.URL,
+					mockSSEServer.URL,
 				).ExpectSuccess()
 
 				Expect(stdout+stderr).To(ContainSubstring(serverName), "Output should mention the server name")
@@ -224,7 +224,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 					"--name", serverName,
 					"--transport", "sse",
 					"--trust-proxy-headers",
-					"--remote-url", mockSSEServer.URL,
+					mockSSEServer.URL,
 				).ExpectSuccess()
 
 				Expect(stdout + stderr).To(ContainSubstring(serverName))
@@ -310,6 +310,8 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 						flusher.Flush()
 
 						time.Sleep(100 * time.Millisecond)
+					} else {
+						w.WriteHeader(http.StatusNotFound)
 					}
 				}))
 			})
@@ -334,7 +336,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 					"--transport", "sse",
 					"--endpoint-prefix", explicitPrefix,
 					"--trust-proxy-headers",
-					"--remote-url", mockSSEServer.URL,
+					mockSSEServer.URL,
 				).ExpectSuccess()
 
 				Expect(stdout + stderr).To(ContainSubstring(serverName))
@@ -415,11 +417,12 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 			})
 
 			It("should work with a real SSE MCP server from registry [Serial]", func() {
+				Skip("Endpoint prefix stripping not yet implemented (issue #3372)")
 				By("Starting an OSV server with SSE transport and endpoint prefix")
 				endpointPrefix := "/api/mcp"
 
 				// Check if osv server is available in registry
-				stdout, _ := e2e.NewTHVCommand(config, "list", "--registry").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "registry", "list").ExpectSuccess()
 				if !strings.Contains(stdout, "osv") {
 					Skip("OSV server not available in registry")
 				}

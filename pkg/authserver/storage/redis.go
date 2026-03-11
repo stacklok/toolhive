@@ -765,11 +765,13 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		return nil, 0, fmt.Errorf("failed to marshal upstream tokens: %w", err)
 	}
 
-	ttl := DefaultAccessTokenTTL
+	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
+	// survives in storage for transparent token refresh by the middleware.
+	ttl := DefaultAccessTokenTTL + DefaultRefreshTokenTTL
 	if !tokens.ExpiresAt.IsZero() {
-		ttl = time.Until(tokens.ExpiresAt)
+		ttl = time.Until(tokens.ExpiresAt) + DefaultRefreshTokenTTL
 		if ttl < 0 {
-			ttl = DefaultAccessTokenTTL
+			ttl = DefaultRefreshTokenTTL
 		}
 	}
 
@@ -841,14 +843,13 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) 
 	// stores 0 for zero time. Skip the expiry check in this case since Redis TTL
 	// handles the actual expiration.
 	var expiresAt time.Time
+	var expired bool
 	if stored.ExpiresAt != 0 {
 		expiresAt = time.Unix(stored.ExpiresAt, 0)
-		if time.Now().After(expiresAt) {
-			return nil, ErrExpired
-		}
+		expired = time.Now().After(expiresAt)
 	}
 
-	return &UpstreamTokens{
+	tokens := &UpstreamTokens{
 		ProviderID:      stored.ProviderID,
 		AccessToken:     stored.AccessToken,
 		RefreshToken:    stored.RefreshToken,
@@ -857,7 +858,14 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) 
 		UserID:          stored.UserID,
 		UpstreamSubject: stored.UpstreamSubject,
 		ClientID:        stored.ClientID,
-	}, nil
+	}
+
+	// Return tokens along with ErrExpired so callers can use the refresh token
+	if expired {
+		return tokens, ErrExpired
+	}
+
+	return tokens, nil
 }
 
 // DeleteUpstreamTokens removes the upstream IDP tokens for a session.

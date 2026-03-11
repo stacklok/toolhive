@@ -62,6 +62,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		timeout              = 3 * time.Minute
 		pollingInterval      = 1 * time.Second
 		mockServer           *httptest.Server
+		oidcNodePort         int32
 	)
 
 	BeforeAll(func() {
@@ -597,7 +598,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 		Expect(k8sClient.Create(ctx, oidcServerPod)).To(Succeed())
 
-		// Create a service for the OIDC server with NodePort for test client access
+		// Create a service for the OIDC server with auto-assigned NodePort
 		oidcServerService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      oidcServerServiceName,
@@ -613,12 +614,18 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 						Port:       80,
 						TargetPort: intstr.FromInt(8080),
 						Protocol:   corev1.ProtocolTCP,
-						NodePort:   30910, // Fixed NodePort for test client access (high to avoid auto-assign collisions)
 					},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, oidcServerService)).To(Succeed())
+
+		// Read back the auto-assigned NodePort
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: oidcServerServiceName, Namespace: testNamespace,
+		}, oidcServerService)).To(Succeed())
+		oidcNodePort = oidcServerService.Spec.Ports[0].NodePort
+		Expect(oidcNodePort).NotTo(BeZero(), "Kubernetes should auto-assign a NodePort")
 
 		// Wait for the OIDC server pod to be ready (both Running and ContainersReady)
 		Eventually(func() bool {
@@ -1134,7 +1141,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 
 		// Helper function to get OIDC token from mock server via client credentials flow
 		getOIDCToken := func() string {
-			tokenURL := "http://localhost:30910/token"
+			tokenURL := fmt.Sprintf("http://localhost:%d/token", oidcNodePort)
 			resp, err := http.PostForm(tokenURL, nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer resp.Body.Close()

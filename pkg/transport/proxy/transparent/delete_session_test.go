@@ -33,11 +33,19 @@ func TestDeleteSessionCleanup(t *testing.T) {
 			expectSession:    false,
 		},
 		{
-			name:             "DELETE with non-2xx does not remove session",
+			name:             "DELETE with 404 removes session",
 			seedSession:      true,
 			sessionID:        "sess-delete-404",
 			deleteHeader:     "sess-delete-404",
 			deleteStatusCode: http.StatusNotFound,
+			expectSession:    false,
+		},
+		{
+			name:             "DELETE with 500 does not remove session",
+			seedSession:      true,
+			sessionID:        "sess-delete-500",
+			deleteHeader:     "sess-delete-500",
+			deleteStatusCode: http.StatusInternalServerError,
 			expectSession:    true,
 		},
 		{

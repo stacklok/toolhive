@@ -28,6 +28,10 @@ const (
 	// DefaultRefreshTokenTTL is the default TTL for refresh tokens when not extractable from session.
 	DefaultRefreshTokenTTL = 30 * 24 * time.Hour // 30 days
 
+	// DefaultUpstreamInactivityTimeout is the sliding inactivity window for upstream
+	// token entries that include a refresh token.
+	DefaultUpstreamInactivityTimeout = 2 * time.Hour
+
 	// DefaultAuthCodeTTL is the default TTL for authorization codes (RFC 6749 recommendation).
 	DefaultAuthCodeTTL = 10 * time.Minute
 

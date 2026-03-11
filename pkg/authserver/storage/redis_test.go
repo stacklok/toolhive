@@ -622,11 +622,41 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("refresh token entries use inactivity timeout TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			now := time.Now()
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{
+				AccessToken:  "access-token",
+				RefreshToken: "refresh-token",
+				ExpiresAt:    now.Add(-time.Hour),
+			}))
+
+			ttl := mr.TTL(redisKey(s.keyPrefix, KeyTypeUpstream, "session"))
+			assert.GreaterOrEqual(t, ttl, DefaultUpstreamInactivityTimeout-2*time.Second)
+			assert.LessOrEqual(t, ttl, DefaultUpstreamInactivityTimeout)
+		})
+	})
+
+	t.Run("entries without refresh token use access token expiry TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			expiresAt := time.Now().Add(45 * time.Minute)
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{
+				AccessToken: "access-token",
+				ExpiresAt:   expiresAt,
+			}))
+
+			ttl := mr.TTL(redisKey(s.keyPrefix, KeyTypeUpstream, "session"))
+			expectedTTL := time.Until(expiresAt)
+			assert.GreaterOrEqual(t, ttl, expectedTTL-2*time.Second)
+			assert.LessOrEqual(t, ttl, expectedTTL+time.Second)
+		})
+	})
+
 	t.Run("get expired tokens returns ErrExpired with token data", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			// Store with an ExpiresAt that's already in the past.
-			// The TTL includes DefaultRefreshTokenTTL so the key survives
-			// past access token expiry, allowing refresh token retrieval.
+			// The entry still survives under the inactivity timeout because a refresh
+			// token is present, allowing transparent refresh.
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{
 				AccessToken:  "expired-token",
 				RefreshToken: "refresh-token",

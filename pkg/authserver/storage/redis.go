@@ -765,15 +765,8 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		return nil, 0, fmt.Errorf("failed to marshal upstream tokens: %w", err)
 	}
 
-	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
-	// survives in storage for transparent token refresh by the middleware.
-	ttl := DefaultAccessTokenTTL + DefaultRefreshTokenTTL
-	if !tokens.ExpiresAt.IsZero() {
-		ttl = time.Until(tokens.ExpiresAt) + DefaultRefreshTokenTTL
-		if ttl < 0 {
-			ttl = DefaultRefreshTokenTTL
-		}
-	}
+	now := time.Now()
+	ttl := upstreamTokenStorageTTL(now, tokens)
 
 	return data, ttl, nil
 }

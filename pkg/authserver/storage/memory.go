@@ -693,14 +693,7 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID string,
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
-	// survives in storage for transparent token refresh by the middleware.
-	var expiresAt time.Time
-	if tokens != nil && !tokens.ExpiresAt.IsZero() {
-		expiresAt = tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
-	} else {
-		expiresAt = now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
-	}
+	expiresAt := upstreamTokenStorageExpiresAt(now, tokens)
 
 	// Make a defensive copy to prevent aliasing issues
 	var tokensCopy *UpstreamTokens
@@ -754,7 +747,8 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID string) (
 	}
 
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
-	// (storage TTL which includes DefaultRefreshTokenTTL buffer for refresh token survival).
+	// (storage TTL may be extended by DefaultUpstreamInactivityTimeout when a refresh
+	// token is present).
 	// Return tokens along with ErrExpired so callers can use the refresh token.
 	if !result.ExpiresAt.IsZero() && time.Now().After(result.ExpiresAt) {
 		slog.Debug("upstream tokens expired", "session_id", sessionID)

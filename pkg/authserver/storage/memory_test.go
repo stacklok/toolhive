@@ -473,6 +473,35 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("refresh token entries use inactivity timeout", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now()
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{
+				AccessToken:  "access-token",
+				RefreshToken: "refresh-token",
+				ExpiresAt:    now.Add(-time.Hour),
+			}))
+
+			entry, ok := s.upstreamTokens["session"]
+			require.True(t, ok)
+			assert.WithinDuration(t, now.Add(DefaultUpstreamInactivityTimeout), entry.expiresAt, 2*time.Second)
+		})
+	})
+
+	t.Run("entries without refresh token follow access token expiry", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			expiresAt := time.Now().Add(45 * time.Minute)
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{
+				AccessToken: "access-token",
+				ExpiresAt:   expiresAt,
+			}))
+
+			entry, ok := s.upstreamTokens["session"]
+			require.True(t, ok)
+			assert.WithinDuration(t, expiresAt, entry.expiresAt, 50*time.Millisecond)
+		})
+	})
+
 	t.Run("get expired tokens returns ErrExpired with token data", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{
@@ -642,8 +671,8 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 		{
 			name: "upstream tokens",
 			setup: func(ctx context.Context, s *MemoryStorage) {
-				// Entry must be older than DefaultRefreshTokenTTL past access token expiry to be cleaned up
-				_ = s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{AccessToken: "exp", ExpiresAt: time.Now().Add(-DefaultRefreshTokenTTL - time.Hour)})
+				// Entry without a refresh token should follow access-token expiry for cleanup.
+				_ = s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{AccessToken: "exp", ExpiresAt: time.Now().Add(-time.Hour)})
 				_ = s.StoreUpstreamTokens(ctx, "valid", &UpstreamTokens{AccessToken: "val", ExpiresAt: time.Now().Add(time.Hour)})
 			},
 			getStats: func(st Stats) int { return st.UpstreamTokens },

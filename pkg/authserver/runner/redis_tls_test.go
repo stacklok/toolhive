@@ -19,7 +19,8 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 
 	t.Run("nil config returns nil", func(t *testing.T) {
 		t.Parallel()
-		result := convertRedisTLSRunConfig(nil)
+		result, err := convertRedisTLSRunConfig(nil)
+		require.NoError(t, err)
 		assert.Nil(t, result)
 	})
 
@@ -28,7 +29,8 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 		rc := &storage.RedisTLSRunConfig{
 			Enabled: true,
 		}
-		result := convertRedisTLSRunConfig(rc)
+		result, err := convertRedisTLSRunConfig(rc)
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.Enabled)
 		assert.False(t, result.InsecureSkipVerify)
@@ -41,7 +43,8 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 			Enabled:            true,
 			InsecureSkipVerify: true,
 		}
-		result := convertRedisTLSRunConfig(rc)
+		result, err := convertRedisTLSRunConfig(rc)
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.InsecureSkipVerify)
 	})
@@ -59,19 +62,20 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 			Enabled:    true,
 			CACertFile: certPath,
 		}
-		result := convertRedisTLSRunConfig(rc)
+		result, err := convertRedisTLSRunConfig(rc)
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.Equal(t, certData, result.CACert)
 	})
 
-	t.Run("missing CA cert file logs warning and uses empty cert", func(t *testing.T) {
+	t.Run("missing CA cert file returns error", func(t *testing.T) {
 		t.Parallel()
 		rc := &storage.RedisTLSRunConfig{
 			Enabled:    true,
 			CACertFile: "/nonexistent/ca.crt",
 		}
-		result := convertRedisTLSRunConfig(rc)
-		require.NotNil(t, result)
-		assert.Empty(t, result.CACert, "missing cert file should result in empty CACert")
+		_, err := convertRedisTLSRunConfig(rc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to read Redis CA cert file")
 	})
 }

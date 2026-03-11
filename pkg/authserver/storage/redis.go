@@ -127,9 +127,10 @@ type storedSession struct {
 }
 
 // buildTLSConfig creates a *tls.Config from a RedisTLSConfig.
-func buildTLSConfig(cfg *RedisTLSConfig) *tls.Config {
+// Returns an error if a CA certificate is provided but cannot be parsed.
+func buildTLSConfig(cfg *RedisTLSConfig) (*tls.Config, error) {
 	if cfg == nil {
-		return nil
+		return nil, nil
 	}
 	tc := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
@@ -137,10 +138,79 @@ func buildTLSConfig(cfg *RedisTLSConfig) *tls.Config {
 	}
 	if len(cfg.CACert) > 0 {
 		pool := x509.NewCertPool()
-		pool.AppendCertsFromPEM(cfg.CACert)
+		if !pool.AppendCertsFromPEM(cfg.CACert) {
+			return nil, fmt.Errorf("failed to parse CA certificate PEM data")
+		}
 		tc.RootCAs = pool
 	}
-	return tc
+	return tc, nil
+}
+
+// newTLSDialer returns a dialer function that applies different TLS configs for
+// master vs sentinel connections. When masterTLS is nil, master connections use
+// plaintext. When sentinelTLS is nil, sentinel connections use plaintext.
+// This is needed because go-redis applies a single TLSConfig to all connections.
+func newTLSDialer(
+	masterTLS, sentinelTLS *tls.Config,
+	sentinelAddrs []string,
+	timeout time.Duration,
+) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(_ context.Context, network, addr string) (net.Conn, error) {
+		d := &net.Dialer{Timeout: timeout}
+		isSentinel := slices.Contains(sentinelAddrs, addr)
+
+		var tlsCfg *tls.Config
+		if isSentinel {
+			tlsCfg = sentinelTLS
+		} else {
+			tlsCfg = masterTLS
+		}
+
+		if tlsCfg == nil {
+			return d.Dial(network, addr)
+		}
+		return tls.DialWithDialer(d, network, addr, tlsCfg)
+	}
+}
+
+// configureTLSDialer sets up a custom dialer on the FailoverOptions when either
+// master or sentinel TLS is enabled. go-redis applies a single TLSConfig to both
+// sentinel and master connections, so when they need different treatment we install
+// a custom dialer that selects the right config per target address.
+func configureTLSDialer(opts *redis.FailoverOptions, masterCfg, sentinelCfg *RedisTLSConfig) error {
+	masterEnabled := masterCfg != nil && masterCfg.Enabled
+
+	// Sentinel falls back to master config when not explicitly set
+	effectiveSentinelCfg := sentinelCfg
+	if effectiveSentinelCfg == nil {
+		effectiveSentinelCfg = masterCfg
+	}
+	sentinelEnabled := effectiveSentinelCfg != nil && effectiveSentinelCfg.Enabled
+
+	if !masterEnabled && !sentinelEnabled {
+		return nil
+	}
+
+	var masterTLS *tls.Config
+	if masterEnabled {
+		var err error
+		masterTLS, err = buildTLSConfig(masterCfg)
+		if err != nil {
+			return fmt.Errorf("master TLS config: %w", err)
+		}
+	}
+
+	var sentinelTLS *tls.Config
+	if sentinelEnabled {
+		var err error
+		sentinelTLS, err = buildTLSConfig(effectiveSentinelCfg)
+		if err != nil {
+			return fmt.Errorf("sentinel TLS config: %w", err)
+		}
+	}
+
+	opts.Dialer = newTLSDialer(masterTLS, sentinelTLS, opts.SentinelAddrs, opts.DialTimeout)
+	return nil
 }
 
 // NewRedisStorage creates Redis-backed storage with Sentinel failover support.
@@ -172,34 +242,9 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		WriteTimeout:  cfg.WriteTimeout,
 	}
 
-	// Configure TLS for master connections
-	if cfg.TLS != nil && cfg.TLS.Enabled {
-		opts.TLSConfig = buildTLSConfig(cfg.TLS)
-	}
-
-	// Configure TLS for sentinel connections via custom dialer.
-	// go-redis applies TLSConfig to both sentinel and master connections,
-	// so we use a custom dialer to apply different TLS configs per target.
-	sentinelTLS := cfg.SentinelTLS
-	if sentinelTLS == nil {
-		sentinelTLS = cfg.TLS // fall back to master TLS config
-	}
-	if sentinelTLS != nil && sentinelTLS.Enabled && opts.TLSConfig != nil {
-		masterTLS := opts.TLSConfig
-		sentinelTLSCfg := buildTLSConfig(sentinelTLS)
-		// Clear the global TLSConfig — we handle TLS per-connection in the dialer
-		opts.TLSConfig = nil
-		opts.Dialer = func(_ context.Context, network, addr string) (net.Conn, error) {
-			tlsCfg := masterTLS
-			for _, sa := range opts.SentinelAddrs {
-				if addr == sa {
-					tlsCfg = sentinelTLSCfg
-					break
-				}
-			}
-			d := &net.Dialer{Timeout: opts.DialTimeout}
-			return tls.DialWithDialer(d, network, addr, tlsCfg)
-		}
+	// Configure TLS dialer if either master or sentinel TLS is enabled.
+	if err := configureTLSDialer(opts, cfg.TLS, cfg.SentinelTLS); err != nil {
+		return nil, err
 	}
 
 	client := redis.NewFailoverClient(opts)

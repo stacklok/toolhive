@@ -481,16 +481,28 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 		cfg.WriteTimeout = d
 	}
 
-	cfg.TLS = convertRedisTLSRunConfig(rc.TLS)
-	cfg.SentinelTLS = convertRedisTLSRunConfig(rc.SentinelTLS)
+	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
+	if err != nil {
+		return nil, fmt.Errorf("master TLS config: %w", err)
+	}
+	cfg.TLS = tlsCfg
+
+	sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
+	if err != nil {
+		return nil, fmt.Errorf("sentinel TLS config: %w", err)
+	}
+	cfg.SentinelTLS = sentinelTLSCfg
 
 	return cfg, nil
 }
 
 // convertRedisTLSRunConfig converts a RedisTLSRunConfig to runtime RedisTLSConfig.
-func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) *storage.RedisTLSConfig {
+// Returns an error if a CA cert file is configured but cannot be read — this is
+// treated as a hard error because silently falling back to system CAs could mask
+// a misconfiguration and cause confusing TLS failures downstream.
+func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*storage.RedisTLSConfig, error) {
 	if rc == nil {
-		return nil
+		return nil, nil
 	}
 	cfg := &storage.RedisTLSConfig{
 		Enabled:            rc.Enabled,
@@ -500,13 +512,11 @@ func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) *storage.RedisTLSCo
 		// #nosec G304 - file path is from configuration, not user input
 		data, err := os.ReadFile(rc.CACertFile)
 		if err != nil {
-			slog.Warn("Failed to read Redis CA cert file, using system CAs",
-				"file", rc.CACertFile, "error", err)
-		} else {
-			cfg.CACert = data
+			return nil, fmt.Errorf("failed to read Redis CA cert file %q: %w", rc.CACertFile, err)
 		}
+		cfg.CACert = data
 	}
-	return cfg
+	return cfg, nil
 }
 
 // resolveEnvVar reads a value from the named environment variable.

@@ -176,7 +176,7 @@ func GenerateAuthServerVolumes(
 	// Generate volumes for Redis TLS CA certificates
 	if authConfig.Storage != nil && authConfig.Storage.Redis != nil {
 		redis := authConfig.Storage.Redis
-		if redis.TLS != nil && redis.TLS.CACertSecretRef != nil {
+		if redis.TLS != nil && redis.TLS.Enabled && redis.TLS.CACertSecretRef != nil {
 			ref := redis.TLS.CACertSecretRef
 			volumeName := RedisTLSCACertVolumePrefix + "master"
 			volumes = append(volumes, corev1.Volume{
@@ -199,7 +199,7 @@ func GenerateAuthServerVolumes(
 				ReadOnly:  true,
 			})
 		}
-		if redis.SentinelTLS != nil && redis.SentinelTLS.CACertSecretRef != nil {
+		if redis.SentinelTLS != nil && redis.SentinelTLS.Enabled && redis.SentinelTLS.CACertSecretRef != nil {
 			ref := redis.SentinelTLS.CACertSecretRef
 			volumeName := RedisTLSCACertVolumePrefix + "sentinel"
 			volumes = append(volumes, corev1.Volume{

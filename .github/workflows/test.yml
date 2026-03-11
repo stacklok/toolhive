@@ -66,14 +66,14 @@ jobs:
         run: task test-coverage
 
       - name: Upload coverage reports to Codecov with GitHub Action
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: stacklok/toolhive
 
       - name: Upload coverage to Coveralls
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         uses: coverallsapp/github-action@v2
         with:
           file: coverage/coverage.out

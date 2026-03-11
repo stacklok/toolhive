@@ -239,7 +239,7 @@ func (c *mcpRegistryClient) fetchServersPage(
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		return nil, "", &RegistryHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 

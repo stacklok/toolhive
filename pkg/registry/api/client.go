@@ -7,6 +7,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,6 +21,32 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry/auth"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
+
+// ErrRegistryUnauthorized is returned when the registry responds with
+// HTTP 401 Unauthorized or 403 Forbidden.
+var ErrRegistryUnauthorized = errors.New("registry requires authentication")
+
+// RegistryHTTPError is returned for non-2xx HTTP responses from the registry API.
+// When StatusCode is 401 or 403, Unwrap returns ErrRegistryUnauthorized so
+// callers can use errors.Is(err, ErrRegistryUnauthorized).
+type RegistryHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *RegistryHTTPError) Error() string {
+	return fmt.Sprintf("registry returned HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+// Unwrap returns ErrRegistryUnauthorized for 401/403 status codes,
+// allowing callers to use errors.Is for auth error detection.
+func (e *RegistryHTTPError) Unwrap() error {
+	if e.StatusCode == http.StatusUnauthorized ||
+		e.StatusCode == http.StatusForbidden {
+		return ErrRegistryUnauthorized
+	}
+	return nil
+}
 
 // Client represents an MCP Registry API client
 type Client interface {
@@ -113,7 +140,7 @@ func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.Ser
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, &RegistryHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var serverResp v0.ServerResponse
@@ -208,7 +235,7 @@ func (c *mcpRegistryClient) fetchServersPage(
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, "", &RegistryHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var listResp v0.ServerListResponse
@@ -253,7 +280,7 @@ func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, &RegistryHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var listResp v0.ServerListResponse

@@ -17,7 +17,65 @@ import (
 	"github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
+
+const (
+	// authStatusNone indicates no registry auth is configured.
+	authStatusNone = "none"
+	// authStatusConfigured indicates auth is configured but no cached tokens exist.
+	authStatusConfigured = "configured"
+	// authStatusAuthenticated indicates auth is configured with cached tokens from a prior login.
+	authStatusAuthenticated = "authenticated"
+)
+
+// registryAuthErrorResponse is the JSON body for HTTP 503 auth-required errors.
+// Studio uses the "code" field to detect this specific condition and prompt the user.
+type registryAuthErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// writeRegistryAuthRequiredError writes a structured JSON 503 response.
+// HTTP 503 is correct: the incoming client (Studio) is authenticated to the thv serve API,
+// but thv serve itself lacks a valid registry credential. This is a server-side dependency
+// issue, not a client auth failure (which would be 401).
+func writeRegistryAuthRequiredError(w http.ResponseWriter) {
+	body := registryAuthErrorResponse{
+		Code:    "registry_auth_required",
+		Message: "Registry authentication required. Run 'thv registry login' to authenticate.",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// resolveAuthStatus reads the config and returns the auth_status and auth_type
+// strings for API responses.
+// Status logic:
+//   - RegistryAuth.Type == "" → ("none", "") — no auth configured
+//   - Type == "oauth", no CachedRefreshTokenRef → ("configured", "oauth")
+//   - Type == "oauth", CachedRefreshTokenRef present → ("authenticated", "oauth")
+func resolveAuthStatus(cfg *config.Config) (authStatus, authType string) {
+	if cfg == nil || cfg.RegistryAuth.Type == "" {
+		return authStatusNone, ""
+	}
+	switch cfg.RegistryAuth.Type {
+	case config.RegistryAuthTypeOAuth:
+		if cfg.RegistryAuth.OAuth == nil ||
+			cfg.RegistryAuth.OAuth.CachedRefreshTokenRef == "" {
+			return authStatusConfigured, "oauth"
+		}
+		return authStatusAuthenticated, "oauth"
+	default:
+		return authStatusConfigured, cfg.RegistryAuth.Type
+	}
+}
+
+// isRegistryAuthError checks if an error is a registry auth required error.
+func isRegistryAuthError(err error) bool {
+	return errors.Is(err, auth.ErrRegistryAuthRequired)
+}
 
 const (
 	// defaultRegistryName is the name of the default registry
@@ -94,10 +152,22 @@ func (rr *RegistryRoutes) getRegistryInfo() (RegistryType, string) {
 	return RegistryType(registryType), source
 }
 
-// getCurrentProvider returns the current registry provider using the injected config
+// getCurrentProvider returns the current registry provider using the injected config.
+// In serve mode, the provider is created with non-interactive auth to prevent
+// browser-based OAuth flows from being triggered by API requests.
 func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
-	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider)
+	var provider regpkg.Provider
+	var err error
+	if rr.serveMode {
+		provider, err = regpkg.GetNonInteractiveProviderWithConfig(rr.configProvider)
+	} else {
+		provider, err = regpkg.GetDefaultProviderWithConfig(rr.configProvider)
+	}
 	if err != nil {
+		if isRegistryAuthError(err) {
+			writeRegistryAuthRequiredError(w)
+			return nil, false
+		}
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
 		slog.Error("failed to get registry provider", "error", err)
 		return nil, false
@@ -109,6 +179,7 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 type RegistryRoutes struct {
 	configProvider config.Provider
 	configService  regpkg.Configurator
+	serveMode      bool
 }
 
 // NewRegistryRoutes creates a new RegistryRoutes with the default config provider
@@ -128,9 +199,26 @@ func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
 	}
 }
 
+// NewRegistryRoutesForServe creates RegistryRoutes configured for serve mode.
+// In serve mode, the registry provider uses non-interactive auth (no browser OAuth).
+func NewRegistryRoutesForServe() *RegistryRoutes {
+	return &RegistryRoutes{
+		configProvider: config.NewDefaultProvider(),
+		configService:  regpkg.NewConfigurator(),
+		serveMode:      true,
+	}
+}
+
 // RegistryRouter creates a new router for the registry API.
-func RegistryRouter() http.Handler {
-	routes := NewRegistryRoutes()
+// When serveMode is true, the registry provider uses non-interactive auth,
+// ensuring browser-based OAuth flows are never triggered from API requests.
+func RegistryRouter(serveMode bool) http.Handler {
+	routes := func() *RegistryRoutes {
+		if serveMode {
+			return NewRegistryRoutesForServe()
+		}
+		return NewRegistryRoutes()
+	}()
 
 	r := chi.NewRouter()
 	r.Get("/", routes.listRegistries)
@@ -163,11 +251,18 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 
 	reg, err := provider.GetRegistry()
 	if err != nil {
+		if isRegistryAuthError(err) {
+			writeRegistryAuthRequiredError(w)
+			return
+		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
 
 	registryType, source := rr.getRegistryInfo()
+
+	cfg, _ := rr.configProvider.LoadOrCreateConfig()
+	regAuthStatus, regAuthType := resolveAuthStatus(cfg)
 
 	registries := []registryInfo{
 		{
@@ -177,6 +272,8 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 			ServerCount: len(reg.Servers),
 			Type:        registryType,
 			Source:      source,
+			AuthStatus:  regAuthStatus,
+			AuthType:    regAuthType,
 		},
 	}
 
@@ -229,11 +326,18 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	reg, err := provider.GetRegistry()
 	if err != nil {
+		if isRegistryAuthError(err) {
+			writeRegistryAuthRequiredError(w)
+			return
+		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
 
 	registryType, source := rr.getRegistryInfo()
+
+	cfg, _ := rr.configProvider.LoadOrCreateConfig()
+	regAuthStatus, regAuthType := resolveAuthStatus(cfg)
 
 	response := getRegistryResponse{
 		Name:        defaultRegistryName,
@@ -242,6 +346,8 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		ServerCount: len(reg.Servers),
 		Type:        registryType,
 		Source:      source,
+		AuthStatus:  regAuthStatus,
+		AuthType:    regAuthType,
 		Registry:    reg,
 	}
 
@@ -430,6 +536,10 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	// Get the full registry to access both container and remote servers
 	reg, err := provider.GetRegistry()
 	if err != nil {
+		if isRegistryAuthError(err) {
+			writeRegistryAuthRequiredError(w)
+			return
+		}
 		slog.Error("failed to get registry", "error", err)
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -546,6 +656,11 @@ type registryInfo struct {
 	Type RegistryType `json:"type"`
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
+	// AuthStatus is one of: "none", "configured", "authenticated".
+	// Absent from the response when no auth is configured.
+	AuthStatus string `json:"auth_status,omitempty"`
+	// AuthType is "oauth", "bearer" (future), or absent when no auth.
+	AuthType string `json:"auth_type,omitempty"`
 }
 
 // registryListResponse represents the response for listing registries
@@ -572,6 +687,10 @@ type getRegistryResponse struct {
 	Type RegistryType `json:"type"`
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
+	// AuthStatus is one of: "none", "configured", "authenticated".
+	AuthStatus string `json:"auth_status,omitempty"`
+	// AuthType is "oauth", "bearer" (future), or absent when no auth.
+	AuthType string `json:"auth_type,omitempty"`
 	// Full registry data
 	Registry *registry.Registry `json:"registry"`
 }

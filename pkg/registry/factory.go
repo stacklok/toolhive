@@ -100,6 +100,23 @@ func GetDefaultProviderWithConfig(configProvider config.Provider) (Provider, err
 	return defaultProvider, defaultProviderErr
 }
 
+// GetNonInteractiveProviderWithConfig returns a registry provider configured for
+// headless/serve mode. Unlike GetDefaultProviderWithConfig, this creates the provider
+// with WithInteractive(false), ensuring browser-based OAuth flows are never triggered.
+// This should be used by thv serve and other non-interactive contexts.
+func GetNonInteractiveProviderWithConfig(configProvider config.Provider) (Provider, error) {
+	defaultProviderOnce.Do(func() {
+		cfg, err := configProvider.LoadOrCreateConfig()
+		if err != nil {
+			defaultProviderErr = err
+			return
+		}
+		defaultProvider, defaultProviderErr = NewRegistryProvider(cfg, WithInteractive(false))
+	})
+
+	return defaultProvider, defaultProviderErr
+}
+
 // ResetDefaultProvider clears the cached default provider instance
 // This allows the provider to be recreated with updated configuration.
 // This function is thread-safe and can be called concurrently.

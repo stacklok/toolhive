@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -20,7 +22,7 @@ import (
 //
 // This middleware sits between discovery and authz in the middleware chain:
 //
-//	auth+parser -> audit -> discovery -> annotation-enrichment -> authz -> handler
+//	... -> discovery -> annotation-enrichment -> authz -> ...
 //
 // It only enriches context for tools/call requests. For all other request
 // types, it passes through without modification.
@@ -30,7 +32,7 @@ func AnnotationEnrichmentMiddleware(next http.Handler) http.Handler {
 
 		// Only enrich for tools/call requests where authz needs annotation data.
 		parsedReq := mcpparser.GetParsedMCPRequest(ctx)
-		if parsedReq == nil || parsedReq.Method != "tools/call" {
+		if parsedReq == nil || parsedReq.Method != string(mcp.MethodToolsCall) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -84,6 +86,8 @@ func findToolAnnotations(toolName string, caps *aggregator.AggregatedCapabilitie
 }
 
 // convertAnnotations converts vmcp.ToolAnnotations to authorizers.ToolAnnotations.
+// Only authorization-relevant hint fields are mapped; informational fields like
+// Title are intentionally omitted since they are not used in policy evaluation.
 // Returns nil if the source annotations contain no hint fields.
 func convertAnnotations(ann *vmcp.ToolAnnotations) *authorizers.ToolAnnotations {
 	if ann.ReadOnlyHint == nil && ann.DestructiveHint == nil &&

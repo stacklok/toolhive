@@ -502,8 +502,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → audit → discovery → backend enrichment → MCP parsing → telemetry
-	// Execution order: telemetry → MCP parsing → backend enrichment → discovery → audit → auth → handler
+	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
+	//   authz → backend-enrichment → MCP-parsing → telemetry
+	// Execution order: recovery → header-val → auth+parser → audit →
+	//   discovery → annotation-enrichment → authz → backend-enrichment →
+	//   MCP-parsing → telemetry → handler
 
 	var mcpHandler http.Handler = streamableServer
 
@@ -515,6 +518,10 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
 	// This runs before telemetry so that recordMetrics can label metrics with the
 	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
+	// Note: ParsingMiddleware is also composed inside the auth middleware (for audit/authz).
+	// The second application here is a no-op because the context already holds a
+	// ParsedMCPRequest; it exists only so the telemetry layer works correctly even
+	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
 	// Apply backend enrichment middleware if audit is configured

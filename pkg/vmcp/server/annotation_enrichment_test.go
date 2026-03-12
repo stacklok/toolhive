@@ -241,4 +241,3 @@ func TestAnnotationEnrichmentMiddleware(t *testing.T) {
 		})
 	}
 }
-

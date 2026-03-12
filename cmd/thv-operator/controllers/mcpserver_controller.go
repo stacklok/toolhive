@@ -1458,11 +1458,13 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 // deleteIfExists fetches a Kubernetes object by name and namespace, and deletes it if it exists.
 // Returns nil if the object was not found or was successfully deleted.
 func (r *MCPServerReconciler) deleteIfExists(ctx context.Context, obj client.Object, name, namespace, kind string) error {
+	ctxLogger := log.FromContext(ctx)
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, obj)
 	if err == nil {
 		if delErr := r.Delete(ctx, obj); delErr != nil && !errors.IsNotFound(delErr) {
 			return fmt.Errorf("failed to delete %s %s: %w", kind, name, delErr)
 		}
+		ctxLogger.V(1).Info("deleted resource", "kind", kind, "name", name, "namespace", namespace)
 		return nil
 	}
 	if !errors.IsNotFound(err) {

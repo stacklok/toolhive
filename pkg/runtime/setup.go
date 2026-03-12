@@ -124,9 +124,9 @@ func Setup(
 	} else {
 		// Update target host and port if needed (for Kubernetes)
 		if (transportType == types.TransportTypeSSE || transportType == types.TransportTypeStreamableHTTP) && rt.IsKubernetesRuntime() {
-			// If the SSEHeadlessServiceName is set, use it as the target host
-			if containerOptions.SSEHeadlessServiceName != "" {
-				result.TargetHost = containerOptions.SSEHeadlessServiceName
+			// If the MCPServiceName is set, use it as the target host
+			if containerOptions.MCPServiceName != "" {
+				result.TargetHost = containerOptions.MCPServiceName
 			}
 		}
 

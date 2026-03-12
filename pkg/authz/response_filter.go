@@ -24,24 +24,28 @@ var errBug = errors.New("there's a bug")
 // ResponseFilteringWriter wraps an http.ResponseWriter to intercept and filter responses
 type ResponseFilteringWriter struct {
 	http.ResponseWriter
-	authorizer authorizers.Authorizer
-	request    *http.Request
-	method     string
-	buffer     *bytes.Buffer
-	statusCode int
+	authorizer      authorizers.Authorizer
+	request         *http.Request
+	method          string
+	buffer          *bytes.Buffer
+	statusCode      int
+	annotationCache *AnnotationCache
 }
 
-// NewResponseFilteringWriter creates a new response filtering writer
+// NewResponseFilteringWriter creates a new response filtering writer.
+// The annotationCache parameter is optional; pass nil to disable annotation caching.
 func NewResponseFilteringWriter(
 	w http.ResponseWriter, authorizer authorizers.Authorizer, r *http.Request, method string,
+	annotationCache *AnnotationCache,
 ) *ResponseFilteringWriter {
 	return &ResponseFilteringWriter{
-		ResponseWriter: w,
-		authorizer:     authorizer,
-		request:        r,
-		method:         method,
-		buffer:         &bytes.Buffer{},
-		statusCode:     http.StatusOK,
+		ResponseWriter:  w,
+		authorizer:      authorizer,
+		request:         r,
+		method:          method,
+		buffer:          &bytes.Buffer{},
+		statusCode:      http.StatusOK,
+		annotationCache: annotationCache,
 	}
 }
 
@@ -274,6 +278,10 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 		// If we can't parse it as a list response, just return it as-is
 		return response, nil
 	}
+
+	// Populate annotation cache from tools/list response so that
+	// subsequent tools/call requests can look up annotations.
+	rfw.annotationCache.SetFromToolsList(listResult.Tools)
 
 	// Note: instantiating the list ensures that no null value is sent over the wire.
 	// This is basically defensive programming, but for clients.

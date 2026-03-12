@@ -15,10 +15,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -779,6 +781,114 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			assert.Equal(t, tc.expectedCommand, mcpContainer.Args)
 			assert.Equal(t, tc.attachStdio, mcpContainer.Stdin)
 			assert.Equal(t, tc.expectedEnvVarCount, len(mcpContainer.Env))
+		})
+	}
+}
+
+// TestDeployWorkloadCreatesBackendServices verifies that deploying with HTTP-based
+// transports (SSE and streamable-http) creates both a headless service and a ClusterIP
+// service with session affinity, and that both services have the StatefulSet as owner.
+func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		transportType string
+	}{
+		{name: "sse transport", transportType: "sse"},
+		{name: "streamable-http transport", transportType: "streamable-http"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			containerName := "test-svc"
+			mockStatefulSet := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      containerName,
+					Namespace: "default",
+					UID:       "test-uid-123",
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To(int32(1)),
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{},
+						},
+					},
+				},
+				Status: appsv1.StatefulSetStatus{
+					ReadyReplicas: 1,
+				},
+			}
+			clientset := fake.NewClientset(mockStatefulSet)
+			fakeConfig := &rest.Config{Host: "https://fake-k8s-api.example.com"}
+			mockDetector := &mockPlatformDetector{platform: PlatformKubernetes}
+
+			client := NewClientWithConfigAndPlatformDetector(clientset, fakeConfig, mockDetector)
+			client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+			client.namespaceFunc = func() string { return "default" }
+
+			options := runtime.NewDeployWorkloadOptions()
+			options.PortBindings = map[string][]runtime.PortBinding{
+				"8080/tcp": {{HostPort: "8080"}},
+			}
+
+			_, err := client.DeployWorkload(
+				t.Context(),
+				"test-image",
+				containerName,
+				[]string{"serve"},
+				nil,
+				map[string]string{"app": containerName},
+				nil,
+				tc.transportType,
+				options,
+				false,
+			)
+			require.NoError(t, err)
+
+			// Verify the headless service was created
+			headlessSvc, err := clientset.CoreV1().Services("default").Get(
+				t.Context(), "mcp-"+containerName+"-headless", metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, corev1.ClusterIPNone, headlessSvc.Spec.ClusterIP)
+			assert.NotEqual(t, corev1.ServiceAffinityClientIP, headlessSvc.Spec.SessionAffinity)
+
+			// Verify owner reference on headless service
+			require.Len(t, headlessSvc.OwnerReferences, 1)
+			assert.Equal(t, "apps/v1", headlessSvc.OwnerReferences[0].APIVersion)
+			assert.Equal(t, "StatefulSet", headlessSvc.OwnerReferences[0].Kind)
+			assert.Equal(t, containerName, headlessSvc.OwnerReferences[0].Name)
+			assert.Equal(t, k8stypes.UID("test-uid-123"), headlessSvc.OwnerReferences[0].UID)
+			require.NotNil(t, headlessSvc.OwnerReferences[0].Controller)
+			assert.True(t, *headlessSvc.OwnerReferences[0].Controller)
+			require.NotNil(t, headlessSvc.OwnerReferences[0].BlockOwnerDeletion)
+			assert.True(t, *headlessSvc.OwnerReferences[0].BlockOwnerDeletion)
+
+			// Verify the MCP ClusterIP service was created
+			mcpSvc, err := clientset.CoreV1().Services("default").Get(
+				t.Context(), "mcp-"+containerName, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, corev1.ServiceAffinityClientIP, mcpSvc.Spec.SessionAffinity)
+			require.NotNil(t, mcpSvc.Spec.SessionAffinityConfig)
+			require.NotNil(t, mcpSvc.Spec.SessionAffinityConfig.ClientIP)
+			assert.Equal(t, int32(1800), *mcpSvc.Spec.SessionAffinityConfig.ClientIP.TimeoutSeconds)
+
+			// Verify owner reference on MCP service
+			require.Len(t, mcpSvc.OwnerReferences, 1)
+			assert.Equal(t, "apps/v1", mcpSvc.OwnerReferences[0].APIVersion)
+			assert.Equal(t, "StatefulSet", mcpSvc.OwnerReferences[0].Kind)
+			assert.Equal(t, containerName, mcpSvc.OwnerReferences[0].Name)
+			assert.Equal(t, k8stypes.UID("test-uid-123"), mcpSvc.OwnerReferences[0].UID)
+			require.NotNil(t, mcpSvc.OwnerReferences[0].Controller)
+			assert.True(t, *mcpSvc.OwnerReferences[0].Controller)
+			require.NotNil(t, mcpSvc.OwnerReferences[0].BlockOwnerDeletion)
+			assert.True(t, *mcpSvc.OwnerReferences[0].BlockOwnerDeletion)
+
+			// Verify MCPServiceName was set on options
+			assert.Equal(t, "mcp-"+containerName, options.MCPServiceName)
 		})
 	}
 }

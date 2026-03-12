@@ -187,6 +187,155 @@ func TestGenerateAuthServerVolumes(t *testing.T) {
 	}
 }
 
+func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
+	t.Parallel()
+
+	baseAuthConfig := func(storageCfg *mcpv1alpha1.AuthServerStorageConfig) *mcpv1alpha1.EmbeddedAuthServerConfig {
+		return &mcpv1alpha1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+				{Name: "signing-key", Key: "private.pem"},
+			},
+			HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+				{Name: "hmac-secret", Key: "hmac"},
+			},
+			Storage: storageCfg,
+		}
+	}
+
+	tests := []struct {
+		name            string
+		authConfig      *mcpv1alpha1.EmbeddedAuthServerConfig
+		wantTLSVolumes  int
+		wantTLSMounts   int
+		wantMasterVol   bool
+		wantSentinelVol bool
+	}{
+		{
+			name: "TLS enabled with CA cert creates volume",
+			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
+				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+				Redis: &mcpv1alpha1.RedisStorageConfig{
+					TLS: &mcpv1alpha1.RedisTLSConfig{
+						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+					},
+				},
+			}),
+			wantTLSVolumes: 1,
+			wantTLSMounts:  1,
+			wantMasterVol:  true,
+		},
+		{
+			name: "nil TLS produces no TLS volumes",
+			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
+				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+				Redis: &mcpv1alpha1.RedisStorageConfig{
+					TLS: nil,
+				},
+			}),
+			wantTLSVolumes: 0,
+			wantTLSMounts:  0,
+		},
+		{
+			name: "TLS enabled without CA cert does NOT create volume",
+			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
+				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+				Redis: &mcpv1alpha1.RedisStorageConfig{
+					TLS: &mcpv1alpha1.RedisTLSConfig{},
+				},
+			}),
+			wantTLSVolumes: 0,
+			wantTLSMounts:  0,
+		},
+		{
+			name: "both master and sentinel TLS with CA certs create separate volumes",
+			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
+				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+				Redis: &mcpv1alpha1.RedisStorageConfig{
+					TLS: &mcpv1alpha1.RedisTLSConfig{
+						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "master-ca", Key: "ca.crt"},
+					},
+					SentinelTLS: &mcpv1alpha1.RedisTLSConfig{
+						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "sentinel-ca", Key: "ca.crt"},
+					},
+				},
+			}),
+			wantTLSVolumes:  2,
+			wantTLSMounts:   2,
+			wantMasterVol:   true,
+			wantSentinelVol: true,
+		},
+		{
+			name: "sentinel TLS only, master plaintext",
+			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
+				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+				Redis: &mcpv1alpha1.RedisStorageConfig{
+					TLS: nil,
+					SentinelTLS: &mcpv1alpha1.RedisTLSConfig{
+						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "sentinel-ca", Key: "ca.crt"},
+					},
+				},
+			}),
+			wantTLSVolumes:  1,
+			wantTLSMounts:   1,
+			wantSentinelVol: true,
+		},
+		{
+			name:           "nil storage produces no TLS volumes",
+			authConfig:     baseAuthConfig(nil),
+			wantTLSVolumes: 0,
+			wantTLSMounts:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			volumes, mounts := GenerateAuthServerVolumes(tt.authConfig)
+
+			// Count TLS-specific volumes
+			tlsVolCount := 0
+			tlsMountCount := 0
+			hasMaster := false
+			hasSentinel := false
+			for _, vol := range volumes {
+				if len(vol.Name) >= len(RedisTLSCACertVolumePrefix) &&
+					vol.Name[:len(RedisTLSCACertVolumePrefix)] == RedisTLSCACertVolumePrefix {
+					tlsVolCount++
+					if vol.Name == RedisTLSCACertVolumePrefix+"master" {
+						hasMaster = true
+					}
+					if vol.Name == RedisTLSCACertVolumePrefix+"sentinel" {
+						hasSentinel = true
+					}
+					// Verify permissions
+					require.NotNil(t, vol.Secret)
+					require.NotNil(t, vol.Secret.DefaultMode)
+					assert.Equal(t, int32(0400), *vol.Secret.DefaultMode)
+				}
+			}
+			for _, mount := range mounts {
+				if len(mount.Name) >= len(RedisTLSCACertVolumePrefix) &&
+					mount.Name[:len(RedisTLSCACertVolumePrefix)] == RedisTLSCACertVolumePrefix {
+					tlsMountCount++
+					assert.True(t, mount.ReadOnly)
+					assert.Contains(t, mount.MountPath, RedisTLSCACertMountPath)
+				}
+			}
+
+			assert.Equal(t, tt.wantTLSVolumes, tlsVolCount, "TLS volume count")
+			assert.Equal(t, tt.wantTLSMounts, tlsMountCount, "TLS mount count")
+			if tt.wantMasterVol {
+				assert.True(t, hasMaster, "expected master TLS volume")
+			}
+			if tt.wantSentinelVol {
+				assert.True(t, hasSentinel, "expected sentinel TLS volume")
+			}
+		})
+	}
+}
+
 func TestGenerateAuthServerEnvVars(t *testing.T) {
 	t.Parallel()
 

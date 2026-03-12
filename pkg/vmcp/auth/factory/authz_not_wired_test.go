@@ -23,8 +23,10 @@ import (
 //   - When authz is configured with a deny-all policy, requests should be rejected
 //   - When authz is configured with role-based policies, unauthorized users should be rejected
 //
-// Currently these tests FAIL because authz is not wired up in vMCP.
-// Once authz middleware is implemented, these tests should pass.
+// The auth and authz middleware are returned separately so the caller can insert
+// discovery and annotation-enrichment middleware between them. In these tests we
+// compose them directly (auth wrapping authz wrapping handler) to verify authz
+// enforcement in isolation.
 func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 	t.Parallel()
 
@@ -45,9 +47,10 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		middleware, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
 		require.NoError(t, err, "middleware creation should succeed")
-		require.NotNil(t, middleware, "middleware should not be nil")
+		require.NotNil(t, authMw, "auth middleware should not be nil")
+		require.NotNil(t, authzMw, "authz middleware should not be nil")
 
 		// Track if the handler is called
 		handlerCalled := false
@@ -56,7 +59,8 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		wrapped := middleware(testHandler)
+		// Compose: auth wraps authz wraps handler (simulating the full chain)
+		wrapped := authMw(authzMw(testHandler))
 
 		// Simulate a tools/call request that should be DENIED by the Cedar policy
 		mcpRequest := map[string]any{
@@ -101,9 +105,10 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		middleware, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
 		require.NoError(t, err, "middleware creation should succeed")
-		require.NotNil(t, middleware, "middleware should not be nil")
+		require.NotNil(t, authMw, "auth middleware should not be nil")
+		require.NotNil(t, authzMw, "authz middleware should not be nil")
 
 		handlerCalled := false
 		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -111,7 +116,8 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		wrapped := middleware(testHandler)
+		// Compose: auth wraps authz wraps handler
+		wrapped := authMw(authzMw(testHandler))
 
 		// Anonymous user has no role, so should be denied
 		mcpRequest := map[string]any{
@@ -157,9 +163,10 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 		},
 	}
 
-	middleware, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
+	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
 	require.NoError(t, err, "middleware creation should succeed")
-	require.NotNil(t, middleware, "middleware should not be nil")
+	require.NotNil(t, authMw, "auth middleware should not be nil")
+	require.NotNil(t, authzMw, "authz middleware should not be nil")
 
 	t.Run("list_tools_is_permitted", func(t *testing.T) {
 		t.Parallel()
@@ -170,7 +177,8 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		wrapped := middleware(testHandler)
+		// Compose: auth wraps authz wraps handler
+		wrapped := authMw(authzMw(testHandler))
 
 		// Request to list tools - should be ALLOWED
 		mcpRequest := map[string]any{
@@ -202,7 +210,8 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		wrapped := middleware(testHandler)
+		// Compose: auth wraps authz wraps handler
+		wrapped := authMw(authzMw(testHandler))
 
 		// Request to call a tool - should be DENIED
 		mcpRequest := map[string]any{
@@ -238,7 +247,8 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		wrapped := middleware(testHandler)
+		// Compose: auth wraps authz wraps handler
+		wrapped := authMw(authzMw(testHandler))
 
 		// Request to read a resource - not explicitly permitted, so should be DENIED (default deny)
 		mcpRequest := map[string]any{
@@ -276,7 +286,8 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"prompts":[]}}`))
 		})
 
-		wrapped := middleware(testHandler)
+		// Compose: auth wraps authz wraps handler
+		wrapped := authMw(authzMw(testHandler))
 
 		// List operations are not blocked - they pass through and get filtered
 		// This is the expected behavior for prompts/list, resources/list, etc.
@@ -310,7 +321,8 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		wrapped := middleware(testHandler)
+		// Compose: auth wraps authz wraps handler
+		wrapped := authMw(authzMw(testHandler))
 
 		// Request to get a specific prompt - not explicitly permitted, should be DENIED
 		mcpRequest := map[string]any{

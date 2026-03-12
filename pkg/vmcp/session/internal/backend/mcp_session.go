@@ -91,6 +91,10 @@ type mcpSession struct {
 // SessionID returns the backend-assigned session ID.
 func (c *mcpSession) SessionID() string { return c.backendSessionID }
 
+// Ping sends an MCP protocol ping to the backend. It is side-effect-free and
+// used by the keepalive mechanism to verify the connection is still alive.
+func (c *mcpSession) Ping(ctx context.Context) error { return c.client.Ping(ctx) }
+
 // Close closes the underlying MCP client transport.
 func (c *mcpSession) Close() error { return c.client.Close() }
 

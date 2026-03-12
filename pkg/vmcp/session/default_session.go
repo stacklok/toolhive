@@ -66,7 +66,8 @@ type defaultMultiSession struct {
 	prompts         []vmcp.Prompt
 	backendSessions map[string]string
 
-	queue AdmissionQueue
+	queue     AdmissionQueue
+	keepalive *KeepaliveManager // may be nil in tests that bypass the factory
 }
 
 // Tools returns a snapshot copy of the tools available in this session.
@@ -191,6 +192,12 @@ func (s *defaultMultiSession) GetPrompt(
 // operations complete; subsequent calls are no-ops (idempotent).
 func (s *defaultMultiSession) Close() error {
 	s.queue.CloseAndDrain()
+
+	// Stop keepalive goroutines before closing backend connections so they
+	// don't attempt probes on already-closed sessions.
+	if s.keepalive != nil {
+		s.keepalive.Stop()
+	}
 
 	var errs []error
 	for id, conn := range s.connections {

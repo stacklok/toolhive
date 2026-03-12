@@ -67,9 +67,35 @@ type BackendTarget struct {
 	// HealthStatus indicates the current health of the backend.
 	HealthStatus BackendHealthStatus
 
+	// KeepaliveMethod sets the keepalive probe method for this backend.
+	// When empty, KeepaliveConfig.DefaultMethod is used; if that is also
+	// empty, keepalive is disabled for this backend.
+	KeepaliveMethod KeepaliveMethod
+
+	// KeepaliveToolName is the tool name to call when KeepaliveMethod is
+	// KeepaliveMethodTool. Ignored for other methods.
+	KeepaliveToolName string
+
 	// Metadata stores additional backend-specific information.
 	Metadata map[string]string
 }
+
+// KeepaliveMethod defines how keepalive probes are sent to a backend.
+type KeepaliveMethod string
+
+const (
+	// KeepaliveMethodPing uses the MCP protocol-level ping request. This is
+	// the default: it is side-effect-free and supported by all compliant servers.
+	KeepaliveMethodPing KeepaliveMethod = "ping"
+
+	// KeepaliveMethodTool invokes a low-cost tool specified in
+	// BackendTarget.KeepaliveToolName. Use this only when the backend does not
+	// support ping.
+	KeepaliveMethodTool KeepaliveMethod = "tool"
+
+	// KeepaliveMethodNone disables keepalive for this backend.
+	KeepaliveMethodNone KeepaliveMethod = "none"
+)
 
 // GetBackendCapabilityName returns the name to use when forwarding a request to the backend.
 // If conflict resolution renamed the capability, this returns the original name that the backend expects.

@@ -4,7 +4,6 @@
 package factory
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,7 +23,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		cfg             *config.IncomingAuthConfig
 		wantErr         bool
 		errContains     string
-		checkMiddleware func(t *testing.T, middleware func(http.Handler) http.Handler, authInfo http.Handler)
+		checkMiddleware func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, authInfo http.Handler)
 	}{
 		{
 			name:        "nil_config_returns_error",
@@ -47,10 +46,11 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 				Type: "local",
 			},
 			wantErr: false,
-			checkMiddleware: func(t *testing.T, middleware func(http.Handler) http.Handler, authInfo http.Handler) {
+			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, authInfo http.Handler) {
 				t.Helper()
 
-				require.NotNil(t, middleware, "middleware should not be nil")
+				require.NotNil(t, authMw, "auth middleware should not be nil")
+				assert.Nil(t, authzMw, "authz middleware should be nil when no authz configured")
 				assert.Nil(t, authInfo, "local auth should not have authInfo handler")
 
 				// Test that middleware creates identity
@@ -62,7 +62,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				})
 
-				wrapped := middleware(testHandler)
+				wrapped := authMw(testHandler)
 				req := httptest.NewRequest(http.MethodGet, "/test", nil)
 				recorder := httptest.NewRecorder()
 				wrapped.ServeHTTP(recorder, req)
@@ -76,10 +76,11 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 				Type: "anonymous",
 			},
 			wantErr: false,
-			checkMiddleware: func(t *testing.T, middleware func(http.Handler) http.Handler, authInfo http.Handler) {
+			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, authInfo http.Handler) {
 				t.Helper()
 
-				require.NotNil(t, middleware, "middleware should not be nil")
+				require.NotNil(t, authMw, "auth middleware should not be nil")
+				assert.Nil(t, authzMw, "authz middleware should be nil when no authz configured")
 				assert.Nil(t, authInfo, "anonymous auth should not have authInfo handler")
 
 				// Test that middleware creates identity
@@ -91,12 +92,31 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				})
 
-				wrapped := middleware(testHandler)
+				wrapped := authMw(testHandler)
 				req := httptest.NewRequest(http.MethodGet, "/test", nil)
 				recorder := httptest.NewRecorder()
 				wrapped.ServeHTTP(recorder, req)
 
 				assert.Equal(t, http.StatusOK, recorder.Code)
+			},
+		},
+		{
+			name: "anonymous_auth_with_cedar_returns_separate_authz",
+			cfg: &config.IncomingAuthConfig{
+				Type: "anonymous",
+				Authz: &config.AuthzConfig{
+					Type: "cedar",
+					Policies: []string{
+						`permit(principal, action == Action::"list_tools", resource);`,
+					},
+				},
+			},
+			wantErr: false,
+			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, _ http.Handler) {
+				t.Helper()
+
+				require.NotNil(t, authMw, "auth middleware should not be nil")
+				require.NotNil(t, authzMw, "authz middleware should not be nil when Cedar is configured")
 			},
 		},
 		{
@@ -113,21 +133,21 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
-			middleware, authInfo, err := NewIncomingAuthMiddleware(ctx, tt.cfg)
+			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg)
 
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
 				}
-				assert.Nil(t, middleware)
+				assert.Nil(t, authMw)
+				assert.Nil(t, authzMw)
 				assert.Nil(t, authInfo)
 			} else {
 				require.NoError(t, err)
-				require.NotNil(t, middleware)
+				require.NotNil(t, authMw)
 				if tt.checkMiddleware != nil {
-					tt.checkMiddleware(t, middleware, authInfo)
+					tt.checkMiddleware(t, authMw, authzMw, authInfo)
 				}
 			}
 		})

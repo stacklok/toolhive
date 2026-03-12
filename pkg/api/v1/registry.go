@@ -485,28 +485,49 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Process the registry update
-	responseType, err := rr.processRegistryUpdate(&req)
-	if err != nil {
-		// Check if it's a connectivity error - return 504 Gateway Timeout
-		var connErr *connectivityError
-		if errors.As(err, &connErr) {
-			http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
+	// Process the registry URL/path update.
+	// Call processRegistryUpdate when source fields are present, or when no fields
+	// at all are provided (which resets the registry to defaults).
+	hasSourceFields := req.URL != nil || req.APIURL != nil || req.LocalPath != nil
+	hasSourceUpdate := hasSourceFields || req.Auth == nil
+	var responseType string
+	if hasSourceUpdate {
+		var err error
+		responseType, err = rr.processRegistryUpdate(&req)
+		if err != nil {
+			// Check if it's a connectivity error - return 504 Gateway Timeout
+			var connErr *connectivityError
+			if errors.As(err, &connErr) {
+				http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
+				return
+			}
+			// Check if it's a validation error - return 502 Bad Gateway
+			if isValidationError(err) {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			// Other errors - return 400 Bad Request
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		// Check if it's a validation error - return 502 Bad Gateway
-		if isValidationError(err) {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+	}
+
+	// Process auth configuration if provided
+	if req.Auth != nil {
+		if err := rr.processAuthUpdate(req.Auth); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		// Other errors - return 400 Bad Request
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
 	}
 
 	// Reset the registry provider cache to pick up configuration changes
-	// Note: The config singleton is already reset by the service
 	regpkg.ResetDefaultProvider()
+
+	// If no source update was performed, resolve the current type from config
+	if responseType == "" {
+		currentType, _ := rr.getRegistryInfo()
+		responseType = string(currentType)
+	}
 
 	response := UpdateRegistryResponse{
 		Type: responseType,
@@ -526,6 +547,18 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 		(req.URL != nil && req.LocalPath != nil) ||
 		(req.APIURL != nil && req.LocalPath != nil) {
 		return fmt.Errorf("cannot specify more than one registry type (url, api_url, or local_path)")
+	}
+	return nil
+}
+
+// processAuthUpdate validates and applies OAuth configuration for registry auth.
+func (rr *RegistryRoutes) processAuthUpdate(authReq *UpdateRegistryAuthRequest) error {
+	if authReq.Issuer == "" || authReq.ClientID == "" {
+		return fmt.Errorf("auth.issuer and auth.client_id are required")
+	}
+	authMgr := regpkg.NewAuthManager(rr.configProvider)
+	if err := authMgr.SetOAuthAuth(authReq.Issuer, authReq.ClientID, authReq.Audience, authReq.Scopes); err != nil {
+		return fmt.Errorf("failed to configure registry auth: %w", err)
 	}
 	return nil
 }
@@ -818,6 +851,20 @@ type UpdateRegistryRequest struct {
 	LocalPath *string `json:"local_path,omitempty"`
 	// Allow private IP addresses for registry URL or API URL
 	AllowPrivateIP *bool `json:"allow_private_ip,omitempty"`
+	// OAuth authentication configuration (optional)
+	Auth *UpdateRegistryAuthRequest `json:"auth,omitempty"`
+}
+
+// UpdateRegistryAuthRequest contains OAuth configuration fields for registry auth.
+type UpdateRegistryAuthRequest struct {
+	// OIDC issuer URL
+	Issuer string `json:"issuer"`
+	// OAuth client ID
+	ClientID string `json:"client_id"`
+	// OAuth audience (optional)
+	Audience string `json:"audience,omitempty"`
+	// OAuth scopes (optional)
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // UpdateRegistryResponse represents the response for updating a registry

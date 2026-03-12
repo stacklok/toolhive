@@ -338,7 +338,8 @@ spec:
                           sentinelTls:
                             description: |-
                               SentinelTLS configures TLS for connections to Sentinel instances.
-                              When not specified, falls back to the TLS config.
+                              Presence of this field enables TLS. Omit to use plaintext.
+                              When omitted, sentinel connections use plaintext (no fallback to TLS config).
                             properties:
                               caCertSecretRef:
                                 description: |-
@@ -355,10 +356,6 @@ spec:
                                 - key
                                 - name
                                 type: object
-                              enabled:
-                                description: Enabled activates TLS for this connection
-                                  type.
-                                type: boolean
                               insecureSkipVerify:
                                 description: |-
                                   InsecureSkipVerify skips TLS certificate verification.
@@ -368,7 +365,7 @@ spec:
                           tls:
                             description: |-
                               TLS configures TLS for connections to the Redis/Valkey master.
-                              Required when the cluster has transit encryption enabled.
+                              Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
                                 description: |-
@@ -385,10 +382,6 @@ spec:
                                 - key
                                 - name
                                 type: object
-                              enabled:
-                                description: Enabled activates TLS for this connection
-                                  type.
-                                type: boolean
                               insecureSkipVerify:
                                 description: |-
                                   InsecureSkipVerify skips TLS certificate verification.

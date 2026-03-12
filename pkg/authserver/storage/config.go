@@ -111,10 +111,8 @@ type SentinelRunConfig struct {
 }
 
 // RedisTLSRunConfig holds TLS configuration for Redis connections.
+// Presence of this struct enables TLS for the connection type.
 type RedisTLSRunConfig struct {
-	// Enabled activates TLS for this connection type.
-	Enabled bool `json:"enabled" yaml:"enabled"`
-
 	// InsecureSkipVerify skips certificate verification.
 	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty" yaml:"insecure_skip_verify,omitempty"`
 

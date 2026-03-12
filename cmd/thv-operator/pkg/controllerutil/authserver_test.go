@@ -217,7 +217,6 @@ func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
 				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
 				Redis: &mcpv1alpha1.RedisStorageConfig{
 					TLS: &mcpv1alpha1.RedisTLSConfig{
-						Enabled:         true,
 						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
 					},
 				},
@@ -227,14 +226,11 @@ func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
 			wantMasterVol:  true,
 		},
 		{
-			name: "TLS disabled with CA cert does NOT create volume",
+			name: "nil TLS produces no TLS volumes",
 			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
 				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
 				Redis: &mcpv1alpha1.RedisStorageConfig{
-					TLS: &mcpv1alpha1.RedisTLSConfig{
-						Enabled:         false,
-						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
-					},
+					TLS: nil,
 				},
 			}),
 			wantTLSVolumes: 0,
@@ -245,9 +241,7 @@ func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
 			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
 				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
 				Redis: &mcpv1alpha1.RedisStorageConfig{
-					TLS: &mcpv1alpha1.RedisTLSConfig{
-						Enabled: true,
-					},
+					TLS: &mcpv1alpha1.RedisTLSConfig{},
 				},
 			}),
 			wantTLSVolumes: 0,
@@ -259,11 +253,9 @@ func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
 				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
 				Redis: &mcpv1alpha1.RedisStorageConfig{
 					TLS: &mcpv1alpha1.RedisTLSConfig{
-						Enabled:         true,
 						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "master-ca", Key: "ca.crt"},
 					},
 					SentinelTLS: &mcpv1alpha1.RedisTLSConfig{
-						Enabled:         true,
 						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "sentinel-ca", Key: "ca.crt"},
 					},
 				},
@@ -274,15 +266,12 @@ func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
 			wantSentinelVol: true,
 		},
 		{
-			name: "sentinel TLS enabled but master TLS disabled",
+			name: "sentinel TLS only, master plaintext",
 			authConfig: baseAuthConfig(&mcpv1alpha1.AuthServerStorageConfig{
 				Type: mcpv1alpha1.AuthServerStorageTypeRedis,
 				Redis: &mcpv1alpha1.RedisStorageConfig{
-					TLS: &mcpv1alpha1.RedisTLSConfig{
-						Enabled: false,
-					},
+					TLS: nil,
 					SentinelTLS: &mcpv1alpha1.RedisTLSConfig{
-						Enabled:         true,
 						CACertSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "sentinel-ca", Key: "ca.crt"},
 					},
 				},

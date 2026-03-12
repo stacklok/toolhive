@@ -67,21 +67,17 @@ type RedisConfig struct {
 	WriteTimeout time.Duration
 
 	// TLS configures TLS for connections to the Redis/Valkey master.
-	// When nil, connections are plaintext.
+	// When nil, master connections are plaintext.
 	TLS *RedisTLSConfig
 
 	// SentinelTLS configures TLS for connections to Sentinel instances.
-	// When nil, falls back to the TLS config (if set). To disable TLS
-	// for sentinel while enabling it for the master, set this to an
-	// explicit config with Enabled=false.
+	// When nil, sentinel connections are plaintext (no fallback to TLS config).
 	SentinelTLS *RedisTLSConfig
 }
 
 // RedisTLSConfig holds TLS configuration for Redis connections.
+// Presence of this struct enables TLS for the connection type.
 type RedisTLSConfig struct {
-	// Enabled activates TLS for this connection type.
-	Enabled bool
-
 	// InsecureSkipVerify skips certificate verification.
 	// Use for self-signed certificates (e.g., sentinel emulators).
 	InsecureSkipVerify bool
@@ -178,21 +174,12 @@ func newTLSDialer(
 // sentinel and master connections, so when they need different treatment we install
 // a custom dialer that selects the right config per target address.
 func configureTLSDialer(opts *redis.FailoverOptions, masterCfg, sentinelCfg *RedisTLSConfig) error {
-	masterEnabled := masterCfg != nil && masterCfg.Enabled
-
-	// Sentinel falls back to master config when not explicitly set
-	effectiveSentinelCfg := sentinelCfg
-	if effectiveSentinelCfg == nil {
-		effectiveSentinelCfg = masterCfg
-	}
-	sentinelEnabled := effectiveSentinelCfg != nil && effectiveSentinelCfg.Enabled
-
-	if !masterEnabled && !sentinelEnabled {
+	if masterCfg == nil && sentinelCfg == nil {
 		return nil
 	}
 
 	var masterTLS *tls.Config
-	if masterEnabled {
+	if masterCfg != nil {
 		var err error
 		masterTLS, err = buildTLSConfig(masterCfg)
 		if err != nil {
@@ -201,9 +188,9 @@ func configureTLSDialer(opts *redis.FailoverOptions, masterCfg, sentinelCfg *Red
 	}
 
 	var sentinelTLS *tls.Config
-	if sentinelEnabled {
+	if sentinelCfg != nil {
 		var err error
-		sentinelTLS, err = buildTLSConfig(effectiveSentinelCfg)
+		sentinelTLS, err = buildTLSConfig(sentinelCfg)
 		if err != nil {
 			return fmt.Errorf("sentinel TLS config: %w", err)
 		}

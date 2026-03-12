@@ -24,15 +24,12 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 		assert.Nil(t, result)
 	})
 
-	t.Run("basic enabled config", func(t *testing.T) {
+	t.Run("empty config enables TLS with defaults", func(t *testing.T) {
 		t.Parallel()
-		rc := &storage.RedisTLSRunConfig{
-			Enabled: true,
-		}
+		rc := &storage.RedisTLSRunConfig{}
 		result, err := convertRedisTLSRunConfig(rc)
 		require.NoError(t, err)
 		require.NotNil(t, result)
-		assert.True(t, result.Enabled)
 		assert.False(t, result.InsecureSkipVerify)
 		assert.Empty(t, result.CACert)
 	})
@@ -40,7 +37,6 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 	t.Run("insecure skip verify", func(t *testing.T) {
 		t.Parallel()
 		rc := &storage.RedisTLSRunConfig{
-			Enabled:            true,
 			InsecureSkipVerify: true,
 		}
 		result, err := convertRedisTLSRunConfig(rc)
@@ -52,14 +48,12 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 	t.Run("CA cert file is read", func(t *testing.T) {
 		t.Parallel()
 
-		// Write a test CA cert file
 		dir := t.TempDir()
 		certPath := filepath.Join(dir, "ca.crt")
 		certData := []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
 		require.NoError(t, os.WriteFile(certPath, certData, 0600))
 
 		rc := &storage.RedisTLSRunConfig{
-			Enabled:    true,
 			CACertFile: certPath,
 		}
 		result, err := convertRedisTLSRunConfig(rc)
@@ -71,7 +65,6 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 	t.Run("missing CA cert file returns error", func(t *testing.T) {
 		t.Parallel()
 		rc := &storage.RedisTLSRunConfig{
-			Enabled:    true,
 			CACertFile: "/nonexistent/ca.crt",
 		}
 		_, err := convertRedisTLSRunConfig(rc)

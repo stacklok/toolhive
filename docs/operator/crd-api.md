@@ -2442,8 +2442,8 @@ _Appears in:_
 | `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `readTimeout` _string_ | ReadTimeout is the timeout for socket reads.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `writeTimeout` _string_ | WriteTimeout is the timeout for socket writes.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
-| `tls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | TLS configures TLS for connections to the Redis/Valkey master.<br />Required when the cluster has transit encryption enabled. |  | Optional: \{\} <br /> |
-| `sentinelTls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />When not specified, falls back to the TLS config. |  | Optional: \{\} <br /> |
+| `tls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | TLS configures TLS for connections to the Redis/Valkey master.<br />Presence of this field enables TLS. Omit to use plaintext. |  | Optional: \{\} <br /> |
+| `sentinelTls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Presence of this field enables TLS. Omit to use plaintext.<br />When omitted, sentinel connections use plaintext (no fallback to TLS config). |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.RedisTLSConfig
@@ -2451,6 +2451,7 @@ _Appears in:_
 
 
 RedisTLSConfig configures TLS for Redis connections.
+Presence of this struct on a connection type enables TLS for that connection.
 
 
 
@@ -2459,7 +2460,6 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled activates TLS for this connection type. |  | Optional: \{\} <br /> |
 | `insecureSkipVerify` _boolean_ | InsecureSkipVerify skips TLS certificate verification.<br />Use when connecting to services with self-signed certificates. |  | Optional: \{\} <br /> |
 | `caCertSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used. |  | Optional: \{\} <br /> |
 

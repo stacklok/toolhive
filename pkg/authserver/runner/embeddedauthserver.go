@@ -505,7 +505,6 @@ func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*storage.RedisTLSC
 		return nil, nil
 	}
 	cfg := &storage.RedisTLSConfig{
-		Enabled:            rc.Enabled,
 		InsecureSkipVerify: rc.InsecureSkipVerify,
 	}
 	if rc.CACertFile != "" {

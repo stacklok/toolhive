@@ -25,7 +25,6 @@ import (
 func TestBuildTLSConfig(t *testing.T) {
 	t.Parallel()
 
-	// Generate a self-signed CA cert for testing
 	caCert, caPEM := generateTestCACert(t)
 
 	tests := []struct {
@@ -43,8 +42,8 @@ func TestBuildTLSConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "basic enabled config",
-			cfg:  &RedisTLSConfig{Enabled: true},
+			name: "empty config returns basic TLS config",
+			cfg:  &RedisTLSConfig{},
 			check: func(t *testing.T, tc *tls.Config) {
 				t.Helper()
 				require.NotNil(t, tc)
@@ -55,7 +54,7 @@ func TestBuildTLSConfig(t *testing.T) {
 		},
 		{
 			name: "insecure skip verify",
-			cfg:  &RedisTLSConfig{Enabled: true, InsecureSkipVerify: true},
+			cfg:  &RedisTLSConfig{InsecureSkipVerify: true},
 			check: func(t *testing.T, tc *tls.Config) {
 				t.Helper()
 				require.NotNil(t, tc)
@@ -64,7 +63,7 @@ func TestBuildTLSConfig(t *testing.T) {
 		},
 		{
 			name: "custom CA cert",
-			cfg:  &RedisTLSConfig{Enabled: true, CACert: caPEM},
+			cfg:  &RedisTLSConfig{CACert: caPEM},
 			check: func(t *testing.T, tc *tls.Config) {
 				t.Helper()
 				require.NotNil(t, tc)
@@ -75,16 +74,8 @@ func TestBuildTLSConfig(t *testing.T) {
 		},
 		{
 			name:    "invalid CA cert returns error",
-			cfg:     &RedisTLSConfig{Enabled: true, CACert: []byte("not-a-cert")},
+			cfg:     &RedisTLSConfig{CACert: []byte("not-a-cert")},
 			wantErr: true,
-		},
-		{
-			name: "disabled config still returns tls.Config",
-			cfg:  &RedisTLSConfig{Enabled: false},
-			check: func(t *testing.T, tc *tls.Config) {
-				t.Helper()
-				require.NotNil(t, tc)
-			},
 		},
 	}
 
@@ -105,11 +96,8 @@ func TestBuildTLSConfig(t *testing.T) {
 func TestRedisTLSConfig_SeparateMasterAndSentinel(t *testing.T) {
 	t.Parallel()
 
-	masterCfg := &RedisTLSConfig{
-		Enabled: true,
-	}
+	masterCfg := &RedisTLSConfig{}
 	sentinelCfg := &RedisTLSConfig{
-		Enabled:            true,
 		InsecureSkipVerify: true,
 	}
 
@@ -133,7 +121,6 @@ func TestNewTLSDialer(t *testing.T) {
 	t.Run("master TLS only: sentinel addr uses plaintext", func(t *testing.T) {
 		t.Parallel()
 		masterTLS := &tls.Config{MinVersion: tls.VersionTLS12}
-		sentinelAddrs := []string{"sentinel.example.com:26379"}
 
 		// Start a plaintext listener to simulate sentinel
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -143,9 +130,7 @@ func TestNewTLSDialer(t *testing.T) {
 		localSentinelAddrs := []string{ln.Addr().String()}
 		dialer := newTLSDialer(masterTLS, nil, localSentinelAddrs, timeout)
 		require.NotNil(t, dialer)
-		_ = sentinelAddrs // used for documentation
 
-		// Dialing sentinel addr with nil sentinelTLS should use plaintext
 		conn, err := dialer(context.Background(), "tcp", ln.Addr().String())
 		require.NoError(t, err)
 		conn.Close()
@@ -164,7 +149,6 @@ func TestNewTLSDialer(t *testing.T) {
 		dialer := newTLSDialer(nil, sentinelTLS, sentinelAddrs, timeout)
 		require.NotNil(t, dialer)
 
-		// Dialing a non-sentinel addr with nil masterTLS should use plaintext
 		conn, err := dialer(context.Background(), "tcp", ln.Addr().String())
 		require.NoError(t, err)
 		conn.Close()
@@ -175,7 +159,6 @@ func TestNewTLSDialer(t *testing.T) {
 		addrs := []string{"10.0.0.1:26379", "10.0.0.2:26379", "sentinel.redis.svc:26379"}
 
 		// Start plaintext listener — not in sentinel list, so master config applies.
-		// With nil masterTLS, this means plaintext.
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
 		defer ln.Close()
@@ -183,7 +166,6 @@ func TestNewTLSDialer(t *testing.T) {
 		sentinelTLS := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true} //nolint:gosec // test
 		dialer := newTLSDialer(nil, sentinelTLS, addrs, timeout)
 
-		// This addr is NOT in sentinel list → uses master config (nil = plaintext)
 		conn, err := dialer(context.Background(), "tcp", ln.Addr().String())
 		require.NoError(t, err)
 		conn.Close()
@@ -208,45 +190,34 @@ func TestConfigureTLSDialer(t *testing.T) {
 		},
 		{
 			name:       "master TLS only — installs dialer",
-			masterCfg:  &RedisTLSConfig{Enabled: true},
+			masterCfg:  &RedisTLSConfig{},
 			wantDialer: true,
 		},
 		{
 			name:        "sentinel TLS only — installs dialer",
-			sentinelCfg: &RedisTLSConfig{Enabled: true},
+			sentinelCfg: &RedisTLSConfig{},
 			wantDialer:  true,
 		},
 		{
 			name:        "both TLS — installs dialer",
-			masterCfg:   &RedisTLSConfig{Enabled: true},
-			sentinelCfg: &RedisTLSConfig{Enabled: true, InsecureSkipVerify: true},
+			masterCfg:   &RedisTLSConfig{},
+			sentinelCfg: &RedisTLSConfig{InsecureSkipVerify: true},
 			wantDialer:  true,
-		},
-		{
-			name:        "master TLS on, sentinel explicitly off — installs dialer",
-			masterCfg:   &RedisTLSConfig{Enabled: true},
-			sentinelCfg: &RedisTLSConfig{Enabled: false},
-			wantDialer:  true,
-		},
-		{
-			name:       "sentinel nil falls back to master TLS — installs dialer",
-			masterCfg:  &RedisTLSConfig{Enabled: true},
-			wantDialer: true,
 		},
 		{
 			name:      "master TLS with invalid CA cert — returns error",
-			masterCfg: &RedisTLSConfig{Enabled: true, CACert: []byte("bad-pem")},
+			masterCfg: &RedisTLSConfig{CACert: []byte("bad-pem")},
 			wantErr:   true,
 		},
 		{
 			name:        "sentinel TLS with invalid CA cert — returns error",
-			sentinelCfg: &RedisTLSConfig{Enabled: true, CACert: []byte("bad-pem")},
+			sentinelCfg: &RedisTLSConfig{CACert: []byte("bad-pem")},
 			wantErr:     true,
 		},
 		{
 			name:        "both TLS with valid CA certs — installs dialer",
-			masterCfg:   &RedisTLSConfig{Enabled: true, CACert: caPEM},
-			sentinelCfg: &RedisTLSConfig{Enabled: true, CACert: caPEM},
+			masterCfg:   &RedisTLSConfig{CACert: caPEM},
+			sentinelCfg: &RedisTLSConfig{CACert: caPEM},
 			wantDialer:  true,
 		},
 	}

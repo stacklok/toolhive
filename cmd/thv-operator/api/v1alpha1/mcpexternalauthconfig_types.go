@@ -483,12 +483,13 @@ type RedisStorageConfig struct {
 	WriteTimeout string `json:"writeTimeout,omitempty"`
 
 	// TLS configures TLS for connections to the Redis/Valkey master.
-	// Required when the cluster has transit encryption enabled.
+	// Presence of this field enables TLS. Omit to use plaintext.
 	// +optional
 	TLS *RedisTLSConfig `json:"tls,omitempty"`
 
 	// SentinelTLS configures TLS for connections to Sentinel instances.
-	// When not specified, falls back to the TLS config.
+	// Presence of this field enables TLS. Omit to use plaintext.
+	// When omitted, sentinel connections use plaintext (no fallback to TLS config).
 	// +optional
 	SentinelTLS *RedisTLSConfig `json:"sentinelTls,omitempty"`
 }
@@ -532,11 +533,8 @@ type SentinelServiceRef struct {
 }
 
 // RedisTLSConfig configures TLS for Redis connections.
+// Presence of this struct on a connection type enables TLS for that connection.
 type RedisTLSConfig struct {
-	// Enabled activates TLS for this connection type.
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
 	// InsecureSkipVerify skips TLS certificate verification.
 	// Use when connecting to services with self-signed certificates.
 	// +optional

@@ -1230,10 +1230,6 @@
                         "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
                         "type": "string"
                     },
-                    "enabled": {
-                        "description": "Enabled activates TLS for this connection type.",
-                        "type": "boolean"
-                    },
                     "insecure_skip_verify": {
                         "description": "InsecureSkipVerify skips certificate verification.",
                         "type": "boolean"

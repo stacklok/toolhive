@@ -89,6 +89,13 @@ type RedisRunConfig struct {
 
 	// WriteTimeout is the timeout for write operations (e.g., "3s").
 	WriteTimeout string `json:"write_timeout,omitempty" yaml:"write_timeout,omitempty"`
+
+	// TLS configures TLS for Redis/Valkey master connections.
+	TLS *RedisTLSRunConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
+
+	// SentinelTLS configures TLS for Sentinel connections.
+	// Falls back to TLS config when nil.
+	SentinelTLS *RedisTLSRunConfig `json:"sentinel_tls,omitempty" yaml:"sentinel_tls,omitempty"`
 }
 
 // SentinelRunConfig contains Redis Sentinel configuration.
@@ -101,6 +108,16 @@ type SentinelRunConfig struct {
 
 	// DB is the Redis database number (default: 0).
 	DB int `json:"db,omitempty" yaml:"db,omitempty"`
+}
+
+// RedisTLSRunConfig holds TLS configuration for Redis connections.
+// Presence of this struct enables TLS for the connection type.
+type RedisTLSRunConfig struct {
+	// InsecureSkipVerify skips certificate verification.
+	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty" yaml:"insecure_skip_verify,omitempty"`
+
+	// CACertFile is the path to a PEM-encoded CA certificate file.
+	CACertFile string `json:"ca_cert_file,omitempty" yaml:"ca_cert_file,omitempty"`
 }
 
 // ACLUserRunConfig contains Redis ACL user authentication configuration.

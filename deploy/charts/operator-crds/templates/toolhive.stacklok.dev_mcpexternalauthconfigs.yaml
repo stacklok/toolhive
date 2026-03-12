@@ -335,6 +335,59 @@ spec:
                             required:
                             - masterName
                             type: object
+                          sentinelTls:
+                            description: |-
+                              SentinelTLS configures TLS for connections to Sentinel instances.
+                              Presence of this field enables TLS. Omit to use plaintext.
+                              When omitted, sentinel connections use plaintext (no fallback to TLS config).
+                            properties:
+                              caCertSecretRef:
+                                description: |-
+                                  CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                                  for verifying the server. When not specified, system root CAs are used.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify skips TLS certificate verification.
+                                  Use when connecting to services with self-signed certificates.
+                                type: boolean
+                            type: object
+                          tls:
+                            description: |-
+                              TLS configures TLS for connections to the Redis/Valkey master.
+                              Presence of this field enables TLS. Omit to use plaintext.
+                            properties:
+                              caCertSecretRef:
+                                description: |-
+                                  CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                                  for verifying the server. When not specified, system root CAs are used.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify skips TLS certificate verification.
+                                  Use when connecting to services with self-signed certificates.
+                                type: boolean
+                            type: object
                           writeTimeout:
                             default: 3s
                             description: |-

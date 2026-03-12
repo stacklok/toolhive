@@ -785,10 +785,10 @@ type MiddlewareRunner interface {
     // GetConfig returns a config interface for middleware to access runner configuration
     GetConfig() RunnerConfig
 
-    // GetUpstreamTokenStorage returns a lazy accessor for upstream token storage.
-    // Returns a function that provides storage at request time (supports late initialization).
-    // Used by upstream swap middleware to retrieve stored IdP tokens.
-    GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage
+    // GetUpstreamTokenService returns a lazy accessor for the upstream token service.
+    // Returns a function that provides the service at request time.
+    // Used by upstream swap middleware to get valid upstream tokens (with transparent refresh).
+    GetUpstreamTokenService() func() upstreamtoken.Service
 }
 ```
 

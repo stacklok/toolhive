@@ -50,6 +50,12 @@ func (c *DefaultAuthManager) SetOAuthAuth(issuer, clientID, audience string, sco
 		return fmt.Errorf("OIDC discovery failed for issuer %s: %w", issuer, err)
 	}
 
+	// Default to openid + offline_access if no scopes provided.
+	// offline_access is required to receive a refresh token from the provider.
+	if len(scopes) == 0 {
+		scopes = []string{"openid", "offline_access"}
+	}
+
 	return c.provider.UpdateConfig(func(cfg *config.Config) {
 		cfg.RegistryAuth = config.RegistryAuth{
 			Type: config.RegistryAuthTypeOAuth,

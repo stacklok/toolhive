@@ -22,6 +22,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -35,6 +36,9 @@ const (
 	testRedirectURI = "http://localhost:8080/callback"
 	testIssuer      = "http://localhost"
 	testAudience    = "https://mcp.example.com"
+
+	testConfidentialClientID     = "test-confidential-client"
+	testConfidentialClientSecret = "test-confidential-secret"
 
 	// testAccessTokenLifetime is the configured access token lifetime in setupTestServer.
 	testAccessTokenLifetime = time.Hour
@@ -51,6 +55,7 @@ type testServerOptions struct {
 	upstream            upstream.OAuth2Provider
 	scopes              []string
 	accessTokenLifespan time.Duration
+	confidentialClient  bool
 }
 
 // testServerOption is a functional option for test server setup.
@@ -74,6 +79,13 @@ func withScopes(scopes []string) testServerOption {
 func withAccessTokenLifespan(d time.Duration) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.accessTokenLifespan = d
+	}
+}
+
+// withConfidentialClient registers a confidential client for client_credentials testing.
+func withConfidentialClient() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.confidentialClient = true
 	}
 }
 
@@ -137,6 +149,22 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		Public:        true,
 	})
 	require.NoError(t, err)
+
+	// Optionally register a confidential client for client_credentials testing
+	if options.confidentialClient {
+		hashedSecret, err := bcrypt.GenerateFromPassword([]byte(testConfidentialClientSecret), bcrypt.DefaultCost)
+		require.NoError(t, err)
+		err = stor.RegisterClient(ctx, &fosite.DefaultClient{
+			ID:            testConfidentialClientID,
+			Secret:        hashedSecret,
+			RedirectURIs:  nil,
+			ResponseTypes: nil,
+			GrantTypes:    []string{"client_credentials"},
+			Scopes:        []string{"openid"},
+			Public:        false,
+		})
+		require.NoError(t, err)
+	}
 
 	// 5. Build upstream config for newServer
 	// When no upstream is provided, use a dummy config that satisfies validation
@@ -1161,4 +1189,113 @@ func TestIntegration_RefreshToken_ShortLivedAccessToken(t *testing.T) {
 	exp, ok := claims["exp"].(float64)
 	require.True(t, ok)
 	assert.Greater(t, int64(exp), time.Now().Unix(), "refreshed token exp must be in the future")
+}
+
+// ============================================================================
+// Client Credentials Flow Integration Tests
+// ============================================================================
+
+// TestIntegration_ClientCredentials_BasicFlow tests the client_credentials grant flow.
+func TestIntegration_ClientCredentials_BasicFlow(t *testing.T) {
+	t.Parallel()
+
+	ts := setupTestServer(t, withConfidentialClient())
+
+	// Make client_credentials token request with client_secret_post
+	params := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {testConfidentialClientID},
+		"client_secret": {testConfidentialClientSecret},
+		"scope":         {"openid"},
+	}
+
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "client_credentials request should succeed")
+	tokenData := parseTokenResponse(t, resp)
+
+	// Verify access token is present
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+
+	// Verify token_type
+	tokenType, ok := tokenData["token_type"].(string)
+	require.True(t, ok)
+	assert.Equal(t, "bearer", strings.ToLower(tokenType))
+
+	// Verify no refresh token (client_credentials should not issue refresh tokens)
+	_, hasRefresh := tokenData["refresh_token"]
+	assert.False(t, hasRefresh, "client_credentials should not issue refresh_token")
+
+	// Verify JWT claims
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err)
+
+	// Subject should be the client ID for M2M tokens
+	assert.Equal(t, testConfidentialClientID, claims["sub"], "sub should be client ID for M2M tokens")
+	assert.Equal(t, testConfidentialClientID, claims["client_id"], "client_id claim should match")
+	assert.Equal(t, testIssuer, claims["iss"], "issuer should match")
+}
+
+// TestIntegration_ClientCredentials_WithAudience tests client_credentials with RFC 8707 resource parameter.
+func TestIntegration_ClientCredentials_WithAudience(t *testing.T) {
+	t.Parallel()
+
+	ts := setupTestServer(t, withConfidentialClient())
+
+	params := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {testConfidentialClientID},
+		"client_secret": {testConfidentialClientSecret},
+		"scope":         {"openid"},
+		"resource":      {testAudience},
+	}
+
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	tokenData := parseTokenResponse(t, resp)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err)
+
+	// Verify audience from resource parameter
+	aud, ok := claims["aud"].([]interface{})
+	require.True(t, ok, "aud should be an array")
+	require.Len(t, aud, 1)
+	assert.Equal(t, testAudience, aud[0], "audience should match requested resource")
+}
+
+// TestIntegration_ClientCredentials_WrongSecret tests that wrong secrets are rejected.
+func TestIntegration_ClientCredentials_WrongSecret(t *testing.T) {
+	t.Parallel()
+
+	ts := setupTestServer(t, withConfidentialClient())
+
+	params := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {testConfidentialClientID},
+		"client_secret": {"wrong-secret"},
+	}
+
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	errResp := parseTokenResponse(t, resp)
+	assert.Equal(t, "invalid_client", errResp["error"])
 }

@@ -110,10 +110,15 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		// OPTIONAL
 		GrantTypesSupported: []string{
 			string(fosite.GrantTypeAuthorizationCode),
+			string(fosite.GrantTypeClientCredentials),
 			string(fosite.GrantTypeRefreshToken),
 		},
-		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
-		TokenEndpointAuthMethodsSupported: []string{sharedobauth.TokenEndpointAuthMethodNone},
+		CodeChallengeMethodsSupported: []string{crypto.PKCEChallengeMethodS256},
+		TokenEndpointAuthMethodsSupported: []string{
+			sharedobauth.TokenEndpointAuthMethodNone,
+			"client_secret_basic",
+			"client_secret_post",
+		},
 	}
 }
 

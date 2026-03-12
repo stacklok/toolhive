@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,10 +15,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // startInProcessMCPServer creates a real in-process MCP server over
@@ -142,7 +145,7 @@ func TestSessionFactory_Integration_CallTool(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
-	result, err := sess.CallTool(context.Background(), "echo", map[string]any{"input": "hello world"}, nil)
+	result, err := sess.CallTool(context.Background(), nil, "echo", map[string]any{"input": "hello world"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Content, 1)
@@ -165,7 +168,7 @@ func TestSessionFactory_Integration_ReadResource(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
-	result, err := sess.ReadResource(context.Background(), "test://data")
+	result, err := sess.ReadResource(context.Background(), nil, "test://data")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, "hello", string(result.Contents))
@@ -187,7 +190,7 @@ func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
-	result, err := sess.GetPrompt(context.Background(), "greet", nil)
+	result, err := sess.GetPrompt(context.Background(), nil, "greet", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	// ConvertPromptMessages formats messages as "[role] text\n"
@@ -216,4 +219,150 @@ func TestSessionFactory_Integration_MultipleBackends(t *testing.T) {
 	// Both backends expose "echo"; "backend-a" sorts first and must win.
 	require.Len(t, sess.Tools(), 1, "conflicting tool names collapse to one")
 	assert.Equal(t, "backend-a", sess.Tools()[0].BackendID)
+}
+
+// ---------------------------------------------------------------------------
+// Token-binding integration tests — HMAC rejection for ReadResource / GetPrompt
+// ---------------------------------------------------------------------------
+
+// TestTokenBinding_CallerRejection verifies that the hijack-prevention decorator
+// is applied to all three protected methods (CallTool, ReadResource, GetPrompt):
+// each rejects a wrong token (ErrUnauthorizedCaller) and a nil caller
+// (ErrNilCaller) before any backend routing occurs, so nilBackendConnector suffices.
+func TestTokenBinding_CallerRejection(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{Subject: "alice", Token: "alice-token"}
+	wrongCaller := &auth.Identity{Subject: "bob", Token: "wrong-token"}
+
+	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
+	sess, err := factory.MakeSession(context.Background(), identity, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	callFns := []struct {
+		name string
+		call func(caller *auth.Identity) error
+	}{
+		{"CallTool", func(caller *auth.Identity) error {
+			_, err := sess.CallTool(context.Background(), caller, "echo", map[string]any{"input": "test"}, nil)
+			return err
+		}},
+		{"ReadResource", func(caller *auth.Identity) error {
+			_, err := sess.ReadResource(context.Background(), caller, "test://data")
+			return err
+		}},
+		{"GetPrompt", func(caller *auth.Identity) error {
+			_, err := sess.GetPrompt(context.Background(), caller, "greet", nil)
+			return err
+		}},
+	}
+
+	for _, fn := range callFns {
+		t.Run(fn.name+"/wrong token", func(t *testing.T) {
+			t.Parallel()
+			assert.ErrorIs(t, fn.call(wrongCaller), sessiontypes.ErrUnauthorizedCaller)
+		})
+		t.Run(fn.name+"/nil caller", func(t *testing.T) {
+			t.Parallel()
+			assert.ErrorIs(t, fn.call(nil), sessiontypes.ErrNilCaller)
+		})
+	}
+}
+
+// TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend verifies that a
+// bound session accepts ReadResource and GetPrompt calls from the correct caller
+// when a real backend is connected.
+func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
+	t.Parallel()
+
+	baseURL := startInProcessMCPServer(t)
+	backend := &vmcp.Backend{
+		ID:            "integration-backend",
+		Name:          "integration-backend",
+		BaseURL:       baseURL,
+		TransportType: "streamable-http",
+	}
+
+	const rawToken = "alice-real-token"
+	identity := &auth.Identity{Subject: "alice", Token: rawToken}
+
+	factory := NewSessionFactory(newUnauthenticatedRegistry(t), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
+	sess, err := factory.MakeSession(context.Background(), identity, []*vmcp.Backend{backend})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sess.Close()) })
+
+	t.Run("allows ReadResource with correct token", func(t *testing.T) {
+		t.Parallel()
+		result, err := sess.ReadResource(context.Background(), identity, "test://data")
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, "hello", string(result.Contents))
+	})
+
+	t.Run("allows GetPrompt with correct token", func(t *testing.T) {
+		t.Parallel()
+		result, err := sess.GetPrompt(context.Background(), identity, "greet", nil)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, "[user] Hello!\n", result.Messages)
+	})
+}
+
+// TestTokenBinding_DifferentSecretsProduceDifferentHashes verifies that two
+// session factories configured with different HMAC secrets store different token
+// hashes for the same raw bearer token. This is the key isolation property that
+// prevents sessions from one secret epoch from being validated against another.
+func TestTokenBinding_DifferentSecretsProduceDifferentHashes(t *testing.T) {
+	t.Parallel()
+
+	const rawToken = "shared-token-same-for-both"
+	identity := &auth.Identity{Subject: "user", Token: rawToken}
+
+	factoryA := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-A-exactly-32-bytes-long!!")))
+	factoryB := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-B-exactly-32-bytes-long!!")))
+
+	sessA, err := factoryA.MakeSession(context.Background(), identity, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessA.Close() })
+
+	sessB, err := factoryB.MakeSession(context.Background(), identity, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessB.Close() })
+
+	hashA := sessA.GetMetadata()[MetadataKeyTokenHash]
+	hashB := sessB.GetMetadata()[MetadataKeyTokenHash]
+
+	assert.NotEmpty(t, hashA)
+	assert.NotEmpty(t, hashB)
+	assert.NotEqual(t, hashA, hashB,
+		"different HMAC secrets must produce different token hashes for the same input token")
+}
+
+// TestTokenBinding_MetadataEncoding verifies that the token hash and salt stored
+// in session metadata are valid hex strings of the expected lengths:
+//   - token hash: 64 hex chars (32-byte HMAC-SHA256)
+//   - token salt: 32 hex chars (16-byte random salt)
+func TestTokenBinding_MetadataEncoding(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{Subject: "user", Token: "test-token-123"}
+
+	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
+	sess, err := factory.MakeSession(context.Background(), identity, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	tokenHash := sess.GetMetadata()[MetadataKeyTokenHash]
+	require.NotEmpty(t, tokenHash)
+	assert.Len(t, tokenHash, 64, "HMAC-SHA256 hex-encoded hash must be 64 characters")
+	hashBytes, err := hex.DecodeString(tokenHash)
+	require.NoError(t, err, "token hash must be valid hex")
+	assert.Len(t, hashBytes, 32, "decoded token hash must be 32 bytes")
+
+	tokenSalt := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+	require.NotEmpty(t, tokenSalt)
+	saltBytes, err := hex.DecodeString(tokenSalt)
+	require.NoError(t, err, "token salt must be valid hex")
+	assert.Len(t, saltBytes, 16, "decoded token salt must be 16 bytes")
 }

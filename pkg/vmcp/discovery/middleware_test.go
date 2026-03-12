@@ -479,6 +479,8 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 	}
 
+	testTimeout := 100 * time.Millisecond
+
 	// Simulate slow discovery that takes longer than timeout
 	mockMgr.EXPECT().
 		Discover(gomock.Any(), backends).
@@ -486,16 +488,13 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 			// Verify timeout context is set
 			deadline, ok := ctx.Deadline()
 			assert.True(t, ok, "context should have a deadline")
-			assert.True(t, time.Until(deadline) <= discoveryTimeout, "timeout should be set correctly")
+			assert.True(t, time.Until(deadline) <= testTimeout, "timeout should be set correctly")
 
 			// Simulate slow operation that exceeds the timeout
-			// The 15-second timeout will expire before this 20-second sleep completes
 			select {
 			case <-ctx.Done():
-				// Context was cancelled (either timeout or cancellation)
 				return nil, ctx.Err()
-			case <-time.After(20 * time.Second):
-				// This should never be reached because context times out first
+			case <-time.After(5 * time.Second):
 				return nil, errors.New("operation completed without timeout")
 			}
 		})
@@ -505,7 +504,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil, WithDiscoveryTimeout(testTimeout))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen

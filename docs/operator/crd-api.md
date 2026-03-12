@@ -1061,7 +1061,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `model` _string_ | Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2") | BAAI/bge-small-en-v1.5 | Optional: \{\} <br /> |
 | `hfTokenSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.<br />If provided, the secret value will be provided to the embedding server for authentication with huggingface. |  | Optional: \{\} <br /> |
-| `image` _string_ | Image is the container image for huggingface-embedding-inference | ghcr.io/huggingface/text-embeddings-inference:cpu-latest | Optional: \{\} <br /> |
+| `image` _string_ | Image is the container image for the embedding inference server.<br />Images must be from HuggingFace Text Embeddings Inference (https://github.com/huggingface/text-embeddings-inference). | ghcr.io/huggingface/text-embeddings-inference:cpu-latest | Optional: \{\} <br /> |
 | `imagePullPolicy` _string_ | ImagePullPolicy defines the pull policy for the container image | IfNotPresent | Enum: [Always Never IfNotPresent] <br />Optional: \{\} <br /> |
 | `port` _integer_ | Port is the port to expose the embedding service on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `args` _string array_ | Args are additional arguments to pass to the embedding inference server |  | Optional: \{\} <br /> |
@@ -2175,6 +2175,7 @@ _Appears in:_
 | `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  | Optional: \{\} <br /> |
+| `tokenResponseMapping` _[api.v1alpha1.TokenResponseMapping](#apiv1alpha1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.OIDCConfigRef
@@ -2441,6 +2442,26 @@ _Appears in:_
 | `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `readTimeout` _string_ | ReadTimeout is the timeout for socket reads.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `writeTimeout` _string_ | WriteTimeout is the timeout for socket writes.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
+| `tls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | TLS configures TLS for connections to the Redis/Valkey master.<br />Presence of this field enables TLS. Omit to use plaintext. |  | Optional: \{\} <br /> |
+| `sentinelTls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Presence of this field enables TLS. Omit to use plaintext.<br />When omitted, sentinel connections use plaintext (no fallback to TLS config). |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.RedisTLSConfig
+
+
+
+RedisTLSConfig configures TLS for Redis connections.
+Presence of this struct on a connection type enables TLS for that connection.
+
+
+
+_Appears in:_
+- [api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `insecureSkipVerify` _boolean_ | InsecureSkipVerify skips TLS certificate verification.<br />Use when connecting to services with self-signed certificates. |  | Optional: \{\} <br /> |
+| `caCertSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.RegistryFilter
@@ -2574,6 +2595,7 @@ _Appears in:_
 - [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
 - [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
 - [api.v1alpha1.RedisACLUserConfig](#apiv1alpha1redisacluserconfig)
+- [api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)
 - [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)
 
 | Field | Description | Default | Validation |
@@ -2766,6 +2788,27 @@ _Appears in:_
 | `accessTokenLifespan` _string_ | AccessTokenLifespan is the duration that access tokens are valid.<br />Format: Go duration string (e.g., "1h", "30m", "24h").<br />If empty, defaults to 1 hour. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `refreshTokenLifespan` _string_ | RefreshTokenLifespan is the duration that refresh tokens are valid.<br />Format: Go duration string (e.g., "168h", "7d" as "168h").<br />If empty, defaults to 7 days (168h). |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `authCodeLifespan` _string_ | AuthCodeLifespan is the duration that authorization codes are valid.<br />Format: Go duration string (e.g., "10m", "5m").<br />If empty, defaults to 10 minutes. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.TokenResponseMapping
+
+
+
+TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
+using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
+the access token under paths like "authed_user.access_token".
+
+
+
+_Appears in:_
+- [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `accessTokenPath` _string_ | AccessTokenPath is the dot-notation path to the access token in the response.<br />Example: "authed_user.access_token" |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `scopePath` _string_ | ScopePath is the dot-notation path to the scope string in the response.<br />If not specified, defaults to "scope". |  | Optional: \{\} <br /> |
+| `refreshTokenPath` _string_ | RefreshTokenPath is the dot-notation path to the refresh token in the response.<br />If not specified, defaults to "refresh_token". |  | Optional: \{\} <br /> |
+| `expiresInPath` _string_ | ExpiresInPath is the dot-notation path to the expires_in value (in seconds).<br />If not specified, defaults to "expires_in". |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.ToolConfigRef

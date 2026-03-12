@@ -13,13 +13,31 @@ on:
 jobs:
   claude:
     name: Claude Code Action
+    # Security: Only allow invocation by trusted contributors.
+    # Blocks NONE (anonymous), FIRST_TIMER, and FIRST_TIME_CONTRIBUTOR to
+    # prevent prompt-injection attacks from untrusted GitHub users.
+    # See: https://docs.github.com/en/graphql/reference/enums#commentauthorassociation
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude'))
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
+       github.event.comment.author_association != 'NONE' &&
+       github.event.comment.author_association != 'FIRST_TIMER' &&
+       github.event.comment.author_association != 'FIRST_TIME_CONTRIBUTOR') ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
+       github.event.comment.author_association != 'NONE' &&
+       github.event.comment.author_association != 'FIRST_TIMER' &&
+       github.event.comment.author_association != 'FIRST_TIME_CONTRIBUTOR') ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
+       github.event.review.author_association != 'NONE' &&
+       github.event.review.author_association != 'FIRST_TIMER' &&
+       github.event.review.author_association != 'FIRST_TIME_CONTRIBUTOR') ||
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude') &&
+       github.event.issue.author_association != 'NONE' &&
+       github.event.issue.author_association != 'FIRST_TIMER' &&
+       github.event.issue.author_association != 'FIRST_TIME_CONTRIBUTOR')
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Least-privilege permissions for the AI agent workflow.
+    # contents:write is required for Claude to push commits on PRs.
     permissions:
       contents: write
       pull-requests: read
@@ -44,3 +62,8 @@ jobs:
         uses: anthropics/claude-code-action@35a9e0292d36f1186f5d842b14eb575074e8b450 # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Security: Restrict tools to prevent arbitrary code execution.
+          # Bash is scoped to known-safe commands (task, go, git, helm-docs).
+          # No unrestricted Bash access — prevents prompt injection from
+          # executing arbitrary shell commands via crafted issue/PR content.
+          allowed_tools: "Read,Edit,Write,Glob,Grep,Bash(task *),Bash(go *),Bash(git *),Bash(helm-docs *),mcp__github__*"

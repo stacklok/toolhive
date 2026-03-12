@@ -23,6 +23,13 @@ import (
 )
 
 func main() {
+	// Bind TOOLHIVE_DEBUG env var early, before logger initialization.
+	// This must happen before viper.GetBool("debug") so the env var
+	// is available when configuring the log level.
+	if err := viper.BindEnv("debug", "TOOLHIVE_DEBUG"); err != nil {
+		slog.Error("failed to bind TOOLHIVE_DEBUG env var", "error", err)
+	}
+
 	// Initialize the logger
 	var opts []logging.Option
 	if viper.GetBool("debug") {
@@ -77,7 +84,7 @@ func setupSignalHandler() context.Context {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118 - cancel called in signal handler goroutine
 	go func() {
 		<-sigCh
 		slog.Debug("received signal, cleaning up lock files")

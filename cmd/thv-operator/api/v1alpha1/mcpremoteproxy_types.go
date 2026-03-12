@@ -205,6 +205,9 @@ const (
 
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+
+	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
+	ConditionTypeConfigurationValid = "ConfigurationValid"
 )
 
 // Condition reasons for MCPRemoteProxy
@@ -256,6 +259,15 @@ const (
 
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError indicates an error occurred fetching the MCPExternalAuthConfig
 	ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError = "ExternalAuthConfigFetchError"
+
+	// ConditionReasonConfigurationValid indicates all configuration validations passed
+	ConditionReasonConfigurationValid = "ConfigurationValid"
+
+	// ConditionReasonOIDCIssuerInsecure indicates the OIDC issuer URL uses HTTP instead of HTTPS
+	ConditionReasonOIDCIssuerInsecure = "OIDCIssuerInsecure"
+
+	// ConditionReasonOIDCIssuerInvalid indicates the OIDC issuer URL is malformed
+	ConditionReasonOIDCIssuerInvalid = "OIDCIssuerInvalid"
 )
 
 //+kubebuilder:object:root=true

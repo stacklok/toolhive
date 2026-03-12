@@ -49,7 +49,8 @@ type EmbeddingServerSpec struct {
 	// +optional
 	HFTokenSecretRef *SecretKeyRef `json:"hfTokenSecretRef,omitempty"`
 
-	// Image is the container image for huggingface-embedding-inference
+	// Image is the container image for the embedding inference server.
+	// Images must be from HuggingFace Text Embeddings Inference (https://github.com/huggingface/text-embeddings-inference).
 	// +kubebuilder:default="ghcr.io/huggingface/text-embeddings-inference:cpu-latest"
 	// +optional
 	Image string `json:"image,omitempty"`

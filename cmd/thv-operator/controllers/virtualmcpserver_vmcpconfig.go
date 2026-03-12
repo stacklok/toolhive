@@ -104,7 +104,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 // Decision matrix (ref = EmbeddingServerRef, svc = config.optimizer.embeddingService):
 //
 //	ref set + optimizer set + svc set → ref overrides svc (warning)
-//	ref set + optimizer set + svc empty → ref populates svc (auto-configured event if defaulted by validation)
+//	ref set + optimizer set + svc empty → ref populates svc (auto-configured event)
 //	ref nil + optimizer set + svc set → warning: prefer embeddingServerRef
 //	ref nil + optimizer set + svc empty → rejected earlier by Validate()
 //
@@ -119,18 +119,8 @@ func (r *VirtualMCPServerReconciler) populateOptimizerEmbeddingService(
 	hasRef := vmcp.Spec.EmbeddingServerRef != nil
 
 	if hasRef && config.Optimizer != nil {
-		// When the optimizer has no embeddingService set, it was auto-populated by
-		// validation with default values. Emit an event so the user is aware.
-		if config.Optimizer.EmbeddingService == "" {
-			ctxLogger.Info("optimizer auto-configured with default values because embeddingServerRef is set",
-				"embeddingServerRef", vmcp.Spec.EmbeddingServerRef.Name)
-			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "OptimizerAutoConfigured",
-					"embeddingServerRef %q is set without spec.config.optimizer; "+
-						"optimizer has been auto-configured with default values",
-					vmcp.Spec.EmbeddingServerRef.Name)
-			}
-		}
+		// When the optimizer has no embeddingService set, it will be auto-populated
+		// from the EmbeddingServerRef URL.
 		return r.populateOptimizerFromRef(ctx, vmcp, config)
 	}
 

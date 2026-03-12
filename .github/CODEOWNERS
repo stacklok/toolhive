@@ -1,15 +1,22 @@
 # Default reviewer
 *                                   @JAORMX
 
+# AI Agent Configuration (changes here affect what AI agents can do in CI)
+CLAUDE.md                            @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/                             @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/skills/                      @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/agents/                      @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/rules/                       @JAORMX @jhrozek @rdimitrov @jerm-dro
+
 # CLI (thv)
-cmd/thv/                             @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
-cmd/help/                            @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
-docs/cli/                            @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
-test/e2e/                            @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
+cmd/thv/                             @JAORMX @yrobla @ChrisJBurns @amirejaz @lujunsan @rdimitrov @jhrozek
+cmd/help/                            @JAORMX @yrobla @ChrisJBurns @amirejaz @lujunsan @rdimitrov @jhrozek
+docs/cli/                            @JAORMX @yrobla @ChrisJBurns @amirejaz @lujunsan @rdimitrov @jhrozek
+test/e2e/                            @JAORMX @yrobla @ChrisJBurns @amirejaz @lujunsan @rdimitrov @jhrozek
 
 # HTTP API (ToolHive server)
-pkg/api/                             @JAORMX @eleftherias @amirejaz
-docs/server/                         @JAORMX @eleftherias @amirejaz
+pkg/api/                             @JAORMX @amirejaz
+docs/server/                         @JAORMX @amirejaz
 
 # Kubernetes (operator + proxyrunner + charts)
 cmd/thv-operator/                    @ChrisJBurns @yrobla @JAORMX @jerm-dro @jhrozek
@@ -27,14 +34,14 @@ pkg/vmcp/                            @JAORMX @yrobla @jhrozek @jerm-dro @amireja
 test/integration/vmcp/               @JAORMX @yrobla @jhrozek @jerm-dro @amirejaz
 
 # Core Runtime & Lifecycle
-pkg/workloads/                       @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/runner/                          @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/runtime/                         @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/state/                           @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/config/                          @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/migration/                       @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/groups/                          @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/client/                          @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/workloads/                       @JAORMX @amirejaz @lujunsan
+pkg/runner/                          @JAORMX @amirejaz @lujunsan
+pkg/runtime/                         @JAORMX @amirejaz @lujunsan
+pkg/state/                           @JAORMX @amirejaz @lujunsan
+pkg/config/                          @JAORMX @amirejaz @lujunsan
+pkg/migration/                       @JAORMX @amirejaz @lujunsan
+pkg/groups/                          @JAORMX @amirejaz @lujunsan
+pkg/client/                          @JAORMX @amirejaz @lujunsan
 
 # Infrastructure Abstractions
 pkg/container/                        @JAORMX @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla

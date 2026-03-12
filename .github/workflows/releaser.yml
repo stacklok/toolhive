@@ -103,7 +103,7 @@ jobs:
         uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version-file: 'go.mod'
-          cache: true
+          cache: false # No cache for release builds — prevents cache poisoning attacks
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
@@ -182,6 +182,16 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
+
+  skills-build-and-push:
+    name: Build and Publish Skills
+    needs: [ release-binaries ]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/skills-build-and-publish.yml
+    with:
+      push: true
 
   publish-helm:
     name: Publish Helm Chart
@@ -289,6 +299,7 @@ jobs:
       - compute-build-flags
       - release-binaries
       - image-build-and-push
+      - skills-build-and-push
       - update-docs-website
       - publish-helm
       - extract-release-actor

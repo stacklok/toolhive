@@ -23,6 +23,14 @@ func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				// Re-panic http.ErrAbortHandler so Go's HTTP server can
+				// handle it as designed (silently close the connection).
+				// ReverseProxy panics with this sentinel when a streaming
+				// response breaks mid-copy; catching it would log noisy
+				// stack traces and corrupt the already-in-flight response.
+				if rec == http.ErrAbortHandler {
+					panic(http.ErrAbortHandler)
+				}
 				stack := debug.Stack()
 				slog.Error(fmt.Sprintf("Panic recovered: %v\nStack trace:\n%s", rec, stack))
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)

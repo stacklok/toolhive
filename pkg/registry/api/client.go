@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -56,8 +57,10 @@ type mcpRegistryClient struct {
 	userAgent      string
 }
 
-// NewClient creates a new MCP Registry API client
-func NewClient(baseURL string, allowPrivateIp bool) (Client, error) {
+// NewClient creates a new MCP Registry API client.
+// If tokenSource is non-nil, the HTTP client transport will be wrapped to inject
+// Bearer tokens into all requests.
+func NewClient(baseURL string, allowPrivateIp bool, tokenSource auth.TokenSource) (Client, error) {
 	// Build HTTP client with security controls
 	// If private IPs are allowed, also allow HTTP (for localhost testing)
 	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIp)
@@ -68,6 +71,9 @@ func NewClient(baseURL string, allowPrivateIp bool) (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build HTTP client: %w", err)
 	}
+
+	// Wrap transport with auth if token source is provided
+	httpClient.Transport = auth.WrapTransport(httpClient.Transport, tokenSource)
 
 	// Ensure base URL doesn't have trailing slash
 	if baseURL[len(baseURL)-1] == '/' {

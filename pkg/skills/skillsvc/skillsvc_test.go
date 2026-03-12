@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -820,6 +821,168 @@ func TestInstallFromOCI(t *testing.T) {
 			}
 			if tt.wantRefSaved != "" {
 				assert.Equal(t, tt.wantRefSaved, result.Skill.Reference)
+			}
+		})
+	}
+}
+
+func TestInstallFromLocalStore(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		opts        skills.InstallOptions
+		setup       func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver)
+		wantCode    int
+		wantErr     string
+		wantStatus  string
+		wantVersion string
+		wantDigest  bool
+	}{
+		{
+			name: "happy path: build then install",
+			opts: skills.InstallOptions{Name: "my-skill", Client: "claude-code"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Build an artifact and tag it with the skill name.
+				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, ociStore.Tag(t.Context(), indexDigest, "my-skill"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, "my-skill", sk.Metadata.Name)
+						assert.Equal(t, "1.0.0", sk.Metadata.Version)
+						assert.Contains(t, sk.Digest, "sha256:")
+						assert.Equal(t, skills.InstallStatusInstalled, sk.Status)
+						return nil
+					})
+				return ociStore, store, pr
+			},
+			wantStatus:  string(skills.InstallStatusInstalled),
+			wantVersion: "1.0.0",
+			wantDigest:  true,
+		},
+		{
+			name: "name mismatch in local artifact",
+			opts: skills.InstallOptions{Name: "evil-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Build "real-skill" but tag it as "evil-skill".
+				indexDigest := buildTestArtifact(t, ociStore, "real-skill", "1.0.0")
+				require.NoError(t, ociStore.Tag(t.Context(), indexDigest, "evil-skill"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return ociStore, store, pr
+			},
+			wantCode: http.StatusUnprocessableEntity,
+			wantErr:  "does not match install name",
+		},
+		{
+			name: "tag not found falls back to pending",
+			opts: skills.InstallOptions{Name: "no-such-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				// Empty store — no tags.
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, skills.InstallStatusPending, sk.Status)
+						return nil
+					})
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return ociStore, store, pr
+			},
+			wantStatus: string(skills.InstallStatusPending),
+		},
+		{
+			name: "nil ociStore falls back to pending",
+			opts: skills.InstallOptions{Name: "some-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				store := storemocks.NewMockSkillStore(ctrl)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, skills.InstallStatusPending, sk.Status)
+						return nil
+					})
+				return nil, store, nil
+			},
+			wantStatus: string(skills.InstallStatusPending),
+		},
+		{
+			name: "corrupt manifest propagates error",
+			opts: skills.InstallOptions{Name: "corrupt-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Store raw bytes as a "manifest" and tag it — this will
+				// fail during extractOCIContent because it's not valid JSON.
+				badManifest := []byte(`not valid json`)
+				d, putErr := ociStore.PutManifest(t.Context(), badManifest)
+				require.NoError(t, putErr)
+				require.NoError(t, ociStore.Tag(t.Context(), d, "corrupt-skill"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return ociStore, store, pr
+			},
+			wantErr: "checking OCI content type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			ociStore, store, pr := tt.setup(t, ctrl)
+
+			var opts []Option
+			if ociStore != nil {
+				opts = append(opts, WithOCIStore(ociStore))
+			}
+			if pr != nil {
+				opts = append(opts, WithPathResolver(pr))
+			}
+
+			svc := New(store, opts...)
+			result, err := svc.Install(t.Context(), tt.opts)
+
+			if tt.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				return
+			}
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantStatus != "" {
+				assert.Equal(t, tt.wantStatus, string(result.Skill.Status))
+			}
+			if tt.wantVersion != "" {
+				assert.Equal(t, tt.wantVersion, result.Skill.Metadata.Version)
+			}
+			if tt.wantDigest {
+				assert.Contains(t, result.Skill.Digest, "sha256:")
 			}
 		})
 	}
@@ -1772,6 +1935,64 @@ func TestUninstallRemovesSkillFromGroups(t *testing.T) {
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateOCITagOrReference(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		tag     string
+		wantErr bool
+	}{
+		// Valid bare tags
+		{name: "simple version", tag: "v1.0.0", wantErr: false},
+		{name: "latest", tag: "latest", wantErr: false},
+		{name: "numeric", tag: "123", wantErr: false},
+		{name: "with dots", tag: "1.2.3", wantErr: false},
+		{name: "with hyphens", tag: "my-skill", wantErr: false},
+		{name: "with underscores", tag: "my_skill", wantErr: false},
+		{name: "mixed alphanumeric", tag: "v1.0.0-rc.1", wantErr: false},
+		{name: "uppercase", tag: "MyTag", wantErr: false},
+		{name: "single char", tag: "a", wantErr: false},
+		{name: "max length 128 chars", tag: strings.Repeat("a", 128), wantErr: false},
+		{name: "exceeds max length 129 chars", tag: strings.Repeat("a", 129), wantErr: true},
+
+		// Valid full OCI references
+		{name: "ghcr tagged reference", tag: "ghcr.io/stacklok/toolhive-skills/my-skill:v1.0.0", wantErr: false},
+		{name: "CI format tag", tag: "ghcr.io/stacklok/toolhive-skills/my-skill:0.0.1-dev.123_abc1234", wantErr: false},
+		{name: "docker hub reference", tag: "docker.io/library/nginx:1.25", wantErr: false},
+		{name: "localhost with port", tag: "localhost:5000/my-skill:v1", wantErr: false},
+		{name: "digest reference", tag: "ghcr.io/org/repo@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", wantErr: false},
+
+		// Invalid bare tags
+		{name: "empty string", tag: "", wantErr: true},
+		{name: "contains space", tag: "invalid tag", wantErr: true},
+		{name: "contains exclamation", tag: "invalid!", wantErr: true},
+		{name: "contains hash", tag: "invalid#tag", wantErr: true},
+
+		// Invalid full references
+		{name: "space in tag of reference", tag: "ghcr.io/org/repo:invalid tag", wantErr: true},
+		{name: "empty tag after colon", tag: "ghcr.io/org/repo:", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateOCITagOrReference(tt.tag)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid OCI reference or tag")
+				// Verify it returns a proper HTTP status code.
+				var coded *httperr.CodedError
+				require.ErrorAs(t, err, &coded)
+				assert.Equal(t, http.StatusBadRequest, coded.HTTPCode())
 			} else {
 				require.NoError(t, err)
 			}

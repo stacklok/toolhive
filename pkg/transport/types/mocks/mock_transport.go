@@ -14,7 +14,7 @@ import (
 	http "net/http"
 	reflect "reflect"
 
-	storage "github.com/stacklok/toolhive/pkg/authserver/storage"
+	upstreamtoken "github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	types "github.com/stacklok/toolhive/pkg/transport/types"
 	gomock "go.uber.org/mock/gomock"
 	jsonrpc2 "golang.org/x/exp/jsonrpc2"
@@ -123,18 +123,18 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetConfig))
 }
 
-// GetUpstreamTokenStorage mocks base method.
-func (m *MockMiddlewareRunner) GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage {
+// GetUpstreamTokenService mocks base method.
+func (m *MockMiddlewareRunner) GetUpstreamTokenService() func() upstreamtoken.Service {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUpstreamTokenStorage")
-	ret0, _ := ret[0].(func() storage.UpstreamTokenStorage)
+	ret := m.ctrl.Call(m, "GetUpstreamTokenService")
+	ret0, _ := ret[0].(func() upstreamtoken.Service)
 	return ret0
 }
 
-// GetUpstreamTokenStorage indicates an expected call of GetUpstreamTokenStorage.
-func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenStorage() *gomock.Call {
+// GetUpstreamTokenService indicates an expected call of GetUpstreamTokenService.
+func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenService() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenStorage", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenStorage))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenService", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenService))
 }
 
 // SetAuthInfoHandler mocks base method.

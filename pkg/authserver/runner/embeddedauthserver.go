@@ -135,6 +135,12 @@ func (e *EmbeddedAuthServer) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return e.server.IDPTokenStorage()
 }
 
+// UpstreamTokenRefresher returns a refresher that can refresh expired upstream
+// tokens using the upstream provider's refresh token grant.
+func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
+	return e.server.UpstreamTokenRefresher()
+}
+
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
 // Returns a GeneratingProvider if config is nil or empty (development mode).
 func createKeyProvider(cfg *authserver.SigningKeyRunConfig) (keys.KeyProvider, error) {
@@ -326,7 +332,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)
 	}
 
-	return &upstream.OAuth2Config{
+	cfg := &upstream.OAuth2Config{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
 			ClientID:     oauth2.ClientID,
 			ClientSecret: clientSecret,
@@ -336,7 +342,18 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
-	}, nil
+	}
+
+	if oauth2.TokenResponseMapping != nil {
+		cfg.TokenResponseMapping = &upstream.TokenResponseMapping{
+			AccessTokenPath:  oauth2.TokenResponseMapping.AccessTokenPath,
+			ScopePath:        oauth2.TokenResponseMapping.ScopePath,
+			RefreshTokenPath: oauth2.TokenResponseMapping.RefreshTokenPath,
+			ExpiresInPath:    oauth2.TokenResponseMapping.ExpiresInPath,
+		}
+	}
+
+	return cfg, nil
 }
 
 // resolveSecret reads a secret from file or environment variable.
@@ -464,6 +481,40 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 		cfg.WriteTimeout = d
 	}
 
+	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
+	if err != nil {
+		return nil, fmt.Errorf("master TLS config: %w", err)
+	}
+	cfg.TLS = tlsCfg
+
+	sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
+	if err != nil {
+		return nil, fmt.Errorf("sentinel TLS config: %w", err)
+	}
+	cfg.SentinelTLS = sentinelTLSCfg
+
+	return cfg, nil
+}
+
+// convertRedisTLSRunConfig converts a RedisTLSRunConfig to runtime RedisTLSConfig.
+// Returns an error if a CA cert file is configured but cannot be read — this is
+// treated as a hard error because silently falling back to system CAs could mask
+// a misconfiguration and cause confusing TLS failures downstream.
+func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*storage.RedisTLSConfig, error) {
+	if rc == nil {
+		return nil, nil
+	}
+	cfg := &storage.RedisTLSConfig{
+		InsecureSkipVerify: rc.InsecureSkipVerify,
+	}
+	if rc.CACertFile != "" {
+		// #nosec G304 - file path is from configuration, not user input
+		data, err := os.ReadFile(rc.CACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read Redis CA cert file %q: %w", rc.CACertFile, err)
+		}
+		cfg.CACert = data
+	}
 	return cfg, nil
 }
 

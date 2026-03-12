@@ -28,6 +28,10 @@ import (
 )
 
 const (
+	// podTemplateSpecHashAnnotation tracks the SHA256 hash of the user-provided PodTemplateSpec.
+	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
+	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
+
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
 
@@ -273,6 +277,11 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
+	// Mount HMAC secret for session token binding (Session Management V2)
+	if vmcp.Spec.Config.Operational != nil && vmcp.Spec.Config.Operational.SessionManagementV2 {
+		env = append(env, r.buildHMACSecretEnvVar(vmcp))
+	}
+
 	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
 	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
 
@@ -319,6 +328,25 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 	}
 
 	return env
+}
+
+// buildHMACSecretEnvVar builds environment variable for HMAC secret mounting.
+// This secret is used for session token binding in Session Management V2.
+// The operator automatically generates and manages this secret if it doesn't exist.
+func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1alpha1.VirtualMCPServer) corev1.EnvVar {
+	secretName := fmt.Sprintf("%s-hmac-secret", vmcp.Name)
+
+	return corev1.EnvVar{
+		Name: "VMCP_SESSION_HMAC_SECRET",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: secretName,
+				},
+				Key: "hmac-secret",
+			},
+		},
+	}
 }
 
 // buildOutgoingAuthEnvVars builds environment variables for outgoing auth secrets.
@@ -533,10 +561,20 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
 func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
-	_ *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
+
+	// Store hash of user-provided PodTemplateSpec to detect changes without
+	// comparing full rendered templates (which include K8s-defaulted fields).
+	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
+	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
+		hash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
+		if err == nil {
+			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
+		}
+	}
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 

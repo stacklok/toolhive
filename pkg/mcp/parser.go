@@ -68,6 +68,13 @@ type ParsedMCPRequest struct {
 //	}
 func ParsingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip if already parsed by an outer middleware (e.g. auth composes
+		// ParsingMiddleware and server.go applies it again for the no-auth case).
+		if GetParsedMCPRequest(r.Context()) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Check if we should parse this request
 		if !shouldParseMCPRequest(r) {
 			next.ServeHTTP(w, r)

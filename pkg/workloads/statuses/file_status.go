@@ -658,6 +658,7 @@ func (f *fileStatusManager) readStatusFile(statusFilePath string) (*workloadStat
 	if recoveryErr != nil {
 		// Recovery failed - back up the corrupted file
 		backupPath := statusFilePath + ".corrupted"
+		//nolint:gosec // G703 - path derived from trusted status file with fixed suffix
 		if backupErr := os.WriteFile(backupPath, data, 0o600); backupErr == nil {
 			slog.Warn("backed up corrupted status file", "path", backupPath)
 		}

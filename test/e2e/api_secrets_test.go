@@ -198,7 +198,7 @@ func cleanupSecretsConfig() {
 
 // Test suite
 
-var _ = Describe("Secrets API", Label("api", "secrets", "e2e"), func() {
+var _ = Describe("Secrets API", Label("api", "api-misc", "secrets", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server

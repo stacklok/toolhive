@@ -11,11 +11,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -44,9 +42,9 @@ type MiddlewareParams struct {
 	Config *Config `json:"config,omitempty"`
 }
 
-// StorageGetter is a function that returns upstream token storage.
-// This allows lazy access to the storage, which may not be available at middleware creation time.
-type StorageGetter func() storage.UpstreamTokenStorage
+// ServiceGetter is a function that returns an upstream token service.
+// It returns nil when the service is unavailable (e.g., auth server not configured).
+type ServiceGetter func() upstreamtoken.Service
 
 // Middleware wraps the upstream swap middleware functionality.
 type Middleware struct {
@@ -81,12 +79,10 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("invalid upstream swap configuration: %w", err)
 	}
 
-	// Get storage getter from runner.
-	// The storage getter is a lazy accessor that checks storage availability at request time,
-	// so it's always non-nil. Actual storage availability is verified when processing requests.
-	storageGetter := runner.GetUpstreamTokenStorage()
+	// Get the lazy service accessor from the runner.
+	serviceGetter := ServiceGetter(runner.GetUpstreamTokenService())
 
-	middleware := createMiddlewareFunc(cfg, storageGetter)
+	middleware := createMiddlewareFunc(cfg, serviceGetter)
 
 	upstreamSwapMw := &Middleware{
 		middleware: middleware,
@@ -141,7 +137,7 @@ func createCustomInjector(headerName string) injectionFunc {
 }
 
 // createMiddlewareFunc creates the actual middleware function.
-func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.MiddlewareFunction {
+func createMiddlewareFunc(cfg *Config, serviceGetter ServiceGetter) types.MiddlewareFunction {
 	// Determine injection strategy at startup time
 	strategy := cfg.HeaderStrategy
 	if strategy == "" {
@@ -171,7 +167,7 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			}
 
 			// 2. Extract tsid from claims
-			tsid, ok := identity.Claims[session.TokenSessionIDClaimKey].(string)
+			tsid, ok := identity.Claims[upstreamtoken.TokenSessionIDClaimKey].(string)
 			if !ok || tsid == "" {
 				slog.Debug("No tsid claim in identity, proceeding without swap",
 					"middleware", "upstreamswap")
@@ -179,53 +175,45 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 				return
 			}
 
-			// 3. Get storage
-			stor := storageGetter()
-			if stor == nil {
-				slog.Warn("Storage unavailable, proceeding without swap",
+			// 3. Get token service — fail closed if unavailable.
+			// The tsid claim confirms this request expects upstream token injection;
+			// passing through with the original JWT would leak it to the backend.
+			svc := serviceGetter()
+			if svc == nil {
+				slog.Warn("Token service unavailable, cannot perform required upstream swap",
 					"middleware", "upstreamswap")
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// 4. Lookup upstream tokens
-			tokens, err := stor.GetUpstreamTokens(r.Context(), tsid)
-			if err != nil {
-				slog.Warn("Failed to get upstream tokens",
-					"middleware", "upstreamswap", "error", err)
-				// Token is expired, was not found, or failed binding validation
-				// (e.g., subject/client mismatch). All three are client-attributable
-				// errors that require the caller to re-authenticate with the upstream IdP.
-				if errors.Is(err, storage.ErrExpired) ||
-					errors.Is(err, storage.ErrNotFound) ||
-					errors.Is(err, storage.ErrInvalidBinding) {
-					writeUpstreamAuthRequired(w)
-					return
-				}
-				// Other storage errors: fail closed to avoid bypassing the token swap
 				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
 
-			// 5. Check if expired
-			// Defense in depth: some storage implementations may return tokens
-			// without checking expiry (the interface does not require it).
-			if tokens.IsExpired(time.Now()) {
-				slog.Warn("Upstream tokens expired",
-					"middleware", "upstreamswap")
-				writeUpstreamAuthRequired(w)
+			// 4. Get valid upstream tokens (with transparent refresh)
+			cred, err := svc.GetValidTokens(r.Context(), tsid)
+			if err != nil {
+				slog.Warn("Failed to get upstream tokens",
+					"middleware", "upstreamswap", "error", err)
+
+				// Client-attributable errors require re-authentication.
+				if errors.Is(err, upstreamtoken.ErrSessionNotFound) ||
+					errors.Is(err, upstreamtoken.ErrNoRefreshToken) ||
+					errors.Is(err, upstreamtoken.ErrRefreshFailed) ||
+					errors.Is(err, upstreamtoken.ErrInvalidBinding) {
+					writeUpstreamAuthRequired(w)
+					return
+				}
+				// Other errors: fail closed to avoid bypassing the token swap
+				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
 
-			// 6. Inject access token
-			if tokens.AccessToken == "" {
-				slog.Warn("Access token is empty",
+			// 5. Inject access token — fail closed if empty to prevent bypassing the swap
+			if cred.AccessToken == "" {
+				slog.Warn("Upstream token service returned empty access token",
 					"middleware", "upstreamswap")
-				next.ServeHTTP(w, r)
+				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
 
-			injectToken(r, tokens.AccessToken)
+			injectToken(r, cred.AccessToken)
 			slog.Debug("Injected upstream access token",
 				"middleware", "upstreamswap")
 

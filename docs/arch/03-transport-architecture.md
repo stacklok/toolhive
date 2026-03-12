@@ -351,7 +351,9 @@ The transparent proxy health check behavior can be tuned via environment variabl
 
 Duration values use Go's `time.ParseDuration` format (e.g., `10s`, `500ms`, `1m30s`). Invalid values are ignored with a warning log, and the default is used instead.
 
-**Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` plus the initial failure tick before shutting down — approximately 70 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends.
+**Threshold of 1**: Setting `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=1` means the proxy shuts down on the first health check failure with no retries.
+
+**Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` before shutting down — approximately 60 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends. If `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` exceeds `TOOLHIVE_HEALTH_CHECK_INTERVAL`, each health check cycle takes longer than one interval tick, extending the failure window beyond what the formula predicts.
 
 **Usage example** (increase tolerance for a flaky network):
 ```bash

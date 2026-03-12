@@ -678,12 +678,7 @@ func (p *TransparentProxy) CloseListener() error {
 // performHealthCheckRetry performs a retry health check after a delay
 // Returns true if the retry was successful (health check recovered), false otherwise
 func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
-	retryDelay := p.healthCheckRetryDelay
-	if retryDelay == 0 {
-		retryDelay = DefaultHealthCheckRetryDelay
-	}
-
-	retryTimer := time.NewTimer(retryDelay)
+	retryTimer := time.NewTimer(p.healthCheckRetryDelay)
 	defer retryTimer.Stop()
 
 	select {

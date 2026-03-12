@@ -54,24 +54,30 @@ func (c *AnnotationCache) Set(toolName string, annotations *authorizers.ToolAnno
 }
 
 // SetFromToolsList extracts annotations from a tools/list response and
-// populates the cache. Only tools that have at least one non-nil annotation
-// hint are cached; tools with all-nil hints (the zero value) are skipped
-// to avoid unnecessary memory consumption.
+// replaces the entire cache contents. The full replacement ensures that
+// tools whose annotations were removed in a subsequent tools/list response
+// do not retain stale cached entries.
+//
+// Only tools that have at least one non-nil annotation hint are cached;
+// tools with all-nil hints (the zero value) are skipped to avoid
+// unnecessary memory consumption.
 //
 // This method is a no-op if the cache is nil.
 func (c *AnnotationCache) SetFromToolsList(tools []mcp.Tool) {
 	if c == nil {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	newTools := make(map[string]*authorizers.ToolAnnotations, len(tools))
 	for i := range tools {
 		ann := &tools[i].Annotations
 		if !hasAnyHint(ann) {
 			continue
 		}
-		c.tools[tools[i].Name] = convertMCPAnnotation(ann)
+		newTools[tools[i].Name] = convertMCPAnnotation(ann)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tools = newTools
 }
 
 // hasAnyHint reports whether the MCP tool annotation has at least one
@@ -84,7 +90,9 @@ func hasAnyHint(ann *mcp.ToolAnnotation) bool {
 }
 
 // convertMCPAnnotation converts an mcp-go ToolAnnotation to the authz
-// ToolAnnotations type used by authorizers.
+// ToolAnnotations type used by authorizers. Only hint fields are copied;
+// the Title field is intentionally omitted because authorizers only use
+// hints for policy decisions.
 func convertMCPAnnotation(ann *mcp.ToolAnnotation) *authorizers.ToolAnnotations {
 	return &authorizers.ToolAnnotations{
 		ReadOnlyHint:    ann.ReadOnlyHint,

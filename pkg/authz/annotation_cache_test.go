@@ -238,6 +238,29 @@ func TestAnnotationCache_ConcurrentAccess(t *testing.T) {
 	assert.NotNil(t, got.ReadOnlyHint, "ReadOnlyHint should be set")
 }
 
+func TestAnnotationCache_SetFromToolsListEvictsStaleEntries(t *testing.T) {
+	t.Parallel()
+
+	cache := NewAnnotationCache()
+
+	// First tools/list: two tools with annotations.
+	cache.SetFromToolsList([]mcp.Tool{
+		{Name: "weather", Annotations: mcp.ToolAnnotation{ReadOnlyHint: boolPtr(true)}},
+		{Name: "deploy", Annotations: mcp.ToolAnnotation{DestructiveHint: boolPtr(true)}},
+	})
+
+	require.NotNil(t, cache.Get("weather"))
+	require.NotNil(t, cache.Get("deploy"))
+
+	// Second tools/list: "deploy" is gone, only "weather" remains.
+	cache.SetFromToolsList([]mcp.Tool{
+		{Name: "weather", Annotations: mcp.ToolAnnotation{ReadOnlyHint: boolPtr(true)}},
+	})
+
+	assert.NotNil(t, cache.Get("weather"), "weather should still be cached")
+	assert.Nil(t, cache.Get("deploy"), "deploy should be evicted after second SetFromToolsList")
+}
+
 func TestAnnotationCache_SetOverwritesPrevious(t *testing.T) {
 	t.Parallel()
 

@@ -4,8 +4,15 @@
 package client
 
 import (
+	"errors"
+	"slices"
+
 	"github.com/stacklok/toolhive/pkg/groups"
 )
+
+// ErrAllClientsRegistered is returned when all available clients are already
+// registered for the selected groups.
+var ErrAllClientsRegistered = errors.New("all installed clients are already registered for the selected groups")
 
 // FilterClientsAlreadyRegistered returns only clients that are NOT already
 // registered in all of the provided groups. A client is excluded only when
@@ -29,14 +36,7 @@ func FilterClientsAlreadyRegistered(
 
 func isClientRegisteredInAllGroups(clientName string, selectedGroups []*groups.Group) bool {
 	for _, group := range selectedGroups {
-		found := false
-		for _, registered := range group.RegisteredClients {
-			if registered == clientName {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(group.RegisteredClients, clientName) {
 			return false
 		}
 	}

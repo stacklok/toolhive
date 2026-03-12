@@ -107,8 +107,14 @@ type Config struct {
 
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
 	// If nil, no authentication is required.
-	// This should be a composed middleware chain (e.g., TokenValidator → IdentityMiddleware).
+	// This should be a composed middleware chain (e.g., TokenValidator + MCP parser).
 	AuthMiddleware func(http.Handler) http.Handler
+
+	// AuthzMiddleware is the optional authorization middleware to apply AFTER discovery.
+	// Split from AuthMiddleware so authz can access discovered tool annotations
+	// injected by the annotation enrichment middleware.
+	// If nil, no authorization is performed.
+	AuthzMiddleware func(http.Handler) http.Handler
 
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
@@ -516,6 +522,21 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.AuditConfig != nil {
 		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
 		slog.Info("backend enrichment middleware enabled for audit events")
+	}
+
+	// Apply authorization middleware if configured (runs AFTER discovery in execution).
+	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
+	if s.config.AuthzMiddleware != nil {
+		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
+		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
+	}
+
+	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).
+	// Reads tool annotations from discovered capabilities and injects them into the
+	// request context so the authz middleware can make annotation-aware decisions.
+	if s.config.AuthzMiddleware != nil {
+		mcpHandler = AnnotationEnrichmentMiddleware(mcpHandler)
+		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
 	}
 
 	// Apply discovery middleware (runs after audit/auth middleware)

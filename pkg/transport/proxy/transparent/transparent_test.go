@@ -706,7 +706,7 @@ func TestWithHealthCheckFailureThresholdOption(t *testing.T) {
 }
 
 func TestWithHealthCheckFailureThresholdOption_IgnoresNonPositive(t *testing.T) {
-	t.Parallel()
+	t.Setenv(HealthCheckFailureThresholdEnvVar, "")
 
 	proxy := newMinimalProxy(withHealthCheckFailureThreshold(0))
 

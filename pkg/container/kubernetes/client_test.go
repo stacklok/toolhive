@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -810,7 +811,7 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 					UID:       "test-uid-123",
 				},
 				Spec: appsv1.StatefulSetSpec{
-					Replicas: func() *int32 { i := int32(1); return &i }(),
+					Replicas: ptr.To(int32(1)),
 					Template: corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{},
@@ -835,7 +836,7 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 			}
 
 			_, err := client.DeployWorkload(
-				context.Background(),
+				t.Context(),
 				"test-image",
 				containerName,
 				[]string{"serve"},
@@ -850,7 +851,7 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 
 			// Verify the headless service was created
 			headlessSvc, err := clientset.CoreV1().Services("default").Get(
-				context.Background(), "mcp-"+containerName+"-headless", metav1.GetOptions{})
+				t.Context(), "mcp-"+containerName+"-headless", metav1.GetOptions{})
 			require.NoError(t, err)
 			assert.Equal(t, corev1.ClusterIPNone, headlessSvc.Spec.ClusterIP)
 			assert.NotEqual(t, corev1.ServiceAffinityClientIP, headlessSvc.Spec.SessionAffinity)
@@ -868,7 +869,7 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 
 			// Verify the MCP ClusterIP service was created
 			mcpSvc, err := clientset.CoreV1().Services("default").Get(
-				context.Background(), "mcp-"+containerName, metav1.GetOptions{})
+				t.Context(), "mcp-"+containerName, metav1.GetOptions{})
 			require.NoError(t, err)
 			assert.Equal(t, corev1.ServiceAffinityClientIP, mcpSvc.Spec.SessionAffinity)
 			require.NotNil(t, mcpSvc.Spec.SessionAffinityConfig)

@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,14 +30,20 @@ const (
 	// StreamableHTTPEndpoint is the endpoint for streamable HTTP.
 	StreamableHTTPEndpoint = "/mcp"
 
-	// Default timeouts and buffer sizes
-	defaultResponseTimeout = 30 * time.Second
+	// defaultRequestTimeout is the maximum time to wait for an MCP request to
+	// complete. Override with TOOLHIVE_PROXY_REQUEST_TIMEOUT (e.g. "30s", "2m").
+	defaultRequestTimeout = 60 * time.Second
+
+	// proxyRequestTimeoutEnv is the environment variable that overrides the
+	// default proxy request timeout.
+	proxyRequestTimeoutEnv = "TOOLHIVE_PROXY_REQUEST_TIMEOUT"
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
 type HTTPProxy struct {
 	host              string
 	port              int
+	requestTimeout    time.Duration
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
@@ -74,6 +81,7 @@ func NewHTTPProxy(
 	proxy := &HTTPProxy{
 		host:              host,
 		port:              port,
+		requestTimeout:    resolveRequestTimeout(),
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
@@ -341,7 +349,7 @@ func (p *HTTPProxy) handleSingleRequest(
 	req *jsonrpc2.Request,
 	setSessionHeader bool,
 ) {
-	ctx, cancel := context.WithTimeout(ctx, defaultResponseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	msg, err := p.doRequest(ctx, sessID, req)
@@ -373,7 +381,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 	req *jsonrpc2.Request,
 	setSessionHeader bool,
 ) {
-	ctx, cancel := context.WithTimeout(ctx, defaultResponseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Prepare SSE response headers
@@ -480,7 +488,7 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 		return nil
 	}
 
-	response := p.waitForResponse(waitCh, defaultResponseTimeout)
+	response := p.waitForResponse(waitCh, p.requestTimeout)
 	if response == nil {
 		slog.Warn("streamableHTTP: batch timeout waiting for key", "key", bkey)
 		return nil
@@ -692,6 +700,24 @@ func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, ms
 		return true
 	}
 	return false
+}
+
+// resolveRequestTimeout returns the proxy request timeout, reading from the
+// TOOLHIVE_PROXY_REQUEST_TIMEOUT environment variable if set, otherwise
+// returning defaultRequestTimeout.
+func resolveRequestTimeout() time.Duration {
+	v := os.Getenv(proxyRequestTimeoutEnv)
+	if v == "" {
+		return defaultRequestTimeout
+	}
+	d, _ := time.ParseDuration(v)
+	if d > 0 {
+		slog.Debug("using custom proxy request timeout", "timeout", d)
+		return d
+	}
+	slog.Warn("invalid proxy request timeout, using default",
+		"env_var", proxyRequestTimeoutEnv, "value", v, "default", defaultRequestTimeout)
+	return defaultRequestTimeout
 }
 
 // createWaiter registers a waiter channel for the given request ID and returns cleanup fn.

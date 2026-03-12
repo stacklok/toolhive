@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -758,8 +759,12 @@ func TestRunConfigBuilder(t *testing.T) {
 	permissionProfile := permissions.ProfileNone
 	targetHost := localhostStr
 	mcpTransport := "sse"
-	proxyPort := 60000
-	targetPort := 60001
+	// Find available ports dynamically to avoid flaky failures when a
+	// hardcoded port happens to be in use on the CI runner.
+	proxyPort := networking.FindAvailable()
+	require.NotZero(t, proxyPort, "should find an available proxy port")
+	targetPort := networking.FindAvailable()
+	require.NotZero(t, targetPort, "should find an available target port")
 	envVars := map[string]string{"TEST_ENV": "test_value"}
 
 	oidcIssuer := "https://issuer.example.com"

@@ -5,7 +5,6 @@
 package ui
 
 import (
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,10 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/groups"
 )
-
-// ErrAllClientsRegistered is returned when all available clients are already
-// registered for the selected groups.
-var ErrAllClientsRegistered = errors.New("all installed clients are already registered for the selected groups")
 
 var (
 	docStyle          = lipgloss.NewStyle().Margin(1, 2)
@@ -143,6 +138,19 @@ func (m *setupModel) View() string {
 	return docStyle.Render(b.String())
 }
 
+// selectedGroups returns the groups corresponding to SelectedGroups indices,
+// skipping any index that is out of bounds.
+func (m *setupModel) selectedGroups() []*groups.Group {
+	selected := make([]*groups.Group, 0, len(m.SelectedGroups))
+	for i := range m.SelectedGroups {
+		if i < 0 || i >= len(m.Groups) {
+			continue
+		}
+		selected = append(selected, m.Groups[i])
+	}
+	return selected
+}
+
 // filterClientsBySelectedGroups replaces Clients with a filtered subset
 // that excludes clients already registered in all selected groups, and
 // resets SelectedClients since the indices would no longer be valid.
@@ -151,20 +159,16 @@ func (m *setupModel) filterClientsBySelectedGroups() {
 		return
 	}
 
-	var selectedGroups []*groups.Group
-	for i := range m.SelectedGroups {
-		selectedGroups = append(selectedGroups, m.Groups[i])
-	}
-
-	m.Clients = client.FilterClientsAlreadyRegistered(m.UnfilteredClients, selectedGroups)
+	m.Clients = client.FilterClientsAlreadyRegistered(m.UnfilteredClients, m.selectedGroups())
 	m.SelectedClients = make(map[int]struct{})
 }
 
 // sortedSelectedGroupNames returns selected group names in sorted order.
 func (m *setupModel) sortedSelectedGroupNames() []string {
-	names := make([]string, 0, len(m.SelectedGroups))
-	for i := range m.SelectedGroups {
-		names = append(names, m.Groups[i].Name)
+	sg := m.selectedGroups()
+	names := make([]string, 0, len(sg))
+	for _, g := range sg {
+		names = append(names, g.Name)
 	}
 	sort.Strings(names)
 	return names
@@ -222,31 +226,23 @@ func RunClientSetup(
 		currentStep = stepGroupSelection
 	}
 
-	// When skipping group selection, filter out already-registered clients
-	displayClients := clients
-	if currentStep == stepClientSelection && len(selectedGroupsMap) > 0 {
-		var selectedGroups []*groups.Group
-		for i := range selectedGroupsMap {
-			selectedGroups = append(selectedGroups, availableGroups[i])
-		}
-		displayClients = client.FilterClientsAlreadyRegistered(clients, selectedGroups)
-		if len(displayClients) == 0 {
-			groupNames := make([]string, 0, len(selectedGroupsMap))
-			for i := range selectedGroupsMap {
-				groupNames = append(groupNames, availableGroups[i].Name)
-			}
-			sort.Strings(groupNames)
-			return nil, groupNames, false, ErrAllClientsRegistered
-		}
-	}
-
 	model := &setupModel{
 		UnfilteredClients: clients,
-		Clients:           displayClients,
+		Clients:           clients,
 		Groups:            availableGroups,
 		SelectedClients:   make(map[int]struct{}),
 		SelectedGroups:    selectedGroupsMap,
 		CurrentStep:       currentStep,
+	}
+
+	// When skipping group selection, filter out already-registered clients
+	if currentStep == stepClientSelection && len(selectedGroupsMap) > 0 {
+		sg := model.selectedGroups()
+		model.Clients = client.FilterClientsAlreadyRegistered(clients, sg)
+		if len(model.Clients) == 0 {
+			groupNames := model.sortedSelectedGroupNames()
+			return nil, groupNames, false, client.ErrAllClientsRegistered
+		}
 	}
 
 	p := tea.NewProgram(model)
@@ -259,7 +255,7 @@ func RunClientSetup(
 
 	if m.AllFiltered {
 		groupNames := m.sortedSelectedGroupNames()
-		return nil, groupNames, false, ErrAllClientsRegistered
+		return nil, groupNames, false, client.ErrAllClientsRegistered
 	}
 
 	var selectedClients []client.ClientAppStatus

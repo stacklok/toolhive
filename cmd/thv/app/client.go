@@ -125,7 +125,7 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	selectedClients, selectedGroups, confirmed, err := ui.RunClientSetup(availableClients, availableGroups)
 	if err != nil {
-		if errors.Is(err, ui.ErrAllClientsRegistered) {
+		if errors.Is(err, client.ErrAllClientsRegistered) {
 			fmt.Println("All installed clients are already registered for the selected groups.")
 			return nil
 		}

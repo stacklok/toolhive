@@ -104,6 +104,56 @@ func TestDefaultGitClient_GetFileContent_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestDefaultGitClient_HeadCommitHash_NilInputs(t *testing.T) {
+	t.Parallel()
+	client := NewDefaultGitClient()
+
+	tests := []struct {
+		name     string
+		repoInfo *RepositoryInfo
+	}{
+		{name: "nil RepositoryInfo", repoInfo: nil},
+		{name: "nil Repository", repoInfo: &RepositoryInfo{Repository: nil}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			hash, err := client.HeadCommitHash(tt.repoInfo)
+			require.ErrorIs(t, err, ErrNilRepository)
+			assert.Empty(t, hash)
+		})
+	}
+}
+
+func TestDefaultGitClient_HeadCommitHash_Valid(t *testing.T) {
+	t.Parallel()
+	client := NewDefaultGitClient()
+
+	repoDir := initTestRepo(t, map[string]string{"test.txt": "content"})
+	repoInfo, err := client.Clone(t.Context(), &CloneConfig{URL: repoDir})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Cleanup(t.Context(), repoInfo) })
+
+	hash, err := client.HeadCommitHash(repoInfo)
+	require.NoError(t, err)
+	assert.Len(t, hash, 40, "commit hash should be 40 hex chars")
+	assert.True(t, isAllHex(hash), "commit hash should be all hex")
+}
+
+// isAllHex checks if s is a non-empty lowercase hex string.
+func isAllHex(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCloneConfig_Validate(t *testing.T) {
 	t.Parallel()
 

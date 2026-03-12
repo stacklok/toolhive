@@ -49,3 +49,10 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/operator-ci.yml
+  skills-build:
+    name: Build Skills
+    needs: [linting, tests, codegen]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/skills-build-and-publish.yml

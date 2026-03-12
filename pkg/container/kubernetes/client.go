@@ -331,8 +331,6 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 }
 
 // DeployWorkload implements runtime.Runtime.
-//
-//nolint:gocyclo
 func (c *Client) DeployWorkload(ctx context.Context,
 	image string,
 	containerName string,
@@ -412,40 +410,21 @@ func (c *Client) DeployWorkload(ctx context.Context,
 			WithTemplate(podTemplateSpec))
 
 	// Apply the statefulset using server-side apply
-	fieldManager := serviceFieldManager
 	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
 		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
-			FieldManager: fieldManager,
+			FieldManager: serviceFieldManager,
 			Force:        true,
 		})
 	if err != nil {
 		return 0, fmt.Errorf("failed to apply statefulset: %w", err)
 	}
 
-	//nolint:gosec // G706: statefulset name from Kubernetes API response
-	slog.Info("applied statefulset", "name", createdStatefulSet.Name)
+	slog.Debug("applied statefulset", "name", createdStatefulSet.Name)
 
-	if transportTypeRequiresBackendServices(transportType) && options != nil {
-		stsOwner := &metav1.OwnerReference{
-			APIVersion:         appsv1.SchemeGroupVersion.String(),
-			Kind:               "StatefulSet",
-			Name:               createdStatefulSet.Name,
-			UID:                createdStatefulSet.UID,
-			BlockOwnerDeletion: ptr.To(true),
-			Controller:         ptr.To(true),
-		}
-
-		// Create a headless service for DNS discovery
-		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options, stsOwner)
-		if err != nil {
-			return 0, fmt.Errorf("failed to create headless service: %w", err)
-		}
-
-		// Create a regular ClusterIP service with session affinity for the proxy-runner target
-		err = c.createMCPService(ctx, containerName, namespace, containerLabels, options, stsOwner)
-		if err != nil {
-			return 0, fmt.Errorf("failed to create MCP service: %w", err)
-		}
+	err = c.ensureBackendServices(
+		ctx, containerName, namespace, containerLabels, transportType, options, createdStatefulSet)
+	if err != nil {
+		return 0, err
 	}
 
 	// Wait for the statefulset to be ready
@@ -461,6 +440,43 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	return 0, nil
+}
+
+// ensureBackendServices creates the headless and ClusterIP services needed by
+// HTTP-based transports (SSE, streamable-http). Both services are owned by the
+// StatefulSet so Kubernetes GC can clean them up automatically.
+func (c *Client) ensureBackendServices(
+	ctx context.Context,
+	containerName, namespace string,
+	containerLabels map[string]string,
+	transportType string,
+	options *runtime.DeployWorkloadOptions,
+	sts *appsv1.StatefulSet,
+) error {
+	if !transportTypeRequiresBackendServices(transportType) || options == nil {
+		return nil
+	}
+
+	stsOwner := &metav1.OwnerReference{
+		APIVersion:         appsv1.SchemeGroupVersion.String(),
+		Kind:               "StatefulSet",
+		Name:               sts.Name,
+		UID:                sts.UID,
+		BlockOwnerDeletion: ptr.To(true),
+		Controller:         ptr.To(true),
+	}
+
+	// Create a headless service for DNS discovery
+	if err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options, stsOwner); err != nil {
+		return fmt.Errorf("failed to create headless service: %w", err)
+	}
+
+	// Create a regular ClusterIP service with session affinity for the proxy-runner target
+	if err := c.createMCPService(ctx, containerName, namespace, containerLabels, options, stsOwner); err != nil {
+		return fmt.Errorf("failed to create MCP service: %w", err)
+	}
+
+	return nil
 }
 
 // GetWorkloadInfo implements runtime.Runtime.

@@ -151,7 +151,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			rr := httptest.NewRecorder()
 
 			// Create the response filtering writer
-			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method)
+			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method, nil)
 			filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 			// Write the response data
@@ -257,7 +257,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer for a non-list operation
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/call")
+	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/call", nil)
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -299,7 +299,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list")
+	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil)
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -395,7 +395,7 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 
 		// Wrap the real ResponseWriter with ResponseFilteringWriter,
 		// exactly as the authz middleware does in middleware.go.
-		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList))
+		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil)
 
 		// Proxy to the backend. ReverseProxy will call w.Header() to copy
 		// the backend's Content-Length into the response header map. Since

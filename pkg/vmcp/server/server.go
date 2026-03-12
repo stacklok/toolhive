@@ -107,8 +107,14 @@ type Config struct {
 
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
 	// If nil, no authentication is required.
-	// This should be a composed middleware chain (e.g., TokenValidator → IdentityMiddleware).
+	// This should be a composed middleware chain (e.g., TokenValidator + MCP parser).
 	AuthMiddleware func(http.Handler) http.Handler
+
+	// AuthzMiddleware is the optional authorization middleware to apply AFTER discovery.
+	// Split from AuthMiddleware so authz can access discovered tool annotations
+	// injected by the annotation enrichment middleware.
+	// If nil, no authorization is performed.
+	AuthzMiddleware func(http.Handler) http.Handler
 
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
@@ -496,8 +502,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → audit → discovery → backend enrichment → MCP parsing → telemetry
-	// Execution order: telemetry → MCP parsing → backend enrichment → discovery → audit → auth → handler
+	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
+	//   authz → backend-enrichment → MCP-parsing → telemetry
+	// Execution order: recovery → header-val → auth+parser → audit →
+	//   discovery → annotation-enrichment → authz → backend-enrichment →
+	//   MCP-parsing → telemetry → handler
 
 	var mcpHandler http.Handler = streamableServer
 
@@ -509,6 +518,10 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
 	// This runs before telemetry so that recordMetrics can label metrics with the
 	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
+	// Note: ParsingMiddleware is also composed inside the auth middleware (for audit/authz).
+	// The second application here is a no-op because the context already holds a
+	// ParsedMCPRequest; it exists only so the telemetry layer works correctly even
+	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
 	// Apply backend enrichment middleware if audit is configured
@@ -516,6 +529,21 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.AuditConfig != nil {
 		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
 		slog.Info("backend enrichment middleware enabled for audit events")
+	}
+
+	// Apply authorization middleware if configured (runs AFTER discovery in execution).
+	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
+	if s.config.AuthzMiddleware != nil {
+		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
+		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
+	}
+
+	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).
+	// Reads tool annotations from discovered capabilities and injects them into the
+	// request context so the authz middleware can make annotation-aware decisions.
+	if s.config.AuthzMiddleware != nil {
+		mcpHandler = AnnotationEnrichmentMiddleware(mcpHandler)
+		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
 	}
 
 	// Apply discovery middleware (runs after audit/auth middleware)

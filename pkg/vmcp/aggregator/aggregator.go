@@ -162,12 +162,8 @@ type AggregatedCapabilities struct {
 
 // AggregationMetadata contains information about the aggregation process.
 type AggregationMetadata struct {
-	// BackendCount is the number of backends that were passed to aggregation.
+	// BackendCount is the number of backends aggregated.
 	BackendCount int
-
-	// QueriedBackendCount is the number of backends that were successfully queried.
-	// When less than BackendCount, the aggregation is partial (some backends failed).
-	QueriedBackendCount int
 
 	// ToolCount is the total number of tools.
 	ToolCount int

@@ -442,6 +442,109 @@ func TestHealthChecker_CheckHealth_Timeout(t *testing.T) {
 	assert.Equal(t, vmcp.BackendUnhealthy, status)
 }
 
+// TestHealthChecker_CheckHealth_ContextCarriesHealthCheckMarker verifies that CheckHealth
+// passes a context with the health check marker to ListCapabilities.
+// This is critical because the auth strategies (header_injection, token_exchange) read
+// this marker to decide how to authenticate probe requests.
+func TestHealthChecker_CheckHealth_ContextCarriesHealthCheckMarker(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	var capturedCtx context.Context
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+			capturedCtx = ctx
+			return &vmcp.CapabilityList{}, nil
+		}).
+		Times(1)
+
+	checker := NewHealthChecker(mockClient, 5*time.Second, 0)
+	target := &vmcp.BackendTarget{
+		WorkloadID:   "backend-1",
+		WorkloadName: "test-backend",
+		BaseURL:      "http://localhost:8080",
+	}
+
+	status, err := checker.CheckHealth(context.Background(), target)
+	require.NoError(t, err)
+	assert.Equal(t, vmcp.BackendHealthy, status)
+
+	// The context passed to ListCapabilities must carry the health check marker so
+	// that auth strategies (header_injection, token_exchange) apply the correct
+	// authentication path for probe requests.
+	require.NotNil(t, capturedCtx, "context must have been captured")
+	assert.True(t, IsHealthCheck(capturedCtx),
+		"ListCapabilities must receive a context with the health check marker; "+
+			"without it, header_injection and token_exchange strategies cannot "+
+			"apply outgoing auth to health check probes")
+}
+
+// TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated verifies that auth
+// errors from health checks are correctly categorised as BackendUnauthenticated, not
+// BackendUnhealthy. This distinguishes a backend that is reachable-but-needs-auth
+// from one that is down, which is important for health check probes that apply
+// outgoing auth credentials (header_injection or token_exchange).
+func TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "header injection auth failure - http 401",
+			err:  fmt.Errorf("transport error: http 401"),
+		},
+		{
+			name: "token exchange auth failure - status code 401",
+			err:  fmt.Errorf("backend unavailable: failed to initialize client for backend my-backend: status code 401"),
+		},
+		{
+			name: "sentinel auth error",
+			err:  vmcp.ErrAuthenticationFailed,
+		},
+		{
+			name: "sentinel authz error",
+			err:  vmcp.ErrAuthorizationFailed,
+		},
+		{
+			name: "wrapped sentinel auth error",
+			err:  fmt.Errorf("client credentials grant failed: %w", vmcp.ErrAuthenticationFailed),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockClient := mocks.NewMockBackendClient(ctrl)
+			mockClient.EXPECT().
+				ListCapabilities(gomock.Any(), gomock.Any()).
+				Return(nil, tt.err).
+				Times(1)
+
+			checker := NewHealthChecker(mockClient, 5*time.Second, 0)
+			target := &vmcp.BackendTarget{
+				WorkloadID:   "backend-1",
+				WorkloadName: "test-backend",
+				BaseURL:      "http://localhost:8080",
+			}
+
+			status, err := checker.CheckHealth(context.Background(), target)
+			assert.Error(t, err)
+			assert.Equal(t, vmcp.BackendUnauthenticated, status,
+				"auth failure from a health probe should be BackendUnauthenticated, not BackendUnhealthy")
+		})
+	}
+}
+
 func TestHealthChecker_CheckHealth_MultipleBackends(t *testing.T) {
 	t.Parallel()
 

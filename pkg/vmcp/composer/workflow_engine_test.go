@@ -137,7 +137,7 @@ func TestWorkflowEngine_ExecuteWorkflow_IsErrorHandling(t *testing.T) {
 			Return(&vmcp.ToolCallResult{
 				IsError: true,
 				Content: []vmcp.Content{{
-					Type: "text",
+					Type: vmcp.ContentTypeText,
 					Text: "Tool execution failed: invalid input",
 				}},
 			}, nil),
@@ -145,7 +145,7 @@ func TestWorkflowEngine_ExecuteWorkflow_IsErrorHandling(t *testing.T) {
 			Return(&vmcp.ToolCallResult{
 				IsError: true,
 				Content: []vmcp.Content{{
-					Type: "text",
+					Type: vmcp.ContentTypeText,
 					Text: "Tool execution failed: temporary error",
 				}},
 			}, nil),
@@ -190,7 +190,7 @@ func TestWorkflowEngine_ExecuteWorkflow_IsErrorExhaustsRetries(t *testing.T) {
 		Return(&vmcp.ToolCallResult{
 			IsError: true,
 			Content: []vmcp.Content{{
-				Type: "text",
+				Type: vmcp.ContentTypeText,
 				Text: "Persistent error: operation failed",
 			}},
 		}, nil).Times(3) // Initial + 2 retries

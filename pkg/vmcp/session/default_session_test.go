@@ -39,7 +39,7 @@ func (m *mockConnectedBackend) CallTool(ctx context.Context, toolName string, ar
 	if m.callToolFunc != nil {
 		return m.callToolFunc(ctx, toolName, arguments, meta)
 	}
-	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "ok"}}}, nil
+	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}}}, nil
 }
 
 func (m *mockConnectedBackend) ReadResource(ctx context.Context, uri string) (*vmcp.ResourceReadResult, error) {
@@ -155,7 +155,7 @@ func TestDefaultSession_CallTool(t *testing.T) {
 			name:     "successful tool call",
 			toolName: "search",
 			mockFn: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
-				return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "result"}}}, nil
+				return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "result"}}}, nil
 			},
 			wantContent: "result",
 		},

@@ -177,7 +177,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
 					Return(&vmcp.ToolCallResult{
 						Content: []vmcp.Content{
-							{Type: "text", Text: "tool execution failed"},
+							{Type: vmcp.ContentTypeText, Text: "tool execution failed"},
 						},
 						IsError: true,
 					}, nil)

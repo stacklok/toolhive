@@ -145,6 +145,77 @@ func TestDefaultAuthManager_GetAuthInfo(t *testing.T) {
 	}
 }
 
+func TestDefaultAuthManager_GetAuthStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		registryAuth config.RegistryAuth
+		wantStatus   string
+		wantAuthType string
+	}{
+		{
+			name:         "returns none when no auth configured",
+			registryAuth: config.RegistryAuth{},
+			wantStatus:   AuthStatusNone,
+			wantAuthType: "",
+		},
+		{
+			name: "returns configured when OAuth set but no cached tokens",
+			registryAuth: config.RegistryAuth{
+				Type: config.RegistryAuthTypeOAuth,
+				OAuth: &config.RegistryOAuthConfig{
+					Issuer:   "https://auth.example.com",
+					ClientID: "my-client",
+				},
+			},
+			wantStatus:   AuthStatusConfigured,
+			wantAuthType: config.RegistryAuthTypeOAuth,
+		},
+		{
+			name: "returns authenticated when OAuth set with cached tokens",
+			registryAuth: config.RegistryAuth{
+				Type: config.RegistryAuthTypeOAuth,
+				OAuth: &config.RegistryOAuthConfig{
+					Issuer:                "https://auth.example.com",
+					ClientID:              "my-client",
+					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",
+				},
+			},
+			wantStatus:   AuthStatusAuthenticated,
+			wantAuthType: config.RegistryAuthTypeOAuth,
+		},
+		{
+			name: "returns configured when OAuth section is nil",
+			registryAuth: config.RegistryAuth{
+				Type:  config.RegistryAuthTypeOAuth,
+				OAuth: nil,
+			},
+			wantStatus:   AuthStatusConfigured,
+			wantAuthType: config.RegistryAuthTypeOAuth,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockProvider := configmocks.NewMockProvider(ctrl)
+
+			mockProvider.EXPECT().
+				GetConfig().
+				Return(&config.Config{RegistryAuth: tt.registryAuth})
+
+			mgr := NewAuthManager(mockProvider)
+			status, authType := mgr.GetAuthStatus()
+
+			require.Equal(t, tt.wantStatus, status)
+			require.Equal(t, tt.wantAuthType, authType)
+		})
+	}
+}
+
 // errUpdateFailed is a sentinel error for testing UpdateConfig failure paths.
 var errUpdateFailed = errSentinel("UpdateConfig failed")
 

@@ -32,6 +32,7 @@ type Workload struct {
 	// For direct transports (sse/streamable-http), this will be the same as TransportType.
 	ProxyMode string `json:"proxy_mode,omitempty"`
 	// Status is the current status of the workload.
+	//nolint:lll // enums tag needed for swagger generation with --parseDependencyLevel
 	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated"`
 	// StatusContext provides additional context about the workload's status.
 	// The exact meaning is determined by the status and the underlying runtime.

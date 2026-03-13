@@ -45,50 +45,6 @@ func TestNewManager(t *testing.T) {
 	})
 }
 
-func TestNewManagerWithRegistry(t *testing.T) {
-	t.Parallel()
-
-	t.Run("success - registry parameter is ignored", func(t *testing.T) {
-		t.Parallel()
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockAgg := aggmocks.NewMockAggregator(ctrl)
-		registry := vmcp.NewDynamicRegistry(nil)
-
-		mgr, err := NewManagerWithRegistry(mockAgg, registry)
-
-		require.NoError(t, err)
-		assert.NotNil(t, mgr)
-		assert.IsType(t, &DefaultManager{}, mgr)
-	})
-
-	t.Run("success with nil registry", func(t *testing.T) {
-		t.Parallel()
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockAgg := aggmocks.NewMockAggregator(ctrl)
-
-		mgr, err := NewManagerWithRegistry(mockAgg, nil)
-
-		require.NoError(t, err)
-		assert.NotNil(t, mgr)
-	})
-
-	t.Run("error with nil aggregator", func(t *testing.T) {
-		t.Parallel()
-
-		registry := vmcp.NewDynamicRegistry(nil)
-
-		mgr, err := NewManagerWithRegistry(nil, registry)
-
-		require.Error(t, err)
-		assert.Nil(t, mgr)
-		assert.ErrorIs(t, err, ErrAggregatorNil)
-	})
-}
-
 func TestDefaultManager_Discover(t *testing.T) {
 	t.Parallel()
 

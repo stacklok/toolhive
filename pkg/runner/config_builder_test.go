@@ -242,6 +242,11 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
+	// Create temporary directories for volume mount source paths
+	tmpDir1 := t.TempDir()
+	tmpDir2 := t.TempDir()
+	tmpDir3 := t.TempDir()
+
 	testCases := []struct {
 		name                string
 		builderOptions      []RunConfigBuilderOption
@@ -261,7 +266,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Volumes without permission profile but with profile name",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{tmpDir1 + ":/container"}),
 				WithPermissionProfileNameOrPath(permissions.ProfileNone),
 			},
 			expectError:         false,
@@ -271,7 +276,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-only volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container:ro"}),
+				WithVolumes([]string{tmpDir1 + ":/container:ro"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -281,7 +286,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-write volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{tmpDir1 + ":/container"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -292,9 +297,9 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			name: "Multiple volumes with existing profile",
 			builderOptions: []RunConfigBuilderOption{
 				WithVolumes([]string{
-					"/host1:/container1:ro",
-					"/host2:/container2",
-					"/host3:/container3:ro",
+					tmpDir1 + ":/container1:ro",
+					tmpDir2 + ":/container2",
+					tmpDir3 + ":/container3:ro",
 				}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
@@ -306,6 +311,14 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			name: "Invalid volume format",
 			builderOptions: []RunConfigBuilderOption{
 				WithVolumes([]string{"invalid:format:with:too:many:colons"}),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
+			},
+			expectError: true,
+		},
+		{
+			name: "Non-existent source path",
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{"/nonexistent/path/that/does/not/exist:/container"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError: true,

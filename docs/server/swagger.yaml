@@ -1,6 +1,89 @@
 components:
   schemas:
-    audit.Config:
+    auth.TokenValidatorConfig:
+      description: |-
+        DEPRECATED: Middleware configuration.
+        OIDCConfig contains OIDC configuration
+      properties:
+        allowPrivateIP:
+          description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+          type: boolean
+        audience:
+          description: Audience is the expected audience for the token
+          type: string
+        authTokenFile:
+          description: AuthTokenFile is the path to file containing bearer token for
+            authentication
+          type: string
+        cacertPath:
+          description: CACertPath is the path to the CA certificate bundle for HTTPS
+            requests
+          type: string
+        clientID:
+          description: ClientID is the OIDC client ID
+          type: string
+        clientSecret:
+          description: ClientSecret is the optional OIDC client secret for introspection
+          type: string
+        insecureAllowHTTP:
+          description: |-
+            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+            WARNING: This is insecure and should NEVER be used in production
+          type: boolean
+        introspectionURL:
+          description: IntrospectionURL is the optional introspection endpoint for
+            validating tokens
+          type: string
+        issuer:
+          description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
+          type: string
+        jwksurl:
+          description: JWKSURL is the URL to fetch the JWKS from
+          type: string
+        resourceURL:
+          description: ResourceURL is the explicit resource URL for OAuth discovery
+            (RFC 9728)
+          type: string
+        scopes:
+          description: |-
+            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+            If empty, defaults to ["openid"]
+          items:
+            type: string
+          type: array
+      type: object
+    github_com_stacklok_toolhive-core_registry_types.Registry:
+      description: Full registry data
+      properties:
+        groups:
+          description: Groups is a slice of group definitions containing related MCP
+            servers
+          items:
+            $ref: '#/components/schemas/registry.Group'
+          type: array
+          uniqueItems: false
+        last_updated:
+          description: LastUpdated is the timestamp when the registry was last updated,
+            in RFC3339 format
+          type: string
+        remote_servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          description: |-
+            RemoteServers is a map of server names to their corresponding remote server definitions
+            These are MCP servers accessed via HTTP/HTTPS using the thv proxy command
+          type: object
+        servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          description: Servers is a map of server names to their corresponding server
+            definitions
+          type: object
+        version:
+          description: Version is the schema version of the registry
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_audit.Config:
       description: |-
         DEPRECATED: Middleware configuration.
         AuditConfig contains the audit logging configuration
@@ -58,361 +141,7 @@ components:
             +optional
           type: integer
       type: object
-    auth.TokenValidatorConfig:
-      description: |-
-        DEPRECATED: Middleware configuration.
-        OIDCConfig contains OIDC configuration
-      properties:
-        allowPrivateIP:
-          description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
-          type: boolean
-        audience:
-          description: Audience is the expected audience for the token
-          type: string
-        authTokenFile:
-          description: AuthTokenFile is the path to file containing bearer token for
-            authentication
-          type: string
-        cacertPath:
-          description: CACertPath is the path to the CA certificate bundle for HTTPS
-            requests
-          type: string
-        clientID:
-          description: ClientID is the OIDC client ID
-          type: string
-        clientSecret:
-          description: ClientSecret is the optional OIDC client secret for introspection
-          type: string
-        insecureAllowHTTP:
-          description: |-
-            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
-            WARNING: This is insecure and should NEVER be used in production
-          type: boolean
-        introspectionURL:
-          description: IntrospectionURL is the optional introspection endpoint for
-            validating tokens
-          type: string
-        issuer:
-          description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
-          type: string
-        jwksurl:
-          description: JWKSURL is the URL to fetch the JWKS from
-          type: string
-        resourceURL:
-          description: ResourceURL is the explicit resource URL for OAuth discovery
-            (RFC 9728)
-          type: string
-        scopes:
-          description: |-
-            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
-            If empty, defaults to ["openid"]
-          items:
-            type: string
-          type: array
-      type: object
-    authserver.OAuth2UpstreamRunConfig:
-      description: |-
-        OAuth2Config contains OAuth 2.0-specific configuration.
-        Required when Type is "oauth2", must be nil when Type is "oidc".
-      properties:
-        authorization_endpoint:
-          description: AuthorizationEndpoint is the URL for the OAuth authorization
-            endpoint.
-          type: string
-        client_id:
-          description: ClientID is the OAuth 2.0 client identifier registered with
-            the upstream IDP.
-          type: string
-        client_secret_env_var:
-          description: |-
-            ClientSecretEnvVar is the name of an environment variable containing the client secret.
-            Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
-          type: string
-        client_secret_file:
-          description: |-
-            ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
-            Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
-          type: string
-        redirect_uri:
-          description: |-
-            RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-            When not specified, defaults to `{issuer}/oauth/callback`.
-          type: string
-        scopes:
-          description: Scopes are the OAuth scopes to request from the upstream IDP.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        token_endpoint:
-          description: TokenEndpoint is the URL for the OAuth token endpoint.
-          type: string
-        token_response_mapping:
-          $ref: '#/components/schemas/authserver.TokenResponseMappingRunConfig'
-        userinfo:
-          $ref: '#/components/schemas/authserver.UserInfoRunConfig'
-      type: object
-    authserver.OIDCUpstreamRunConfig:
-      description: |-
-        OIDCConfig contains OIDC-specific configuration.
-        Required when Type is "oidc", must be nil when Type is "oauth2".
-      properties:
-        client_id:
-          description: ClientID is the OAuth 2.0 client identifier registered with
-            the upstream IDP.
-          type: string
-        client_secret_env_var:
-          description: |-
-            ClientSecretEnvVar is the name of an environment variable containing the client secret.
-            Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
-          type: string
-        client_secret_file:
-          description: |-
-            ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
-            Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
-          type: string
-        issuer_url:
-          description: |-
-            IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
-            Must be a valid HTTPS URL.
-          type: string
-        redirect_uri:
-          description: |-
-            RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-            When not specified, defaults to `{issuer}/oauth/callback`.
-          type: string
-        scopes:
-          description: |-
-            Scopes are the OAuth scopes to request from the upstream IDP.
-            If not specified, defaults to ["openid", "offline_access"].
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        userinfo_override:
-          $ref: '#/components/schemas/authserver.UserInfoRunConfig'
-      type: object
-    authserver.RunConfig:
-      description: |-
-        EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.
-        When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
-        This is the serializable RunConfig; secrets are referenced by file paths or env var names.
-      properties:
-        allowed_audiences:
-          description: |-
-            AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
-            Per RFC 8707, the "resource" parameter in authorization and token requests is
-            validated against this list. Required for MCP compliance.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        hmac_secret_files:
-          description: |-
-            HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes
-            and refresh tokens (opaque tokens).
-            First file is the current secret (must be at least 32 bytes), subsequent files
-            are for rotation/verification of existing tokens.
-            If empty, an ephemeral secret will be auto-generated (development only).
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        issuer:
-          description: |-
-            Issuer is the issuer identifier for this authorization server.
-            This will be included in the "iss" claim of issued tokens.
-            Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
-          type: string
-        schema_version:
-          description: SchemaVersion is the version of the RunConfig schema.
-          type: string
-        scopes_supported:
-          description: |-
-            ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
-            If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        signing_key_config:
-          $ref: '#/components/schemas/authserver.SigningKeyRunConfig'
-        storage:
-          $ref: '#/components/schemas/storage.RunConfig'
-        token_lifespans:
-          $ref: '#/components/schemas/authserver.TokenLifespanRunConfig'
-        upstreams:
-          description: |-
-            Upstreams configures connections to upstream Identity Providers.
-            At least one upstream is required - the server delegates authentication to these providers.
-            Currently only a single upstream is supported.
-          items:
-            $ref: '#/components/schemas/authserver.UpstreamRunConfig'
-          type: array
-          uniqueItems: false
-      type: object
-    authserver.SigningKeyRunConfig:
-      description: |-
-        SigningKeyConfig configures the signing key provider for JWT operations.
-        If nil or empty, an ephemeral signing key will be auto-generated (development only).
-      properties:
-        fallback_key_files:
-          description: |-
-            FallbackKeyFiles are filenames of additional keys for verification (relative to KeyDir).
-            These keys are included in the JWKS endpoint for token verification but are NOT
-            used for signing new tokens. Useful for key rotation.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        key_dir:
-          description: |-
-            KeyDir is the directory containing PEM-encoded private key files.
-            All key filenames are relative to this directory.
-            In Kubernetes, this is typically a mounted Secret volume.
-          type: string
-        signing_key_file:
-          description: |-
-            SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
-            This key is used for signing new tokens.
-          type: string
-      type: object
-    authserver.TokenLifespanRunConfig:
-      description: |-
-        TokenLifespans configures the duration that various tokens are valid.
-        If nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
-      properties:
-        access_token_lifespan:
-          description: |-
-            AccessTokenLifespan is the duration that access tokens are valid.
-            If empty, defaults to 1 hour.
-          type: string
-        auth_code_lifespan:
-          description: |-
-            AuthCodeLifespan is the duration that authorization codes are valid.
-            If empty, defaults to 10 minutes.
-          type: string
-        refresh_token_lifespan:
-          description: |-
-            RefreshTokenLifespan is the duration that refresh tokens are valid.
-            If empty, defaults to 7 days (168h).
-          type: string
-      type: object
-    authserver.TokenResponseMappingRunConfig:
-      description: |-
-        TokenResponseMapping configures custom field extraction from non-standard token responses.
-        When set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using
-        the configured dot-notation paths.
-      properties:
-        access_token_path:
-          description: AccessTokenPath is the dot-notation path to the access token
-            (required).
-          type: string
-        expires_in_path:
-          description: ExpiresInPath is the dot-notation path to the expires_in value.
-            Defaults to "expires_in".
-          type: string
-        refresh_token_path:
-          description: RefreshTokenPath is the dot-notation path to the refresh token.
-            Defaults to "refresh_token".
-          type: string
-        scope_path:
-          description: ScopePath is the dot-notation path to the scope. Defaults to
-            "scope".
-          type: string
-      type: object
-    authserver.UpstreamProviderType:
-      description: 'Type specifies the provider type: "oidc" or "oauth2".'
-      enum:
-      - oidc
-      - oauth2
-      type: string
-      x-enum-varnames:
-      - UpstreamProviderTypeOIDC
-      - UpstreamProviderTypeOAuth2
-    authserver.UpstreamRunConfig:
-      properties:
-        name:
-          description: |-
-            Name uniquely identifies this upstream.
-            Used for routing decisions and session binding in multi-upstream scenarios.
-            If empty when only one upstream is configured, defaults to "default".
-          type: string
-        oauth2_config:
-          $ref: '#/components/schemas/authserver.OAuth2UpstreamRunConfig'
-        oidc_config:
-          $ref: '#/components/schemas/authserver.OIDCUpstreamRunConfig'
-        type:
-          $ref: '#/components/schemas/authserver.UpstreamProviderType'
-      type: object
-    authserver.UserInfoFieldMappingRunConfig:
-      description: |-
-        FieldMapping contains custom field mapping configuration for non-standard providers.
-        If nil, standard OIDC field names are used ("sub", "name", "email").
-      properties:
-        email_fields:
-          description: |-
-            EmailFields is an ordered list of field names to try for the email address.
-            The first non-empty value found will be used.
-            Default: ["email"]
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        name_fields:
-          description: |-
-            NameFields is an ordered list of field names to try for the display name.
-            The first non-empty value found will be used.
-            Default: ["name"]
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        subject_fields:
-          description: |-
-            SubjectFields is an ordered list of field names to try for the user ID.
-            The first non-empty value found will be used.
-            Default: ["sub"]
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
-    authserver.UserInfoRunConfig:
-      description: UserInfo contains configuration for fetching user information (required
-        for OAuth2).
-      properties:
-        additional_headers:
-          additionalProperties:
-            type: string
-          description: |-
-            AdditionalHeaders contains extra headers to include in the userinfo request.
-            Useful for providers that require specific headers (e.g., GitHub's Accept header).
-          type: object
-        endpoint_url:
-          description: EndpointURL is the URL of the userinfo endpoint.
-          type: string
-        field_mapping:
-          $ref: '#/components/schemas/authserver.UserInfoFieldMappingRunConfig'
-        http_method:
-          description: |-
-            HTTPMethod is the HTTP method to use for the userinfo request.
-            If not specified, defaults to GET.
-          type: string
-      type: object
-    authz.Config:
-      description: |-
-        DEPRECATED: Middleware configuration.
-        AuthzConfig contains the authorization configuration
-      properties:
-        type:
-          description: Type is the type of authorization configuration (e.g., "cedarv1").
-          type: string
-        version:
-          description: Version is the version of the configuration format.
-          type: string
-      type: object
-    awssts.Config:
+    github_com_stacklok_toolhive_pkg_auth_awssts.Config:
       description: AWSStsConfig contains AWS STS token exchange configuration for
         accessing AWS services
       properties:
@@ -430,7 +159,7 @@ components:
         role_mappings:
           description: RoleMappings maps JWT claim values to IAM roles with priority.
           items:
-            $ref: '#/components/schemas/awssts.RoleMapping'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping'
           type: array
           uniqueItems: false
         service:
@@ -446,7 +175,7 @@ components:
             name (default: "sub").'
           type: string
       type: object
-    awssts.RoleMapping:
+    github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping:
       properties:
         claim:
           description: |-
@@ -474,172 +203,7 @@ components:
           description: RoleArn is the IAM role ARN to assume when this mapping matches.
           type: string
       type: object
-    client.ClientApp:
-      description: ClientType is the type of MCP client
-      enum:
-      - roo-code
-      - cline
-      - cursor
-      - vscode-insider
-      - vscode
-      - claude-code
-      - windsurf
-      - windsurf-jetbrains
-      - amp-cli
-      - amp-vscode
-      - amp-cursor
-      - amp-vscode-insider
-      - amp-windsurf
-      - lm-studio
-      - goose
-      - trae
-      - continue
-      - opencode
-      - kiro
-      - antigravity
-      - zed
-      - gemini-cli
-      - vscode-server
-      - mistral-vibe
-      - codex
-      type: string
-      x-enum-varnames:
-      - RooCode
-      - Cline
-      - Cursor
-      - VSCodeInsider
-      - VSCode
-      - ClaudeCode
-      - Windsurf
-      - WindsurfJetBrains
-      - AmpCli
-      - AmpVSCode
-      - AmpCursor
-      - AmpVSCodeInsider
-      - AmpWindsurf
-      - LMStudio
-      - Goose
-      - Trae
-      - Continue
-      - OpenCode
-      - Kiro
-      - Antigravity
-      - Zed
-      - GeminiCli
-      - VSCodeServer
-      - MistralVibe
-      - Codex
-    client.ClientAppStatus:
-      properties:
-        client_type:
-          $ref: '#/components/schemas/client.ClientApp'
-        installed:
-          description: Installed indicates whether the client is installed on the
-            system
-          type: boolean
-        registered:
-          description: Registered indicates whether the client is registered in the
-            ToolHive configuration
-          type: boolean
-      type: object
-    client.RegisteredClient:
-      properties:
-        groups:
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        name:
-          $ref: '#/components/schemas/client.ClientApp'
-      type: object
-    core.Workload:
-      properties:
-        created_at:
-          description: CreatedAt is the timestamp when the workload was created.
-          type: string
-        group:
-          description: Group is the name of the group this workload belongs to, if
-            any.
-          type: string
-        labels:
-          additionalProperties:
-            type: string
-          description: Labels are the container labels (excluding standard ToolHive
-            labels)
-          type: object
-        name:
-          description: |-
-            Name is the name of the workload.
-            It is used as a unique identifier.
-          type: string
-        package:
-          description: Package specifies the Workload Package used to create this
-            Workload.
-          type: string
-        port:
-          description: |-
-            Port is the port on which the workload is exposed.
-            This is embedded in the URL.
-          type: integer
-        proxy_mode:
-          description: |-
-            ProxyMode is the proxy mode that clients should use to connect.
-            For stdio transports, this will be the proxy mode (sse or streamable-http).
-            For direct transports (sse/streamable-http), this will be the same as TransportType.
-          type: string
-        remote:
-          description: Remote indicates whether this is a remote workload (true) or
-            a container workload (false).
-          type: boolean
-        started_at:
-          description: StartedAt is when the container was last started (changes on
-            restart)
-          type: string
-        status:
-          $ref: '#/components/schemas/runtime.WorkloadStatus'
-        status_context:
-          description: |-
-            StatusContext provides additional context about the workload's status.
-            The exact meaning is determined by the status and the underlying runtime.
-          type: string
-        tools:
-          description: ToolsFilter is the filter on tools applied to the workload.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport_type:
-          $ref: '#/components/schemas/types.TransportType'
-        url:
-          description: URL is the URL of the workload exposed by the ToolHive proxy.
-          type: string
-      type: object
-    groups.Group:
-      properties:
-        name:
-          type: string
-        registered_clients:
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        skills:
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
-    ignore.Config:
-      description: IgnoreConfig contains configuration for ignore processing
-      properties:
-        loadGlobal:
-          description: Whether to load global ignore patterns
-          type: boolean
-        printOverlays:
-          description: Whether to print resolved overlay paths for debugging
-          type: boolean
-      type: object
-    remote.Config:
+    github_com_stacklok_toolhive_pkg_auth_remote.Config:
       description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
       properties:
         authorize_url:
@@ -710,7 +274,554 @@ components:
         use_pkce:
           type: boolean
       type: object
-    runner.HeaderForwardConfig:
+    github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config:
+      description: TokenExchangeConfig contains token exchange configuration for external
+        authentication
+      properties:
+        audience:
+          description: Audience is the target audience for the exchanged token
+          type: string
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier
+          type: string
+        client_secret:
+          description: ClientSecret is the OAuth 2.0 client secret
+          type: string
+        external_token_header_name:
+          description: ExternalTokenHeaderName is the name of the custom header to
+            use when HeaderStrategy is "custom"
+          type: string
+        header_strategy:
+          description: |-
+            HeaderStrategy determines how to inject the token
+            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
+          type: string
+        scopes:
+          description: Scopes is the list of scopes to request for the exchanged token
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject_token_type:
+          description: |-
+            SubjectTokenType specifies the type of the subject token being exchanged.
+            Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
+            If empty, defaults to tokenTypeAccessToken.
+          type: string
+        token_url:
+          description: TokenURL is the OAuth 2.0 token endpoint URL
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config:
+      description: |-
+        UpstreamSwapConfig contains configuration for upstream token swap middleware.
+        When set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs
+        for upstream IdP tokens before forwarding requests to the MCP server.
+      properties:
+        custom_header_name:
+          description: CustomHeaderName is the header name when HeaderStrategy is
+            "custom".
+          type: string
+        header_strategy:
+          description: 'HeaderStrategy determines how to inject the token: "replace"
+            (default) or "custom".'
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig:
+      description: |-
+        OAuth2Config contains OAuth 2.0-specific configuration.
+        Required when Type is "oauth2", must be nil when Type is "oidc".
+      properties:
+        authorization_endpoint:
+          description: AuthorizationEndpoint is the URL for the OAuth authorization
+            endpoint.
+          type: string
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier registered with
+            the upstream IDP.
+          type: string
+        client_secret_env_var:
+          description: |-
+            ClientSecretEnvVar is the name of an environment variable containing the client secret.
+            Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
+          type: string
+        client_secret_file:
+          description: |-
+            ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
+            Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
+          type: string
+        redirect_uri:
+          description: |-
+            RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+            When not specified, defaults to `{issuer}/oauth/callback`.
+          type: string
+        scopes:
+          description: Scopes are the OAuth scopes to request from the upstream IDP.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        token_endpoint:
+          description: TokenEndpoint is the URL for the OAuth token endpoint.
+          type: string
+        token_response_mapping:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenResponseMappingRunConfig'
+        userinfo:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig'
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig:
+      description: |-
+        OIDCConfig contains OIDC-specific configuration.
+        Required when Type is "oidc", must be nil when Type is "oauth2".
+      properties:
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier registered with
+            the upstream IDP.
+          type: string
+        client_secret_env_var:
+          description: |-
+            ClientSecretEnvVar is the name of an environment variable containing the client secret.
+            Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
+          type: string
+        client_secret_file:
+          description: |-
+            ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
+            Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
+          type: string
+        issuer_url:
+          description: |-
+            IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
+            Must be a valid HTTPS URL.
+          type: string
+        redirect_uri:
+          description: |-
+            RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+            When not specified, defaults to `{issuer}/oauth/callback`.
+          type: string
+        scopes:
+          description: |-
+            Scopes are the OAuth scopes to request from the upstream IDP.
+            If not specified, defaults to ["openid", "offline_access"].
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        userinfo_override:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig'
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.RunConfig:
+      description: |-
+        EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.
+        When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
+        This is the serializable RunConfig; secrets are referenced by file paths or env var names.
+      properties:
+        allowed_audiences:
+          description: |-
+            AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
+            Per RFC 8707, the "resource" parameter in authorization and token requests is
+            validated against this list. Required for MCP compliance.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        hmac_secret_files:
+          description: |-
+            HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes
+            and refresh tokens (opaque tokens).
+            First file is the current secret (must be at least 32 bytes), subsequent files
+            are for rotation/verification of existing tokens.
+            If empty, an ephemeral secret will be auto-generated (development only).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        issuer:
+          description: |-
+            Issuer is the issuer identifier for this authorization server.
+            This will be included in the "iss" claim of issued tokens.
+            Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+          type: string
+        schema_version:
+          description: SchemaVersion is the version of the RunConfig schema.
+          type: string
+        scopes_supported:
+          description: |-
+            ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
+            If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        signing_key_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig'
+        storage:
+          $ref: '#/components/schemas/storage.RunConfig'
+        token_lifespans:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig'
+        upstreams:
+          description: |-
+            Upstreams configures connections to upstream Identity Providers.
+            At least one upstream is required - the server delegates authentication to these providers.
+            Currently only a single upstream is supported.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig'
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig:
+      description: |-
+        SigningKeyConfig configures the signing key provider for JWT operations.
+        If nil or empty, an ephemeral signing key will be auto-generated (development only).
+      properties:
+        fallback_key_files:
+          description: |-
+            FallbackKeyFiles are filenames of additional keys for verification (relative to KeyDir).
+            These keys are included in the JWKS endpoint for token verification but are NOT
+            used for signing new tokens. Useful for key rotation.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        key_dir:
+          description: |-
+            KeyDir is the directory containing PEM-encoded private key files.
+            All key filenames are relative to this directory.
+            In Kubernetes, this is typically a mounted Secret volume.
+          type: string
+        signing_key_file:
+          description: |-
+            SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
+            This key is used for signing new tokens.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig:
+      description: |-
+        TokenLifespans configures the duration that various tokens are valid.
+        If nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
+      properties:
+        access_token_lifespan:
+          description: |-
+            AccessTokenLifespan is the duration that access tokens are valid.
+            If empty, defaults to 1 hour.
+          type: string
+        auth_code_lifespan:
+          description: |-
+            AuthCodeLifespan is the duration that authorization codes are valid.
+            If empty, defaults to 10 minutes.
+          type: string
+        refresh_token_lifespan:
+          description: |-
+            RefreshTokenLifespan is the duration that refresh tokens are valid.
+            If empty, defaults to 7 days (168h).
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.TokenResponseMappingRunConfig:
+      description: |-
+        TokenResponseMapping configures custom field extraction from non-standard token responses.
+        When set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using
+        the configured dot-notation paths.
+      properties:
+        access_token_path:
+          description: AccessTokenPath is the dot-notation path to the access token
+            (required).
+          type: string
+        expires_in_path:
+          description: ExpiresInPath is the dot-notation path to the expires_in value.
+            Defaults to "expires_in".
+          type: string
+        refresh_token_path:
+          description: RefreshTokenPath is the dot-notation path to the refresh token.
+            Defaults to "refresh_token".
+          type: string
+        scope_path:
+          description: ScopePath is the dot-notation path to the scope. Defaults to
+            "scope".
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType:
+      description: 'Type specifies the provider type: "oidc" or "oauth2".'
+      enum:
+      - oidc
+      - oauth2
+      type: string
+      x-enum-varnames:
+      - UpstreamProviderTypeOIDC
+      - UpstreamProviderTypeOAuth2
+    github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig:
+      properties:
+        name:
+          description: |-
+            Name uniquely identifies this upstream.
+            Used for routing decisions and session binding in multi-upstream scenarios.
+            If empty when only one upstream is configured, defaults to "default".
+          type: string
+        oauth2_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig'
+        oidc_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig'
+        type:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType'
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.UserInfoFieldMappingRunConfig:
+      description: |-
+        FieldMapping contains custom field mapping configuration for non-standard providers.
+        If nil, standard OIDC field names are used ("sub", "name", "email").
+      properties:
+        email_fields:
+          description: |-
+            EmailFields is an ordered list of field names to try for the email address.
+            The first non-empty value found will be used.
+            Default: ["email"]
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        name_fields:
+          description: |-
+            NameFields is an ordered list of field names to try for the display name.
+            The first non-empty value found will be used.
+            Default: ["name"]
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject_fields:
+          description: |-
+            SubjectFields is an ordered list of field names to try for the user ID.
+            The first non-empty value found will be used.
+            Default: ["sub"]
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig:
+      description: UserInfo contains configuration for fetching user information (required
+        for OAuth2).
+      properties:
+        additional_headers:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalHeaders contains extra headers to include in the userinfo request.
+            Useful for providers that require specific headers (e.g., GitHub's Accept header).
+          type: object
+        endpoint_url:
+          description: EndpointURL is the URL of the userinfo endpoint.
+          type: string
+        field_mapping:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoFieldMappingRunConfig'
+        http_method:
+          description: |-
+            HTTPMethod is the HTTP method to use for the userinfo request.
+            If not specified, defaults to GET.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authz.Config:
+      description: |-
+        DEPRECATED: Middleware configuration.
+        AuthzConfig contains the authorization configuration
+      properties:
+        type:
+          description: Type is the type of authorization configuration (e.g., "cedarv1").
+          type: string
+        version:
+          description: Version is the version of the configuration format.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_client.ClientApp:
+      description: ClientType is the type of MCP client
+      enum:
+      - roo-code
+      - cline
+      - cursor
+      - vscode-insider
+      - vscode
+      - claude-code
+      - windsurf
+      - windsurf-jetbrains
+      - amp-cli
+      - amp-vscode
+      - amp-cursor
+      - amp-vscode-insider
+      - amp-windsurf
+      - lm-studio
+      - goose
+      - trae
+      - continue
+      - opencode
+      - kiro
+      - antigravity
+      - zed
+      - gemini-cli
+      - vscode-server
+      - mistral-vibe
+      - codex
+      type: string
+      x-enum-varnames:
+      - RooCode
+      - Cline
+      - Cursor
+      - VSCodeInsider
+      - VSCode
+      - ClaudeCode
+      - Windsurf
+      - WindsurfJetBrains
+      - AmpCli
+      - AmpVSCode
+      - AmpCursor
+      - AmpVSCodeInsider
+      - AmpWindsurf
+      - LMStudio
+      - Goose
+      - Trae
+      - Continue
+      - OpenCode
+      - Kiro
+      - Antigravity
+      - Zed
+      - GeminiCli
+      - VSCodeServer
+      - MistralVibe
+      - Codex
+    github_com_stacklok_toolhive_pkg_client.ClientAppStatus:
+      properties:
+        client_type:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp'
+        installed:
+          description: Installed indicates whether the client is installed on the
+            system
+          type: boolean
+        registered:
+          description: Registered indicates whether the client is registered in the
+            ToolHive configuration
+          type: boolean
+      type: object
+    github_com_stacklok_toolhive_pkg_client.RegisteredClient:
+      properties:
+        groups:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        name:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp'
+      type: object
+    github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig:
+      description: |-
+        RuntimeConfig allows overriding the default runtime configuration
+        for this specific workload (base images and packages)
+      properties:
+        additional_packages:
+          description: |-
+            AdditionalPackages lists extra packages to install in builder stage
+            Examples for Alpine: ["git", "make", "gcc"]
+            Examples for Debian: ["git", "build-essential"]
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        builder_image:
+          description: |-
+            BuilderImage is the full image reference for the builder stage
+            Examples: "golang:1.25-alpine", "node:22-alpine", "python:3.13-slim"
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_core.Workload:
+      properties:
+        created_at:
+          description: CreatedAt is the timestamp when the workload was created.
+          type: string
+        group:
+          description: Group is the name of the group this workload belongs to, if
+            any.
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          description: Labels are the container labels (excluding standard ToolHive
+            labels)
+          type: object
+        name:
+          description: |-
+            Name is the name of the workload.
+            It is used as a unique identifier.
+          type: string
+        package:
+          description: Package specifies the Workload Package used to create this
+            Workload.
+          type: string
+        port:
+          description: |-
+            Port is the port on which the workload is exposed.
+            This is embedded in the URL.
+          type: integer
+        proxy_mode:
+          description: |-
+            ProxyMode is the proxy mode that clients should use to connect.
+            For stdio transports, this will be the proxy mode (sse or streamable-http).
+            For direct transports (sse/streamable-http), this will be the same as TransportType.
+          type: string
+        remote:
+          description: Remote indicates whether this is a remote workload (true) or
+            a container workload (false).
+          type: boolean
+        started_at:
+          description: StartedAt is when the container was last started (changes on
+            restart)
+          type: string
+        status:
+          description: Status is the current status of the workload.
+          enum:
+          - running
+          - stopped
+          - error
+          - starting
+          - stopping
+          - unhealthy
+          - removing
+          - unknown
+          - unauthenticated
+          type: string
+        status_context:
+          description: |-
+            StatusContext provides additional context about the workload's status.
+            The exact meaning is determined by the status and the underlying runtime.
+          type: string
+        tools:
+          description: ToolsFilter is the filter on tools applied to the workload.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport_type:
+          description: TransportType is the type of transport used for this workload.
+          enum:
+          - stdio
+          - sse
+          - streamable-http
+          - inspector
+          type: string
+        url:
+          description: URL is the URL of the workload exposed by the ToolHive proxy.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_groups.Group:
+      properties:
+        name:
+          type: string
+        registered_clients:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        skills:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig:
       description: HeaderForward contains configuration for injecting headers into
         requests to remote servers.
       properties:
@@ -732,24 +843,24 @@ components:
             For sensitive values (API keys, tokens), use AddHeadersFromSecret instead.
           type: object
       type: object
-    runner.RunConfig:
+    github_com_stacklok_toolhive_pkg_runner.RunConfig:
       properties:
         audit_config:
-          $ref: '#/components/schemas/audit.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config'
         audit_config_path:
           description: |-
             DEPRECATED: Middleware configuration.
             AuditConfigPath is the path to the audit configuration file
           type: string
         authz_config:
-          $ref: '#/components/schemas/authz.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authz.Config'
         authz_config_path:
           description: |-
             DEPRECATED: Middleware configuration.
             AuthzConfigPath is the path to the authorization configuration file
           type: string
         aws_sts_config:
-          $ref: '#/components/schemas/awssts.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.Config'
         base_name:
           description: BaseName is the base name used for the container (without prefixes)
           type: string
@@ -771,7 +882,7 @@ components:
           description: Debug indicates whether debug mode is enabled
           type: boolean
         embedded_auth_server_config:
-          $ref: '#/components/schemas/authserver.RunConfig'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.RunConfig'
         endpoint_prefix:
           description: |-
             EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
@@ -792,7 +903,7 @@ components:
             any
           type: string
         header_forward:
-          $ref: '#/components/schemas/runner.HeaderForwardConfig'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig'
         host:
           description: Host is the host for the HTTP proxy
           type: string
@@ -836,14 +947,20 @@ components:
           description: Port is the port for the HTTP proxy to listen on (host port)
           type: integer
         proxy_mode:
-          $ref: '#/components/schemas/types.ProxyMode'
+          description: |-
+            ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+            Note: "sse" is deprecated; use "streamable-http" instead.
+          enum:
+          - sse
+          - streamable-http
+          type: string
         remote_auth_config:
-          $ref: '#/components/schemas/remote.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config'
         remote_url:
           description: RemoteURL is the URL of the remote MCP server (if running remotely)
           type: string
         runtime_config:
-          $ref: '#/components/schemas/templates.RuntimeConfig'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig'
         schema_version:
           description: SchemaVersion is the version of the RunConfig schema
           type: string
@@ -864,14 +981,14 @@ components:
             to SSE transport)
           type: integer
         telemetry_config:
-          $ref: '#/components/schemas/telemetry.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_telemetry.Config'
         thv_ca_bundle:
           description: |-
             DEPRECATED: No longer appears to be used.
             ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
           type: string
         token_exchange_config:
-          $ref: '#/components/schemas/tokenexchange.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config'
         tools_filter:
           description: |-
             DEPRECATED: Middleware configuration.
@@ -882,19 +999,25 @@ components:
           uniqueItems: false
         tools_override:
           additionalProperties:
-            $ref: '#/components/schemas/runner.ToolOverride'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ToolOverride'
           description: |-
             DEPRECATED: Middleware configuration.
             ToolsOverride is a map from an actual tool to its overridden name and/or description
           type: object
         transport:
-          $ref: '#/components/schemas/types.TransportType'
+          description: Transport is the transport mode (stdio, sse, or streamable-http)
+          enum:
+          - stdio
+          - sse
+          - streamable-http
+          - inspector
+          type: string
         trust_proxy_headers:
           description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
             headers from reverse proxies
           type: boolean
         upstream_swap_config:
-          $ref: '#/components/schemas/upstreamswap.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config'
         volumes:
           description: |-
             Volumes are the directory mounts to pass to the container
@@ -904,7 +1027,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    runner.ToolOverride:
+    github_com_stacklok_toolhive_pkg_runner.ToolOverride:
       properties:
         description:
           description: Description is the redefined description of the tool
@@ -913,30 +1036,7 @@ components:
           description: Name is the redefined name of the tool
           type: string
       type: object
-    runtime.WorkloadStatus:
-      description: Current status of the workload
-      enum:
-      - running
-      - stopped
-      - error
-      - starting
-      - stopping
-      - unhealthy
-      - removing
-      - unknown
-      - unauthenticated
-      type: string
-      x-enum-varnames:
-      - WorkloadStatusRunning
-      - WorkloadStatusStopped
-      - WorkloadStatusError
-      - WorkloadStatusStarting
-      - WorkloadStatusStopping
-      - WorkloadStatusUnhealthy
-      - WorkloadStatusRemoving
-      - WorkloadStatusUnknown
-      - WorkloadStatusUnauthenticated
-    secrets.SecretParameter:
+    github_com_stacklok_toolhive_pkg_secrets.SecretParameter:
       description: Bearer token for authentication (alternative to OAuth)
       properties:
         name:
@@ -944,13 +1044,13 @@ components:
         target:
           type: string
       type: object
-    skills.BuildResult:
+    github_com_stacklok_toolhive_pkg_skills.BuildResult:
       properties:
         reference:
           description: Reference is the OCI reference of the built skill artifact.
           type: string
       type: object
-    skills.Dependency:
+    github_com_stacklok_toolhive_pkg_skills.Dependency:
       properties:
         digest:
           description: Digest is the OCI digest for upgrade detection.
@@ -962,7 +1062,7 @@ components:
           description: Reference is the OCI reference for the dependency.
           type: string
       type: object
-    skills.InstallStatus:
+    github_com_stacklok_toolhive_pkg_skills.InstallStatus:
       description: Status is the current installation status.
       enum:
       - installed
@@ -973,7 +1073,7 @@ components:
       - InstallStatusInstalled
       - InstallStatusPending
       - InstallStatusFailed
-    skills.InstalledSkill:
+    github_com_stacklok_toolhive_pkg_skills.InstalledSkill:
       description: InstalledSkill contains the full installation record.
       properties:
         clients:
@@ -987,7 +1087,7 @@ components:
         dependencies:
           description: Dependencies is the list of external skill dependencies.
           items:
-            $ref: '#/components/schemas/skills.Dependency'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Dependency'
           type: array
           uniqueItems: false
         digest:
@@ -997,7 +1097,7 @@ components:
           description: InstalledAt is the timestamp when the skill was installed.
           type: string
         metadata:
-          $ref: '#/components/schemas/skills.SkillMetadata'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata'
         project_root:
           description: ProjectRoot is the project root path for project-scoped skills.
             Empty for user-scoped.
@@ -1006,14 +1106,14 @@ components:
           description: Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).
           type: string
         scope:
-          $ref: '#/components/schemas/skills.Scope'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Scope'
         status:
-          $ref: '#/components/schemas/skills.InstallStatus'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstallStatus'
         tag:
           description: Tag is the OCI tag (e.g. v1.0.0).
           type: string
       type: object
-    skills.Scope:
+    github_com_stacklok_toolhive_pkg_skills.Scope:
       description: Scope for the installation
       enum:
       - user
@@ -1022,14 +1122,14 @@ components:
       x-enum-varnames:
       - ScopeUser
       - ScopeProject
-    skills.SkillInfo:
+    github_com_stacklok_toolhive_pkg_skills.SkillInfo:
       properties:
         installed_skill:
-          $ref: '#/components/schemas/skills.InstalledSkill'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill'
         metadata:
-          $ref: '#/components/schemas/skills.SkillMetadata'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata'
       type: object
-    skills.SkillMetadata:
+    github_com_stacklok_toolhive_pkg_skills.SkillMetadata:
       description: Metadata contains the skill's metadata.
       properties:
         author:
@@ -1051,7 +1151,7 @@ components:
           description: Version is the semantic version of the skill.
           type: string
       type: object
-    skills.ValidationResult:
+    github_com_stacklok_toolhive_pkg_skills.ValidationResult:
       properties:
         errors:
           description: Errors is a list of validation errors, if any.
@@ -1070,87 +1170,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    storage.ACLUserRunConfig:
-      description: ACLUserConfig contains ACL user authentication configuration.
-      properties:
-        password_env_var:
-          description: PasswordEnvVar is the environment variable containing the Redis
-            password.
-          type: string
-        username_env_var:
-          description: UsernameEnvVar is the environment variable containing the Redis
-            username.
-          type: string
-      type: object
-    storage.RedisRunConfig:
-      description: RedisConfig is the Redis-specific configuration when Type is "redis".
-      properties:
-        acl_user_config:
-          $ref: '#/components/schemas/storage.ACLUserRunConfig'
-        auth_type:
-          description: AuthType must be "aclUser" - only ACL user authentication is
-            supported.
-          type: string
-        dial_timeout:
-          description: DialTimeout is the timeout for establishing connections (e.g.,
-            "5s").
-          type: string
-        key_prefix:
-          description: KeyPrefix for multi-tenancy, typically "thv:auth:{ns}:{name}:".
-          type: string
-        read_timeout:
-          description: ReadTimeout is the timeout for read operations (e.g., "3s").
-          type: string
-        sentinel_config:
-          $ref: '#/components/schemas/storage.SentinelRunConfig'
-        sentinel_tls:
-          $ref: '#/components/schemas/storage.RedisTLSRunConfig'
-        tls:
-          $ref: '#/components/schemas/storage.RedisTLSRunConfig'
-        write_timeout:
-          description: WriteTimeout is the timeout for write operations (e.g., "3s").
-          type: string
-      type: object
-    storage.RedisTLSRunConfig:
-      description: |-
-        SentinelTLS configures TLS for Sentinel connections.
-        Falls back to TLS config when nil.
-      properties:
-        ca_cert_file:
-          description: CACertFile is the path to a PEM-encoded CA certificate file.
-          type: string
-        insecure_skip_verify:
-          description: InsecureSkipVerify skips certificate verification.
-          type: boolean
-      type: object
-    storage.RunConfig:
-      description: |-
-        Storage configures the storage backend for the auth server.
-        If nil, defaults to in-memory storage.
-      properties:
-        redis_config:
-          $ref: '#/components/schemas/storage.RedisRunConfig'
-        type:
-          description: Type specifies the storage backend type. Defaults to "memory".
-          type: string
-      type: object
-    storage.SentinelRunConfig:
-      description: SentinelConfig contains Sentinel-specific configuration.
-      properties:
-        db:
-          description: 'DB is the Redis database number (default: 0).'
-          type: integer
-        master_name:
-          description: MasterName is the name of the Redis Sentinel master.
-          type: string
-        sentinel_addrs:
-          description: SentinelAddrs is the list of Sentinel addresses (host:port).
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
-    telemetry.Config:
+    github_com_stacklok_toolhive_pkg_telemetry.Config:
       description: |-
         DEPRECATED: Middleware configuration.
         TelemetryConfig contains the OpenTelemetry configuration
@@ -1246,115 +1266,93 @@ components:
             +optional
           type: boolean
       type: object
-    templates.RuntimeConfig:
-      description: |-
-        RuntimeConfig allows overriding the default runtime configuration
-        for this specific workload (base images and packages)
+    ignore.Config:
+      description: IgnoreConfig contains configuration for ignore processing
       properties:
-        additional_packages:
-          description: |-
-            AdditionalPackages lists extra packages to install in builder stage
-            Examples for Alpine: ["git", "make", "gcc"]
-            Examples for Debian: ["git", "build-essential"]
+        loadGlobal:
+          description: Whether to load global ignore patterns
+          type: boolean
+        printOverlays:
+          description: Whether to print resolved overlay paths for debugging
+          type: boolean
+      type: object
+    permissions.InboundNetworkPermissions:
+      description: Inbound defines inbound network permissions
+      properties:
+        allow_host:
+          description: AllowHost is a list of allowed hosts for inbound connections
           items:
             type: string
           type: array
           uniqueItems: false
-        builder_image:
-          description: |-
-            BuilderImage is the full image reference for the builder stage
-            Examples: "golang:1.25-alpine", "node:22-alpine", "python:3.13-slim"
-          type: string
       type: object
-    tokenexchange.Config:
-      description: TokenExchangeConfig contains token exchange configuration for external
-        authentication
+    permissions.NetworkPermissions:
+      description: Network defines network permissions
       properties:
-        audience:
-          description: Audience is the target audience for the exchanged token
-          type: string
-        client_id:
-          description: ClientID is the OAuth 2.0 client identifier
-          type: string
-        client_secret:
-          description: ClientSecret is the OAuth 2.0 client secret
-          type: string
-        external_token_header_name:
-          description: ExternalTokenHeaderName is the name of the custom header to
-            use when HeaderStrategy is "custom"
-          type: string
-        header_strategy:
+        inbound:
+          $ref: '#/components/schemas/permissions.InboundNetworkPermissions'
+        mode:
           description: |-
-            HeaderStrategy determines how to inject the token
-            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
+            Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+            When empty, the default container runtime network mode is used
           type: string
-        scopes:
-          description: Scopes is the list of scopes to request for the exchanged token
+        outbound:
+          $ref: '#/components/schemas/permissions.OutboundNetworkPermissions'
+      type: object
+    permissions.OutboundNetworkPermissions:
+      description: Outbound defines outbound network permissions
+      properties:
+        allow_host:
+          description: AllowHost is a list of allowed hosts
           items:
             type: string
           type: array
           uniqueItems: false
-        subject_token_type:
-          description: |-
-            SubjectTokenType specifies the type of the subject token being exchanged.
-            Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
-            If empty, defaults to tokenTypeAccessToken.
-          type: string
-        token_url:
-          description: TokenURL is the OAuth 2.0 token endpoint URL
-          type: string
+        allow_port:
+          description: AllowPort is a list of allowed ports
+          items:
+            type: integer
+          type: array
+          uniqueItems: false
+        insecure_allow_all:
+          description: InsecureAllowAll allows all outbound network connections
+          type: boolean
       type: object
-    types.MiddlewareConfig:
+    permissions.Profile:
+      description: Permission profile to apply
       properties:
-        parameters:
+        name:
+          description: Name is the name of the profile
+          type: string
+        network:
+          $ref: '#/components/schemas/permissions.NetworkPermissions'
+        privileged:
           description: |-
-            Parameters is a JSON object containing the middleware parameters.
-            It is stored as a raw message to allow flexible parameter types.
-          type: object
-        type:
-          description: Type is a string representing the middleware type.
-          type: string
+            Privileged indicates whether the container should run in privileged mode
+            When true, the container has access to all host devices and capabilities
+            Use with extreme caution as this removes most security isolation
+          type: boolean
+        read:
+          description: |-
+            Read is a list of mount declarations that the container can read from
+            These can be in the following formats:
+            - A single path: The same path will be mounted from host to container
+            - host-path:container-path: Different paths for host and container
+            - resource-uri:container-path: Mount a resource identified by URI to a container path
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        write:
+          description: |-
+            Write is a list of mount declarations that the container can write to
+            These follow the same format as Read mounts but with write permissions
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
-    types.ProxyMode:
-      description: |-
-        ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
-        Note: "sse" is deprecated; use "streamable-http" instead.
-      enum:
-      - sse
-      - streamable-http
-      type: string
-      x-enum-varnames:
-      - ProxyModeSSE
-      - ProxyModeStreamableHTTP
-    types.TransportType:
-      description: Transport is the transport mode (stdio, sse, or streamable-http)
-      enum:
-      - stdio
-      - sse
-      - streamable-http
-      - inspector
-      type: string
-      x-enum-varnames:
-      - TransportTypeStdio
-      - TransportTypeSSE
-      - TransportTypeStreamableHTTP
-      - TransportTypeInspector
-    upstreamswap.Config:
-      description: |-
-        UpstreamSwapConfig contains configuration for upstream token swap middleware.
-        When set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs
-        for upstream IdP tokens before forwarding requests to the MCP server.
-      properties:
-        custom_header_name:
-          description: CustomHeaderName is the header name when HeaderStrategy is
-            "custom".
-          type: string
-        header_strategy:
-          description: 'HeaderStrategy determines how to inject the token: "replace"
-            (default) or "custom".'
-          type: string
-      type: object
-    v1.RegistryType:
+    pkg_api_v1.RegistryType:
       description: Type of registry (file, url, or default)
       enum:
       - file
@@ -1367,7 +1365,7 @@ components:
       - RegistryTypeURL
       - RegistryTypeAPI
       - RegistryTypeDefault
-    v1.UpdateRegistryRequest:
+    pkg_api_v1.UpdateRegistryRequest:
       description: Request containing registry configuration updates
       properties:
         allow_private_ip:
@@ -1383,14 +1381,14 @@ components:
           description: Registry URL (for remote registries)
           type: string
       type: object
-    v1.UpdateRegistryResponse:
+    pkg_api_v1.UpdateRegistryResponse:
       description: Response containing update result
       properties:
         type:
           description: Registry type after update
           type: string
       type: object
-    v1.buildSkillRequest:
+    pkg_api_v1.buildSkillRequest:
       description: Request to build a skill from a local directory
       properties:
         path:
@@ -1400,7 +1398,7 @@ components:
           description: OCI tag for the built artifact
           type: string
       type: object
-    v1.bulkClientRequest:
+    pkg_api_v1.bulkClientRequest:
       properties:
         groups:
           description: Groups is the list of groups configured on the client.
@@ -1411,11 +1409,11 @@ components:
         names:
           description: Names is the list of client names to operate on.
           items:
-            $ref: '#/components/schemas/client.ClientApp'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp'
           type: array
           uniqueItems: false
       type: object
-    v1.bulkOperationRequest:
+    pkg_api_v1.bulkOperationRequest:
       properties:
         group:
           description: Group name to operate on (mutually exclusive with names)
@@ -1427,15 +1425,15 @@ components:
           type: array
           uniqueItems: false
       type: object
-    v1.clientStatusResponse:
+    pkg_api_v1.clientStatusResponse:
       properties:
         clients:
           items:
-            $ref: '#/components/schemas/client.ClientAppStatus'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientAppStatus'
           type: array
           uniqueItems: false
       type: object
-    v1.createClientRequest:
+    pkg_api_v1.createClientRequest:
       properties:
         groups:
           description: Groups is the list of groups configured on the client.
@@ -1444,9 +1442,9 @@ components:
           type: array
           uniqueItems: false
         name:
-          $ref: '#/components/schemas/client.ClientApp'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp'
       type: object
-    v1.createClientResponse:
+    pkg_api_v1.createClientResponse:
       properties:
         groups:
           description: Groups is the list of groups configured on the client.
@@ -1455,21 +1453,21 @@ components:
           type: array
           uniqueItems: false
         name:
-          $ref: '#/components/schemas/client.ClientApp'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp'
       type: object
-    v1.createGroupRequest:
+    pkg_api_v1.createGroupRequest:
       properties:
         name:
           description: Name of the group to create
           type: string
       type: object
-    v1.createGroupResponse:
+    pkg_api_v1.createGroupResponse:
       properties:
         name:
           description: Name of the created group
           type: string
       type: object
-    v1.createRequest:
+    pkg_api_v1.createRequest:
       description: Request to create a new workload
       properties:
         authz_config:
@@ -1490,7 +1488,12 @@ components:
           description: Group name this workload belongs to
           type: string
         header_forward:
-          $ref: '#/components/schemas/v1.headerForwardConfig'
+          $ref: '#/components/schemas/pkg_api_v1.headerForwardConfig'
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
         host:
           description: Host to bind to
           type: string
@@ -1505,9 +1508,11 @@ components:
             in the permission profile.
           type: boolean
         oauth_config:
-          $ref: '#/components/schemas/v1.remoteOAuthConfig'
+          $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'
         oidc:
-          $ref: '#/components/schemas/v1.oidcOptions'
+          $ref: '#/components/schemas/pkg_api_v1.oidcOptions'
+        permission_profile:
+          $ref: '#/components/schemas/permissions.Profile'
         proxy_mode:
           description: Proxy mode to use
           type: string
@@ -1517,7 +1522,7 @@ components:
         secrets:
           description: Secret parameters to inject
           items:
-            $ref: '#/components/schemas/secrets.SecretParameter'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
           type: array
           uniqueItems: false
         target_port:
@@ -1531,7 +1536,7 @@ components:
           uniqueItems: false
         tools_override:
           additionalProperties:
-            $ref: '#/components/schemas/v1.toolOverride'
+            $ref: '#/components/schemas/pkg_api_v1.toolOverride'
           description: Tools override
           type: object
         transport:
@@ -1550,7 +1555,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    v1.createSecretRequest:
+    pkg_api_v1.createSecretRequest:
       description: Request to create a new secret
       properties:
         key:
@@ -1560,7 +1565,7 @@ components:
           description: Secret value
           type: string
       type: object
-    v1.createSecretResponse:
+    pkg_api_v1.createSecretResponse:
       description: Response after creating a secret
       properties:
         key:
@@ -1570,7 +1575,7 @@ components:
           description: Success message
           type: string
       type: object
-    v1.createWorkloadResponse:
+    pkg_api_v1.createWorkloadResponse:
       description: Response after successfully creating a workload
       properties:
         name:
@@ -1580,7 +1585,7 @@ components:
           description: Port the workload is listening on
           type: integer
       type: object
-    v1.getRegistryResponse:
+    pkg_api_v1.getRegistryResponse:
       description: Response containing registry details
       properties:
         last_updated:
@@ -1589,6 +1594,8 @@ components:
         name:
           description: Name of the registry
           type: string
+        registry:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive-core_registry_types.Registry'
         server_count:
           description: Number of servers in the registry
           type: integer
@@ -1597,16 +1604,16 @@ components:
             built-in)
           type: string
         type:
-          $ref: '#/components/schemas/v1.RegistryType'
+          $ref: '#/components/schemas/pkg_api_v1.RegistryType'
         version:
           description: Version of the registry schema
           type: string
       type: object
-    v1.getSecretsProviderResponse:
+    pkg_api_v1.getSecretsProviderResponse:
       description: Response containing secrets provider details
       properties:
         capabilities:
-          $ref: '#/components/schemas/v1.providerCapabilitiesResponse'
+          $ref: '#/components/schemas/pkg_api_v1.providerCapabilitiesResponse'
         name:
           description: Name of the secrets provider
           type: string
@@ -1614,23 +1621,27 @@ components:
           description: Type of the secrets provider
           type: string
       type: object
-    v1.getServerResponse:
+    pkg_api_v1.getServerResponse:
       description: Response containing server details
       properties:
         is_remote:
           description: Indicates if this is a remote server
           type: boolean
+        remote_server:
+          $ref: '#/components/schemas/registry.RemoteServerMetadata'
+        server:
+          $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
-    v1.groupListResponse:
+    pkg_api_v1.groupListResponse:
       properties:
         groups:
           description: List of groups
           items:
-            $ref: '#/components/schemas/groups.Group'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_groups.Group'
           type: array
           uniqueItems: false
       type: object
-    v1.headerForwardConfig:
+    pkg_api_v1.headerForwardConfig:
       description: |-
         HeaderForward configures headers to inject into requests to remote MCP servers.
         Use this to add custom headers like X-Tenant-ID or correlation IDs.
@@ -1651,7 +1662,7 @@ components:
             Use AddHeadersFromSecret for sensitive data like API keys.
           type: object
       type: object
-    v1.installSkillRequest:
+    pkg_api_v1.installSkillRequest:
       description: Request to install a skill
       properties:
         client:
@@ -1670,31 +1681,44 @@ components:
           description: ProjectRoot is the project root path for project-scoped installs
           type: string
         scope:
-          $ref: '#/components/schemas/skills.Scope'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Scope'
         version:
           description: Version to install (empty means latest)
           type: string
       type: object
-    v1.installSkillResponse:
+    pkg_api_v1.installSkillResponse:
       description: Response after successfully installing a skill
       properties:
         skill:
-          $ref: '#/components/schemas/skills.InstalledSkill'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill'
       type: object
-    v1.listSecretsResponse:
+    pkg_api_v1.listSecretsResponse:
       description: Response containing a list of secret keys
       properties:
         keys:
           description: List of secret keys
           items:
-            $ref: '#/components/schemas/v1.secretKeyResponse'
+            $ref: '#/components/schemas/pkg_api_v1.secretKeyResponse'
           type: array
           uniqueItems: false
       type: object
-    v1.listServersResponse:
+    pkg_api_v1.listServersResponse:
       description: Response containing a list of servers
+      properties:
+        remote_servers:
+          description: List of remote servers in the registry (if any)
+          items:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          type: array
+          uniqueItems: false
+        servers:
+          description: List of container servers in the registry
+          items:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          type: array
+          uniqueItems: false
       type: object
-    v1.oidcOptions:
+    pkg_api_v1.oidcOptions:
       description: OIDC configuration options
       properties:
         audience:
@@ -1722,7 +1746,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    v1.providerCapabilitiesResponse:
+    pkg_api_v1.providerCapabilitiesResponse:
       description: Capabilities of the secrets provider
       properties:
         can_cleanup:
@@ -1741,14 +1765,14 @@ components:
           description: Whether the provider can write secrets
           type: boolean
       type: object
-    v1.pushSkillRequest:
+    pkg_api_v1.pushSkillRequest:
       description: Request to push a built skill artifact
       properties:
         reference:
           description: OCI reference to push
           type: string
       type: object
-    v1.registryInfo:
+    pkg_api_v1.registryInfo:
       description: Basic information about a registry
       properties:
         last_updated:
@@ -1765,22 +1789,22 @@ components:
             built-in)
           type: string
         type:
-          $ref: '#/components/schemas/v1.RegistryType'
+          $ref: '#/components/schemas/pkg_api_v1.RegistryType'
         version:
           description: Version of the registry schema
           type: string
       type: object
-    v1.registryListResponse:
+    pkg_api_v1.registryListResponse:
       description: Response containing a list of registries
       properties:
         registries:
           description: List of registries
           items:
-            $ref: '#/components/schemas/v1.registryInfo'
+            $ref: '#/components/schemas/pkg_api_v1.registryInfo'
           type: array
           uniqueItems: false
       type: object
-    v1.remoteOAuthConfig:
+    pkg_api_v1.remoteOAuthConfig:
       description: OAuth configuration for remote server authentication
       properties:
         authorize_url:
@@ -1788,7 +1812,7 @@ components:
             non-OIDC OAuth)
           type: string
         bearer_token:
-          $ref: '#/components/schemas/secrets.SecretParameter'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
         callback_port:
           description: Specific port for OAuth callback server
           type: integer
@@ -1796,7 +1820,7 @@ components:
           description: OAuth client ID for authentication
           type: string
         client_secret:
-          $ref: '#/components/schemas/secrets.SecretParameter'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
         issuer:
           description: OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
           type: string
@@ -1826,7 +1850,7 @@ components:
           description: Whether to use PKCE for the OAuth flow
           type: boolean
       type: object
-    v1.secretKeyResponse:
+    pkg_api_v1.secretKeyResponse:
       description: Secret key information
       properties:
         description:
@@ -1836,7 +1860,7 @@ components:
           description: Secret key name
           type: string
       type: object
-    v1.setupSecretsRequest:
+    pkg_api_v1.setupSecretsRequest:
       description: Request to setup a secrets provider
       properties:
         password:
@@ -1848,7 +1872,7 @@ components:
           description: Type of the secrets provider (encrypted, 1password, environment)
           type: string
       type: object
-    v1.setupSecretsResponse:
+    pkg_api_v1.setupSecretsResponse:
       description: Response after initializing a secrets provider
       properties:
         message:
@@ -1858,17 +1882,17 @@ components:
           description: Type of the secrets provider that was setup
           type: string
       type: object
-    v1.skillListResponse:
+    pkg_api_v1.skillListResponse:
       description: Response containing a list of installed skills
       properties:
         skills:
           description: List of installed skills
           items:
-            $ref: '#/components/schemas/skills.InstalledSkill'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill'
           type: array
           uniqueItems: false
       type: object
-    v1.toolOverride:
+    pkg_api_v1.toolOverride:
       description: Tool override
       properties:
         description:
@@ -1878,7 +1902,7 @@ components:
           description: Name of the tool
           type: string
       type: object
-    v1.updateRequest:
+    pkg_api_v1.updateRequest:
       description: Request to update an existing workload (name cannot be changed)
       properties:
         authz_config:
@@ -1899,7 +1923,12 @@ components:
           description: Group name this workload belongs to
           type: string
         header_forward:
-          $ref: '#/components/schemas/v1.headerForwardConfig'
+          $ref: '#/components/schemas/pkg_api_v1.headerForwardConfig'
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
         host:
           description: Host to bind to
           type: string
@@ -1911,9 +1940,11 @@ components:
             in the permission profile.
           type: boolean
         oauth_config:
-          $ref: '#/components/schemas/v1.remoteOAuthConfig'
+          $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'
         oidc:
-          $ref: '#/components/schemas/v1.oidcOptions'
+          $ref: '#/components/schemas/pkg_api_v1.oidcOptions'
+        permission_profile:
+          $ref: '#/components/schemas/permissions.Profile'
         proxy_mode:
           description: Proxy mode to use
           type: string
@@ -1923,7 +1954,7 @@ components:
         secrets:
           description: Secret parameters to inject
           items:
-            $ref: '#/components/schemas/secrets.SecretParameter'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
           type: array
           uniqueItems: false
         target_port:
@@ -1937,7 +1968,7 @@ components:
           uniqueItems: false
         tools_override:
           additionalProperties:
-            $ref: '#/components/schemas/v1.toolOverride'
+            $ref: '#/components/schemas/pkg_api_v1.toolOverride'
           description: Tools override
           type: object
         transport:
@@ -1956,14 +1987,14 @@ components:
           type: array
           uniqueItems: false
       type: object
-    v1.updateSecretRequest:
+    pkg_api_v1.updateSecretRequest:
       description: Request to update an existing secret
       properties:
         value:
           description: New secret value
           type: string
       type: object
-    v1.updateSecretResponse:
+    pkg_api_v1.updateSecretResponse:
       description: Response after updating a secret
       properties:
         key:
@@ -1973,33 +2004,523 @@ components:
           description: Success message
           type: string
       type: object
-    v1.validateSkillRequest:
+    pkg_api_v1.validateSkillRequest:
       description: Request to validate a skill definition
       properties:
         path:
           description: Path to the skill definition directory
           type: string
       type: object
-    v1.versionResponse:
+    pkg_api_v1.versionResponse:
       properties:
         version:
           type: string
       type: object
-    v1.workloadListResponse:
+    pkg_api_v1.workloadListResponse:
       description: Response containing a list of workloads
       properties:
         workloads:
           description: List of container information for each workload
           items:
-            $ref: '#/components/schemas/core.Workload'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_core.Workload'
           type: array
           uniqueItems: false
       type: object
-    v1.workloadStatusResponse:
+    pkg_api_v1.workloadStatusResponse:
       description: Response containing workload status information
       properties:
         status:
-          $ref: '#/components/schemas/runtime.WorkloadStatus'
+          description: Current status of the workload
+          enum:
+          - running
+          - stopped
+          - error
+          - starting
+          - stopping
+          - unhealthy
+          - removing
+          - unknown
+          - unauthenticated
+          type: string
+      type: object
+    registry.EnvVar:
+      properties:
+        default:
+          description: |-
+            Default is the value to use if the environment variable is not explicitly provided
+            Only used for non-required variables
+          type: string
+        description:
+          description: Description is a human-readable explanation of the variable's
+            purpose
+          type: string
+        name:
+          description: Name is the environment variable name (e.g., API_KEY)
+          type: string
+        required:
+          description: |-
+            Required indicates whether this environment variable must be provided
+            If true and not provided via command line or secrets, the user will be prompted for a value
+          type: boolean
+        secret:
+          description: |-
+            Secret indicates whether this environment variable contains sensitive information
+            If true, the value will be stored as a secret rather than as a plain environment variable
+          type: boolean
+      type: object
+    registry.Group:
+      properties:
+        description:
+          description: Description is a human-readable description of the group's
+            purpose and functionality
+          type: string
+        name:
+          description: Name is the identifier for the group, used when referencing
+            the group in commands
+          type: string
+        remote_servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          description: RemoteServers is a map of server names to their corresponding
+            remote server definitions within this group
+          type: object
+        servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          description: Servers is a map of server names to their corresponding server
+            definitions within this group
+          type: object
+      type: object
+    registry.Header:
+      properties:
+        choices:
+          description: Choices provides a list of valid values for the header (optional)
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        default:
+          description: |-
+            Default is the value to use if the header is not explicitly provided
+            Only used for non-required headers
+          type: string
+        description:
+          description: Description is a human-readable explanation of the header's
+            purpose
+          type: string
+        name:
+          description: Name is the header name (e.g., X-API-Key, Authorization)
+          type: string
+        required:
+          description: |-
+            Required indicates whether this header must be provided
+            If true and not provided via command line or secrets, the user will be prompted for a value
+          type: boolean
+        secret:
+          description: |-
+            Secret indicates whether this header contains sensitive information
+            If true, the value will be stored as a secret rather than as plain text
+          type: boolean
+      type: object
+    registry.ImageMetadata:
+      description: Container server details (if it's a container server)
+      properties:
+        args:
+          description: |-
+            Args are the default command-line arguments to pass to the MCP server container.
+            These arguments will be used only if no command-line arguments are provided by the user.
+            If the user provides arguments, they will override these defaults.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
+        description:
+          description: Description is a human-readable description of the server's
+            purpose and functionality
+          type: string
+        docker_tags:
+          description: DockerTags lists the available Docker tags for this server
+            image
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        env_vars:
+          description: EnvVars defines environment variables that can be passed to
+            the server
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+          uniqueItems: false
+        image:
+          description: Image is the Docker image reference for the MCP server
+          type: string
+        metadata:
+          $ref: '#/components/schemas/registry.Metadata'
+        name:
+          description: |-
+            Name is the identifier for the MCP server, used when referencing the server in commands
+            If not provided, it will be auto-generated from the registry key
+          type: string
+        overview:
+          description: |-
+            Overview is a longer Markdown-formatted description for web display.
+            Unlike the Description field (limited to 500 chars), this supports
+            full Markdown and is intended for rich rendering on catalog pages.
+          type: string
+        permissions:
+          $ref: '#/components/schemas/permissions.Profile'
+        provenance:
+          $ref: '#/components/schemas/registry.Provenance'
+        proxy_port:
+          description: |-
+            ProxyPort is the port for the HTTP proxy to listen on (host port)
+            If not specified, a random available port will be assigned
+          type: integer
+        repository_url:
+          description: RepositoryURL is the URL to the source code repository for
+            the server
+          type: string
+        status:
+          description: Status indicates whether the server is currently active or
+            deprecated
+          type: string
+        tags:
+          description: Tags are categorization labels for the server to aid in discovery
+            and filtering
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        target_port:
+          description: TargetPort is the port for the container to expose (only applicable
+            to SSE and Streamable HTTP transports)
+          type: integer
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "Official" or "Community"
+          type: string
+        title:
+          description: |-
+            Title is an optional human-readable display name for the server.
+            If not provided, the Name field is used for display purposes.
+          type: string
+        tools:
+          description: Tools is a list of tool names provided by this MCP server
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
+          type: string
+      type: object
+    registry.KubernetesMetadata:
+      description: |-
+        Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster.
+        This field is optional and only populated when:
+        - The server is served from ToolHive Registry Server
+        - The server was auto-discovered from a Kubernetes deployment
+        - The Kubernetes resource has the required registry annotations
+      properties:
+        image:
+          description: Image is the container image used by the Kubernetes workload
+            (applicable to MCPServer)
+          type: string
+        kind:
+          description: Kind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer,
+            MCPRemoteProxy)
+          type: string
+        name:
+          description: Name is the Kubernetes resource name
+          type: string
+        namespace:
+          description: Namespace is the Kubernetes namespace where the resource is
+            deployed
+          type: string
+        transport:
+          description: Transport is the transport type configured for the Kubernetes
+            workload (applicable to MCPServer)
+          type: string
+        uid:
+          description: UID is the Kubernetes resource UID
+          type: string
+      type: object
+    registry.Metadata:
+      description: Metadata contains additional information about the server such
+        as popularity metrics
+      properties:
+        kubernetes:
+          $ref: '#/components/schemas/registry.KubernetesMetadata'
+        last_updated:
+          description: LastUpdated is the timestamp when the server was last updated,
+            in RFC3339 format
+          type: string
+        stars:
+          description: Stars represents the popularity rating or number of stars for
+            the server
+          type: integer
+      type: object
+    registry.OAuthConfig:
+      description: |-
+        OAuthConfig provides OAuth/OIDC configuration for authentication to the remote server
+        Used with the thv proxy command's --remote-auth flags
+      properties:
+        authorize_url:
+          description: |-
+            AuthorizeURL is the OAuth authorization endpoint URL
+            Used for non-OIDC OAuth flows when issuer is not provided
+          type: string
+        callback_port:
+          description: |-
+            CallbackPort is the specific port to use for the OAuth callback server
+            If not specified, a random available port will be used
+          type: integer
+        client_id:
+          description: ClientID is the OAuth client ID for authentication
+          type: string
+        issuer:
+          description: |-
+            Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
+            Used for OIDC discovery to find authorization and token endpoints
+          type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: |-
+            OAuthParams contains additional OAuth parameters to include in the authorization request
+            These are server-specific parameters like "prompt", "response_mode", etc.
+          type: object
+        resource:
+          description: Resource is the OAuth 2.0 resource indicator (RFC 8707)
+          type: string
+        scopes:
+          description: |-
+            Scopes are the OAuth scopes to request
+            If not specified, defaults to ["openid", "profile", "email"] for OIDC
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        token_url:
+          description: |-
+            TokenURL is the OAuth token endpoint URL
+            Used for non-OIDC OAuth flows when issuer is not provided
+          type: string
+        use_pkce:
+          description: |-
+            UsePKCE indicates whether to use PKCE for the OAuth flow
+            Defaults to true for enhanced security
+          type: boolean
+      type: object
+    registry.Provenance:
+      description: Provenance contains verification and signing metadata
+      properties:
+        attestation:
+          $ref: '#/components/schemas/registry.VerifiedAttestation'
+        cert_issuer:
+          type: string
+        repository_ref:
+          type: string
+        repository_uri:
+          type: string
+        runner_environment:
+          type: string
+        signer_identity:
+          type: string
+        sigstore_url:
+          type: string
+      type: object
+    registry.RemoteServerMetadata:
+      description: Remote server details (if it's a remote server)
+      properties:
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
+        description:
+          description: Description is a human-readable description of the server's
+            purpose and functionality
+          type: string
+        env_vars:
+          description: |-
+            EnvVars defines environment variables that can be passed to configure the client
+            These might be needed for client-side configuration when connecting to the remote server
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+          uniqueItems: false
+        headers:
+          description: |-
+            Headers defines HTTP headers that can be passed to the remote server for authentication
+            These are used with the thv proxy command's authentication features
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
+        metadata:
+          $ref: '#/components/schemas/registry.Metadata'
+        name:
+          description: |-
+            Name is the identifier for the MCP server, used when referencing the server in commands
+            If not provided, it will be auto-generated from the registry key
+          type: string
+        oauth_config:
+          $ref: '#/components/schemas/registry.OAuthConfig'
+        overview:
+          description: |-
+            Overview is a longer Markdown-formatted description for web display.
+            Unlike the Description field (limited to 500 chars), this supports
+            full Markdown and is intended for rich rendering on catalog pages.
+          type: string
+        proxy_port:
+          description: |-
+            ProxyPort is the port for the HTTP proxy to listen on (host port)
+            If not specified, a random available port will be assigned
+          type: integer
+        repository_url:
+          description: RepositoryURL is the URL to the source code repository for
+            the server
+          type: string
+        status:
+          description: Status indicates whether the server is currently active or
+            deprecated
+          type: string
+        tags:
+          description: Tags are categorization labels for the server to aid in discovery
+            and filtering
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "Official" or "Community"
+          type: string
+        title:
+          description: |-
+            Title is an optional human-readable display name for the server.
+            If not provided, the Name field is used for display purposes.
+          type: string
+        tools:
+          description: Tools is a list of tool names provided by this MCP server
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
+          type: string
+        url:
+          description: URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
+          type: string
+      type: object
+    registry.VerifiedAttestation:
+      properties:
+        predicate: {}
+        predicate_type:
+          type: string
+      type: object
+    storage.ACLUserRunConfig:
+      description: ACLUserConfig contains ACL user authentication configuration.
+      properties:
+        password_env_var:
+          description: PasswordEnvVar is the environment variable containing the Redis
+            password.
+          type: string
+        username_env_var:
+          description: UsernameEnvVar is the environment variable containing the Redis
+            username.
+          type: string
+      type: object
+    storage.RedisRunConfig:
+      description: RedisConfig is the Redis-specific configuration when Type is "redis".
+      properties:
+        acl_user_config:
+          $ref: '#/components/schemas/storage.ACLUserRunConfig'
+        auth_type:
+          description: AuthType must be "aclUser" - only ACL user authentication is
+            supported.
+          type: string
+        dial_timeout:
+          description: DialTimeout is the timeout for establishing connections (e.g.,
+            "5s").
+          type: string
+        key_prefix:
+          description: KeyPrefix for multi-tenancy, typically "thv:auth:{ns}:{name}:".
+          type: string
+        read_timeout:
+          description: ReadTimeout is the timeout for read operations (e.g., "3s").
+          type: string
+        sentinel_config:
+          $ref: '#/components/schemas/storage.SentinelRunConfig'
+        sentinel_tls:
+          $ref: '#/components/schemas/storage.RedisTLSRunConfig'
+        tls:
+          $ref: '#/components/schemas/storage.RedisTLSRunConfig'
+        write_timeout:
+          description: WriteTimeout is the timeout for write operations (e.g., "3s").
+          type: string
+      type: object
+    storage.RedisTLSRunConfig:
+      description: |-
+        SentinelTLS configures TLS for Sentinel connections.
+        Falls back to TLS config when nil.
+      properties:
+        ca_cert_file:
+          description: CACertFile is the path to a PEM-encoded CA certificate file.
+          type: string
+        insecure_skip_verify:
+          description: InsecureSkipVerify skips certificate verification.
+          type: boolean
+      type: object
+    storage.RunConfig:
+      description: |-
+        Storage configures the storage backend for the auth server.
+        If nil, defaults to in-memory storage.
+      properties:
+        redis_config:
+          $ref: '#/components/schemas/storage.RedisRunConfig'
+        type:
+          description: Type specifies the storage backend type. Defaults to "memory".
+          type: string
+      type: object
+    storage.SentinelRunConfig:
+      description: SentinelConfig contains Sentinel-specific configuration.
+      properties:
+        db:
+          description: 'DB is the Redis database number (default: 0).'
+          type: integer
+        master_name:
+          description: MasterName is the name of the Redis Sentinel master.
+          type: string
+        sentinel_addrs:
+          description: SentinelAddrs is the list of Sentinel addresses (host:port).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    types.MiddlewareConfig:
+      properties:
+        parameters:
+          description: |-
+            Parameters is a JSON object containing the middleware parameters.
+            It is stored as a raw message to allow flexible parameter types.
+          type: object
+        type:
+          description: Type is a string representing the middleware type.
+          type: string
       type: object
 externalDocs:
   description: ""
@@ -2032,7 +2553,7 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/client.RegisteredClient'
+                  $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.RegisteredClient'
                 type: array
           description: OK
       summary: List all clients
@@ -2046,7 +2567,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.createClientRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.createClientRequest'
                 description: Client to register
                 summary: client
         description: Client to register
@@ -2056,7 +2577,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createClientResponse'
+                $ref: '#/components/schemas/pkg_api_v1.createClientResponse'
           description: OK
         "400":
           content:
@@ -2132,7 +2653,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.bulkClientRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.bulkClientRequest'
                 description: Clients to register
                 summary: clients
         description: Clients to register
@@ -2143,7 +2664,7 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/v1.createClientResponse'
+                  $ref: '#/components/schemas/pkg_api_v1.createClientResponse'
                 type: array
           description: OK
         "400":
@@ -2164,7 +2685,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.bulkClientRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.bulkClientRequest'
                 description: Clients to unregister
                 summary: clients
         description: Clients to unregister
@@ -2189,7 +2710,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.clientStatusResponse'
+                $ref: '#/components/schemas/pkg_api_v1.clientStatusResponse'
           description: OK
       summary: List all clients status
       tags:
@@ -2202,7 +2723,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.groupListResponse'
+                $ref: '#/components/schemas/pkg_api_v1.groupListResponse'
           description: OK
         "500":
           content:
@@ -2221,7 +2742,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.createGroupRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.createGroupRequest'
                 description: Group creation request
                 summary: group
         description: Group creation request
@@ -2231,7 +2752,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createGroupResponse'
+                $ref: '#/components/schemas/pkg_api_v1.createGroupResponse'
           description: Created
         "400":
           content:
@@ -2306,7 +2827,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/groups.Group'
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_groups.Group'
           description: OK
         "404":
           content:
@@ -2331,7 +2852,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.registryListResponse'
+                $ref: '#/components/schemas/pkg_api_v1.registryListResponse'
           description: OK
       summary: List registries
       tags:
@@ -2393,7 +2914,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.getRegistryResponse'
+                $ref: '#/components/schemas/pkg_api_v1.getRegistryResponse'
           description: OK
         "404":
           content:
@@ -2419,7 +2940,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.UpdateRegistryRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.UpdateRegistryRequest'
                 description: Registry configuration
                 summary: body
         description: Registry configuration
@@ -2429,7 +2950,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.UpdateRegistryResponse'
+                $ref: '#/components/schemas/pkg_api_v1.UpdateRegistryResponse'
           description: OK
         "400":
           content:
@@ -2473,7 +2994,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.listServersResponse'
+                $ref: '#/components/schemas/pkg_api_v1.listServersResponse'
           description: OK
         "404":
           content:
@@ -2505,7 +3026,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.getServerResponse'
+                $ref: '#/components/schemas/pkg_api_v1.getServerResponse'
           description: OK
         "404":
           content:
@@ -2525,7 +3046,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.setupSecretsRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.setupSecretsRequest'
                 description: Setup secrets provider request
                 summary: request
         description: Setup secrets provider request
@@ -2535,7 +3056,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.setupSecretsResponse'
+                $ref: '#/components/schemas/pkg_api_v1.setupSecretsResponse'
           description: Created
         "400":
           content:
@@ -2560,7 +3081,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.getSecretsProviderResponse'
+                $ref: '#/components/schemas/pkg_api_v1.getSecretsProviderResponse'
           description: OK
         "404":
           content:
@@ -2585,7 +3106,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.listSecretsResponse'
+                $ref: '#/components/schemas/pkg_api_v1.listSecretsResponse'
           description: OK
         "404":
           content:
@@ -2617,7 +3138,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.createSecretRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.createSecretRequest'
                 description: Create secret request
                 summary: request
         description: Create secret request
@@ -2627,7 +3148,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createSecretResponse'
+                $ref: '#/components/schemas/pkg_api_v1.createSecretResponse'
           description: Created
         "400":
           content:
@@ -2716,7 +3237,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.updateSecretRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.updateSecretRequest'
                 description: Update secret request
                 summary: request
         description: Update secret request
@@ -2726,7 +3247,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.updateSecretResponse'
+                $ref: '#/components/schemas/pkg_api_v1.updateSecretResponse'
           description: OK
         "400":
           content:
@@ -2787,7 +3308,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.skillListResponse'
+                $ref: '#/components/schemas/pkg_api_v1.skillListResponse'
           description: OK
         "500":
           content:
@@ -2806,7 +3327,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.installSkillRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.installSkillRequest'
                 description: Install request
                 summary: request
         description: Install request
@@ -2816,7 +3337,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.installSkillResponse'
+                $ref: '#/components/schemas/pkg_api_v1.installSkillResponse'
           description: Created
           headers:
             Location:
@@ -2922,7 +3443,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/skills.SkillInfo'
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillInfo'
           description: OK
         "400":
           content:
@@ -2954,7 +3475,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.buildSkillRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.buildSkillRequest'
                 description: Build request
                 summary: request
         description: Build request
@@ -2964,7 +3485,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/skills.BuildResult'
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.BuildResult'
           description: OK
         "400":
           content:
@@ -2990,7 +3511,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.pushSkillRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.pushSkillRequest'
                 description: Push request
                 summary: request
         description: Push request
@@ -3032,7 +3553,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.validateSkillRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.validateSkillRequest'
                 description: Validate request
                 summary: request
         description: Validate request
@@ -3042,7 +3563,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/skills.ValidationResult'
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.ValidationResult'
           description: OK
         "400":
           content:
@@ -3067,7 +3588,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.versionResponse'
+                $ref: '#/components/schemas/pkg_api_v1.versionResponse'
           description: OK
       summary: Get server version
       tags:
@@ -3091,7 +3612,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.workloadListResponse'
+                $ref: '#/components/schemas/pkg_api_v1.workloadListResponse'
           description: OK
         "404":
           content:
@@ -3110,7 +3631,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.createRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.createRequest'
                 description: Create workload request
                 summary: request
         description: Create workload request
@@ -3120,7 +3641,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createWorkloadResponse'
+                $ref: '#/components/schemas/pkg_api_v1.createWorkloadResponse'
           description: Created
         "400":
           content:
@@ -3185,7 +3706,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createRequest'
+                $ref: '#/components/schemas/pkg_api_v1.createRequest'
           description: OK
         "404":
           content:
@@ -3212,7 +3733,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.updateRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.updateRequest'
                 description: Update workload request
                 summary: request
         description: Update workload request
@@ -3222,7 +3743,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createWorkloadResponse'
+                $ref: '#/components/schemas/pkg_api_v1.createWorkloadResponse'
           description: OK
         "400":
           content:
@@ -3254,7 +3775,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/runner.RunConfig'
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.RunConfig'
           description: OK
         "404":
           content:
@@ -3378,7 +3899,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.workloadStatusResponse'
+                $ref: '#/components/schemas/pkg_api_v1.workloadStatusResponse'
           description: OK
         "404":
           content:
@@ -3432,7 +3953,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.bulkOperationRequest'
                 description: Bulk delete request (names or group)
                 summary: request
         description: Bulk delete request (names or group)
@@ -3462,7 +3983,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.bulkOperationRequest'
                 description: Bulk restart request (names or group)
                 summary: request
         description: Bulk restart request (names or group)
@@ -3492,7 +4013,7 @@ paths:
             schema:
               oneOf:
               - type: object
-              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+              - $ref: '#/components/schemas/pkg_api_v1.bulkOperationRequest'
                 description: Bulk stop request (names or group)
                 summary: request
         description: Bulk stop request (names or group)

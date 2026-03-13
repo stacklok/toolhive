@@ -286,10 +286,20 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	// Note: instantiating the list ensures that no null value is sent over the wire.
 	// This is basically defensive programming, but for clients.
 	filteredTools := []mcp.Tool{}
-	for _, tool := range listResult.Tools {
+	for i, tool := range listResult.Tools {
+		// Inject this tool's annotations into the context so Cedar policies
+		// that use when clauses on resource attributes (e.g. resource.readOnlyHint)
+		// can evaluate correctly. Without this, the authorization check runs
+		// against a context with no annotations and all when clauses fail.
+		ctx := rfw.request.Context()
+		ann := &listResult.Tools[i].Annotations
+		if hasAnyHint(ann) {
+			ctx = authorizers.WithToolAnnotations(ctx, convertMCPAnnotation(ann))
+		}
+
 		// Check if the user is authorized to call this tool
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
-			rfw.request.Context(),
+			ctx,
 			authorizers.MCPFeatureTool,
 			authorizers.MCPOperationCall,
 			tool.Name,

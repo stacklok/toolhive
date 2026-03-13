@@ -42,11 +42,17 @@ const (
 	defaultCircuitBreakerEnabled = false
 )
 
+// boolPtr returns a pointer to the given bool value.
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DefaultOperationalConfig returns a fully populated OperationalConfig with default values.
 // This is the SINGLE SOURCE OF TRUTH for all operational defaults.
 // This should be used when no operational config is provided.
 func DefaultOperationalConfig() *OperationalConfig {
 	return &OperationalConfig{
+		SessionManagementV2: boolPtr(true),
 		Timeouts: &TimeoutConfig{
 			Default:     Duration(defaultTimeoutDefault),
 			PerWorkload: nil,
@@ -70,19 +76,38 @@ func DefaultOperationalConfig() *OperationalConfig {
 // If Operational is nil, it sets it to DefaultOperationalConfig().
 // If Operational exists but has nil or zero-value nested fields, those fields
 // are filled with defaults while preserving any user-provided values.
+//
+// Note: SessionManagementV2 is a *bool. nil means "unset" → default true.
+// mergo dereferences pointers and treats *false as a zero-value bool, so an
+// explicit *false opt-out is saved before the merge and restored afterwards.
 func (c *Config) EnsureOperationalDefaults() {
 	if c == nil {
 		return
 	}
 
-	defaults := DefaultOperationalConfig()
-
 	if c.Operational == nil {
-		c.Operational = defaults
+		c.Operational = DefaultOperationalConfig()
 		return
 	}
 
+	// mergo treats the bool zero-value (false) as "unset" even through a pointer,
+	// and overwrites the value at the pointer address. Save the original pointer
+	// and the value it holds so they can be restored after the merge, preserving
+	// pointer identity for any caller that retains a reference.
+	origPtr := c.Operational.SessionManagementV2
+	var origVal bool
+	if origPtr != nil {
+		origVal = *origPtr
+	}
+
 	// Merge defaults into target, only filling zero/nil values.
-	// User-provided values are preserved.
-	_ = mergo.Merge(c.Operational, defaults)
+	// User-provided values are preserved (except for the *bool caveat above).
+	_ = mergo.Merge(c.Operational, DefaultOperationalConfig())
+
+	// Restore the user-provided value through the original pointer so that
+	// pointer identity is preserved and the explicit opt-out is not lost.
+	if origPtr != nil {
+		*origPtr = origVal
+		c.Operational.SessionManagementV2 = origPtr
+	}
 }

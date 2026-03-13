@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	mcpmcp "github.com/mark3labs/mcp-go/mcp"
+	mcpsdk "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -23,8 +25,10 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -69,6 +73,7 @@ func (*v2FakeMultiSession) Prompts() []vmcp.Prompt     { return nil }
 func (*v2FakeMultiSession) BackendSessions() map[string]string {
 	return nil
 }
+func (*v2FakeMultiSession) GetRoutingTable() *vmcp.RoutingTable { return nil }
 
 func (f *v2FakeMultiSession) CallTool(
 	_ context.Context, _ *auth.Identity, _ string, _ map[string]any, _ map[string]any,
@@ -157,6 +162,12 @@ func (f *v2FakeMultiSessionFactory) MakeSessionWithID(
 // Helpers
 // ---------------------------------------------------------------------------
 
+// v2ServerOptions holds optional configuration extensions for buildV2ServerWithOptions.
+type v2ServerOptions struct {
+	workflowDefs     map[string]*composer.WorkflowDefinition
+	optimizerFactory func(context.Context, []mcpsdk.ServerTool) (optimizer.Optimizer, error)
+}
+
 // buildV2Server constructs a vMCP server with SessionManagementV2 enabled,
 // backed by mock discovery infrastructure, and returns the httptest.Server
 // and the session factory so tests can inspect state.
@@ -165,6 +176,18 @@ func (f *v2FakeMultiSessionFactory) MakeSessionWithID(
 func buildV2Server(
 	t *testing.T,
 	factory vmcpsession.MultiSessionFactory,
+) *httptest.Server {
+	t.Helper()
+	return buildV2ServerWithOptions(t, factory, v2ServerOptions{})
+}
+
+// buildV2ServerWithOptions is like buildV2Server but accepts optional workflow
+// definitions and an optimizer factory, enabling composite tool and optimizer
+// integration tests.
+func buildV2ServerWithOptions(
+	t *testing.T,
+	factory vmcpsession.MultiSessionFactory,
+	opts v2ServerOptions,
 ) *httptest.Server {
 	t.Helper()
 
@@ -194,12 +217,13 @@ func buildV2Server(
 			SessionTTL:          5 * time.Minute,
 			SessionManagementV2: true,
 			SessionFactory:      factory,
+			OptimizerFactory:    opts.optimizerFactory,
 		},
 		rt,
 		mockBackendClient,
 		mockDiscoveryMgr,
 		mockBackendRegistry,
-		nil,
+		opts.workflowDefs,
 	)
 	require.NoError(t, err)
 
@@ -632,4 +656,257 @@ func TestIntegration_SessionManagementV2_TokenBinding(t *testing.T) {
 	// Session should be terminated, so this should fail
 	assert.Equal(t, http.StatusInternalServerError, respC.StatusCode,
 		"request should fail after session termination due to auth failure")
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for composite tool and optimizer mode tests
+// ---------------------------------------------------------------------------
+
+// listToolNames sends a tools/list request and returns the tool names from the
+// response. Returns nil when the request fails or the response cannot be parsed.
+func listToolNames(t *testing.T, baseURL, sessionID string) []string {
+	t.Helper()
+
+	resp := postMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      99,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var body struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil
+	}
+
+	names := make([]string, 0, len(body.Result.Tools))
+	for _, tool := range body.Result.Tools {
+		names = append(names, tool.Name)
+	}
+	return names
+}
+
+// fakeV2Optimizer is a minimal optimizer.Optimizer for testing optimizer mode.
+// It returns empty results and does not require an embedding store.
+type fakeV2Optimizer struct{}
+
+func (*fakeV2Optimizer) FindTool(_ context.Context, _ optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
+	return &optimizer.FindToolOutput{}, nil
+}
+
+func (*fakeV2Optimizer) CallTool(_ context.Context, _ optimizer.CallToolInput) (*mcpmcp.CallToolResult, error) {
+	return &mcpmcp.CallToolResult{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Composite tool and optimizer integration tests
+// ---------------------------------------------------------------------------
+
+// TestIntegration_SessionManagementV2_CompositeTools verifies that composite tools
+// (workflow definitions) appear in tools/list alongside backend tools when
+// SessionManagementV2 is enabled.
+func TestIntegration_SessionManagementV2_CompositeTools(t *testing.T) {
+	t.Parallel()
+
+	backendTool := vmcp.Tool{Name: "backend-tool", Description: "a backend tool"}
+	factory := newV2FakeFactory([]vmcp.Tool{backendTool})
+
+	workflowDef := &composer.WorkflowDefinition{
+		Name:        "composite-tool",
+		Description: "a composite workflow tool",
+		Steps: []composer.WorkflowStep{
+			{
+				ID:   "step1",
+				Type: composer.StepTypeTool,
+				Tool: "backend-tool",
+			},
+		},
+	}
+
+	ts := buildV2ServerWithOptions(t, factory, v2ServerOptions{
+		workflowDefs: map[string]*composer.WorkflowDefinition{
+			"composite-tool": workflowDef,
+		},
+	})
+
+	initResp := postMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	// Poll tools/list until the composite tool appears — confirms registration
+	// and tool injection have both completed.
+	require.Eventually(t, func() bool {
+		for _, n := range listToolNames(t, ts.URL, sessionID) {
+			if n == "composite-tool" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 20*time.Millisecond,
+		"composite-tool should appear in tools/list after session registration")
+
+	toolNames := listToolNames(t, ts.URL, sessionID)
+	assert.Contains(t, toolNames, "backend-tool", "backend tool should be in tools/list")
+	assert.Contains(t, toolNames, "composite-tool", "composite tool should be in tools/list")
+}
+
+// TestIntegration_SessionManagementV2_CompositeToolConflict verifies that when a
+// composite tool name collides with a backend tool name, the composite tool is
+// silently skipped and the backend tool remains registered and callable.
+func TestIntegration_SessionManagementV2_CompositeToolConflict(t *testing.T) {
+	t.Parallel()
+
+	// Both the backend and the workflow definition use the same name — a collision.
+	const sharedName = "shared-tool"
+	factory := newV2FakeFactory([]vmcp.Tool{{Name: sharedName, Description: "backend version"}})
+
+	workflowDef := &composer.WorkflowDefinition{
+		Name:        sharedName, // conflicts with the backend tool
+		Description: "composite version — should be skipped due to name conflict",
+		Steps: []composer.WorkflowStep{
+			{
+				ID:   "step1",
+				Type: composer.StepTypeTool,
+				Tool: "other-tool",
+			},
+		},
+	}
+
+	ts := buildV2ServerWithOptions(t, factory, v2ServerOptions{
+		workflowDefs: map[string]*composer.WorkflowDefinition{
+			sharedName: workflowDef,
+		},
+	})
+
+	initResp := postMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	// Wait for the backend tool to appear in tools/list (confirms injection completed).
+	require.Eventually(t, func() bool {
+		for _, n := range listToolNames(t, ts.URL, sessionID) {
+			if n == sharedName {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 20*time.Millisecond,
+		"backend tool should appear in tools/list")
+
+	toolNames := listToolNames(t, ts.URL, sessionID)
+	assert.Contains(t, toolNames, sharedName,
+		"backend tool should still be registered despite the name conflict")
+
+	// Exactly one tool should have the shared name — the composite was skipped.
+	count := 0
+	for _, n := range toolNames {
+		if n == sharedName {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count,
+		"only the backend tool should be registered; the conflicting composite tool must be skipped")
+
+	// Backend tool must remain callable after conflict detection.
+	toolResp := postMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      sharedName,
+			"arguments": map[string]any{},
+		},
+	}, sessionID)
+	defer toolResp.Body.Close()
+	respBody, err := io.ReadAll(toolResp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, toolResp.StatusCode,
+		"backend tool call should succeed after conflict detection; body: %s", string(respBody))
+}
+
+// TestIntegration_SessionManagementV2_OptimizerMode verifies that when an optimizer
+// factory is configured with SessionManagementV2, tools/list exposes only
+// find_tool and call_tool (the optimizer wraps all backend tools).
+func TestIntegration_SessionManagementV2_OptimizerMode(t *testing.T) {
+	t.Parallel()
+
+	testTool := vmcp.Tool{Name: "test-tool", Description: "a test tool"}
+	factory := newV2FakeFactory([]vmcp.Tool{testTool})
+
+	ts := buildV2ServerWithOptions(t, factory, v2ServerOptions{
+		optimizerFactory: func(_ context.Context, _ []mcpsdk.ServerTool) (optimizer.Optimizer, error) {
+			return &fakeV2Optimizer{}, nil
+		},
+	})
+
+	initResp := postMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	// Poll until find_tool appears, confirming optimizer tools were injected.
+	require.Eventually(t, func() bool {
+		for _, n := range listToolNames(t, ts.URL, sessionID) {
+			if n == "find_tool" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 20*time.Millisecond,
+		"find_tool should appear in tools/list when optimizer is configured")
+
+	toolNames := listToolNames(t, ts.URL, sessionID)
+	assert.Contains(t, toolNames, "find_tool", "find_tool must be exposed in optimizer mode")
+	assert.Contains(t, toolNames, "call_tool", "call_tool must be exposed in optimizer mode")
+	// The raw backend tool must not be directly visible — the optimizer wraps it.
+	assert.NotContains(t, toolNames, "test-tool",
+		"backend tools must not be directly exposed in optimizer mode")
+	assert.Len(t, toolNames, 2,
+		"only find_tool and call_tool should be exposed in optimizer mode")
 }

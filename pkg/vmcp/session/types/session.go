@@ -124,6 +124,11 @@ type MultiSession interface {
 	// backend MCP server and is used to correlate vMCP sessions with backend
 	// sessions for debugging and auditing.
 	BackendSessions() map[string]string
+
+	// GetRoutingTable returns the session's routing table.
+	// Used by the discovery middleware to inject DiscoveredCapabilities into the
+	// request context so composite tool workflow steps can route backend tool calls.
+	GetRoutingTable() *vmcp.RoutingTable
 }
 
 const (

@@ -49,8 +49,8 @@ var MCPMethodToFeatureOperation = map[string]struct {
 	"resources/unsubscribe":    {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
 
 	// Discovery and capability methods - always allowed
-	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
-	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
+	"features/list": {Feature: "", Operation: ""}, // Capability discovery - always allowed
+	"roots/list":    {Feature: "", Operation: ""}, // Root directory discovery
 
 	// Logging and client preferences - always allowed
 	"logging/setLevel": {Feature: "", Operation: ""}, // Client preference for server logging
@@ -218,6 +218,18 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 
 		// Handle list operations differently - allow them through but filter the response
 		if featureOp.Operation == authorizers.MCPOperationList {
+			authorized, err := a.AuthorizeWithJWTClaims(
+				r.Context(),
+				featureOp.Feature,
+				authorizers.MCPOperationList,
+				"metadata",
+				nil, // No arguments for the authorization check
+			)
+			// Handle unauthorized requests
+			if err != nil || !authorized {
+				handleUnauthorized(w, parsedRequest.ID, err)
+				return
+			}
 
 			// Create a response filtering writer to intercept and filter the response
 			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method, annotationCache)

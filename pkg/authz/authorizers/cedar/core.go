@@ -431,6 +431,42 @@ func (a *Authorizer) authorizeToolCall(
 	return a.IsAuthorized(principal, action, resource, contextMap, entities)
 }
 
+// authorizeToolRead authorizes a tool read operation.
+// This method is used when filtering a tools list response to determine
+// which tools a client is permitted to see.
+func (a *Authorizer) authorizeToolRead(
+	clientID, toolName string,
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
+) (bool, error) {
+	// Extract principal from client ID
+	principal := fmt.Sprintf("Client::%s", clientID)
+
+	// Action is to read a tool
+	action := "Action::read_tool"
+
+	// Resource is the tool being read
+	resource := fmt.Sprintf("Tool::%s", toolName)
+
+	// Create attributes for the entities
+	attributes := mergeContexts(map[string]interface{}{
+		"name":      toolName,
+		"operation": "read",
+		"feature":   "tool",
+	}, attrsMap)
+
+	// Create Cedar entities
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	if err != nil {
+		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
+	}
+
+	contextMap := mergeContexts(claimsMap, attrsMap)
+
+	// Check authorization with entities
+	return a.IsAuthorized(principal, action, resource, contextMap, entities)
+}
+
 // authorizePromptGet authorizes a prompt get operation.
 // This method is used when a client tries to get a specific prompt.
 // It checks if the client is authorized to access the prompt with the given context.
@@ -607,6 +643,10 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
 		// Use the authorizeToolCall function for tool call operations
 		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs)
+
+	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationRead:
+		// Use the authorizeToolRead function for tool read (list filtering) operations
+		return a.authorizeToolRead(clientID, resourceID, processedClaims, processedArgs)
 
 	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
 		// Use the authorizePromptGet function for prompt get operations

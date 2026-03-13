@@ -287,11 +287,11 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	// This is basically defensive programming, but for clients.
 	filteredTools := []mcp.Tool{}
 	for _, tool := range listResult.Tools {
-		// Check if the user is authorized to call this tool
+		// Check if the user is authorized to read this tool
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
 			authorizers.MCPFeatureTool,
-			authorizers.MCPOperationCall,
+			authorizers.MCPOperationRead,
 			tool.Name,
 			nil, // No arguments for the authorization check
 		)

@@ -158,6 +158,7 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 			Type: "cedar",
 			Policies: []string{
 				`permit(principal, action == Action::"list_tools", resource);`,
+				`permit(principal, action == Action::"list_prompts", resource);`,
 				`forbid(principal, action == Action::"call_tool", resource);`,
 			},
 		},

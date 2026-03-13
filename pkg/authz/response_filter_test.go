@@ -32,7 +32,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 	// Create a Cedar authorizer with specific tool permissions
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+			`permit(principal, action == Action::"read_tool", resource == Tool::"weather");`,
 			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
 			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
 		},
@@ -329,7 +329,7 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 	// The backend will return 3 tools, so filtering will shrink the response.
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+			`permit(principal, action == Action::"read_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
 	})

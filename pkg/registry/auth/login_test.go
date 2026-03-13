@@ -643,6 +643,9 @@ func TestLogout_DeletesCachedToken(t *testing.T) {
 
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
 	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), "my-token-ref").Return(nil)
+	// Derived key fallback: DeriveSecretKey(registryURL, issuer) differs from "my-token-ref".
+	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
+	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
 
 	mockCfg.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
 		fn(cfg)
@@ -667,6 +670,9 @@ func TestLogout_NoCachedRefSkipsDelete(t *testing.T) {
 	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
 
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
+	// No CachedRefreshTokenRef, but derived key fallback fires.
+	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
+	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
 
 	mockCfg.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
 
@@ -705,6 +711,10 @@ func TestLogout_UpdateConfigError(t *testing.T) {
 	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
 
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
+	// Derived key fallback fires since CachedRefreshTokenRef is empty.
+	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
+	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
+
 	mockCfg.EXPECT().UpdateConfig(gomock.Any()).Return(errors.New("write failed"))
 
 	err := Logout(context.Background(), mockCfg, mockSecrets)

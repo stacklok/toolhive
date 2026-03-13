@@ -101,15 +101,29 @@ func Logout(ctx context.Context, configProvider config.Provider, secretsProvider
 		return err
 	}
 
+	registryURL := registryURLFromConfig(cfg)
+
 	if ref := cfg.RegistryAuth.OAuth.CachedRefreshTokenRef; ref != "" {
 		if err := secretsProvider.DeleteSecret(ctx, ref); err != nil && !secrets.IsNotFoundError(err) {
 			return fmt.Errorf("deleting cached token: %w", err)
 		}
 	}
 
+	// Also attempt cleanup using the derived key as a fallback. If
+	// updateConfigTokenRef failed previously (it only logs a warning),
+	// the secret may exist under this key even when CachedRefreshTokenRef
+	// is empty or points to a different reference.
+	if cfg.RegistryAuth.OAuth.Issuer != "" {
+		derivedKey := DeriveSecretKey(registryURL, cfg.RegistryAuth.OAuth.Issuer)
+		if derivedKey != cfg.RegistryAuth.OAuth.CachedRefreshTokenRef {
+			if err := secretsProvider.DeleteSecret(ctx, derivedKey); err != nil && !secrets.IsNotFoundError(err) {
+				slog.Debug("failed to delete derived secret key", "error", err)
+			}
+		}
+	}
+
 	// Clear the persistent registry cache so authenticated data doesn't
 	// remain on disk after logout.
-	registryURL := registryURLFromConfig(cfg)
 	if err := clearRegistryCache(registryURL); err != nil {
 		slog.Debug("failed to clear registry cache", "error", err)
 	}
@@ -133,10 +147,15 @@ func validateOAuthConfig(cfg *config.Config) error {
 	return nil
 }
 
+// hasRegistryConfig reports whether any registry source is configured.
+func hasRegistryConfig(cfg *config.Config) bool {
+	return cfg.RegistryApiUrl != "" || cfg.RegistryUrl != "" || cfg.LocalRegistryPath != ""
+}
+
 // checkMissingLoginConfig inspects the current config and opts, and returns a
 // single formatted error listing every flag the user still needs to provide.
 func checkMissingLoginConfig(cfg *config.Config, opts LoginOptions) error {
-	hasRegistry := cfg.RegistryApiUrl != "" || cfg.RegistryUrl != "" || cfg.LocalRegistryPath != ""
+	hasRegistry := hasRegistryConfig(cfg)
 	hasOAuth := cfg.RegistryAuth.Type == config.RegistryAuthTypeOAuth && cfg.RegistryAuth.OAuth != nil
 
 	var missing []string
@@ -169,8 +188,7 @@ func checkMissingLoginConfig(cfg *config.Config, opts LoginOptions) error {
 // if not, attempts to save the one supplied via opts. Returns an actionable
 // error when no URL can be determined.
 func ensureRegistryURL(cfg *config.Config, configProvider config.Provider, opts LoginOptions) error {
-	hasRegistry := cfg.RegistryApiUrl != "" || cfg.RegistryUrl != "" || cfg.LocalRegistryPath != ""
-	if hasRegistry {
+	if hasRegistryConfig(cfg) {
 		return nil
 	}
 

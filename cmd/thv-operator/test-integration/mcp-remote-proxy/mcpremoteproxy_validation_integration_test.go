@@ -84,22 +84,16 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 	})
 
 	Context("Remote URL Format Validation", func() {
-		It("should set ConfigurationValid=False when remote URL has invalid scheme", func() {
-			By("creating an MCPRemoteProxy with ftp:// remote URL")
+		It("should reject creation when remote URL has invalid scheme via CRD validation", func() {
+			By("attempting to create an MCPRemoteProxy with ftp:// remote URL")
 			proxy := proxyHelper.NewRemoteProxyBuilder("test-bad-url").
 				WithRemoteURL("ftp://bad-scheme.example.com").
-				Create(proxyHelper)
+				Build()
 
-			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
-
-			By("verifying the ConfigurationValid condition")
-			statusHelper.WaitForConditionReason(
-				proxy.Name,
-				mcpv1alpha1.ConditionTypeConfigurationValid,
-				mcpv1alpha1.ConditionReasonRemoteURLInvalid,
-				MediumTimeout,
-			)
+			By("verifying the API server rejects the resource")
+			err := k8sClient.Create(testCtx, proxy)
+			Expect(err).To(HaveOccurred(), "expected CRD validation to reject ftp:// URL")
+			Expect(err.Error()).To(ContainSubstring("remoteURL"))
 		})
 	})
 

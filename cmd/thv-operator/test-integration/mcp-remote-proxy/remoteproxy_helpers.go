@@ -204,6 +204,12 @@ func (rb *RemoteProxyBuilder) WithHeaderFromSecret(
 	return rb
 }
 
+// Build returns a deep copy of the MCPRemoteProxy without creating it in the cluster.
+// Use this when testing CRD-level validation that rejects the resource at creation time.
+func (rb *RemoteProxyBuilder) Build() *mcpv1alpha1.MCPRemoteProxy {
+	return rb.proxy.DeepCopy()
+}
+
 // Create builds and creates the MCPRemoteProxy in the cluster
 func (rb *RemoteProxyBuilder) Create(h *MCPRemoteProxyTestHelper) *mcpv1alpha1.MCPRemoteProxy {
 	proxy := rb.proxy.DeepCopy()

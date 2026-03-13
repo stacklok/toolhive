@@ -54,13 +54,6 @@ func NewManager(agg aggregator.Aggregator) (Manager, error) {
 	}, nil
 }
 
-// NewManagerWithRegistry creates a new discovery manager.
-// The registry parameter is accepted for API compatibility but is no longer used
-// for caching. Discovery results are computed fresh on each request.
-func NewManagerWithRegistry(agg aggregator.Aggregator, _ vmcp.DynamicRegistry) (Manager, error) {
-	return NewManager(agg)
-}
-
 // Discover performs capability aggregation for the given backends.
 //
 // Results are computed fresh on each call — no caching is performed. New MCP

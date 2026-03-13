@@ -67,10 +67,11 @@ func createTestServer(t *testing.T) *server.Server {
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
 	srv, err := server.New(ctx, &server.Config{
-		Name:    "test-vmcp",
-		Version: "1.0.0",
-		Host:    "127.0.0.1",
-		Port:    port,
+		Name:           "test-vmcp",
+		Version:        "1.0.0",
+		Host:           "127.0.0.1",
+		Port:           port,
+		SessionFactory: newNoopMockFactory(t),
 	}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 
@@ -182,9 +183,10 @@ func TestServer_SessionManager(t *testing.T) {
 
 		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
 		srv, err := server.New(context.Background(), &server.Config{
-			Name:       "test-vmcp",
-			Version:    "1.0.0",
-			SessionTTL: 10 * time.Minute,
+			Name:           "test-vmcp",
+			Version:        "1.0.0",
+			SessionTTL:     10 * time.Minute,
+			SessionFactory: newNoopMockFactory(t),
 		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 		require.NoError(t, err)
 
@@ -206,9 +208,10 @@ func TestServer_SessionManager(t *testing.T) {
 		customTTL := 15 * time.Minute
 		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
 		srv, err := server.New(context.Background(), &server.Config{
-			Name:       "test-vmcp",
-			Version:    "1.0.0",
-			SessionTTL: customTTL,
+			Name:           "test-vmcp",
+			Version:        "1.0.0",
+			SessionTTL:     customTTL,
+			SessionFactory: newNoopMockFactory(t),
 		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 		require.NoError(t, err)
 

@@ -306,6 +306,12 @@ func createSessionFactory(
 		minRecommendedSecretLen = 32
 	)
 
+	// Build base options, conditionally including aggregator only when provided.
+	opts := []vmcpsession.MultiSessionFactoryOption{}
+	if agg != nil {
+		opts = append(opts, vmcpsession.WithAggregator(agg))
+	}
+
 	hmacSecret := os.Getenv(envKey)
 
 	if hmacSecret != "" {
@@ -319,11 +325,8 @@ func createSessionFactory(
 			)
 		}
 		slog.Info("using HMAC secret from VMCP_SESSION_HMAC_SECRET environment variable for session token binding")
-		return vmcpsession.NewSessionFactory(
-			outgoingRegistry,
-			vmcpsession.WithHMACSecret([]byte(hmacSecret)),
-			vmcpsession.WithAggregator(agg),
-		), nil
+		opts = append(opts, vmcpsession.WithHMACSecret([]byte(hmacSecret)))
+		return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
 	}
 
 	// No secret provided - check if we're in Kubernetes (production environment)
@@ -336,7 +339,7 @@ func createSessionFactory(
 
 	// Development mode: use default insecure secret with warning
 	slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
-	return vmcpsession.NewSessionFactory(outgoingRegistry, vmcpsession.WithAggregator(agg)), nil
+	return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
 }
 
 // runServe implements the serve command logic
@@ -526,15 +529,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
-	// Create session factory only when SessionManagementV2 is enabled.
-	// nil means "unset" which defaults to true; explicit *false opts out.
-	sessionManagementV2 := cfg.Operational.SessionManagementV2 == nil || *cfg.Operational.SessionManagementV2
-	var sessionFactory vmcpsession.MultiSessionFactory
-	if sessionManagementV2 {
-		sessionFactory, err = createSessionFactory(outgoingRegistry, agg)
-		if err != nil {
-			return err
-		}
+	sessionFactory, err := createSessionFactory(outgoingRegistry, agg)
+	if err != nil {
+		return err
 	}
 
 	serverCfg := &vmcpserver.Config{
@@ -553,7 +550,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
-		SessionManagementV2:     sessionManagementV2,
 		SessionFactory:          sessionFactory,
 	}
 
@@ -575,55 +571,4 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Start server (blocks until shutdown signal)
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
-}
-
-// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-// It may be removed in a future cleanup or used for startup-time capability caching.
-//
-//nolint:unused // Unused until we implement startup aggregation or caching
-func aggregateCapabilities(
-	ctx context.Context,
-	agg aggregator.Aggregator,
-	backends []vmcp.Backend,
-) (*aggregator.AggregatedCapabilities, error) {
-	slog.Info("aggregating capabilities from backends")
-
-	if len(backends) > 0 {
-		aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		capabilities, err := agg.AggregateCapabilities(aggCtx, backends)
-		if err != nil {
-			return nil, fmt.Errorf("failed to aggregate capabilities: %w", err)
-		}
-
-		slog.Info(fmt.Sprintf("Aggregated %d tools, %d resources, %d prompts from %d backends",
-			capabilities.Metadata.ToolCount,
-			capabilities.Metadata.ResourceCount,
-			capabilities.Metadata.PromptCount,
-			capabilities.Metadata.BackendCount))
-
-		return capabilities, nil
-	}
-
-	// No backends available - create empty capabilities
-	slog.Warn("no backends available - starting with empty capabilities")
-	return &aggregator.AggregatedCapabilities{
-		Tools:     []vmcp.Tool{},
-		Resources: []vmcp.Resource{},
-		Prompts:   []vmcp.Prompt{},
-		RoutingTable: &vmcp.RoutingTable{
-			Tools:     make(map[string]*vmcp.BackendTarget),
-			Resources: make(map[string]*vmcp.BackendTarget),
-			Prompts:   make(map[string]*vmcp.BackendTarget),
-		},
-		Metadata: &aggregator.AggregationMetadata{
-			BackendCount:  0,
-			ToolCount:     0,
-			ResourceCount: 0,
-			PromptCount:   0,
-		},
-	}, nil
 }

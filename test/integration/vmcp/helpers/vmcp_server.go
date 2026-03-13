@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 // NewBackend creates a test backend with sensible defaults.
@@ -173,6 +174,11 @@ func NewVMCPServer(
 	// Create immutable backend registry for tests (backends don't change during test execution)
 	backendRegistry := vmcptypes.NewImmutableRegistry(backends)
 
+	// Create session factory with the same aggregator so tool names in the
+	// session routing table are consistent with the server's conflict-resolution
+	// strategy (e.g. prefix format applied by the aggregator).
+	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, vmcpsession.WithAggregator(agg))
+
 	// Create vMCP server with test-specific defaults
 	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
 		Name:              "test-vmcp",
@@ -181,6 +187,7 @@ func NewVMCPServer(
 		Port:              getFreePort(tb), // Get a random available port for parallel test execution
 		AuthMiddleware:    auth.AnonymousMiddleware,
 		TelemetryProvider: config.telemetryProvider,
+		SessionFactory:    sessionFactory,
 	}, rtr, backendClient, discoveryMgr, backendRegistry, config.workflowDefs)
 	require.NoError(tb, err, "failed to create vMCP server")
 

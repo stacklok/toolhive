@@ -277,12 +277,8 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
-	// Mount HMAC secret when SessionManagementV2 is enabled (nil = unset = default true).
-	// Skip only when explicitly set to false.
-	op := vmcp.Spec.Config.Operational
-	if op == nil || op.SessionManagementV2 == nil || *op.SessionManagementV2 {
-		env = append(env, r.buildHMACSecretEnvVar(vmcp))
-	}
+	// Always mount HMAC secret for session token binding.
+	env = append(env, r.buildHMACSecretEnvVar(vmcp))
 
 	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
 	// following the same pattern of mounting from Kubernetes Secrets as environment variables.

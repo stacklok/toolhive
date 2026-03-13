@@ -387,6 +387,21 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
+	// Clean up session on DELETE so the transparent proxy's session manager
+	// doesn't hold references until TTL expiry (#4062).
+	// Remove on 2xx (successful termination) and 404 (upstream already
+	// considers the session gone), since in both cases keeping a local
+	// reference would only waste memory.
+	if req.Method == http.MethodDelete &&
+		(resp.StatusCode >= 200 && resp.StatusCode < 300 || resp.StatusCode == http.StatusNotFound) {
+		if sid := req.Header.Get("Mcp-Session-Id"); sid != "" {
+			if err := t.p.sessionManager.Delete(sid); err != nil {
+				slog.Debug("failed to delete session from transparent proxy",
+					"session_id", sid, "error", err)
+			}
+		}
+	}
+
 	if resp.StatusCode == http.StatusOK {
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")
@@ -472,6 +487,13 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
 			pr.SetXForwarded()
+
+			// Stash the original inbound request in the outbound request's
+			// context so that ModifyResponse (SSE response processor) can
+			// read the client's real headers instead of the auto-injected
+			// X-Forwarded-* values that SetXForwarded() wrote to pr.Out.
+			ctx := InboundRequestToContext(pr.Out.Context(), pr.In)
+			pr.Out = pr.Out.WithContext(ctx)
 
 			// Rewrite path to the remote server's path when configured.
 			// When the remote URL has a path (e.g., /v2/mcp), the target URI only

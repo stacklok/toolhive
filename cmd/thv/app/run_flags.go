@@ -562,6 +562,14 @@ func buildRunnerConfig(
 		imageMetadata = md
 	}
 
+	// Extract registry proxy port from remote server metadata when CLI flag is not set
+	var registryProxyPort int
+	if runFlags.ProxyPort == 0 {
+		if remoteMd, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteMd != nil {
+			registryProxyPort = remoteMd.ProxyPort
+		}
+	}
+
 	// Build default options
 	opts := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(rt),
@@ -606,6 +614,11 @@ func buildRunnerConfig(
 		return nil, err
 	}
 	opts = append(opts, remoteHeaderOpts...)
+
+	// Use registry proxy port for remote servers if CLI flag is not set
+	if registryProxyPort > 0 {
+		opts = append(opts, runner.WithRegistryProxyPort(registryProxyPort))
+	}
 
 	// Configure runtime options
 	runtimeOpts := configureRuntimeOptions(runFlags)

@@ -5,10 +5,13 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"slices"
 	"time"
@@ -62,6 +65,26 @@ type RedisConfig struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+
+	// TLS configures TLS for connections to the Redis/Valkey master.
+	// When nil, master connections are plaintext.
+	TLS *RedisTLSConfig
+
+	// SentinelTLS configures TLS for connections to Sentinel instances.
+	// When nil, sentinel connections are plaintext (no fallback to TLS config).
+	SentinelTLS *RedisTLSConfig
+}
+
+// RedisTLSConfig holds TLS configuration for Redis connections.
+// Presence of this struct enables TLS for the connection type.
+type RedisTLSConfig struct {
+	// InsecureSkipVerify skips certificate verification.
+	// Use for self-signed certificates (e.g., sentinel emulators).
+	InsecureSkipVerify bool
+
+	// CACert is the PEM-encoded CA certificate for verifying the server.
+	// When empty, the system root CAs are used.
+	CACert []byte
 }
 
 // SentinelConfig contains Redis Sentinel configuration.
@@ -99,6 +122,84 @@ type storedSession struct {
 	Session           json.RawMessage     `json:"session"`
 }
 
+// buildTLSConfig creates a *tls.Config from a RedisTLSConfig.
+// Returns an error if a CA certificate is provided but cannot be parsed.
+func buildTLSConfig(cfg *RedisTLSConfig) (*tls.Config, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	tc := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // G402: configurable per-deployment
+	}
+	if len(cfg.CACert) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(cfg.CACert) {
+			return nil, fmt.Errorf("failed to parse CA certificate PEM data")
+		}
+		tc.RootCAs = pool
+	}
+	return tc, nil
+}
+
+// newTLSDialer returns a dialer function that applies different TLS configs for
+// master vs sentinel connections. When masterTLS is nil, master connections use
+// plaintext. When sentinelTLS is nil, sentinel connections use plaintext.
+// This is needed because go-redis applies a single TLSConfig to all connections.
+func newTLSDialer(
+	masterTLS, sentinelTLS *tls.Config,
+	sentinelAddrs []string,
+	timeout time.Duration,
+) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(_ context.Context, network, addr string) (net.Conn, error) {
+		d := &net.Dialer{Timeout: timeout}
+		isSentinel := slices.Contains(sentinelAddrs, addr)
+
+		var tlsCfg *tls.Config
+		if isSentinel {
+			tlsCfg = sentinelTLS
+		} else {
+			tlsCfg = masterTLS
+		}
+
+		if tlsCfg == nil {
+			return d.Dial(network, addr)
+		}
+		return tls.DialWithDialer(d, network, addr, tlsCfg)
+	}
+}
+
+// configureTLSDialer sets up a custom dialer on the FailoverOptions when either
+// master or sentinel TLS is enabled. go-redis applies a single TLSConfig to both
+// sentinel and master connections, so when they need different treatment we install
+// a custom dialer that selects the right config per target address.
+func configureTLSDialer(opts *redis.FailoverOptions, masterCfg, sentinelCfg *RedisTLSConfig) error {
+	if masterCfg == nil && sentinelCfg == nil {
+		return nil
+	}
+
+	var masterTLS *tls.Config
+	if masterCfg != nil {
+		var err error
+		masterTLS, err = buildTLSConfig(masterCfg)
+		if err != nil {
+			return fmt.Errorf("master TLS config: %w", err)
+		}
+	}
+
+	var sentinelTLS *tls.Config
+	if sentinelCfg != nil {
+		var err error
+		sentinelTLS, err = buildTLSConfig(sentinelCfg)
+		if err != nil {
+			return fmt.Errorf("sentinel TLS config: %w", err)
+		}
+	}
+
+	opts.Dialer = newTLSDialer(masterTLS, sentinelTLS, opts.SentinelAddrs, opts.DialTimeout)
+	return nil
+}
+
 // NewRedisStorage creates Redis-backed storage with Sentinel failover support.
 // Returns error if configuration validation fails or connection cannot be established.
 func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error) {
@@ -117,7 +218,7 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		cfg.WriteTimeout = DefaultWriteTimeout
 	}
 
-	client := redis.NewFailoverClient(&redis.FailoverOptions{
+	opts := &redis.FailoverOptions{
 		MasterName:    cfg.SentinelConfig.MasterName,
 		SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
 		DB:            cfg.SentinelConfig.DB,
@@ -126,7 +227,14 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		DialTimeout:   cfg.DialTimeout,
 		ReadTimeout:   cfg.ReadTimeout,
 		WriteTimeout:  cfg.WriteTimeout,
-	})
+	}
+
+	// Configure TLS dialer if either master or sentinel TLS is enabled.
+	if err := configureTLSDialer(opts, cfg.TLS, cfg.SentinelTLS); err != nil {
+		return nil, err
+	}
+
+	client := redis.NewFailoverClient(opts)
 
 	// Test connection
 	if err := client.Ping(ctx).Err(); err != nil {
@@ -240,7 +348,7 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		Public:        client.IsPublic(),
 	}
 
-	data, err := json.Marshal(stored)
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return fmt.Errorf("failed to marshal client: %w", err)
 	}
@@ -760,16 +868,18 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		ClientID:        tokens.ClientID,
 	}
 
-	data, err := json.Marshal(stored)
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to marshal upstream tokens: %w", err)
 	}
 
-	ttl := DefaultAccessTokenTTL
+	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
+	// survives in storage for transparent token refresh by the middleware.
+	ttl := DefaultAccessTokenTTL + DefaultRefreshTokenTTL
 	if !tokens.ExpiresAt.IsZero() {
-		ttl = time.Until(tokens.ExpiresAt)
+		ttl = time.Until(tokens.ExpiresAt) + DefaultRefreshTokenTTL
 		if ttl < 0 {
-			ttl = DefaultAccessTokenTTL
+			ttl = DefaultRefreshTokenTTL
 		}
 	}
 
@@ -841,14 +951,13 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) 
 	// stores 0 for zero time. Skip the expiry check in this case since Redis TTL
 	// handles the actual expiration.
 	var expiresAt time.Time
+	var expired bool
 	if stored.ExpiresAt != 0 {
 		expiresAt = time.Unix(stored.ExpiresAt, 0)
-		if time.Now().After(expiresAt) {
-			return nil, ErrExpired
-		}
+		expired = time.Now().After(expiresAt)
 	}
 
-	return &UpstreamTokens{
+	tokens := &UpstreamTokens{
 		ProviderID:      stored.ProviderID,
 		AccessToken:     stored.AccessToken,
 		RefreshToken:    stored.RefreshToken,
@@ -857,7 +966,14 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) 
 		UserID:          stored.UserID,
 		UpstreamSubject: stored.UpstreamSubject,
 		ClientID:        stored.ClientID,
-	}, nil
+	}
+
+	// Return tokens along with ErrExpired so callers can use the refresh token
+	if expired {
+		return tokens, ErrExpired
+	}
+
+	return tokens, nil
 }
 
 // DeleteUpstreamTokens removes the upstream IDP tokens for a session.
@@ -932,7 +1048,7 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		CreatedAt:            pending.CreatedAt.Unix(),
 	}
 
-	data, err := json.Marshal(stored)
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return fmt.Errorf("failed to marshal pending authorization: %w", err)
 	}
@@ -1021,7 +1137,7 @@ func (s *RedisStorage) CreateUser(ctx context.Context, user *User) error {
 		UpdatedAt: user.UpdatedAt.Unix(),
 	}
 
-	data, err := json.Marshal(stored)
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return fmt.Errorf("failed to marshal user: %w", err)
 	}
@@ -1153,7 +1269,7 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 		LastUsedAt:      identity.LastUsedAt.Unix(),
 	}
 
-	data, err := json.Marshal(stored)
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return fmt.Errorf("failed to marshal identity: %w", err)
 	}

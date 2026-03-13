@@ -17,7 +17,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle", "e2e"), func() {
+var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "workloads", "lifecycle", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server

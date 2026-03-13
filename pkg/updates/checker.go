@@ -211,6 +211,7 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 	}
 	defer lockfile.ReleaseTrackedLock(lockPath, lockFile)
 
+	//nolint:gosec // G703 - path from trusted app config directory
 	if err := os.WriteFile(d.updateFilePath, updatedData, 0600); err != nil {
 		return fmt.Errorf("failed to write updated file: %w", err)
 	}

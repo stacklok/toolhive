@@ -52,6 +52,9 @@ type runConfigBuilder struct {
 	// Store ports separately for proper validation
 	port       int
 	targetPort int
+	// registryProxyPort is the proxy port from the registry metadata (remote servers).
+	// Used as a fallback when port is 0 (not set by CLI).
+	registryProxyPort int
 	// Store network mode to apply to permission profile after it's loaded
 	networkMode string
 	// Build context determines which validation and features are enabled
@@ -91,6 +94,15 @@ func WithRuntimeConfig(runtimeConfig *templates.RuntimeConfig) RunConfigBuilderO
 func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.RemoteURL = remoteURL
+		return nil
+	}
+}
+
+// WithRegistryProxyPort sets the proxy port from registry metadata.
+// This is used as a fallback when the CLI --proxy-port flag is not set.
+func WithRegistryProxyPort(port int) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.registryProxyPort = port
 		return nil
 	}
 }
@@ -873,6 +885,11 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 				targetPort = imageMetadata.TargetPort
 			}
 		}
+	}
+	// Use registry proxy port from remote server metadata if not set by CLI
+	if proxyPort == 0 && b.registryProxyPort > 0 {
+		slog.Debug("Using remote server registry proxy port", "port", b.registryProxyPort)
+		proxyPort = b.registryProxyPort
 	}
 	// Configure ports and target host
 	if _, err = c.WithPorts(proxyPort, targetPort); err != nil {

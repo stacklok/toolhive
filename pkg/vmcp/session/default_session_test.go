@@ -166,10 +166,10 @@ func TestDefaultSession_CallTool(t *testing.T) {
 			wantErrIs: ErrToolNotFound,
 		},
 		{
-			name:     "backend returns error",
+			name:     "backend returns error includes backend ID in message",
 			toolName: "search",
 			mockFn: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
-				return nil, errors.New("backend boom")
+				return nil, errors.New("connection refused")
 			},
 			wantErr: true,
 		},
@@ -190,6 +190,11 @@ func TestDefaultSession_CallTool(t *testing.T) {
 				require.Error(t, err)
 				if tt.wantErrIs != nil {
 					assert.ErrorIs(t, err, tt.wantErrIs)
+				}
+				// Backend errors must identify the backend by ID.
+				if tt.mockFn != nil {
+					assert.Contains(t, err.Error(), "b1", "error must identify the backend")
+					assert.Contains(t, err.Error(), "request failure")
 				}
 				return
 			}
@@ -1123,4 +1128,206 @@ func TestMakeSessionWithID_InvalidIDReturnsError(t *testing.T) {
 	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, true, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid character")
+}
+
+// ---------------------------------------------------------------------------
+// Backend crash resilience (issue #3875)
+// ---------------------------------------------------------------------------
+
+// buildMultiBackendSession creates a defaultMultiSession with two backends
+// so crash-resilience tests can verify that one backend failing does not affect
+// the other and that error messages identify the failing backend by ID.
+func buildMultiBackendSession(
+	t *testing.T,
+	connA, connB internalbk.Session,
+) *defaultMultiSession {
+	t.Helper()
+
+	targetA := &vmcp.BackendTarget{WorkloadID: "backend-a", WorkloadName: "backend-a", BaseURL: "http://a:9999"}
+	targetB := &vmcp.BackendTarget{WorkloadID: "backend-b", WorkloadName: "backend-b", BaseURL: "http://b:9999"}
+
+	rt := &vmcp.RoutingTable{
+		Tools: map[string]*vmcp.BackendTarget{
+			"tool-a": targetA,
+			"tool-b": targetB,
+		},
+		Resources: make(map[string]*vmcp.BackendTarget),
+		Prompts:   make(map[string]*vmcp.BackendTarget),
+	}
+
+	return &defaultMultiSession{
+		Session: transportsession.NewStreamableSession("test-multi-session"),
+		connections: map[string]internalbk.Session{
+			"backend-a": connA,
+			"backend-b": connB,
+		},
+		routingTable:    rt,
+		tools:           []vmcp.Tool{{Name: "tool-a", BackendID: "backend-a"}, {Name: "tool-b", BackendID: "backend-b"}},
+		backendSessions: map[string]string{"backend-a": "sess-a", "backend-b": "sess-b"},
+		queue:           newAdmissionQueue(),
+	}
+}
+
+func TestDefaultSession_BackendCrashResilience(t *testing.T) {
+	t.Parallel()
+
+	crashErr := errors.New("connection reset by peer")
+
+	t.Run("context cancellation is wrapped with backend ID and unwrappable", func(t *testing.T) {
+		t.Parallel()
+
+		conn := &mockConnectedBackend{
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				return nil, context.Canceled
+			},
+		}
+		sess := buildTestSession(t, "b1", conn,
+			[]vmcp.Tool{{Name: "search", BackendID: "b1"}},
+			nil, nil,
+		)
+
+		_, err := sess.CallTool(context.Background(), nil, "search", nil, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Contains(t, err.Error(), "b1")
+		assert.Contains(t, err.Error(), "request failure")
+	})
+
+	t.Run("deadline exceeded is wrapped with backend ID and unwrappable", func(t *testing.T) {
+		t.Parallel()
+
+		conn := &mockConnectedBackend{
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				return nil, context.DeadlineExceeded
+			},
+		}
+		sess := buildTestSession(t, "b1", conn,
+			[]vmcp.Tool{{Name: "search", BackendID: "b1"}},
+			nil, nil,
+		)
+
+		_, err := sess.CallTool(context.Background(), nil, "search", nil, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Contains(t, err.Error(), "b1")
+		assert.Contains(t, err.Error(), "request failure")
+	})
+
+	t.Run("ReadResource error includes backend ID and wraps original cause", func(t *testing.T) {
+		t.Parallel()
+
+		sentinel := errors.New("read: connection reset by peer")
+		conn := &mockConnectedBackend{
+			readResourceFunc: func(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
+				return nil, sentinel
+			},
+		}
+		sess := buildTestSession(t, "b1", conn,
+			nil,
+			[]vmcp.Resource{{URI: "file://data", BackendID: "b1"}},
+			nil,
+		)
+
+		_, err := sess.ReadResource(context.Background(), nil, "file://data")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "b1", "error must identify the backend")
+		assert.Contains(t, err.Error(), "request failure")
+		assert.ErrorIs(t, err, sentinel, "original error must be unwrappable via errors.Is")
+	})
+
+	t.Run("GetPrompt error includes backend ID and wraps original cause", func(t *testing.T) {
+		t.Parallel()
+
+		sentinel := errors.New("EOF")
+		conn := &mockConnectedBackend{
+			getPromptFunc: func(_ context.Context, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+				return nil, sentinel
+			},
+		}
+		sess := buildTestSession(t, "b1", conn,
+			nil, nil,
+			[]vmcp.Prompt{{Name: "greet", BackendID: "b1"}},
+		)
+
+		_, err := sess.GetPrompt(context.Background(), nil, "greet", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "b1", "error must identify the backend")
+		assert.Contains(t, err.Error(), "request failure")
+		assert.ErrorIs(t, err, sentinel, "original error must be unwrappable via errors.Is")
+	})
+
+	t.Run("single backend crash does not affect healthy backend", func(t *testing.T) {
+		t.Parallel()
+
+		crashingA := &mockConnectedBackend{
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				return nil, crashErr
+			},
+		}
+		healthyB := &mockConnectedBackend{
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "ok"}}}, nil
+			},
+		}
+		sess := buildMultiBackendSession(t, crashingA, healthyB)
+
+		// tool-a (backend-a) crashes — error must identify backend-a.
+		_, err := sess.CallTool(context.Background(), nil, "tool-a", nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backend-a", "error must identify the failing backend")
+		assert.Contains(t, err.Error(), "request failure")
+
+		// tool-b (backend-b) must still work.
+		result, err := sess.CallTool(context.Background(), nil, "tool-b", nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", result.Content[0].Text)
+	})
+
+	t.Run("session remains active when all backends fail", func(t *testing.T) {
+		t.Parallel()
+
+		crashingA := &mockConnectedBackend{
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				return nil, crashErr
+			},
+		}
+		crashingB := &mockConnectedBackend{
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				return nil, crashErr
+			},
+		}
+		sess := buildMultiBackendSession(t, crashingA, crashingB)
+
+		_, errA := sess.CallTool(context.Background(), nil, "tool-a", nil, nil)
+		require.Error(t, errA)
+		assert.Contains(t, errA.Error(), "backend-a")
+
+		_, errB := sess.CallTool(context.Background(), nil, "tool-b", nil, nil)
+		require.Error(t, errB)
+		assert.Contains(t, errB.Error(), "backend-b")
+
+		// Session must still be open (not closed) — Close() should succeed cleanly.
+		require.NoError(t, sess.Close())
+	})
+
+	t.Run("error message wraps original cause", func(t *testing.T) {
+		t.Parallel()
+
+		sentinel := errors.New("dial tcp: connection refused")
+		conn := &mockConnectedBackend{
+			callToolFunc: func(_ context.Context, _ string, _, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				return nil, sentinel
+			},
+		}
+		sess := buildTestSession(t, "b1", conn,
+			[]vmcp.Tool{{Name: "search", BackendID: "b1"}},
+			nil, nil,
+		)
+
+		_, err := sess.CallTool(context.Background(), nil, "search", nil, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, sentinel, "original error must be unwrappable via errors.Is")
+		assert.Contains(t, err.Error(), "b1")
+		assert.Contains(t, err.Error(), "request failure")
+	})
 }

@@ -220,7 +220,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	}
 
 	// Start a goroutine to handle container exit
-	go t.handleContainerExit(ctx)
+	go t.handleContainerExit(ctx) //nolint:gosec // G118 - background goroutine manages container lifecycle, outlives request
 
 	return nil
 }

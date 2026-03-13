@@ -1,0 +1,210 @@
+# Example: Advanced VirtualMCPServer with Explicit Optimizer Configuration
+#
+# This example demonstrates a VirtualMCPServer with ALL optimizer and
+# EmbeddingServer configuration options explicitly set, suitable as a
+# reference for production tuning.
+#
+# Unlike vmcp_optimizer_quickstart.yaml (which relies on auto-configuration),
+# this example:
+# - Explicitly specifies every EmbeddingServer field (model, image, port, replicas, resources, etc.)
+# - Explicitly configures the optimizer block with tuned search parameters
+# - Adds PodTemplateSpec customization for both EmbeddingServer and VirtualMCPServer
+# - Adds resource overrides for EmbeddingServer sub-resources
+#
+# This example creates:
+# 1. An MCPGroup to organize backends
+# 2. A yardstick MCPServer backend
+# 3. A fetch MCPServer backend (URL fetching)
+# 4. An EmbeddingServer with all fields explicitly configured
+# 5. A VirtualMCPServer with explicit optimizer config and embeddingServerRef
+#
+# Apple Silicon (ARM64) Note:
+#   The embedding server image (ghcr.io/huggingface/text-embeddings-inference:cpu-latest)
+#   is amd64-only. On ARM64 Macs with Kind, you must pre-load it:
+#     docker pull --platform linux/amd64 ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+#     kind load docker-image ghcr.io/huggingface/text-embeddings-inference:cpu-latest --name toolhive
+#   ARM64 support is tracked in: https://github.com/huggingface/text-embeddings-inference/pull/827
+#
+# Usage:
+#   kubectl apply -f vmcp_optimizer_all_options.yaml
+
+---
+# Step 1: Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: optimizer-services
+  namespace: default
+spec:
+  description: Backend services for advanced optimizer-enabled VirtualMCPServer
+
+---
+# Step 2: Create MCPServer backend - yardstick
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 3: Create MCPServer backend - fetch (URL content fetching)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 4: Create EmbeddingServer with all fields explicitly configured
+#
+# IMPORTANT: Images must come from HuggingFace Text Embeddings Inference (TEI):
+#   https://github.com/huggingface/text-embeddings-inference
+# Available tags include :cpu-latest, :latest (GPU), and version-pinned variants.
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: optimizer-embedding
+  namespace: default
+spec:
+  # Model: HuggingFace embedding model identifier
+  model: "BAAI/bge-small-en-v1.5"
+
+  # Image: Must be from HuggingFace TEI (https://github.com/huggingface/text-embeddings-inference)
+  image: "ghcr.io/huggingface/text-embeddings-inference:cpu-latest"
+
+  # Port the embedding service listens on (1-65535)
+  port: 8080
+
+  # Image pull policy: Always, Never, or IfNotPresent
+  imagePullPolicy: IfNotPresent
+
+  # Number of embedding server replicas for high availability
+  replicas: 2
+
+  # Compute resources for the embedding server container
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+
+  # Persistent storage for downloaded models (faster restarts, reduced network)
+  modelCache:
+    enabled: true
+    size: "10Gi"
+    accessMode: ReadWriteOnce
+    # storageClassName: "fast-ssd"  # Uncomment to use a specific storage class
+
+  # Additional arguments passed to the TEI server binary
+  args:
+    - "--max-batch-requests"
+    - "64"
+
+  # Environment variables for the embedding container
+  env:
+    - name: LOG_LEVEL
+      value: "info"
+
+---
+# Step 5: Create VirtualMCPServer with explicit optimizer configuration
+#
+# This example sets every optimizer field explicitly rather than relying on
+# auto-configuration. The embeddingServerRef still resolves the URL from the
+# EmbeddingServer status, but the optimizer tuning parameters are user-controlled.
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: optimizer-vmcp
+  namespace: default
+spec:
+  config:
+    groupRef: optimizer-services
+
+    # Aggregation: prefix strategy prevents tool name conflicts
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+
+    # Explicit optimizer configuration (all tuning fields shown)
+    optimizer:
+      # Timeout for HTTP requests to the embedding service (default: 30s)
+      embeddingServiceTimeout: 45s
+
+      # Maximum tools returned per search query (range: 1-50, default: 8)
+      maxToolsToReturn: 10
+
+      # Balance between semantic and keyword search (0.0=keyword, 1.0=semantic, default: 0.5)
+      # 0.7 favors semantic (meaning-based) matching over keyword matching
+      hybridSearchSemanticRatio: "0.7"
+
+      # Maximum cosine distance for semantic results (0=identical, 2=unrelated, default: 1.0)
+      # 0.8 is stricter, filtering out less relevant matches
+      semanticDistanceThreshold: "0.8"
+
+    # Operational settings
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+
+  # Reference to the EmbeddingServer created above.
+  # The operator resolves the EmbeddingServer's Status.URL and populates
+  # optimizer.embeddingService automatically. Since we set an explicit optimizer
+  # config above, the operator uses our values instead of auto-populating defaults.
+  embeddingServerRef:
+    name: optimizer-embedding
+
+  # Incoming authentication (client -> vMCP)
+  # Anonymous auth for easy local testing
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  # Outgoing authentication (vMCP -> backends)
+  # Discovered mode auto-discovers auth from backend MCPServers
+  outgoingAuth:
+    source: discovered
+
+  # PodTemplateSpec for the vMCP pod itself
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: vmcp
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

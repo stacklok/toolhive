@@ -1455,9 +1455,26 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	return r.Status().Update(ctx, m)
 }
 
+// deleteIfExists fetches a Kubernetes object by name and namespace, and deletes it if it exists.
+// Returns nil if the object was not found or was successfully deleted.
+func (r *MCPServerReconciler) deleteIfExists(ctx context.Context, obj client.Object, name, namespace, kind string) error {
+	ctxLogger := log.FromContext(ctx)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, obj)
+	if err == nil {
+		if delErr := r.Delete(ctx, obj); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete %s %s: %w", kind, name, delErr)
+		}
+		ctxLogger.V(1).Info("deleted resource", "kind", kind, "name", name, "namespace", namespace)
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check %s %s: %w", kind, name, err)
+	}
+	return nil
+}
+
 // finalizeMCPServer performs the finalizer logic for the MCPServer
 func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
-	ctxLogger := log.FromContext(ctx)
 	// Update the MCPServer status
 	m.Status.Phase = mcpv1alpha1.MCPServerPhaseTerminating
 	m.Status.Message = "MCP server is being terminated"
@@ -1465,47 +1482,21 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 		return err
 	}
 
-	// Step 2: Attempt to delete associated StatefulSet by name
-	sts := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, sts)
-	if err == nil {
-		// StatefulSet found, delete it
-		if delErr := r.Delete(ctx, sts); delErr != nil && !errors.IsNotFound(delErr) {
-			return fmt.Errorf("failed to delete StatefulSet %s: %w", m.Name, delErr)
-		}
-	} else if !errors.IsNotFound(err) {
-		// Unexpected error (not just "not found")
-		return fmt.Errorf("failed to get StatefulSet %s: %w", m.Name, err)
+	// Delete associated StatefulSet
+	if err := r.deleteIfExists(ctx, &appsv1.StatefulSet{}, m.Name, m.Namespace, "StatefulSet"); err != nil {
+		return err
 	}
 
-	// Step 3: Attempt to delete associated service by name
-	svc := &corev1.Service{}
-	serviceName := fmt.Sprintf("mcp-%s-headless", m.Name)
-	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: m.Namespace}, svc)
-	if err == nil {
-		if delErr := r.Delete(ctx, svc); delErr != nil && !errors.IsNotFound(delErr) {
-			return fmt.Errorf("failed to delete Service %s: %w", serviceName, delErr)
-		}
-	} else if !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to check Service %s: %w", serviceName, err)
+	// Delete associated services
+	if err := r.deleteIfExists(ctx, &corev1.Service{}, fmt.Sprintf("mcp-%s-headless", m.Name), m.Namespace, "Service"); err != nil {
+		return err
+	}
+	if err := r.deleteIfExists(ctx, &corev1.Service{}, fmt.Sprintf("mcp-%s", m.Name), m.Namespace, "Service"); err != nil {
+		return err
 	}
 
-	// Step 4: Delete associated RunConfig ConfigMap
-	runConfigName := fmt.Sprintf("%s-runconfig", m.Name)
-	runConfigMap := &corev1.ConfigMap{}
-	err = r.Get(ctx, types.NamespacedName{Name: runConfigName, Namespace: m.Namespace}, runConfigMap)
-	if err == nil {
-		if delErr := r.Delete(ctx, runConfigMap); delErr != nil && !errors.IsNotFound(delErr) {
-			return fmt.Errorf("failed to delete RunConfig ConfigMap %s: %w", runConfigName, delErr)
-		}
-		ctxLogger.Info("Deleted RunConfig ConfigMap", "name", runConfigName, "namespace", m.Namespace)
-	} else if !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to check RunConfig ConfigMap %s: %w", runConfigName, err)
-	}
-
-	// The owner references will automatically delete the deployment and service
-	// when the MCPServer is deleted, so we don't need to do anything here.
-	return nil
+	// Delete associated RunConfig ConfigMap
+	return r.deleteIfExists(ctx, &corev1.ConfigMap{}, fmt.Sprintf("%s-runconfig", m.Name), m.Namespace, "ConfigMap")
 }
 
 // deploymentNeedsUpdate checks if the deployment needs to be updated

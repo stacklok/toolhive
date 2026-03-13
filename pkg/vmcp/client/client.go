@@ -467,10 +467,12 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	// Convert tools
 	for i, tool := range toolsResp.Tools {
 		capabilities.Tools[i] = vmcp.Tool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: conversion.ConvertToolInputSchema(tool.InputSchema),
-			BackendID:   target.WorkloadID,
+			Name:         tool.Name,
+			Description:  tool.Description,
+			InputSchema:  conversion.ConvertToolInputSchema(tool.InputSchema),
+			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),
+			Annotations:  conversion.ConvertToolAnnotations(tool.Annotations),
+			BackendID:    target.WorkloadID,
 		}
 	}
 

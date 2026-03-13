@@ -31,6 +31,11 @@ type Server interface {
 	// Returns nil if no upstream IDP is configured.
 	IDPTokenStorage() storage.UpstreamTokenStorage
 
+	// UpstreamTokenRefresher returns a refresher that can refresh expired upstream
+	// tokens using the upstream provider's refresh token grant.
+	// Returns nil if no upstream IDP is configured.
+	UpstreamTokenRefresher() storage.UpstreamTokenRefresher
+
 	// Close releases resources held by the server.
 	Close() error
 }

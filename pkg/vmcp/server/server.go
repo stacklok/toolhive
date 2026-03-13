@@ -107,8 +107,14 @@ type Config struct {
 
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
 	// If nil, no authentication is required.
-	// This should be a composed middleware chain (e.g., TokenValidator → IdentityMiddleware).
+	// This should be a composed middleware chain (e.g., TokenValidator + MCP parser).
 	AuthMiddleware func(http.Handler) http.Handler
+
+	// AuthzMiddleware is the optional authorization middleware to apply AFTER discovery.
+	// Split from AuthMiddleware so authz can access discovered tool annotations
+	// injected by the annotation enrichment middleware.
+	// If nil, no authorization is performed.
+	AuthzMiddleware func(http.Handler) http.Handler
 
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
@@ -286,6 +292,7 @@ func New(
 		cfg.Name,
 		cfg.Version,
 		server.WithToolCapabilities(false), // We'll register tools dynamically
+		server.WithResourceCapabilities(false, false), // We'll register resources dynamically
 		server.WithLogging(),
 		server.WithHooks(hooks),
 	)
@@ -495,8 +502,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → audit → discovery → backend enrichment → MCP parsing → telemetry
-	// Execution order: telemetry → MCP parsing → backend enrichment → discovery → audit → auth → handler
+	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
+	//   authz → backend-enrichment → MCP-parsing → telemetry
+	// Execution order: recovery → header-val → auth+parser → audit →
+	//   discovery → annotation-enrichment → authz → backend-enrichment →
+	//   MCP-parsing → telemetry → handler
 
 	var mcpHandler http.Handler = streamableServer
 
@@ -508,6 +518,10 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
 	// This runs before telemetry so that recordMetrics can label metrics with the
 	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
+	// Note: ParsingMiddleware is also composed inside the auth middleware (for audit/authz).
+	// The second application here is a no-op because the context already holds a
+	// ParsedMCPRequest; it exists only so the telemetry layer works correctly even
+	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
 	// Apply backend enrichment middleware if audit is configured
@@ -515,6 +529,21 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.AuditConfig != nil {
 		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
 		slog.Info("backend enrichment middleware enabled for audit events")
+	}
+
+	// Apply authorization middleware if configured (runs AFTER discovery in execution).
+	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
+	if s.config.AuthzMiddleware != nil {
+		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
+		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
+	}
+
+	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).
+	// Reads tool annotations from discovered capabilities and injects them into the
+	// request context so the authz middleware can make annotation-aware decisions.
+	if s.config.AuthzMiddleware != nil {
+		mcpHandler = AnnotationEnrichmentMiddleware(mcpHandler)
+		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
 	}
 
 	// Apply discovery middleware (runs after audit/auth middleware)
@@ -917,17 +946,25 @@ func (s *Server) Ready() <-chan struct{} {
 //
 // Note: SDK v0.43.0 does not support per-session prompts yet.
 func (s *Server) injectCapabilities(
-	sessionID string,
+	session server.ClientSession,
 	caps *aggregator.AggregatedCapabilities,
 ) error {
-	// Convert and add backend tools
+	sessionID := session.SessionID()
+
+	// Convert and add backend tools directly to the session.
+	// We use SetSessionTools instead of MCPServer.AddSessionTools to avoid
+	// sending notifications through the session's notification channel.
+	// During session registration the notification-listening goroutine from
+	// the initialize request has already exited, so notifications would
+	// accumulate as stale messages and corrupt the next HTTP response
+	// (race between SSE upgrade and JSON response).
 	if len(caps.Tools) > 0 {
 		sdkTools, err := s.capabilityAdapter.ToSDKTools(caps.Tools)
 		if err != nil {
 			return fmt.Errorf("failed to convert tools to SDK format: %w", err)
 		}
 
-		if err := s.mcpServer.AddSessionTools(sessionID, sdkTools...); err != nil {
+		if err := setSessionToolsDirect(session, sdkTools); err != nil {
 			return fmt.Errorf("failed to add session tools: %w", err)
 		}
 		slog.Debug("added session backend tools", "session_id", sessionID, "count", len(sdkTools))
@@ -940,17 +977,17 @@ func (s *Server) injectCapabilities(
 			return fmt.Errorf("failed to convert composite tools to SDK format: %w", err)
 		}
 
-		if err := s.mcpServer.AddSessionTools(sessionID, compositeSDKTools...); err != nil {
+		if err := setSessionToolsDirect(session, compositeSDKTools); err != nil {
 			return fmt.Errorf("failed to add session composite tools: %w", err)
 		}
 		slog.Debug("added session composite tools", "session_id", sessionID, "count", len(compositeSDKTools))
 	}
 
-	// Convert and add resources
+	// Convert and add resources directly to the session (same rationale as tools above).
 	if len(caps.Resources) > 0 {
 		sdkResources := s.capabilityAdapter.ToSDKResources(caps.Resources)
 
-		if err := s.mcpServer.AddSessionResources(sessionID, sdkResources...); err != nil {
+		if err := setSessionResourcesDirect(session, sdkResources); err != nil {
 			return fmt.Errorf("failed to add session resources: %w", err)
 		}
 		slog.Debug("added session resources", "session_id", sessionID, "count", len(sdkResources))
@@ -981,6 +1018,52 @@ func (s *Server) injectCapabilities(
 	return nil
 }
 
+// setSessionToolsDirect sets tools directly on the session via the SessionWithTools
+// interface, bypassing MCPServer.AddSessionTools. This avoids sending notifications
+// through the session's notification channel, which would accumulate as stale
+// messages during session registration (the notification goroutine from the
+// initialize request has already exited at that point).
+func setSessionToolsDirect(session server.ClientSession, tools []server.ServerTool) error {
+	sessionWithTools, ok := session.(server.SessionWithTools)
+	if !ok {
+		return fmt.Errorf("session does not support per-session tools")
+	}
+
+	// Merge with any existing tools (preserves tools set by earlier calls)
+	existing := sessionWithTools.GetSessionTools()
+	toolMap := make(map[string]server.ServerTool, len(existing)+len(tools))
+	for k, v := range existing {
+		toolMap[k] = v
+	}
+	for _, tool := range tools {
+		toolMap[tool.Tool.Name] = tool
+	}
+	sessionWithTools.SetSessionTools(toolMap)
+	return nil
+}
+
+// setSessionResourcesDirect sets resources directly on the session via the
+// SessionWithResources interface, bypassing MCPServer.AddSessionResources.
+// See setSessionToolsDirect for rationale.
+func setSessionResourcesDirect(session server.ClientSession, resources []server.ServerResource) error {
+	sessionWithResources, ok := session.(server.SessionWithResources)
+	if !ok {
+		return fmt.Errorf("session does not support per-session resources")
+	}
+
+	// Merge with any existing resources
+	existing := sessionWithResources.GetSessionResources()
+	resourceMap := make(map[string]server.ServerResource, len(existing)+len(resources))
+	for k, v := range existing {
+		resourceMap[k] = v
+	}
+	for _, resource := range resources {
+		resourceMap[resource.Resource.URI] = resource
+	}
+	sessionWithResources.SetSessionResources(resourceMap)
+	return nil
+}
+
 // injectOptimizerCapabilities injects all capabilities into the session, including optimizer tools.
 // It should not be called if not in optimizer mode and replaces injectCapabilities.
 //
@@ -994,9 +1077,10 @@ func (s *Server) injectCapabilities(
 // 2. Injects the optimizer capabilities into the session
 func (s *Server) injectOptimizerCapabilities(
 	ctx context.Context,
-	sessionID string,
+	session server.ClientSession,
 	caps *aggregator.AggregatedCapabilities,
 ) error {
+	sessionID := session.SessionID()
 
 	tools := append([]vmcp.Tool{}, caps.Tools...)
 	tools = append(tools, caps.CompositeTools...)
@@ -1027,19 +1111,19 @@ func (s *Server) injectOptimizerCapabilities(
 	capsCopy.Tools = nil
 	capsCopy.CompositeTools = nil
 
-	// Manually add the optimizer tools, since we don't want to bother converting
-	// optimizer tools into `vmcp.Tool`s as well.
-	if err := s.mcpServer.AddSessionTools(sessionID, optimizerTools...); err != nil {
+	// Set optimizer tools directly on the session to avoid stale notifications.
+	// See injectCapabilities for full rationale.
+	if err := setSessionToolsDirect(session, optimizerTools); err != nil {
 		return fmt.Errorf("failed to add session tools: %w", err)
 	}
 
-	return s.injectCapabilities(sessionID, &capsCopy)
+	return s.injectCapabilities(session, &capsCopy)
 }
 
 // handleSessionRegistration processes a new MCP session registration.
 //
 // This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
-// fires BEFORE session registration), allowing us to safely call AddSessionTools/AddSessionResources.
+// fires BEFORE session registration), allowing us to safely set session capabilities.
 //
 // The discovery middleware populates capabilities in the context, which is available here.
 // We inject them into the SDK session and store the routing table for subsequent requests.
@@ -1132,7 +1216,7 @@ func (s *Server) handleSessionRegistration(
 		"prompt_count", len(caps.RoutingTable.Prompts))
 
 	if s.config.OptimizerFactory != nil {
-		err = s.injectOptimizerCapabilities(ctx, sessionID, caps)
+		err = s.injectOptimizerCapabilities(ctx, session, caps)
 		if err != nil {
 			slog.Error("failed to create optimizer tools",
 				"error", err,
@@ -1143,8 +1227,8 @@ func (s *Server) handleSessionRegistration(
 		return
 	}
 
-	// Inject capabilities into SDK session
-	if err := s.injectCapabilities(sessionID, caps); err != nil {
+	// Inject capabilities into SDK session directly (bypassing notification channel)
+	if err := s.injectCapabilities(session, caps); err != nil {
 		slog.Error("failed to inject session capabilities",
 			"error", err,
 			"session_id", sessionID)
@@ -1229,7 +1313,9 @@ func (s *Server) handleSessionRegistrationV2(ctx context.Context, session server
 	}
 
 	if len(adaptedTools) > 0 {
-		if retErr = s.mcpServer.AddSessionTools(sessionID, adaptedTools...); retErr != nil {
+		// Set tools directly on the session to avoid stale notifications.
+		// See injectCapabilities for full rationale.
+		if retErr = setSessionToolsDirect(session, adaptedTools); retErr != nil {
 			slog.Error("failed to add session tools",
 				"session_id", sessionID,
 				"error", retErr)

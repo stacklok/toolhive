@@ -1218,9 +1218,29 @@
                     "sentinel_config": {
                         "$ref": "#/components/schemas/storage.SentinelRunConfig"
                     },
+                    "sentinel_tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
                     "write_timeout": {
                         "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisTLSRunConfig": {
+                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
+                "properties": {
+                    "ca_cert_file": {
+                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify skips certificate verification.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"

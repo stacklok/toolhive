@@ -7,6 +7,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"maps"
 	"reflect"
@@ -23,6 +25,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -100,7 +103,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
@@ -592,6 +595,12 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		return ctrl.Result{}, err
 	}
 
+	// Ensure HMAC secret for session token binding (Session Management V2)
+	if err := r.ensureHMACSecret(ctx, vmcp); err != nil {
+		ctxLogger.Error(err, "Failed to ensure HMAC secret")
+		return ctrl.Result{}, err
+	}
+
 	// Ensure vmcp Config ConfigMap
 	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
@@ -658,6 +667,161 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 		Owner:     vmcp,
 	})
 	return err
+}
+
+// ensureHMACSecret ensures the HMAC secret exists for session token binding.
+// This secret is required when Session Management V2 is enabled.
+// The secret is automatically generated with a cryptographically secure random value.
+//
+// The secret follows this naming pattern: {vmcp-name}-hmac-secret
+// and contains a single key: hmac-secret with a 32-byte base64-encoded random value.
+func (r *VirtualMCPServerReconciler) ensureHMACSecret(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Only ensure HMAC secret if Session Management V2 is enabled
+	if vmcp.Spec.Config.Operational == nil || !vmcp.Spec.Config.Operational.SessionManagementV2 {
+		return nil
+	}
+
+	secretName := fmt.Sprintf("%s-hmac-secret", vmcp.Name)
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: vmcp.Namespace}, secret)
+
+	if errors.IsNotFound(err) {
+		// Generate a cryptographically secure 32-byte HMAC secret
+		hmacSecret, err := generateHMACSecret()
+		if err != nil {
+			ctxLogger.Error(err, "Failed to generate HMAC secret")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "HMACSecretGenerationFailed",
+					"Failed to generate HMAC secret: %v", err)
+			}
+			return fmt.Errorf("failed to generate HMAC secret: %w", err)
+		}
+
+		newSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: vmcp.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":       "virtualmcpserver",
+					"app.kubernetes.io/instance":   vmcp.Name,
+					"app.kubernetes.io/component":  "session-security",
+					"app.kubernetes.io/managed-by": "toolhive-operator",
+				},
+				Annotations: map[string]string{
+					"toolhive.stacklok.dev/purpose": "hmac-secret-for-session-token-binding",
+				},
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: map[string][]byte{
+				"hmac-secret": []byte(hmacSecret),
+			},
+		}
+
+		// Set VirtualMCPServer as owner so secret is automatically deleted when VMCP is deleted
+		if err := controllerutil.SetControllerReference(vmcp, newSecret, r.Scheme); err != nil {
+			ctxLogger.Error(err, "Failed to set controller reference for HMAC secret")
+			return fmt.Errorf("failed to set controller reference: %w", err)
+		}
+
+		ctxLogger.Info("Creating HMAC secret for session token binding", "Secret.Name", secretName)
+		if err := r.Create(ctx, newSecret); err != nil {
+			ctxLogger.Error(err, "Failed to create HMAC secret")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "HMACSecretCreationFailed",
+					"Failed to create HMAC secret: %v", err)
+			}
+			return fmt.Errorf("failed to create HMAC secret: %w", err)
+		}
+
+		// Record success event
+		if r.Recorder != nil {
+			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "HMACSecretCreated",
+				"HMAC secret created for session token binding")
+		}
+		return nil
+	} else if err != nil {
+		ctxLogger.Error(err, "Failed to get HMAC secret")
+		return fmt.Errorf("failed to get HMAC secret: %w", err)
+	}
+
+	// Secret exists - validate ownership and structure before accepting it
+	if err := r.validateHMACSecret(ctx, vmcp, secret); err != nil {
+		ctxLogger.Error(err, "Existing HMAC secret is invalid", "Secret.Name", secretName)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "HMACSecretValidationFailed",
+				"Existing HMAC secret validation failed: %v", err)
+		}
+		return fmt.Errorf("existing HMAC secret validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateHMACSecret validates that an existing HMAC secret has the correct ownership,
+// structure, and content. This prevents accepting stale, malformed, or attacker-controlled
+// secrets that could weaken session token signing or cause pod startup failures.
+func (*VirtualMCPServerReconciler) validateHMACSecret(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	secret *corev1.Secret,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Verify the secret is owned by this VirtualMCPServer
+	// This prevents accepting secrets created by other actors
+	isOwned := false
+	for _, ownerRef := range secret.OwnerReferences {
+		if ownerRef.UID == vmcp.UID &&
+			ownerRef.Kind == "VirtualMCPServer" &&
+			ownerRef.Name == vmcp.Name {
+			isOwned = true
+			break
+		}
+	}
+	if !isOwned {
+		return fmt.Errorf("secret is not owned by VirtualMCPServer %s/%s", vmcp.Namespace, vmcp.Name)
+	}
+
+	// Verify the hmac-secret key exists
+	hmacSecretData, exists := secret.Data["hmac-secret"]
+	if !exists {
+		return fmt.Errorf("secret missing required 'hmac-secret' key")
+	}
+
+	// Verify it's valid base64 and decodes to exactly 32 bytes
+	hmacSecretBase64 := string(hmacSecretData)
+	if hmacSecretBase64 == "" {
+		return fmt.Errorf("hmac-secret is empty")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(hmacSecretBase64)
+	if err != nil {
+		return fmt.Errorf("hmac-secret is not valid base64: %w", err)
+	}
+
+	if len(decoded) != 32 {
+		return fmt.Errorf("hmac-secret must be exactly 32 bytes, got %d bytes", len(decoded))
+	}
+
+	// Verify it's not all zeros (would indicate a weak/predictable key)
+	allZeros := true
+	for _, b := range decoded {
+		if b != 0 {
+			allZeros = false
+			break
+		}
+	}
+	if allZeros {
+		return fmt.Errorf("hmac-secret is all zeros (weak key)")
+	}
+
+	ctxLogger.V(1).Info("HMAC secret validation passed", "Secret.Name", secret.Name)
+	return nil
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.
@@ -2367,4 +2531,19 @@ func setAuthConfigConditions(
 	// Note: We don't modify the overall AuthConfigured condition here because
 	// auth config errors are non-fatal. The system can continue operating with
 	// the auth configs that are valid.
+}
+
+// generateHMACSecret generates a cryptographically secure 32-byte HMAC secret
+// encoded as base64. This secret is used for session token binding in Session Management V2.
+//
+// Returns a base64-encoded string suitable for use as VMCP_SESSION_HMAC_SECRET.
+func generateHMACSecret() (string, error) {
+	// Generate 32 bytes of cryptographically secure random data
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+
+	// Encode as base64 for safe storage and environment variable use
+	return base64.StdEncoding.EncodeToString(secret), nil
 }

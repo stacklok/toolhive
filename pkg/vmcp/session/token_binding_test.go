@@ -5,81 +5,17 @@ package session
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	internalbk "github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
-
-var (
-	// Test HMAC secret and salt for consistent test results
-	testSecret    = []byte("test-secret")
-	testTokenSalt = []byte("test-salt-123456") // 16 bytes
-)
-
-// ---------------------------------------------------------------------------
-// HashToken
-// ---------------------------------------------------------------------------
-
-func TestHashToken(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		token string
-		want  string
-	}{
-		{
-			name:  "empty token returns anonymous sentinel",
-			token: "",
-			want:  "",
-		},
-		{
-			name:  "non-empty token returns HMAC-SHA256 hex",
-			token: "my-bearer-token",
-			want: func() string {
-				h := hmac.New(sha256.New, testSecret)
-				h.Write(testTokenSalt)
-				h.Write([]byte("my-bearer-token"))
-				return hex.EncodeToString(h.Sum(nil))
-			}(),
-		},
-		{
-			name:  "different tokens produce different hashes",
-			token: "another-token",
-			want: func() string {
-				h := hmac.New(sha256.New, testSecret)
-				h.Write(testTokenSalt)
-				h.Write([]byte("another-token"))
-				return hex.EncodeToString(h.Sum(nil))
-			}(),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, security.HashToken(tt.token, testSecret, testTokenSalt))
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Note: ComputeTokenHash was removed
-// ---------------------------------------------------------------------------
-// ComputeTokenHash was removed because HMAC-SHA256 hashing requires
-// per-session salt, so token hashes can't be computed without session context.
-// Use HashToken(token, secret, salt) directly with session-specific parameters.
 
 // ---------------------------------------------------------------------------
 // makeSession stores token hash in metadata
@@ -97,7 +33,7 @@ func nilBackendConnector() backendConnector {
 func TestMakeSession_StoresTokenHash(t *testing.T) {
 	t.Parallel()
 
-	t.Run("authenticated session stores HMAC-SHA256 hash and salt", func(t *testing.T) {
+	t.Run("authenticated session stores HMAC-SHA256 hash", func(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "test-bearer-token"
@@ -116,9 +52,9 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		// Raw token must never appear in metadata.
 		assert.NotEqual(t, rawToken, storedHash)
 
-		// Verify salt is stored
-		storedSalt, saltPresent := sess.GetMetadata()[MetadataKeyTokenSalt]
-		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set")
+		// Verify salt is stored for authenticated sessions
+		storedSalt, saltPresent := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set for authenticated sessions")
 		assert.NotEmpty(t, storedSalt, "Salt must be non-empty for authenticated session")
 	})
 
@@ -134,9 +70,9 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		require.True(t, present, "MetadataKeyTokenHash must be set even for anonymous sessions")
 		assert.Empty(t, storedHash, "anonymous session must store empty sentinel")
 
-		// Anonymous sessions should not have salt
-		storedSalt := sess.GetMetadata()[MetadataKeyTokenSalt]
-		assert.Empty(t, storedSalt, "anonymous session should not have salt")
+		// Salt must not be present for anonymous sessions
+		storedSalt := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		assert.Empty(t, storedSalt, "anonymous session must not store a salt")
 	})
 
 	t.Run("identity with empty token stores empty sentinel", func(t *testing.T) {
@@ -151,12 +87,12 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		storedHash := sess.GetMetadata()[MetadataKeyTokenHash]
 		assert.Empty(t, storedHash, "empty-token identity must store empty sentinel")
 
-		// Empty token should not have salt
-		storedSalt := sess.GetMetadata()[MetadataKeyTokenSalt]
-		assert.Empty(t, storedSalt, "empty-token identity should not have salt")
+		// Salt must not be present for empty-token (anonymous) sessions
+		storedSalt := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		assert.Empty(t, storedSalt, "empty-token identity must not store a salt")
 	})
 
-	t.Run("MakeSessionWithID also stores token hash and salt", func(t *testing.T) {
+	t.Run("MakeSessionWithID also stores token hash", func(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "id-specific-token"
@@ -173,202 +109,11 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		assert.NotEmpty(t, storedHash, "Token hash must be non-empty")
 		assert.Len(t, storedHash, 64, "HMAC-SHA256 hex-encoded hash should be 64 characters")
 
-		// Verify salt
-		storedSalt, saltPresent := sess.GetMetadata()[MetadataKeyTokenSalt]
-		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set")
-		assert.NotEmpty(t, storedSalt, "Salt must be non-empty")
+		// Verify salt is stored for authenticated sessions
+		storedSalt, saltPresent := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+		require.True(t, saltPresent, "MetadataKeyTokenSalt must be set for authenticated sessions")
+		assert.NotEmpty(t, storedSalt, "Salt must be non-empty for authenticated session")
 	})
-}
-
-// ---------------------------------------------------------------------------
-// Caller validation
-// ---------------------------------------------------------------------------
-
-// TestValidateCaller_EdgeCases tests edge cases in caller validation logic.
-func TestValidateCaller_EdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		allowAnonymous bool
-		boundTokenHash string
-		caller         *auth.Identity
-		wantErr        error
-	}{
-		{
-			name:           "anonymous session with nil caller",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         nil,
-			wantErr:        nil, // Should succeed
-		},
-		{
-			name:           "anonymous session rejects caller with token",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         &auth.Identity{Subject: "user", Token: "token"},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller, // Prevent session upgrade attack
-		},
-		{
-			name:           "bound session with nil caller",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         nil,
-			wantErr:        sessiontypes.ErrNilCaller,
-		},
-		{
-			name:           "bound session with matching token",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: "correct-token"},
-			wantErr:        nil, // Should succeed
-		},
-		{
-			name:           "bound session with wrong token",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: "wrong-token"},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller,
-		},
-		{
-			name:           "bound session with empty token in identity",
-			allowAnonymous: false,
-			boundTokenHash: security.HashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: ""},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller,
-		},
-		{
-			name:           "anonymous session accepts caller with empty token",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         &auth.Identity{Subject: "user", Token: ""},
-			wantErr:        nil, // Empty token is equivalent to no token
-		},
-		{
-			name:           "misconfigured bound session with empty hash rejects empty token",
-			allowAnonymous: false,
-			boundTokenHash: "", // Misconfiguration: bound but no hash
-			caller:         &auth.Identity{Subject: "user", Token: ""},
-			wantErr:        sessiontypes.ErrSessionOwnerUnknown, // Fail closed
-		},
-		{
-			name:           "misconfigured bound session with empty hash rejects nil caller",
-			allowAnonymous: false,
-			boundTokenHash: "", // Misconfiguration: bound but no hash
-			caller:         nil,
-			wantErr:        sessiontypes.ErrNilCaller, // Nil check happens first
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create a base session
-			baseSession := &defaultMultiSession{
-				Session: transportsession.NewStreamableSession("test-session"),
-			}
-
-			// Wrap with decorator that has the test configuration
-			decorator := &HijackPreventionDecorator{
-				MultiSession:   baseSession,
-				allowAnonymous: tt.allowAnonymous,
-				boundTokenHash: tt.boundTokenHash,
-				tokenSalt:      testTokenSalt,
-				hmacSecret:     testSecret,
-			}
-
-			// Test validateCaller directly on the decorator
-			err := decorator.validateCaller(tt.caller)
-
-			if tt.wantErr != nil {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, tt.wantErr)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
-}
-
-// TestConcurrentValidation tests that validateCaller is safe for concurrent use.
-func TestConcurrentValidation(t *testing.T) {
-	t.Parallel()
-
-	baseSession := &defaultMultiSession{
-		Session: transportsession.NewStreamableSession("test-session"),
-	}
-
-	decorator := &HijackPreventionDecorator{
-		MultiSession:   baseSession,
-		allowAnonymous: false,
-		boundTokenHash: security.HashToken("test-token", testSecret, testTokenSalt),
-		tokenSalt:      testTokenSalt,
-		hmacSecret:     testSecret,
-	}
-
-	// Run validation concurrently from multiple goroutines
-	// Collect errors in channel to avoid race conditions with testify assertions
-	const numGoroutines = 10
-	errChan := make(chan error, numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func() {
-			caller := &auth.Identity{Subject: "user", Token: "test-token"}
-			err := decorator.validateCaller(caller)
-			errChan <- err
-		}()
-	}
-
-	// Wait for all goroutines and assert in main goroutine (thread-safe)
-	for i := 0; i < numGoroutines; i++ {
-		err := <-errChan
-		assert.NoError(t, err, "concurrent validation should succeed")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ShouldAllowAnonymous helper
-// ---------------------------------------------------------------------------
-
-// TestShouldAllowAnonymous_EdgeCases tests the ShouldAllowAnonymous helper.
-func TestShouldAllowAnonymous_EdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		identity *auth.Identity
-		want     bool
-	}{
-		{
-			name:     "nil identity",
-			identity: nil,
-			want:     true,
-		},
-		{
-			name:     "non-nil identity with token",
-			identity: &auth.Identity{Subject: "user", Token: "token"},
-			want:     false,
-		},
-		{
-			name:     "non-nil identity with empty token",
-			identity: &auth.Identity{Subject: "user", Token: ""},
-			want:     true, // Empty token is treated as anonymous
-		},
-		{
-			name:     "non-nil identity with empty subject",
-			identity: &auth.Identity{Subject: "", Token: "token"},
-			want:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := ShouldAllowAnonymous(tt.identity)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -492,16 +237,22 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 	require.NotEmpty(t, hash2, "second session should have token hash")
 
 	// Both sessions should still be able to validate the original token
-	// (proving the factory used the original secret, not the modified one)
-	decorator1, ok := sess1.(*HijackPreventionDecorator)
-	require.True(t, ok, "session should be HijackPreventionDecorator")
-	err = decorator1.validateCaller(identity)
-	assert.NoError(t, err, "first session should validate original token despite external modification")
+	// (proving the factory used the original secret, not the modified one).
+	// We verify this by calling a session method that requires authentication.
+	ctx := context.Background()
 
-	decorator2, ok := sess2.(*HijackPreventionDecorator)
-	require.True(t, ok, "session should be HijackPreventionDecorator")
-	err = decorator2.validateCaller(identity)
-	assert.NoError(t, err, "second session should validate original token despite external modification")
+	// First session should accept the original token and fail with ErrToolNotFound,
+	// not an auth error (which would indicate the secret was corrupted)
+	_, err = sess1.CallTool(ctx, identity, "nonexistent-tool", nil, nil)
+	assert.ErrorIs(t, err, ErrToolNotFound, "should fail with tool not found error")
+	assert.False(t, errors.Is(err, sessiontypes.ErrUnauthorizedCaller),
+		"should not be an auth error (would indicate corrupted secret)")
+
+	// Second session should also accept the original token and fail with ErrToolNotFound
+	_, err = sess2.CallTool(ctx, identity, "nonexistent-tool", nil, nil)
+	assert.ErrorIs(t, err, ErrToolNotFound, "should fail with tool not found error")
+	assert.False(t, errors.Is(err, sessiontypes.ErrUnauthorizedCaller),
+		"should not be an auth error (would indicate corrupted secret)")
 }
 
 // TestWithHMACSecret_RejectsEmptySecret verifies that WithHMACSecret rejects

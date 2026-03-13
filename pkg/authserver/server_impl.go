@@ -161,6 +161,18 @@ func (s *server) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return s.storage
 }
 
+// UpstreamTokenRefresher returns a refresher that wraps the upstream provider
+// and storage to transparently refresh expired upstream tokens.
+func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
+	if s.upstreamIDP == nil {
+		return nil
+	}
+	return &upstreamTokenRefresher{
+		provider: s.upstreamIDP,
+		storage:  s.storage,
+	}
+}
+
 // Close releases resources held by the server.
 func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")

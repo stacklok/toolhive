@@ -1,0 +1,388 @@
+# Example: VirtualMCPServer with Optimizer Auto-Configured via EmbeddingServerRef
+#
+# This example demonstrates a VirtualMCPServer that automatically enables the
+# optimizer feature by simply referencing an EmbeddingServer. When embeddingServerRef
+# is set without an explicit optimizer config, the operator auto-populates the
+# optimizer with default values and emits an "OptimizerAutoConfigured" event.
+#
+# When the optimizer is enabled, vMCP exposes only two meta-tools to clients:
+#   - find_tool: Search for tools by natural language description
+#   - call_tool: Invoke a discovered tool by name
+#
+# This reduces token usage for LLMs by avoiding sending all tool definitions
+# upfront, instead allowing on-demand tool discovery.
+#
+# The purpose of this example is to showcase the optimizer's capabilities when
+# ingesting a large number of tools from diverse MCP servers. With the
+# configuration below, all backends will start and respond to tool listing,
+# making every tool searchable via find_tool.
+#
+# Note on call_tool: Some backends require valid API keys or tokens to actually
+# execute tools. Without proper credentials, find_tool will work (tool discovery)
+# but call_tool may fail for those backends. Backends that work fully out of the
+# box with no extra configuration: yardstick, fetch, osv, everything.
+#
+# This example creates:
+# 1. An MCPGroup to organize backends
+# 2. Multiple MCPServer backends:
+#
+#    Backend      | Description                        | Tools
+#    -------------|------------------------------------|---------
+#    yardstick    | Unit conversion                    |     1
+#    fetch        | URL content fetching               |     1
+#    github       | GitHub API                         |    41
+#    memory       | Knowledge graph persistent memory  |     9
+#    puppeteer    | Browser automation / web scraping  |     7
+#    osv          | OSV vulnerability database         |     3
+#    terraform    | Terraform registry & workspaces    |     9
+#    playwright   | Browser automation & testing       |    22
+#    everything   | MCP reference/test server          |     8
+#    ida-pro-mcp  | IDA Pro reverse engineering        |    47
+#    pagerduty    | PagerDuty incident management      |    64
+#    -------------|------------------------------------|---------
+#    Total        |                                    |   212
+# 3. An EmbeddingServer for the optimizer (using all default values)
+# 4. A VirtualMCPServer with optimizer auto-configured via embeddingServerRef
+#
+# Apple Silicon (ARM64) Note:
+#   The embedding server image (ghcr.io/huggingface/text-embeddings-inference:cpu-latest)
+#   is amd64-only. On ARM64 Macs with Kind, you must pre-load it:
+#     docker pull --platform linux/amd64 ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+#     kind load docker-image ghcr.io/huggingface/text-embeddings-inference:cpu-latest --name toolhive
+#   ARM64 support is tracked in: https://github.com/huggingface/text-embeddings-inference/pull/827
+#
+# Prerequisites - Create secrets for MCP servers that need them:
+#
+#   # GitHub Personal Access Token (for github MCP server)
+#   # Option 1: From environment variable (recommended - avoids token in shell history)
+#   kubectl create secret generic github-token \
+#     --from-literal=token="$GITHUB_TOKEN"
+#
+#   # Option 2: From a file
+#   echo -n "ghp_YOUR_TOKEN" > /tmp/github-token.txt
+#   kubectl create secret generic github-token \
+#     --from-file=token=/tmp/github-token.txt
+#   rm /tmp/github-token.txt
+#
+#   # PagerDuty User API Key (for pagerduty MCP server)
+#   kubectl create secret generic pagerduty-token \
+#     --from-literal=token="$PAGERDUTY_USER_API_KEY"
+#
+# Usage:
+#   kubectl apply -f vmcp_optimizer_quickstart.yaml
+
+---
+# Step 1: Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: optimizer-services
+  namespace: default
+spec:
+  description: Backend services for optimizer-enabled VirtualMCPServer
+
+---
+# Step 2a: MCPServer backend - yardstick (unit conversion)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+  transport: streamable-http
+  proxyPort: 8080
+  env:
+  - name: TRANSPORT
+    value: streamable-http
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 2b: MCPServer backend - fetch (URL content fetching)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 2c: MCPServer backend - github (GitHub API interaction)
+# Requires a Kubernetes Secret named "github-token" with key "token"
+# containing a GitHub Personal Access Token:
+#   kubectl create secret generic github-token --from-literal=token=ghp_YOUR_TOKEN
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/github/github-mcp-server
+  transport: stdio
+  proxyPort: 8080
+  secrets:
+    - name: github-token
+      key: token
+      targetEnvName: GITHUB_PERSONAL_ACCESS_TOKEN
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+---
+# Step 2d: MCPServer backend - memory (knowledge graph-based persistent memory)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: memory
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: docker.io/mcp/memory
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 2e: MCPServer backend - puppeteer (browser automation and web scraping)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: puppeteer
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: docker.io/mcp/puppeteer
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+
+---
+# Step 2f: MCPServer backend - osv (OSV vulnerability database)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: osv
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/osv-mcp/server:0.0.7
+  transport: streamable-http
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 2g: MCPServer backend - terraform (Terraform registry and workspace management)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: terraform
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: docker.io/hashicorp/terraform-mcp-server:0.4.0
+  transport: streamable-http
+  proxyPort: 8080
+  env:
+  - name: TRANSPORT_MODE
+    value: streamable-http
+  - name: TRANSPORT_HOST
+    value: "0.0.0.0"
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+---
+# Step 2h: MCPServer backend - playwright (browser automation and testing)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: playwright
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: mcr.microsoft.com/playwright/mcp:v0.0.68
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+
+---
+# Step 2i: MCPServer backend - everything (MCP reference/test server)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: everything
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: docker.io/mcp/everything:latest
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 2j: MCPServer backend - ida-pro-mcp (IDA Pro reverse engineering)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: ida-pro-mcp
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stacklok/dockyard/uvx/ida-pro-mcp:1.4.0
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+---
+# Step 2k: MCPServer backend - pagerduty (PagerDuty incident management)
+# Requires a Kubernetes Secret named "pagerduty-token" with key "token"
+# containing a PagerDuty User API Key:
+#   kubectl create secret generic pagerduty-token --from-literal=token=YOUR_KEY
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: pagerduty
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp:0.12.0
+  transport: stdio
+  proxyPort: 8080
+  secrets:
+    - name: pagerduty-token
+      key: token
+      targetEnvName: PAGERDUTY_USER_API_KEY
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+---
+# Step 3: Create EmbeddingServer for the optimizer
+# All fields use kubebuilder defaults:
+#   model: BAAI/bge-small-en-v1.5
+#   image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+#   port: 8080
+#   imagePullPolicy: IfNotPresent
+#   replicas: 1
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: optimizer-embedding
+  namespace: default
+spec: {}
+
+---
+# Step 4: Create VirtualMCPServer with optimizer auto-configured
+# Note: No explicit "optimizer" config is needed. The operator detects that
+# embeddingServerRef is set, auto-populates the optimizer with default values,
+# resolves the EmbeddingServer URL, and emits an "OptimizerAutoConfigured" event.
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: optimizer-vmcp
+  namespace: default
+spec:
+  config:
+    groupRef: optimizer-services
+
+    # Aggregation: prefix strategy prevents tool name conflicts
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+
+    # No optimizer config needed — auto-configured from embeddingServerRef below.
+
+    # Operational settings
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+
+  # Incoming authentication (client -> vMCP)
+  # Anonymous auth for easy local testing
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  # Reference to a shared EmbeddingServer.
+  # When embeddingServerRef is set without an explicit optimizer config, the operator
+  # auto-populates the optimizer with default values and resolves the URL automatically.
+  embeddingServerRef:
+    name: optimizer-embedding
+
+  # Outgoing authentication (vMCP -> backends)
+  # Discovered mode auto-discovers auth from backend MCPServers
+  outgoingAuth:
+    source: discovered

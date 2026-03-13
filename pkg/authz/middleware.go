@@ -165,10 +165,19 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 // the request to proceed but intercepts the response to filter out items that the user
 // is not authorized to access based on the corresponding call/get/read policies.
 //
+// An in-memory annotation cache is maintained per middleware instance. When a
+// tools/list response passes through, tool annotations are captured. When a
+// subsequent tools/call request arrives, the cached annotations are injected into
+// the request context so that authorizers can use them for policy decisions.
+//
 // The authorizer parameter should implement the authorizers.Authorizer interface,
 // which can be created using authz.CreateMiddlewareFromConfig() or directly
 // from an authorizer package (e.g., cedar.NewCedarAuthorizer()).
 func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
+	// Cache is shared across requests for the same proxy.
+	// Populated from tools/list responses, read during tools/call.
+	annotationCache := NewAnnotationCache()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
@@ -211,7 +220,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 		if featureOp.Operation == authorizers.MCPOperationList {
 
 			// Create a response filtering writer to intercept and filter the response
-			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method)
+			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method, annotationCache)
 
 			// Call the next handler with the filtering writer
 			next.ServeHTTP(filteringWriter, r)
@@ -223,6 +232,15 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 				slog.Warn("error flushing filtered response", "error", err)
 			}
 			return
+		}
+
+		// For tools/call, look up annotations from cache and inject into context
+		// so that authorizers can use them for policy decisions.
+		if featureOp.Feature == authorizers.MCPFeatureTool && featureOp.Operation == authorizers.MCPOperationCall {
+			if ann := annotationCache.Get(parsedRequest.ResourceID); ann != nil {
+				ctx := authorizers.WithToolAnnotations(r.Context(), ann)
+				r = r.WithContext(ctx)
+			}
 		}
 
 		// For non-list operations, perform authorization using parsed data

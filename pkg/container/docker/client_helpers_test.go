@@ -151,6 +151,7 @@ func TestGeneratePortBindings_NonAuxiliaryAssignsRandomPortForZero(t *testing.T)
 
 	require.Contains(t, out, "8080/tcp")
 	require.Len(t, out["8080/tcp"], 1)
+	assert.NotEqual(t, "0", out["8080/tcp"][0].HostPort)
 	assert.Equal(t, fmt.Sprintf("%d", hostPort), out["8080/tcp"][0].HostPort)
 }
 

@@ -151,16 +151,29 @@ func (o *oauthTokenSource) buildOAuthFlowConfig(ctx context.Context) (*oauth.Con
 		callbackPort = remote.DefaultCallbackPort
 	}
 
+	scopes := ensureOfflineAccess(o.oauthCfg.Scopes)
+
 	return oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		o.oauthCfg.Issuer,
 		o.oauthCfg.ClientID,
 		"", // Public client — no client secret (PKCE is used instead)
-		o.oauthCfg.Scopes,
+		scopes,
 		true, // Always use PKCE (S256)
 		callbackPort,
 		o.oauthCfg.Audience,
 	)
+}
+
+// ensureOfflineAccess returns scopes with "offline_access" included.
+// This scope is required for the provider to return a refresh token.
+func ensureOfflineAccess(scopes []string) []string {
+	for _, s := range scopes {
+		if s == "offline_access" {
+			return scopes
+		}
+	}
+	return append(scopes[:len(scopes):len(scopes)], "offline_access")
 }
 
 // buildOAuth2Config creates an oauth2.Config for token refresh via OIDC discovery.

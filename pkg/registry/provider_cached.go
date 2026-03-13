@@ -5,7 +5,6 @@ package registry
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adrg/xdg"
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
@@ -26,7 +24,7 @@ const (
 	maxCacheFileSize      = 10 * 1024 * 1024   // 10MB per cache file
 	maxCacheAge           = 7 * 24 * time.Hour // Delete caches older than 7 days
 	maxTotalCacheSize     = 50 * 1024 * 1024   // 50MB total cache directory
-	persistentCacheSubdir = "cache"
+	persistentCacheSubdir = auth.PersistentCacheSubdir
 )
 
 // CachedAPIRegistryProvider wraps APIRegistryProvider with caching support.
@@ -71,8 +69,7 @@ func NewCachedAPIRegistryProvider(
 
 	if usePersistent {
 		// Generate cache file path based on API URL hash
-		hash := sha256.Sum256([]byte(apiURL))
-		cacheFile, err := xdg.CacheFile(fmt.Sprintf("toolhive/%s/registry-%x.json", persistentCacheSubdir, hash[:4]))
+		cacheFile, err := auth.RegistryCacheFilePath(apiURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get cache file path: %w", err)
 		}

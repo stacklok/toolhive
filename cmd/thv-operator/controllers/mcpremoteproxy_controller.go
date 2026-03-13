@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -335,26 +336,26 @@ func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *
 
 // validateSpec validates the MCPRemoteProxy spec
 func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	if proxy.Spec.RemoteURL == "" {
-		return fmt.Errorf("remoteURL is required")
-	}
-
 	// Validate external auth config if referenced
 	if proxy.Spec.ExternalAuthConfigRef != nil {
 		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 		if err != nil {
-			return fmt.Errorf("failed to validate external auth config: %w", err)
+			return r.failValidation(proxy,
+				mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
+				fmt.Errorf("failed to validate external auth config: %w", err),
+			)
 		}
 		if externalAuthConfig == nil {
-			return fmt.Errorf("referenced MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name)
+			return r.failValidation(proxy,
+				mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
+				fmt.Errorf("referenced MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name),
+			)
 		}
 	}
 
-	// Validate remote URL format
+	// Validate remote URL format (also rejects empty URLs)
 	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL); err != nil {
-		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err.Error())
-		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err.Error())
-		return err
+		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err)
 	}
 
 	// Validate OIDC issuer URL scheme
@@ -363,23 +364,17 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		if strings.Contains(err.Error(), "HTTP scheme") {
 			reason = mcpv1alpha1.ConditionReasonOIDCIssuerInsecure
 		}
-		r.recordValidationEvent(proxy, reason, err.Error())
-		setConfigurationInvalidCondition(proxy, reason, err.Error())
-		return err
+		return r.failValidation(proxy, reason, err)
 	}
 
 	// Validate JWKS URL format
 	if err := r.validateJWKSURL(proxy); err != nil {
-		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err.Error())
-		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err.Error())
-		return err
+		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err)
 	}
 
 	// Validate inline Cedar policy syntax
 	if err := r.validateAuthzPolicySyntax(proxy); err != nil {
-		r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err.Error())
-		setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err.Error())
-		return err
+		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err)
 	}
 
 	// Validate Kubernetes resource references (ConfigMaps, Secrets)
@@ -397,6 +392,14 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 	})
 
 	return nil
+}
+
+// failValidation records a validation event, sets the ConfigurationValid condition to False,
+// and returns the error. This consolidates the repeated validate → event → condition → return pattern.
+func (r *MCPRemoteProxyReconciler) failValidation(proxy *mcpv1alpha1.MCPRemoteProxy, reason string, err error) error {
+	r.recordValidationEvent(proxy, reason, err.Error())
+	setConfigurationInvalidCondition(proxy, reason, err.Error())
+	return err
 }
 
 // recordValidationEvent emits a Warning event for a validation failure.
@@ -493,9 +496,14 @@ func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 					mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
 					msg,
 				)
-				return fmt.Errorf("%s", msg)
+				return stderrors.New(msg)
 			}
-			return fmt.Errorf("failed to fetch authorization ConfigMap %q: %w", cmName, err)
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to fetch authorization ConfigMap", "name", cmName, "namespace", proxy.Namespace)
+			genericMsg := fmt.Sprintf("failed to fetch authorization ConfigMap %q", cmName)
+			r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
+			setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
+			return stderrors.New(genericMsg)
 		}
 	}
 
@@ -526,9 +534,14 @@ func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 						mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
 						msg,
 					)
-					return fmt.Errorf("%s", msg)
+					return stderrors.New(msg)
 				}
-				return fmt.Errorf("failed to fetch secret %q: %w", secretName, err)
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to fetch secret", "name", secretName, "namespace", proxy.Namespace)
+				genericMsg := fmt.Sprintf("failed to fetch secret %q for header %q", secretName, headerRef.HeaderName)
+				r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, genericMsg)
+				setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, genericMsg)
+				return stderrors.New(genericMsg)
 			}
 		}
 	}

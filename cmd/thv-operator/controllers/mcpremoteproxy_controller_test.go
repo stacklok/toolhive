@@ -87,7 +87,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errContains: "remoteURL is required",
+			errContains: "remote URL must not be empty",
 		},
 		// Note: "missing OIDC config" test removed - OIDCConfig is now a required value type
 		// with kubebuilder:validation:Required, so the API server prevents resources without it

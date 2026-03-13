@@ -57,6 +57,9 @@ func (*fakeMultiSession) Prompts() []vmcp.Prompt { return nil }
 // BackendSessions returns an empty map (not used in these tests).
 func (*fakeMultiSession) BackendSessions() map[string]string { return nil }
 
+// GetRoutingTable returns nil (not used in these tests).
+func (*fakeMultiSession) GetRoutingTable() *vmcp.RoutingTable { return nil }
+
 // CallTool records the meta argument and returns the preconfigured result / error.
 func (f *fakeMultiSession) CallTool(
 	_ context.Context, _ *auth.Identity, _ string, _ map[string]any, meta map[string]any,

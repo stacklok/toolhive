@@ -336,6 +336,25 @@ export TOOLHIVE_REMOTE_HEALTHCHECKS=true
 thv proxy --remote-url https://example.com/mcp my-remote-server
 ```
 
+### Proxy Request Timeout (Stdio Transport)
+
+**Implementation**: `pkg/transport/proxy/streamable/streamable_proxy.go:resolveRequestTimeout`
+
+The streamable HTTP proxy (used by stdio transport) has a configurable timeout for MCP requests.
+
+**Default:** 60 seconds — consistent with the [MCP SDK default](https://github.com/modelcontextprotocol/typescript-sdk/blob/b0ef89ffaf6db8b3c52cd8919e8949b0f1da9ca4/packages/core/src/shared/protocol.ts#L110).
+
+**Override:** Set `TOOLHIVE_PROXY_REQUEST_TIMEOUT` to any valid Go duration string (e.g., `2m`, `120s`). Invalid or non-positive values are ignored with a warning, and the default is used.
+
+**Usage example:**
+```bash
+# Use a 5-minute timeout for very slow MCP tools
+export TOOLHIVE_PROXY_REQUEST_TIMEOUT=5m
+thv run my-slow-server
+```
+
+**Note:** This timeout only affects the streamable HTTP proxy used with stdio transport. The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server) does not impose a request timeout.
+
 ### Kubernetes Support for Remote MCPs
 
 **Implementation**: [PR #2151](https://github.com/stacklok/toolhive/pull/2151)

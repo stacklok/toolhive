@@ -37,6 +37,8 @@ spec:
     - assert:
         file: assert-mcpserver-headless-svc.yaml
     - assert:
+        file: assert-mcpserver-svc.yaml
+    - assert:
         file: assert-mcpserver-proxy-runner-running.yaml
     - assert:
         file: assert-mcpserver-proxy-runner-svc.yaml

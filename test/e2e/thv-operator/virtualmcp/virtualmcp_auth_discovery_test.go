@@ -62,6 +62,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		timeout              = 3 * time.Minute
 		pollingInterval      = 1 * time.Second
 		mockServer           *httptest.Server
+		oidcNodePort         int32
 	)
 
 	BeforeAll(func() {
@@ -597,7 +598,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 		Expect(k8sClient.Create(ctx, oidcServerPod)).To(Succeed())
 
-		// Create a service for the OIDC server with NodePort for test client access
+		// Create a service for the OIDC server with auto-assigned NodePort
 		oidcServerService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      oidcServerServiceName,
@@ -613,12 +614,18 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 						Port:       80,
 						TargetPort: intstr.FromInt(8080),
 						Protocol:   corev1.ProtocolTCP,
-						NodePort:   30010, // Fixed NodePort for test client access
 					},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, oidcServerService)).To(Succeed())
+
+		// Read back the auto-assigned NodePort
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: oidcServerServiceName, Namespace: testNamespace,
+		}, oidcServerService)).To(Succeed())
+		oidcNodePort = oidcServerService.Spec.Ports[0].NodePort
+		Expect(oidcNodePort).NotTo(BeZero(), "Kubernetes should auto-assign a NodePort")
 
 		// Wait for the OIDC server pod to be ready (both Running and ContainersReady)
 		Eventually(func() bool {
@@ -1134,7 +1141,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 
 		// Helper function to get OIDC token from mock server via client credentials flow
 		getOIDCToken := func() string {
-			tokenURL := "http://localhost:30010/token"
+			tokenURL := fmt.Sprintf("http://localhost:%d/token", oidcNodePort)
 			resp, err := http.PostForm(tokenURL, nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer resp.Body.Close()
@@ -1195,39 +1202,27 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			By("Getting OIDC token from mock OIDC server")
 			oidcToken := getOIDCToken()
 
-			By("Starting transport and initializing connection with retries")
-			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
-			// auth middleware (OIDC validation and auth discovery) may not be fully ready
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			By("Starting transport and initializing connection with retries, waiting for expected tools")
+			// Retry MCP initialization AND tool discovery to handle timing issues where
+			// the VirtualMCPServer's auth middleware or backends may not be fully ready.
+			// Each retry creates a new session to trigger fresh backend discovery.
 			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
 
-			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute, WithHttpLoggerOption(), transport.WithHTTPBasicClient(authenticatedHTTPClient))
+			toolsToTest := []string{"backend-with-token-exchange_fetch", "backend-no-auth_fetch"}
+			tools, mcpClient := WaitForExpectedToolsWithAuth(
+				vmcpNodePort, 2*time.Minute,
+				func(tools []mcp.Tool) error {
+					return ToolsContainAll(tools, toolsToTest...)
+				},
+				WithHttpLoggerOption(), transport.WithHTTPBasicClient(authenticatedHTTPClient),
+			)
 			defer mcpClient.Close()
 
-			By("Listing tools from VirtualMCPServer")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty())
 			Expect(len(tools.Tools)).To(BeNumerically(">=", 2), "Should aggregate tools from multiple backends")
-
 			GinkgoWriter.Printf("VirtualMCPServer aggregates %d tools with discovered auth\n", len(tools.Tools))
 
 			By("Calling fetch tools from backends with different auth configurations")
-			toolsToTest := []string{"backend-with-token-exchange_fetch", "backend-no-auth_fetch"}
-
 			for _, targetToolName := range toolsToTest {
-				var toolFound bool
-				for _, tool := range tools.Tools {
-					if tool.Name == targetToolName {
-						toolFound = true
-						break
-					}
-				}
-				Expect(toolFound).To(BeTrue(), "Expected tool %s should be available", targetToolName)
-
 				toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer toolCallCancel()
 
@@ -1238,7 +1233,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
 				Expect(err).ToNot(HaveOccurred(), "Tool call should succeed: %s", targetToolName)
 				Expect(result).ToNot(BeNil())
-				GinkgoWriter.Printf("✓ Successfully called tool: %s\n", targetToolName)
+				GinkgoWriter.Printf("Successfully called tool: %s\n", targetToolName)
 			}
 		})
 

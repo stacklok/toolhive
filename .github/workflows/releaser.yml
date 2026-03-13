@@ -183,6 +183,16 @@ jobs:
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
 
+  skills-build-and-push:
+    name: Build and Publish Skills
+    needs: [ release-binaries ]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/skills-build-and-publish.yml
+    with:
+      push: true
+
   publish-helm:
     name: Publish Helm Chart
     needs: [image-build-and-push]
@@ -289,6 +299,7 @@ jobs:
       - compute-build-flags
       - release-binaries
       - image-build-and-push
+      - skills-build-and-push
       - update-docs-website
       - publish-helm
       - extract-release-actor

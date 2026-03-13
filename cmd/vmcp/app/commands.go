@@ -297,7 +297,10 @@ func discoverBackends(
 //   - Otherwise: logs warning and creates factory with default insecure secret
 //
 // Returns an error only when running in Kubernetes without a secret (fail-fast for production).
-func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcpsession.MultiSessionFactory, error) {
+func createSessionFactory(
+	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
+	agg aggregator.Aggregator,
+) (vmcpsession.MultiSessionFactory, error) {
 	const (
 		envKey                  = "VMCP_SESSION_HMAC_SECRET"
 		minRecommendedSecretLen = 32
@@ -319,6 +322,7 @@ func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcps
 		return vmcpsession.NewSessionFactory(
 			outgoingRegistry,
 			vmcpsession.WithHMACSecret([]byte(hmacSecret)),
+			vmcpsession.WithAggregator(agg),
 		), nil
 	}
 
@@ -332,7 +336,7 @@ func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcps
 
 	// Development mode: use default insecure secret with warning
 	slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
-	return vmcpsession.NewSessionFactory(outgoingRegistry), nil
+	return vmcpsession.NewSessionFactory(outgoingRegistry, vmcpsession.WithAggregator(agg)), nil
 }
 
 // runServe implements the serve command logic
@@ -451,7 +455,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type))
 
-	authMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
+	authMiddleware, authzMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
@@ -522,10 +526,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
-	// Create session factory only when SessionManagementV2 is enabled
+	// Create session factory only when SessionManagementV2 is enabled.
+	// nil means "unset" which defaults to true; explicit *false opts out.
+	sessionManagementV2 := cfg.Operational.SessionManagementV2 == nil || *cfg.Operational.SessionManagementV2
 	var sessionFactory vmcpsession.MultiSessionFactory
-	if cfg.Operational.SessionManagementV2 {
-		sessionFactory, err = createSessionFactory(outgoingRegistry)
+	if sessionManagementV2 {
+		sessionFactory, err = createSessionFactory(outgoingRegistry, agg)
 		if err != nil {
 			return err
 		}
@@ -538,6 +544,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Host:                    host,
 		Port:                    port,
 		AuthMiddleware:          authMiddleware,
+		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             cfg.Audit,
@@ -546,7 +553,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
-		SessionManagementV2:     cfg.Operational.SessionManagementV2,
+		SessionManagementV2:     sessionManagementV2,
 		SessionFactory:          sessionFactory,
 	}
 

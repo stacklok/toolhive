@@ -444,9 +444,10 @@ type OperationalConfig struct {
 	// SessionManagementV2 enables session-scoped backend client lifecycle.
 	// When true, vMCP creates real backend connections per session via MultiSessionFactory
 	// and routes tool calls directly through the session rather than the global router.
-	// Defaults to false; existing behaviour is completely unchanged when disabled.
+	// Defaults to true. Set explicitly to false to opt out.
+	// +kubebuilder:default=true
 	// +optional
-	SessionManagementV2 bool `json:"sessionManagementV2,omitempty" yaml:"sessionManagementV2,omitempty"`
+	SessionManagementV2 *bool `json:"sessionManagementV2,omitempty" yaml:"sessionManagementV2,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings.

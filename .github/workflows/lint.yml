@@ -9,7 +9,7 @@ permissions:
 jobs:
   lint-go-code:
     name: Lint Go Code
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 

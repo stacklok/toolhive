@@ -389,7 +389,10 @@ func mergeContexts(contextMaps ...map[string]interface{}) map[string]interface{}
 // authorizeToolCall authorizes a tool call operation.
 // This method is used when a client tries to call a specific tool.
 // It checks if the client is authorized to call the tool with the given context.
+// Tool annotations from the context (if present) are included as resource entity
+// attributes so Cedar policies can reference them (e.g. resource.readOnlyHint).
 func (a *Authorizer) authorizeToolCall(
+	ctx context.Context,
 	clientID, toolName string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
@@ -403,12 +406,18 @@ func (a *Authorizer) authorizeToolCall(
 	// Resource is the tool being called
 	resource := fmt.Sprintf("Tool::%s", toolName)
 
+	// Read tool annotations from context and include in resource attributes.
+	// Annotations are merged first so that the standard attributes ("name",
+	// "operation", "feature") always take precedence and cannot be overwritten
+	// by annotation keys — intentionally or accidentally.
+	annotationAttrs := authorizers.AnnotationsToMap(authorizers.ToolAnnotationsFromContext(ctx))
+
 	// Create attributes for the entities
-	attributes := mergeContexts(map[string]interface{}{
+	attributes := mergeContexts(annotationAttrs, attrsMap, map[string]interface{}{
 		"name":      toolName,
 		"operation": "call",
 		"feature":   "tool",
-	}, attrsMap)
+	})
 
 	// Create Cedar entities
 	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
@@ -597,7 +606,7 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	switch {
 	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
 		// Use the authorizeToolCall function for tool call operations
-		return a.authorizeToolCall(clientID, resourceID, processedClaims, processedArgs)
+		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs)
 
 	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
 		// Use the authorizePromptGet function for prompt get operations

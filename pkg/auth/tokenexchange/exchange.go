@@ -96,19 +96,6 @@ func (e *oAuthError) String() string {
 	return fmt.Sprintf("OAuth error %q (status %d)", e.Error, e.StatusCode)
 }
 
-// parseOAuthError attempts to parse an OAuth error response from the given response body.
-func parseOAuthError(statusCode int, body []byte) *oAuthError {
-	var oauthErr oAuthError
-	if err := json.Unmarshal(body, &oauthErr); err != nil {
-		return nil
-	}
-	if oauthErr.Error == "" {
-		return nil
-	}
-	oauthErr.StatusCode = statusCode
-	return &oauthErr
-}
-
 // defaultHTTPClient is the default HTTP client used for token exchange requests.
 var defaultHTTPClient = &http.Client{
 	Timeout: defaultHTTPTimeout,
@@ -156,8 +143,8 @@ func (r exchangeRequest) String() string {
 		r.GrantType, r.Audience, r.Scope, subjectToken, actorToken)
 }
 
-// response is used to decode the remote server response during an OAuth 2.0 token exchange.
-type response struct {
+// Response is used to decode the remote server response during an OAuth 2.0 token exchange.
+type Response struct {
 	AccessToken     string `json:"access_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 	IssuedTokenType string `json:"issued_token_type"`
 	TokenType       string `json:"token_type"`
@@ -166,8 +153,8 @@ type response struct {
 	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
-// String implements fmt.Stringer for response, redacting sensitive tokens.
-func (r response) String() string {
+// String implements fmt.Stringer for Response, redacting sensitive tokens.
+func (r Response) String() string {
 	accessToken := redactedPlaceholder
 	if r.AccessToken == "" {
 		accessToken = emptyPlaceholder
@@ -197,6 +184,15 @@ func (c clientAuthentication) String() string {
 
 	return fmt.Sprintf("clientAuthentication{ClientID: %s, ClientSecret: %s}",
 		c.ClientID, clientSecret)
+}
+
+// RawExchangeConfig holds extension fields for non-standard token exchange flows.
+type RawExchangeConfig struct {
+	// GrantTypeURN is the custom grant_type value (used by variant "raw").
+	GrantTypeURN string
+
+	// Parameters are key-value pairs interpreted by the variant handler.
+	Parameters map[string]string
 }
 
 // ExchangeConfig holds the configuration for token exchange.
@@ -229,10 +225,23 @@ type ExchangeConfig struct {
 	// HTTPClient is the HTTP client to use for token exchange requests.
 	// If nil, defaultHTTPClient will be used.
 	HTTPClient *http.Client
+
+	// Variant selects the variant handler for building the token exchange request.
+	// Empty means standard RFC 8693 token exchange.
+	Variant string
+
+	// RawConfig holds variant-specific extension configuration.
+	// Set when Variant is non-empty. The variant handler determines which fields are used.
+	RawConfig *RawExchangeConfig
+
+	// VariantRegistry is an optional override for variant handler lookup.
+	// If nil, DefaultVariantRegistry is used. Set this in tests for isolation.
+	VariantRegistry *VariantRegistry
 }
 
 // Validate checks if the ExchangeConfig contains all required fields.
 func (c *ExchangeConfig) Validate() error {
+	// TokenURL may have been resolved by variant handler in TokenSource()
 	if c.TokenURL == "" {
 		return fmt.Errorf("TokenURL is required")
 	}
@@ -241,21 +250,16 @@ func (c *ExchangeConfig) Validate() error {
 		return fmt.Errorf("SubjectTokenProvider is required")
 	}
 
-	// ClientID is optional - some token exchange endpoints (like Google STS)
-	// don't require client credentials and rely on the trust relationship
-	// configured in the identity provider (e.g., Workload Identity Federation)
-
-	// Validate and normalize SubjectTokenType if provided
-	if c.SubjectTokenType != "" {
+	// SubjectTokenType normalization only for RFC 8693
+	if c.Variant == "" && c.SubjectTokenType != "" {
 		normalized, err := NormalizeTokenType(c.SubjectTokenType)
 		if err != nil {
 			return fmt.Errorf("invalid SubjectTokenType: %w", err)
 		}
-		// Update the config with the normalized value
 		c.SubjectTokenType = normalized
 	}
 
-	// Validate URL format
+	// URL format validation
 	_, err := url.Parse(c.TokenURL)
 	if err != nil {
 		return fmt.Errorf("TokenURL is not a valid URL: %w", err)
@@ -264,10 +268,44 @@ func (c *ExchangeConfig) Validate() error {
 	return nil
 }
 
+// TokenSource returns an oauth2.TokenSource that performs token exchange.
+// It resolves the variant handler and optional token URL at construction time.
+// Returns an error if the configured Variant has no registered handler.
+// The returned tokenSource holds a shallow copy of the config, so subsequent
+// mutations to the original ExchangeConfig do not affect in-flight exchanges.
+func (c *ExchangeConfig) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	handler, err := c.resolveHandler()
+	if err != nil {
+		return nil, err
+	}
+
+	// Work on a copy so the caller's config is not mutated.
+	confCopy := *c
+
+	// Allow the variant handler to resolve the token URL if not explicitly set.
+	if confCopy.TokenURL == "" {
+		resolved, resolveErr := handler.ResolveTokenURL(&confCopy)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("variant handler failed to resolve token URL: %w", resolveErr)
+		}
+		if resolved == "" {
+			return nil, fmt.Errorf("variant %q did not resolve a token URL and none was configured", confCopy.Variant)
+		}
+		confCopy.TokenURL = resolved
+	}
+
+	return &tokenSource{
+		ctx:     ctx,
+		conf:    &confCopy,
+		handler: handler,
+	}, nil
+}
+
 // tokenSource implements oauth2.TokenSource for token exchange.
 type tokenSource struct {
-	ctx  context.Context
-	conf *ExchangeConfig
+	ctx     context.Context
+	conf    *ExchangeConfig
+	handler VariantHandler // resolved at construction time
 }
 
 // Token implements oauth2.TokenSource interface.
@@ -286,42 +324,56 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("failed to get subject token: %w", err)
 	}
 
-	// Determine subject token type (default to access_token if not specified)
-	subjectTokenType := conf.SubjectTokenType
-	if subjectTokenType == "" {
-		subjectTokenType = tokenTypeAccessToken
+	// Delegate form data construction to the variant handler
+	data, err := ts.handler.BuildFormData(conf, subjectToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build token exchange form data: %w", err)
 	}
 
-	// Build the token exchange request
-	request := &exchangeRequest{
-		GrantType:          grantTypeTokenExchange,
-		Audience:           conf.Audience,
-		Scope:              conf.Scopes,
-		RequestedTokenType: tokenTypeAccessToken,
-		SubjectToken:       subjectToken,
-		SubjectTokenType:   subjectTokenType,
-	}
+	// Client auth split: RFC 8693 (no variant) uses HTTP Basic Auth per
+	// RFC 6749 §2.3.1. All other variant handlers include credentials in
+	// form data if needed, so we pass empty client authentication.
+	clientAuth := func() clientAuthentication {
+		if conf.Variant == "" {
+			return clientAuthentication{
+				ClientID:     conf.ClientID,
+				ClientSecret: conf.ClientSecret,
+			}
+		}
+		return clientAuthentication{}
+	}()
 
-	clientAuth := clientAuthentication{
-		ClientID:     conf.ClientID,
-		ClientSecret: conf.ClientSecret,
-	}
-
-	// Perform the exchange
-	resp, err := exchangeToken(ts.ctx, conf.TokenURL, request, clientAuth, conf.HTTPClient)
+	req, err := createTokenExchangeRequest(ts.ctx, conf.TokenURL, data, clientAuth)
 	if err != nil {
 		return nil, err
 	}
 
-	// Validate required RFC 8693 response fields
+	client := conf.HTTPClient
+	if client == nil {
+		client = defaultHTTPClient
+	}
+
+	body, err := executeTokenExchangeRequest(client, req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := parseTokenExchangeResponse(body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate common response fields required by all variants
 	if resp.AccessToken == "" {
 		return nil, fmt.Errorf("token exchange: server returned empty access_token")
 	}
 	if resp.TokenType == "" {
 		return nil, fmt.Errorf("token exchange: server returned empty token_type")
 	}
-	if resp.IssuedTokenType == "" {
-		return nil, fmt.Errorf("token exchange: server returned empty issued_token_type (required by RFC 8693)")
+
+	// Delegate variant-specific response validation
+	if err := ts.handler.ValidateResponse(resp); err != nil {
+		return nil, err
 	}
 
 	// Build oauth2.Token
@@ -342,23 +394,52 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 	return token, nil
 }
 
-// TokenSource returns an oauth2.TokenSource that performs token exchange.
-func (c *ExchangeConfig) TokenSource(ctx context.Context) oauth2.TokenSource {
-	return &tokenSource{
-		ctx:  ctx,
-		conf: c,
+// variantRegistry returns the VariantRegistry to use for handler lookup.
+func (c *ExchangeConfig) variantRegistry() *VariantRegistry {
+	if c.VariantRegistry != nil {
+		return c.VariantRegistry
 	}
+	return DefaultVariantRegistry
+}
+
+// resolveHandler returns the VariantHandler for this config's Variant.
+// Returns defaultHandler (RFC 8693) when Variant is empty.
+// Returns an error if a non-empty Variant has no registered handler.
+func (c *ExchangeConfig) resolveHandler() (VariantHandler, error) {
+	if c.Variant == "" {
+		return defaultHandler, nil
+	}
+	handler, ok := c.variantRegistry().Get(c.Variant)
+	if !ok {
+		return nil, fmt.Errorf("unsupported token exchange variant: %s (no handler registered)", c.Variant)
+	}
+	return handler, nil
+}
+
+// parseOAuthError attempts to parse an OAuth error response from the given response body.
+func parseOAuthError(statusCode int, body []byte) *oAuthError {
+	var oauthErr oAuthError
+	if err := json.Unmarshal(body, &oauthErr); err != nil {
+		return nil
+	}
+	if oauthErr.Error == "" {
+		return nil
+	}
+	oauthErr.StatusCode = statusCode
+	return &oauthErr
 }
 
 // exchangeToken performs the actual HTTP request for token exchange.
-// This is the internal implementation used by tokenSource.Token().
+// This is the legacy internal implementation. The main Token() path now
+// delegates to VariantHandler.BuildFormData, but this function is retained
+// for backward compatibility with existing tests.
 func exchangeToken(
 	ctx context.Context,
 	endpoint string,
 	request *exchangeRequest,
 	auth clientAuthentication,
 	client *http.Client,
-) (*response, error) {
+) (*Response, error) {
 	data, err := buildTokenExchangeFormData(request)
 	if err != nil {
 		return nil, err
@@ -511,8 +592,8 @@ func validateResponseStatus(statusCode int, body []byte) error {
 }
 
 // parseTokenExchangeResponse parses the token exchange response body.
-func parseTokenExchangeResponse(body []byte) (*response, error) {
-	var tokenResp response
+func parseTokenExchangeResponse(body []byte) (*Response, error) {
+	var tokenResp Response
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		slog.Debug("Failed to parse token exchange response", "error", err)
 		return nil, errors.New("failed to parse token exchange response")

@@ -271,7 +271,7 @@ func TestCreateTokenExchangeMiddleware_Success(t *testing.T) {
 					receivedScopes = r.Form.Get("scope")
 				}
 
-				resp := response{
+				resp := Response{
 					AccessToken:     "exchanged-token",
 					TokenType:       "Bearer",
 					IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
@@ -447,7 +447,7 @@ func TestCreateTokenExchangeMiddleware_Failures(t *testing.T) {
 		{
 			name: "invalid injection config",
 			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
-				resp := response{
+				resp := Response{
 					AccessToken:     "exchanged-token",
 					TokenType:       "Bearer",
 					IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
@@ -684,7 +684,7 @@ func TestCreateTokenExchangeMiddleware_EnvironmentVariable(t *testing.T) {
 					receivedClientSecret = password
 				}
 
-				resp := response{
+				resp := Response{
 					AccessToken:     "exchanged-token",
 					TokenType:       "Bearer",
 					IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",

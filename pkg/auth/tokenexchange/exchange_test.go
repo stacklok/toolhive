@@ -30,14 +30,14 @@ const (
 
 // responseBuilder builds test OAuth 2.0 token exchange responses.
 type responseBuilder struct {
-	resp response
+	resp Response
 }
 
 // newResponse creates a new response builder with sensible defaults.
 // Returns a minimal valid response (access_token, token_type, issued_token_type).
 func newResponse() *responseBuilder {
 	return &responseBuilder{
-		resp: response{
+		resp: Response{
 			AccessToken:     "token",
 			IssuedTokenType: tokenTypeAccessToken,
 			TokenType:       "Bearer",
@@ -70,7 +70,7 @@ func (b *responseBuilder) withScope(scope string) *responseBuilder {
 }
 
 // build returns the constructed response.
-func (b *responseBuilder) build() response {
+func (b *responseBuilder) build() Response {
 	return b.resp
 }
 
@@ -230,7 +230,8 @@ func TestTokenSource_Token_Success(t *testing.T) {
 
 	// Create token source and get token
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, err := config.TokenSource(ctx)
+	require.NoError(t, err)
 	token, err := ts.Token()
 
 	// Verify results
@@ -268,7 +269,8 @@ func TestTokenSource_Token_WithRefreshToken(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, err := config.TokenSource(ctx)
+	require.NoError(t, err)
 	token, err := ts.Token()
 
 	require.NoError(t, err)
@@ -300,7 +302,8 @@ func TestTokenSource_Token_NoExpiry(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, err := config.TokenSource(ctx)
+	require.NoError(t, err)
 	token, err := ts.Token()
 
 	require.NoError(t, err)
@@ -323,7 +326,8 @@ func TestTokenSource_Token_SubjectTokenProviderError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, err := config.TokenSource(ctx)
+	require.NoError(t, err)
 	token, err := ts.Token()
 
 	require.Error(t, err)
@@ -356,7 +360,8 @@ func TestTokenSource_Token_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	ts := config.TokenSource(ctx)
+	ts, err := config.TokenSource(ctx)
+	require.NoError(t, err)
 	token, err := ts.Token()
 
 	require.Error(t, err)
@@ -900,7 +905,8 @@ func TestSubjectTokenProvider_Variants(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			ts := config.TokenSource(ctx)
+			ts, err := config.TokenSource(ctx)
+			require.NoError(t, err)
 			token, err := ts.Token()
 
 			if tt.expectError {
@@ -1143,7 +1149,8 @@ func TestExchangeConfig_TokenSource(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, err := config.TokenSource(ctx)
+	require.NoError(t, err)
 
 	assert.NotNil(t, ts)
 	assert.Implements(t, (*oauth2.TokenSource)(nil), ts)
@@ -1241,7 +1248,7 @@ func TestResponse_JSONTags(t *testing.T) {
 		"refresh_token": "test-refresh-token"
 	}`
 
-	var resp response
+	var resp Response
 	err := json.Unmarshal([]byte(jsonData), &resp)
 
 	require.NoError(t, err)

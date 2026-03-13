@@ -126,7 +126,10 @@ func (s *TokenExchangeStrategy) Authenticate(
 	// Get user-specific exchange config. This creates a fresh config instance
 	// with the current user's token. The underlying server config is cached.
 	exchangeConfig := s.createUserConfig(config, identity.Token)
-	tokenSource := exchangeConfig.TokenSource(ctx)
+	tokenSource, err := exchangeConfig.TokenSource(ctx)
+	if err != nil {
+		return fmt.Errorf("token exchange configuration failed: %w", err)
+	}
 
 	token, err := tokenSource.Token()
 	if err != nil {

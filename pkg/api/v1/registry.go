@@ -21,15 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-const (
-	// authStatusNone indicates no registry auth is configured.
-	authStatusNone = "none"
-	// authStatusConfigured indicates auth is configured but no cached tokens exist.
-	authStatusConfigured = "configured"
-	// authStatusAuthenticated indicates auth is configured with cached tokens from a prior login.
-	authStatusAuthenticated = "authenticated"
-)
-
 // RegistryAuthRequiredCode is the machine-readable error code returned in the
 // structured JSON 503 response when registry authentication is missing.
 // Desktop clients (Studio) match on this value to display the correct UI.
@@ -56,26 +47,11 @@ func writeRegistryAuthRequiredError(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// resolveAuthStatus reads the config and returns the auth_status and auth_type
-// strings for API responses.
-// Status logic:
-//   - RegistryAuth.Type == "" → ("none", "") — no auth configured
-//   - Type == "oauth", no CachedRefreshTokenRef → ("configured", "oauth")
-//   - Type == "oauth", CachedRefreshTokenRef present → ("authenticated", "oauth")
-func resolveAuthStatus(cfg *config.Config) (authStatus, authType string) {
-	if cfg == nil || cfg.RegistryAuth.Type == "" {
-		return authStatusNone, ""
-	}
-	switch cfg.RegistryAuth.Type {
-	case config.RegistryAuthTypeOAuth:
-		if cfg.RegistryAuth.OAuth == nil ||
-			cfg.RegistryAuth.OAuth.CachedRefreshTokenRef == "" {
-			return authStatusConfigured, "oauth"
-		}
-		return authStatusAuthenticated, "oauth"
-	default:
-		return authStatusConfigured, cfg.RegistryAuth.Type
-	}
+// resolveAuthStatus returns the auth_status and auth_type strings for API responses
+// by delegating to the AuthManager.
+func (rr *RegistryRoutes) resolveAuthStatus() (authStatus, authType string) {
+	authMgr := regpkg.NewAuthManager(rr.configProvider)
+	return authMgr.GetAuthStatus()
 }
 
 // isRegistryAuthError checks if an error is a registry auth required error.
@@ -98,7 +74,9 @@ func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error
 
 // registryAuthLogin handles POST /registry/auth/login.
 // It triggers an interactive OAuth flow that opens the user's browser.
-// This endpoint is only available in serve mode.
+// This endpoint is only available in serve mode and is designed for desktop
+// clients (e.g. Studio) where the user has a local browser. Headless or
+// remote deployments should pre-configure credentials via the CLI instead.
 func (rr *RegistryRoutes) registryAuthLogin(w http.ResponseWriter, r *http.Request) {
 	secretsProvider, err := newSecretsProvider(rr.configProvider)
 	if err != nil {
@@ -345,11 +323,7 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 
 	registryType, source := rr.getRegistryInfo()
 
-	cfg, cfgErr := rr.configProvider.LoadOrCreateConfig()
-	if cfgErr != nil {
-		slog.Debug("failed to load config for auth status", "error", cfgErr)
-	}
-	regAuthStatus, regAuthType := resolveAuthStatus(cfg)
+	regAuthStatus, regAuthType := rr.resolveAuthStatus()
 
 	registries := []registryInfo{
 		{
@@ -423,11 +397,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	registryType, source := rr.getRegistryInfo()
 
-	cfg, cfgErr := rr.configProvider.LoadOrCreateConfig()
-	if cfgErr != nil {
-		slog.Debug("failed to load config for auth status", "error", cfgErr)
-	}
-	regAuthStatus, regAuthType := resolveAuthStatus(cfg)
+	regAuthStatus, regAuthType := rr.resolveAuthStatus()
 
 	response := getRegistryResponse{
 		Name:        defaultRegistryName,
@@ -780,8 +750,12 @@ type registryInfo struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// AuthStatus is one of: "none", "configured", "authenticated".
+	// Intentionally omits omitempty so clients always receive the field,
+	// even when the value is "none" (the zero-value equivalent).
 	AuthStatus string `json:"auth_status"`
 	// AuthType is "oauth", "bearer" (future), or empty string when no auth.
+	// Intentionally omits omitempty so clients can distinguish "no auth
+	// configured" (empty string) from "field missing" without extra logic.
 	AuthType string `json:"auth_type"`
 }
 
@@ -810,8 +784,10 @@ type getRegistryResponse struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// AuthStatus is one of: "none", "configured", "authenticated".
+	// Intentionally omits omitempty — see registryInfo for rationale.
 	AuthStatus string `json:"auth_status"`
 	// AuthType is "oauth", "bearer" (future), or empty string when no auth.
+	// Intentionally omits omitempty — see registryInfo for rationale.
 	AuthType string `json:"auth_type"`
 	// Full registry data
 	Registry *registry.Registry `json:"registry"`

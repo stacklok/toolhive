@@ -69,7 +69,7 @@ type RunConfig struct {
 	BaseName string `json:"base_name,omitempty" yaml:"base_name,omitempty"`
 
 	// Transport is the transport mode (stdio, sse, or streamable-http)
-	Transport types.TransportType `json:"transport" yaml:"transport"`
+	Transport types.TransportType `json:"transport" yaml:"transport" enums:"stdio,sse,streamable-http,inspector"`
 
 	// Host is the host for the HTTP proxy
 	Host string `json:"host" yaml:"host"`
@@ -163,7 +163,7 @@ type RunConfig struct {
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	// Note: "sse" is deprecated; use "streamable-http" instead.
-	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
+	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty" enums:"sse,streamable-http"`
 
 	// DEPRECATED: No longer appears to be used.
 	// ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations

@@ -399,15 +399,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, tracerProvider)
 
-	// Use DynamicRegistry for version-based cache invalidation
-	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
-	// In standalone mode: backends from config file, no dynamic updates
-	// In K8s mode with discovered auth: backends watched dynamically via BackendWatcher
+	// DynamicRegistry tracks backends for dynamic discovery in Kubernetes mode.
+	// In standalone mode: backends from config file, no dynamic updates.
+	// In K8s mode with discovered auth: backends watched dynamically via BackendWatcher.
 	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
 	backendRegistry := vmcp.BackendRegistry(dynamicRegistry)
 
-	// Use NewManagerWithRegistry to enable version-based cache invalidation
-	discoveryMgr, err := discovery.NewManagerWithRegistry(agg, dynamicRegistry)
+	discoveryMgr, err := discovery.NewManager(agg)
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}

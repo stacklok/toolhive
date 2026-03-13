@@ -71,7 +71,7 @@ func createTestServer(t *testing.T) *server.Server {
 		Version:        "1.0.0",
 		Host:           "127.0.0.1",
 		Port:           port,
-		SessionFactory: newFakeFactory(nil),
+		SessionFactory: newNoopMockFactory(t),
 	}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 
@@ -186,7 +186,7 @@ func TestServer_SessionManager(t *testing.T) {
 			Name:           "test-vmcp",
 			Version:        "1.0.0",
 			SessionTTL:     10 * time.Minute,
-			SessionFactory: newFakeFactory(nil),
+			SessionFactory: newNoopMockFactory(t),
 		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 		require.NoError(t, err)
 
@@ -211,7 +211,7 @@ func TestServer_SessionManager(t *testing.T) {
 			Name:           "test-vmcp",
 			Version:        "1.0.0",
 			SessionTTL:     customTTL,
-			SessionFactory: newFakeFactory(nil),
+			SessionFactory: newNoopMockFactory(t),
 		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 		require.NoError(t, err)
 

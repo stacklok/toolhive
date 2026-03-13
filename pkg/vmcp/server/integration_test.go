@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +23,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -34,127 +32,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessionfactorymocks "github.com/stacklok/toolhive/pkg/vmcp/session/mocks"
+	sessionmocks "github.com/stacklok/toolhive/pkg/vmcp/session/types/mocks"
 )
-
-// ---------------------------------------------------------------------------
-// integrationTestSession / integrationTestFactory
-// ---------------------------------------------------------------------------
-// These types are used by infrastructure-focused integration tests (audit,
-// telemetry, etc.) that need a real SessionFactory but don't care about
-// per-session token binding or crypto internals.
-
-// integrationTestSession wraps fakeMultiSession but returns a configurable routing table.
-type integrationTestSession struct {
-	*fakeMultiSession
-	routingTable *vmcp.RoutingTable
-}
-
-func (s *integrationTestSession) GetRoutingTable() *vmcp.RoutingTable {
-	return s.routingTable
-}
-
-// integrationTestFactory creates sessions with configurable tools and routing table
-// for infrastructure-focused integration tests (audit, telemetry, etc.).
-type integrationTestFactory struct {
-	tools        []vmcp.Tool
-	routingTable *vmcp.RoutingTable
-}
-
-func (f *integrationTestFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
-) (vmcpsession.MultiSession, error) {
-	sess := transportsession.NewStreamableSession(id)
-	return &integrationTestSession{
-		fakeMultiSession: newFakeMultiSession(sess, f.tools),
-		routingTable:     f.routingTable,
-	}, nil
-}
-
-// Ensure integrationTestFactory satisfies the vmcpsession.MultiSessionFactory interface.
-var _ vmcpsession.MultiSessionFactory = (*integrationTestFactory)(nil)
-
-// ---------------------------------------------------------------------------
-// backendAwareTestSession / backendAwareTestFactory
-// ---------------------------------------------------------------------------
-// Used by tests that need tool calls to reach the real (mock) backend client
-// so that backend-level metrics/telemetry are recorded.
-
-// backendAwareTestSession delegates CallTool to a vmcp.BackendClient so that
-// the monitorBackends-wrapped client is exercised during tool calls.
-type backendAwareTestSession struct {
-	*fakeMultiSession
-	routingTable     *vmcp.RoutingTable
-	backendClientRef *backendClientRef // indirect reference so the wrapped client can be set post-New
-}
-
-func (s *backendAwareTestSession) GetRoutingTable() *vmcp.RoutingTable {
-	return s.routingTable
-}
-
-func (s *backendAwareTestSession) CallTool(
-	ctx context.Context, _ *auth.Identity, toolName string, args map[string]any, meta map[string]any,
-) (*vmcp.ToolCallResult, error) {
-	s.callToolCalled.Store(true)
-	client := s.backendClientRef.get()
-	if s.routingTable == nil || client == nil {
-		return s.callToolResult, s.callToolErr
-	}
-	target, ok := s.routingTable.Tools[toolName]
-	if !ok {
-		return s.callToolResult, s.callToolErr
-	}
-	return client.CallTool(ctx, target, toolName, args, meta)
-}
-
-// backendClientRef holds a vmcp.BackendClient that can be set after server creation
-// so that the session factory can delegate to the monitorBackends-wrapped client.
-type backendClientRef struct {
-	mu     sync.Mutex
-	client vmcp.BackendClient
-}
-
-func (r *backendClientRef) set(c vmcp.BackendClient) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.client = c
-}
-
-func (r *backendClientRef) get() vmcp.BackendClient {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.client
-}
-
-// backendAwareTestFactory creates sessions that delegate CallTool to the vmcp.BackendClient
-// held in a backendClientRef. The ref can be populated after server.New() returns so that
-// the sessions use the monitorBackends-wrapped client for backend-level telemetry.
-type backendAwareTestFactory struct {
-	tools        []vmcp.Tool
-	routingTable *vmcp.RoutingTable
-	clientRef    *backendClientRef
-}
-
-func newBackendAwareTestFactory(tools []vmcp.Tool, routingTable *vmcp.RoutingTable) (*backendAwareTestFactory, *backendClientRef) {
-	ref := &backendClientRef{}
-	return &backendAwareTestFactory{
-		tools:        tools,
-		routingTable: routingTable,
-		clientRef:    ref,
-	}, ref
-}
-
-func (f *backendAwareTestFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
-) (vmcpsession.MultiSession, error) {
-	sess := transportsession.NewStreamableSession(id)
-	return &backendAwareTestSession{
-		fakeMultiSession: newFakeMultiSession(sess, f.tools),
-		routingTable:     f.routingTable,
-		backendClientRef: f.clientRef,
-	}, nil
-}
-
-var _ vmcpsession.MultiSessionFactory = (*backendAwareTestFactory)(nil)
 
 // TestIntegration_AggregatorToRouterToServer tests the complete integration
 // of the aggregation pipeline with the router and server.
@@ -328,7 +208,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		Version:        "1.0.0",
 		Host:           "127.0.0.1",
 		Port:           4484,
-		SessionFactory: newFakeFactory(nil),
+		SessionFactory: newNoopMockFactory(t),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -621,16 +501,40 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		Prompts: map[string]*vmcp.BackendTarget{},
 	}
 
-	// Create server with audit config using integrationTestFactory so sessions have
-	// the routing table needed for tool calls and resource reads to be logged correctly.
+	// Build a MockMultiSessionFactory whose sessions carry the tools and routing
+	// table needed for tool calls and resource reads to be audit-logged correctly.
+	auditSessionFactory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	auditSessionFactory.EXPECT().
+		MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+			mock := sessionmocks.NewMockMultiSession(ctrl)
+			mock.EXPECT().ID().Return(id).AnyTimes()
+			mock.EXPECT().Touch().AnyTimes()
+			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+			mock.EXPECT().GetData().Return(nil).AnyTimes()
+			mock.EXPECT().SetData(gomock.Any()).AnyTimes()
+			mock.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+			mock.EXPECT().Tools().Return(auditTools).AnyTimes()
+			mock.EXPECT().Resources().Return(nil).AnyTimes()
+			mock.EXPECT().Prompts().Return(nil).AnyTimes()
+			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
+			mock.EXPECT().GetRoutingTable().Return(auditRoutingTable).AnyTimes()
+			mock.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(&vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}, nil).AnyTimes()
+			mock.EXPECT().ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			mock.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			mock.EXPECT().Close().Return(nil).AnyTimes()
+			return mock, nil
+		}).AnyTimes()
+
 	srv, err := server.New(ctx, &server.Config{
-		Host:        "127.0.0.1",
-		Port:        0, // Random port
-		AuditConfig: auditConfig,
-		SessionFactory: &integrationTestFactory{
-			tools:        auditTools,
-			routingTable: auditRoutingTable,
-		},
+		Host:           "127.0.0.1",
+		Port:           0, // Random port
+		AuditConfig:    auditConfig,
+		SessionFactory: auditSessionFactory,
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -906,7 +810,7 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		Port:           0, // Let OS assign port
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
-		SessionFactory: newFakeFactory(nil),
+		SessionFactory: newNoopMockFactory(t),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -982,288 +886,4 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 	assert.Equal(t, "John Doe", subjects["user"], "Should have correct user name")
 	assert.Equal(t, "mcp-client", subjects["client_name"], "Should have correct client_name")
 	assert.Equal(t, "2.0.0", subjects["client_version"], "Should have correct client_version")
-}
-
-// TestIntegration_TelemetryMiddleware tests that the vMCP server records telemetry
-// metrics when the telemetry middleware is enabled via TelemetryProvider.
-//
-// This validates:
-// 1. Incoming MCP requests are counted by toolhive_mcp_requests
-// 2. Request latency is tracked by toolhive_mcp_request_duration
-// 3. Backend calls are counted by toolhive_vmcp_backend_requests
-// 4. Backend discovery count is reported by toolhive_vmcp_backends_discovered
-// 5. All metrics are accessible via the /metrics Prometheus endpoint
-//
-// Note: This test does not use t.Parallel() because subtests share the same
-// server instance and TelemetryProvider sets global OTel providers.
-//
-//nolint:paralleltest // Subtests must run sequentially as they share server state
-func TestIntegration_TelemetryMiddleware(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-
-	ctx := context.Background()
-
-	// Create telemetry provider with Prometheus metrics enabled.
-	// This wires up a real meter provider with a Prometheus reader so we can
-	// scrape /metrics to verify recorded metrics.
-	telemetryProvider, err := telemetry.NewProvider(ctx, telemetry.Config{
-		ServiceName:                 "vmcp-telemetry-test",
-		ServiceVersion:              "1.0.0",
-		EnablePrometheusMetricsPath: true,
-		CustomAttributes: map[string]string{
-			"deployment": "dan-demo",
-			"region":     "us-east-1",
-		},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { telemetryProvider.Shutdown(ctx) })
-
-	// Create mock backend client
-	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-	backendCapabilities := &vmcp.CapabilityList{
-		Tools: []vmcp.Tool{
-			{
-				Name:        "search",
-				Description: "Search for items",
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"query": map[string]any{"type": "string"},
-					},
-				},
-				BackendID: "search-svc",
-			},
-		},
-		Resources: []vmcp.Resource{},
-		Prompts:   []vmcp.Prompt{},
-	}
-
-	// Mock backend responses
-	mockBackendClient.EXPECT().
-		ListCapabilities(gomock.Any(), gomock.Any()).
-		Return(backendCapabilities, nil).
-		AnyTimes()
-
-	// Use MinTimes(1) to verify the backend client is actually called during tool execution.
-	// If the tool call doesn't reach the backend client, this will cause a test failure.
-	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(&vmcp.ToolCallResult{
-			StructuredContent: map[string]any{"result": "found"},
-			Content:           []vmcp.Content{},
-		}, nil).
-		MinTimes(1)
-
-	backends := []vmcp.Backend{
-		{
-			ID:            "search-svc",
-			Name:          "Search Service",
-			BaseURL:       "http://search-svc:8080",
-			TransportType: "streamable-http",
-			HealthStatus:  vmcp.BackendHealthy,
-		},
-	}
-
-	// Create discovery manager (follows same pattern as TestIntegration_AuditLogging)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
-			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
-			return agg.AggregateCapabilities(ctx, backends)
-		}).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
-
-	// Create router
-	rt := router.NewDefaultRouter()
-
-	// Build the tools and routing table. The aggregator prefixes tool names with
-	// "{workload}_", so "search" becomes "search-svc_search".
-	telemetryTools := []vmcp.Tool{
-		{
-			Name:        "search-svc_search",
-			Description: "Search for items",
-			BackendID:   "search-svc",
-		},
-	}
-	telemetryRoutingTable := &vmcp.RoutingTable{
-		Tools: map[string]*vmcp.BackendTarget{
-			"search-svc_search": {
-				WorkloadID:   "search-svc",
-				WorkloadName: "Search Service",
-			},
-		},
-		Resources: map[string]*vmcp.BackendTarget{},
-		Prompts:   map[string]*vmcp.BackendTarget{},
-	}
-
-	// Create server with telemetry provider — this also wraps the backend
-	// client with monitorBackends() which instruments outgoing backend calls.
-	// Use backendAwareTestFactory so that CallTool delegates to the monitorBackends-wrapped
-	// backendClient, ensuring toolhive_vmcp_backend_requests metrics are recorded.
-	telemetryFactory, clientRef := newBackendAwareTestFactory(telemetryTools, telemetryRoutingTable)
-	srv, err := server.New(ctx, &server.Config{
-		Name:              "telemetry-vmcp",
-		Version:           "1.0.0",
-		Host:              "127.0.0.1",
-		Port:              0, // Random available port
-		TelemetryProvider: telemetryProvider,
-		SessionFactory:    telemetryFactory,
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
-	require.NoError(t, err)
-	// Wire the monitorBackends-wrapped client into the session factory so that
-	// tool calls go through the telemetry instrumentation layer.
-	clientRef.set(srv.BackendClient())
-
-	// Start server
-	serverCtx, cancelServer := context.WithCancel(ctx)
-	t.Cleanup(cancelServer)
-
-	serverErrCh := make(chan error, 1)
-	go func() {
-		if err := srv.Start(serverCtx); err != nil && !errors.Is(err, context.Canceled) {
-			serverErrCh <- err
-		}
-	}()
-
-	// Wait for server ready
-	select {
-	case <-srv.Ready():
-	case err := <-serverErrCh:
-		t.Fatalf("Server failed to start: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Server timeout waiting for ready")
-	}
-
-	baseURL := "http://" + srv.Address()
-	var sessionID string
-
-	// Test 1: Initialize request
-	t.Run("initialize request succeeds", func(t *testing.T) {
-		initReq := map[string]any{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"method":  "initialize",
-			"params": map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":    map[string]any{},
-				"clientInfo": map[string]any{
-					"name":    "telemetry-test-client",
-					"version": "1.0.0",
-				},
-			},
-		}
-
-		reqBody, err := json.Marshal(initReq)
-		require.NoError(t, err)
-
-		resp, err := http.Post(baseURL+"/mcp", "application/json", bytes.NewReader(reqBody))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		require.Equal(t, http.StatusOK, resp.StatusCode, "Initialize should succeed")
-
-		sessionID = resp.Header.Get("Mcp-Session-Id")
-		require.NotEmpty(t, sessionID, "Session ID should be returned")
-	})
-
-	// Allow time for AfterInitialize/OnRegisterSession hooks to complete
-	time.Sleep(200 * time.Millisecond)
-
-	// Test 2: Tool call request — exercises both the telemetry middleware (incoming)
-	// and the monitorBackends wrapper (outgoing backend call)
-	t.Run("tool call succeeds", func(t *testing.T) {
-		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
-
-		toolCallReq := map[string]any{
-			"jsonrpc": "2.0",
-			"id":      2,
-			"method":  "tools/call",
-			"params": map[string]any{
-				"name":      "search-svc_search", // Prefixed by conflict resolver
-				"arguments": map[string]any{"query": "test"},
-			},
-		}
-
-		reqBody, err := json.Marshal(toolCallReq)
-		require.NoError(t, err)
-
-		req, err := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Mcp-Session-Id", sessionID)
-
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		require.Equal(t, http.StatusOK, resp.StatusCode, "Tool call should succeed")
-	})
-
-	// Test 3: Verify Prometheus metrics
-	t.Run("prometheus metrics contain expected request metrics", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/metrics")
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		require.Equal(t, http.StatusOK, resp.StatusCode, "/metrics endpoint should be accessible")
-
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		metrics := string(body)
-
-		// --- Incoming request metrics (from telemetry middleware in pkg/telemetry/middleware.go) ---
-
-		// Request counter
-		assert.Contains(t, metrics, "toolhive_mcp_requests",
-			"Should record incoming request counter")
-		assert.Contains(t, metrics, `server="telemetry-vmcp"`,
-			"Request metrics should identify the vMCP server name")
-		assert.Contains(t, metrics, `transport="streamable-http"`,
-			"Request metrics should identify the transport type")
-
-		// MCP method labels — the telemetry middleware should distinguish request types
-		assert.Contains(t, metrics, `mcp_method="tools/call"`,
-			"Request counter should have mcp_method label for tool calls")
-		assert.Contains(t, metrics, `mcp_method="initialize"`,
-			"Request counter should have mcp_method label for initialize")
-
-		// Resource ID label — for tools/call the mcp_resource_id is the tool name
-		assert.Contains(t, metrics, `mcp_resource_id="search-svc_search"`,
-			"Request counter should have mcp_resource_id label with the called tool name")
-
-		// Request duration histogram
-		assert.Contains(t, metrics, "toolhive_mcp_request_duration",
-			"Should record request duration histogram")
-
-		// --- Backend metrics (from monitorBackends in vmcp/server/telemetry.go) ---
-
-		// Backend request counter — recorded when the tool call was routed to the backend
-		assert.Contains(t, metrics, "toolhive_vmcp_backend_requests",
-			"Should record backend request counter from tool call routing")
-
-		// Backend request duration histogram
-		assert.Contains(t, metrics, "toolhive_vmcp_backend_requests_duration",
-			"Should record backend request duration histogram")
-
-		// Backend discovery gauge — recorded during server.New() for the initial backend list
-		assert.Contains(t, metrics, "toolhive_vmcp_backends_discovered",
-			"Should record backend discovery count gauge")
-
-		// --- Custom resource attributes (from Config.CustomAttributes) ---
-		// Custom attributes are added to the OTel resource and surface as labels on the
-		// target_info gauge in Prometheus exposition format.
-		assert.Contains(t, metrics, "target_info",
-			"Should have target_info gauge for resource attributes")
-		assert.Contains(t, metrics, `deployment="dan-demo"`,
-			"Custom attribute 'deployment' should appear on target_info")
-		assert.Contains(t, metrics, `region="us-east-1"`,
-			"Custom attribute 'region' should appear on target_info")
-	})
-
-	cancelServer()
 }

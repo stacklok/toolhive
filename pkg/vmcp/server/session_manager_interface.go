@@ -31,6 +31,10 @@ type SessionManager interface {
 	// session's backend connections rather than the global router.
 	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
 
+	// GetAdaptedResources returns SDK-format resources for the given session with
+	// session-scoped handlers, analogous to GetAdaptedTools for resources.
+	GetAdaptedResources(sessionID string) ([]mcpserver.ServerResource, error)
+
 	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.
 	// Returns (nil, false) if the session does not exist or is still a placeholder.
 	// Used to access session-scoped backend tool metadata (e.g. for conflict validation).

@@ -40,11 +40,6 @@ const (
 	discoveryTimeout = 15 * time.Second
 )
 
-// errNotMultiSession is returned by handleSubsequentRequest when the session
-// stored in the manager is not a MultiSession. This is an internal invariant
-// violation — all sessions must be MultiSessions after the v1 removal.
-var errNotMultiSession = errors.New("session is not a MultiSession")
-
 // middlewareConfig holds optional configuration for Middleware.
 type middlewareConfig struct {
 	sessionScopedRouting bool
@@ -292,11 +287,16 @@ func handleSubsequentRequest(
 	// routing table so composite workflows can route backend tool calls correctly.
 	multiSess, isMulti := rawSess.(vmcpsession.MultiSession)
 	if !isMulti {
+		// The session is still a StreamableSession placeholder — Phase 2
+		// (OnRegisterSession / CreateSession) has not yet replaced it with a
+		// MultiSession. This can happen if the client sends a request in the
+		// brief window between receiving the session ID and the hook completing.
+		// Skip capability injection and let the SDK respond (tools list will be
+		// temporarily empty, but no 500 is returned to the client).
 		//nolint:gosec // G706: session ID is not an injection vector
-		slog.Error("session is not a MultiSession",
-			"session_id", sessionID,
-			"type", fmt.Sprintf("%T", rawSess))
-		return ctx, fmt.Errorf("%w: session=%s type=%T", errNotMultiSession, sessionID, rawSess)
+		slog.Debug("session initialisation in progress, skipping capability injection",
+			"session_id", sessionID)
+		return ctx, nil
 	}
 
 	routingTable := multiSess.GetRoutingTable()
@@ -331,11 +331,6 @@ func handleDiscoveryError(w http.ResponseWriter, _ *http.Request, err error) {
 	errMsg := err.Error()
 	if strings.Contains(errMsg, "session not found") {
 		http.Error(w, "Session not found", http.StatusUnauthorized)
-		return
-	}
-
-	if errors.Is(err, errNotMultiSession) {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 

@@ -401,3 +401,65 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 
 	return sdkTools, nil
 }
+
+// GetAdaptedResources returns SDK-format resources for the given session, with handlers
+// that delegate read requests directly to the session's ReadResource() method.
+func (sm *Manager) GetAdaptedResources(sessionID string) ([]mcpserver.ServerResource, error) {
+	multiSess, ok := sm.GetMultiSession(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("Manager.GetAdaptedResources: session %q not found or not a multi-session", sessionID)
+	}
+
+	domainResources := multiSess.Resources()
+	sdkResources := make([]mcpserver.ServerResource, 0, len(domainResources))
+
+	for _, domainResource := range domainResources {
+		resource := mcp.Resource{
+			Name:        domainResource.Name,
+			URI:         domainResource.URI,
+			Description: domainResource.Description,
+			MIMEType:    domainResource.MimeType,
+		}
+
+		capturedSess := multiSess
+		capturedSessionID := sessionID
+		capturedResourceURI := domainResource.URI
+		handler := func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			caller, _ := auth.IdentityFromContext(ctx)
+
+			result, readErr := capturedSess.ReadResource(ctx, caller, capturedResourceURI)
+			if readErr != nil {
+				if errors.Is(readErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(readErr, sessiontypes.ErrNilCaller) {
+					slog.Warn("caller authorization failed, terminating session",
+						"session_id", capturedSessionID, "resource", capturedResourceURI, "error", readErr)
+					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
+						slog.Error("failed to terminate session after auth failure",
+							"session_id", capturedSessionID, "error", termErr)
+					}
+					return nil, fmt.Errorf("unauthorized: %w", readErr)
+				}
+				return nil, readErr
+			}
+
+			mimeType := result.MimeType
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{
+					URI:      capturedResourceURI,
+					MIMEType: mimeType,
+					Text:     string(result.Contents),
+				},
+			}, nil
+		}
+
+		sdkResources = append(sdkResources, mcpserver.ServerResource{
+			Resource: resource,
+			Handler:  handler,
+		})
+		slog.Debug("Manager.GetAdaptedResources: adapted resource", "session_id", sessionID, "uri", domainResource.URI)
+	}
+
+	return sdkResources, nil
+}

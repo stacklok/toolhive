@@ -393,7 +393,6 @@ func New(
 		return nil, fmt.Errorf("SessionFactory is required but was not provided")
 	}
 	vmcpSessMgr := sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry)
-	slog.Info("session-scoped backend lifecycle enabled")
 
 	// Create Server instance
 	srv := &Server{
@@ -417,7 +416,7 @@ func New(
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
 	// See handleSessionRegistration for implementation details.
 	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
-		srv.handleSessionRegistration(ctx, session, sessionManager)
+		srv.handleSessionRegistration(ctx, session)
 	})
 
 	return srv, nil
@@ -778,13 +777,6 @@ func (s *Server) Address() string {
 	return fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 }
 
-// BackendClient returns the backend client used by this server.
-// When telemetry is configured, this is the monitorBackends-wrapped client.
-// This accessor is intended for testing purposes only.
-func (s *Server) BackendClient() vmcp.BackendClient {
-	return s.backendClient
-}
-
 // handleHealth handles /health and /ping HTTP requests.
 // Returns 200 OK if the server is running and able to respond.
 //
@@ -893,6 +885,26 @@ func (s *Server) Ready() <-chan struct{} {
 	return s.ready
 }
 
+// setSessionResourcesDirect sets resources directly on the session via the SessionWithResources
+// interface, analogous to setSessionToolsDirect for resources.
+func setSessionResourcesDirect(session server.ClientSession, resources []server.ServerResource) error {
+	sessionWithResources, ok := session.(server.SessionWithResources)
+	if !ok {
+		return fmt.Errorf("session does not support per-session resources")
+	}
+
+	existing := sessionWithResources.GetSessionResources()
+	resourceMap := make(map[string]server.ServerResource, len(existing)+len(resources))
+	for k, v := range existing {
+		resourceMap[k] = v
+	}
+	for _, res := range resources {
+		resourceMap[res.Resource.URI] = res
+	}
+	sessionWithResources.SetSessionResources(resourceMap)
+	return nil
+}
+
 // setSessionToolsDirect sets tools directly on the session via the SessionWithTools
 // interface, bypassing MCPServer.AddSessionTools. This avoids sending notifications
 // through the session's notification channel, which would accumulate as stale
@@ -919,13 +931,9 @@ func setSessionToolsDirect(session server.ClientSession, tools []server.ServerTo
 
 // handleSessionRegistration processes a new MCP session registration.
 // It fires AFTER the session is registered in the SDK.
-//
-// The sessionManager parameter is passed explicitly because this method is called
-// from a closure registered before the Server is fully constructed.
 func (s *Server) handleSessionRegistration(
 	ctx context.Context,
 	session server.ClientSession,
-	_ *transportsession.Manager,
 ) {
 	// Error is logged and handled within handleSessionRegistrationImpl.
 	// The session is terminated on failure; no further action needed here.
@@ -936,20 +944,14 @@ func (s *Server) handleSessionRegistration(
 //
 // It is invoked from handleSessionRegistration and:
 //  1. Creates a MultiSession with real backend HTTP connections via CreateSession().
-//  2. Retrieves SDK-format tools with session-scoped routing handlers.
-//  3. Registers backend tools and composite tools with the SDK MCPServer for the session.
+//  2. Retrieves SDK-format tools and resources with session-scoped routing handlers.
+//  3. Registers backend tools, composite tools, and resources with the SDK for the session.
 //
-// Tool calls are routed directly through the session's backend connections
+// Tool and resource calls are routed directly through the session's backend connections
 // rather than through the global router and discovery middleware.
 // Composite tool executors use the shared backend client and router.
 //
 // # Current capability surface
-//
-// The following capabilities are not yet supported and require future work:
-//
-//   - Resources: session-scoped resource handlers need to be added to
-//     vmcpSessionManager (analogous to GetAdaptedTools) before resources
-//     from MultiSession.Resources() can be registered via AddSessionResources.
 //
 //   - Optimizer mode: when configured, all tools (backend + composite) are
 //     indexed into the optimizer and only find_tool/call_tool are exposed,
@@ -999,10 +1001,25 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		return retErr
 	}
 
+	adaptedResources, retErr := s.vmcpSessionMgr.GetAdaptedResources(sessionID)
+	if retErr != nil {
+		slog.Error("failed to get session-scoped resources",
+			"session_id", sessionID,
+			"error", retErr)
+		return retErr
+	}
+
 	// Collect composite SDK tools (with name-collision check against backend tools).
 	compositeSDKTools, retErr := s.collectCompositeTools(sessionID)
 	if retErr != nil {
 		return retErr
+	}
+
+	if len(adaptedResources) > 0 {
+		if err := setSessionResourcesDirect(session, adaptedResources); err != nil {
+			slog.Error("failed to add session resources", "session_id", sessionID, "error", err)
+			return err
+		}
 	}
 
 	return s.injectTools(ctx, session, adaptedTools, compositeSDKTools)

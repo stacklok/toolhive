@@ -7,10 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,105 +32,110 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessionfactorymocks "github.com/stacklok/toolhive/pkg/vmcp/session/mocks"
+	sessionmocks "github.com/stacklok/toolhive/pkg/vmcp/session/types/mocks"
 )
 
 // ---------------------------------------------------------------------------
-// Fakes (redeclared for package server_test; cannot import internal fakes
-// from the internal server package tests since those are in package server).
+// Mock factory helpers
 // ---------------------------------------------------------------------------
 
-// fakeMultiSession is a minimal MultiSession implementation that records
-// whether CallTool was invoked and returns a preconfigured result.
-type fakeMultiSession struct {
-	transportsession.Session // embedded to satisfy ID/Type/timestamp/metadata methods
-
-	tools          []vmcp.Tool
-	callToolCalled atomic.Bool
-	callToolResult *vmcp.ToolCallResult
-	callToolErr    error
-	closed         atomic.Bool
+// newNoopMockFactory creates a MockMultiSessionFactory that permits any number
+// of MakeSessionWithID calls (including zero). Each call returns a minimal
+// MockMultiSession with no tools. Use for tests that construct a Server and
+// may or may not trigger session creation but don't need to inspect the result.
+func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFactory {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+			mock := sessionmocks.NewMockMultiSession(ctrl)
+			mock.EXPECT().ID().Return(id).AnyTimes()
+			mock.EXPECT().Touch().AnyTimes()
+			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+			mock.EXPECT().GetData().Return(nil).AnyTimes()
+			mock.EXPECT().SetData(gomock.Any()).AnyTimes()
+			mock.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+			mock.EXPECT().Tools().Return(nil).AnyTimes()
+			mock.EXPECT().Resources().Return(nil).AnyTimes()
+			mock.EXPECT().Prompts().Return(nil).AnyTimes()
+			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
+			mock.EXPECT().GetRoutingTable().Return(nil).AnyTimes()
+			mock.EXPECT().ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			mock.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			mock.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(&vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "noop"}}}, nil).AnyTimes()
+			mock.EXPECT().Close().Return(nil).AnyTimes()
+			return mock, nil
+		}).AnyTimes()
+	return factory
 }
 
-func newFakeMultiSession(sess transportsession.Session, tools []vmcp.Tool) *fakeMultiSession {
-	return &fakeMultiSession{
-		Session: sess,
-		tools:   tools,
-		callToolResult: &vmcp.ToolCallResult{
-			Content: []vmcp.Content{{Type: "text", Text: "fake result"}},
-		},
-	}
+// mockFactoryState tracks observable behaviour of a mock session factory.
+type mockFactoryState struct {
+	makeWithIDCalled atomic.Bool
+	callToolCalled   atomic.Bool
+	closed           atomic.Bool
+	mu               sync.Mutex
+	lastSession      *sessionmocks.MockMultiSession
 }
 
-func (f *fakeMultiSession) Tools() []vmcp.Tool {
-	result := make([]vmcp.Tool, len(f.tools))
-	copy(result, f.tools)
-	return result
-}
-
-func (*fakeMultiSession) Resources() []vmcp.Resource { return nil }
-func (*fakeMultiSession) Prompts() []vmcp.Prompt     { return nil }
-func (*fakeMultiSession) BackendSessions() map[string]string {
-	return nil
-}
-func (*fakeMultiSession) GetRoutingTable() *vmcp.RoutingTable { return nil }
-
-func (f *fakeMultiSession) CallTool(
-	_ context.Context, _ *auth.Identity, _ string, _ map[string]any, _ map[string]any,
-) (*vmcp.ToolCallResult, error) {
-	f.callToolCalled.Store(true)
-	return f.callToolResult, f.callToolErr
-}
-
-func (*fakeMultiSession) ReadResource(_ context.Context, _ *auth.Identity, _ string) (*vmcp.ResourceReadResult, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (*fakeMultiSession) GetPrompt(
-	_ context.Context, _ *auth.Identity, _ string, _ map[string]any,
-) (*vmcp.PromptGetResult, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (f *fakeMultiSession) Close() error {
-	f.closed.Store(true)
-	return nil
-}
-
-// fakeMultiSessionFactory tracks whether MakeSessionWithID was called
-// and returns a fakeMultiSession with a preconfigured tool.
-type fakeMultiSessionFactory struct {
-	tools              []vmcp.Tool
-	makeWithIDCalled   atomic.Bool
-	lastCreatedSession *fakeMultiSession
-	err                error
-}
-
-func newFakeFactory(tools []vmcp.Tool) *fakeMultiSessionFactory {
-	return &fakeMultiSessionFactory{tools: tools}
-}
-
-func (f *fakeMultiSessionFactory) MakeSessionWithID(
-	_ context.Context, id string, identity *auth.Identity, allowAnonymous bool, _ []*vmcp.Backend,
-) (vmcpsession.MultiSession, error) {
-	f.makeWithIDCalled.Store(true)
-	if f.err != nil {
-		return nil, f.err
-	}
-	baseSession := transportsession.NewStreamableSession(id)
-
-	// Set basic metadata to indicate whether this is an anonymous session.
-	// Integration tests don't need to verify crypto implementation details.
-	if identity != nil && identity.Token != "" && !allowAnonymous {
-		// Authenticated session - set non-empty hash placeholder
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "fake-hash-for-testing")
-	} else {
-		// Anonymous session - set empty hash
-		baseSession.SetMetadata(vmcpsession.MetadataKeyTokenHash, "")
-	}
-
-	sess := newFakeMultiSession(baseSession, f.tools)
-	f.lastCreatedSession = sess
-	return sess, nil
+// newMockFactory creates a MockMultiSessionFactory whose MakeSessionWithID returns
+// a fully-configured MockMultiSession. The returned state tracks what happened.
+func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*sessionfactorymocks.MockMultiSessionFactory, *mockFactoryState) {
+	t.Helper()
+	state := &mockFactoryState{}
+	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, identity *auth.Identity, allowAnonymous bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+			state.makeWithIDCalled.Store(true)
+			tokenHash := ""
+			if identity != nil && identity.Token != "" && !allowAnonymous {
+				tokenHash = "fake-hash-for-testing"
+			}
+			mock := sessionmocks.NewMockMultiSession(ctrl)
+			mock.EXPECT().ID().Return(id).AnyTimes()
+			mock.EXPECT().Touch().AnyTimes()
+			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+			mock.EXPECT().GetData().Return(nil).AnyTimes()
+			mock.EXPECT().SetData(gomock.Any()).AnyTimes()
+			mock.EXPECT().GetMetadata().Return(map[string]string{
+				vmcpsession.MetadataKeyTokenHash: tokenHash,
+			}).AnyTimes()
+			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+			toolsCopy := make([]vmcp.Tool, len(tools))
+			copy(toolsCopy, tools)
+			mock.EXPECT().Tools().Return(toolsCopy).AnyTimes()
+			mock.EXPECT().Resources().Return(nil).AnyTimes()
+			mock.EXPECT().Prompts().Return(nil).AnyTimes()
+			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
+			mock.EXPECT().GetRoutingTable().Return(nil).AnyTimes()
+			mock.EXPECT().ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			mock.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			callResult := &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}
+			callToolCalled := &state.callToolCalled
+			mock.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ *auth.Identity, _ string, _ map[string]any, _ map[string]any) (*vmcp.ToolCallResult, error) {
+					callToolCalled.Store(true)
+					return callResult, nil
+				}).AnyTimes()
+			closed := &state.closed
+			mock.EXPECT().Close().DoAndReturn(func() error {
+				closed.Store(true)
+				return nil
+			}).AnyTimes()
+			state.mu.Lock()
+			state.lastSession = mock
+			state.mu.Unlock()
+			return mock, nil
+		}).AnyTimes()
+	return factory, state
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +246,9 @@ func postMCP(t *testing.T, baseURL string, body map[string]any, sessionID string
 func TestIntegration_SessionManagement_Initialize(t *testing.T) {
 	t.Parallel()
 
+	ctrl := gomock.NewController(t)
 	testTool := vmcp.Tool{Name: "test-tool", Description: "a test tool"}
-	factory := newFakeFactory([]vmcp.Tool{testTool})
+	factory, state := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
 
 	ts := buildTestServer(t, factory)
 
@@ -272,7 +278,7 @@ func TestIntegration_SessionManagement_Initialize(t *testing.T) {
 	// Give the OnRegisterSession hook time to run (it may execute asynchronously
 	// after the response is sent, but before the next request).
 	require.Eventually(t, func() bool {
-		return factory.makeWithIDCalled.Load()
+		return state.makeWithIDCalled.Load()
 	}, 2*time.Second, 10*time.Millisecond,
 		"MakeSessionWithID should have been called after initialize")
 
@@ -295,11 +301,13 @@ func TestIntegration_SessionManagement_Initialize(t *testing.T) {
 	require.Equal(t, http.StatusOK, toolResp.StatusCode,
 		"tool call should succeed; body: %s", string(body))
 
-	// The fake session's CallTool should have been invoked.
-	fakeSess := factory.lastCreatedSession
-	require.NotNil(t, fakeSess, "factory should have created a session")
-	assert.True(t, fakeSess.callToolCalled.Load(),
-		"CallTool on the fake session should have been invoked by the tool call request")
+	// The mock session's CallTool should have been invoked.
+	state.mu.Lock()
+	lastSession := state.lastSession
+	state.mu.Unlock()
+	require.NotNil(t, lastSession, "factory should have created a session")
+	assert.True(t, state.callToolCalled.Load(),
+		"CallTool on the mock session should have been invoked by the tool call request")
 }
 
 // deleteMCP sends a DELETE request to /mcp with the given session ID and
@@ -329,8 +337,9 @@ func deleteMCP(t *testing.T, baseURL, sessionID string) *http.Response {
 func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	t.Parallel()
 
+	ctrl := gomock.NewController(t)
 	testTool := vmcp.Tool{Name: "test-tool", Description: "a test tool"}
-	factory := newFakeFactory([]vmcp.Tool{testTool})
+	factory, state := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
 
 	ts := buildTestServer(t, factory)
 
@@ -354,7 +363,7 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 
 	// Wait for the OnRegisterSession hook to complete so the MultiSession exists.
 	require.Eventually(t, func() bool {
-		return factory.makeWithIDCalled.Load()
+		return state.makeWithIDCalled.Load()
 	}, 2*time.Second, 10*time.Millisecond,
 		"MakeSessionWithID should have been called after initialize")
 
@@ -363,11 +372,13 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	defer delResp.Body.Close()
 	require.Equal(t, http.StatusOK, delResp.StatusCode, "DELETE should return 200 OK")
 
-	// Close() must have been called on the fake MultiSession,
+	// Close() must have been called on the mock MultiSession,
 	// confirming backend connections are released.
-	fakeSess := factory.lastCreatedSession
-	require.NotNil(t, fakeSess, "factory should have created a session")
-	assert.True(t, fakeSess.closed.Load(),
+	state.mu.Lock()
+	lastSession := state.lastSession
+	state.mu.Unlock()
+	require.NotNil(t, lastSession, "factory should have created a session")
+	assert.True(t, state.closed.Load(),
 		"Close() should have been called on the MultiSession after termination")
 
 	// Subsequent requests with the terminated session ID are rejected.
@@ -412,8 +423,9 @@ func TestIntegration_SessionManagement_TokenBinding(t *testing.T) {
 	t.Skip("Fake factory doesn't implement real token binding - see test comment for details")
 	t.Parallel()
 
+	ctrl := gomock.NewController(t)
 	testTool := vmcp.Tool{Name: "echo", Description: "echoes input"}
-	factory := newFakeFactory([]vmcp.Tool{testTool})
+	factory, state := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
 	ts := buildTestServer(t, factory)
 
 	tokenA := "bearer-token-A"
@@ -453,7 +465,7 @@ func TestIntegration_SessionManagement_TokenBinding(t *testing.T) {
 
 	// Wait for factory to be called
 	require.Eventually(t,
-		func() bool { return factory.makeWithIDCalled.Load() },
+		func() bool { return state.makeWithIDCalled.Load() },
 		1*time.Second,
 		10*time.Millisecond,
 		"factory should be called to create session",
@@ -616,8 +628,9 @@ func (*fakeOptimizer) CallTool(_ context.Context, _ optimizer.CallToolInput) (*m
 func TestIntegration_SessionManagement_CompositeTools(t *testing.T) {
 	t.Parallel()
 
+	ctrl := gomock.NewController(t)
 	backendTool := vmcp.Tool{Name: "backend-tool", Description: "a backend tool"}
-	factory := newFakeFactory([]vmcp.Tool{backendTool})
+	factory, _ := newMockFactory(t, ctrl, []vmcp.Tool{backendTool})
 
 	workflowDef := &composer.WorkflowDefinition{
 		Name:        "composite-tool",
@@ -678,7 +691,8 @@ func TestIntegration_SessionManagement_CompositeToolConflict(t *testing.T) {
 
 	// Both the backend and the workflow definition use the same name — a collision.
 	const sharedName = "shared-tool"
-	factory := newFakeFactory([]vmcp.Tool{{Name: sharedName, Description: "backend version"}})
+	ctrl := gomock.NewController(t)
+	factory, _ := newMockFactory(t, ctrl, []vmcp.Tool{{Name: sharedName, Description: "backend version"}})
 
 	workflowDef := &composer.WorkflowDefinition{
 		Name:        sharedName, // conflicts with the backend tool
@@ -762,8 +776,9 @@ func TestIntegration_SessionManagement_CompositeToolConflict(t *testing.T) {
 func TestIntegration_SessionManagement_OptimizerMode(t *testing.T) {
 	t.Parallel()
 
+	ctrl := gomock.NewController(t)
 	testTool := vmcp.Tool{Name: "test-tool", Description: "a test tool"}
-	factory := newFakeFactory([]vmcp.Tool{testTool})
+	factory, _ := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
 
 	ts := buildTestServerWithOptions(t, factory, serverOptions{
 		optimizerFactory: func(_ context.Context, _ []mcpsdk.ServerTool) (optimizer.Optimizer, error) {

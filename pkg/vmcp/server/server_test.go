@@ -67,7 +67,7 @@ func TestServerStartFailsWhenReporterStartFails(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newFakeFactory(nil)},
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -97,7 +97,7 @@ func TestServerStopRunsReporterShutdown(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newFakeFactory(nil)},
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -152,7 +152,7 @@ func TestNew(t *testing.T) {
 	}{
 		{
 			name:         "applies all defaults",
-			config:       &server.Config{SessionFactory: newFakeFactory(nil)},
+			config:       &server.Config{SessionFactory: newNoopMockFactory(t)},
 			expectedHost: "127.0.0.1",
 			expectedPort: 4483,
 			expectedPath: "/mcp",
@@ -167,7 +167,7 @@ func TestNew(t *testing.T) {
 				Host:           "0.0.0.0",
 				Port:           8080,
 				EndpointPath:   "/api/mcp",
-				SessionFactory: newFakeFactory(nil),
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expectedHost: "0.0.0.0",
 			expectedPort: 8080,
@@ -180,7 +180,7 @@ func TestNew(t *testing.T) {
 			config: &server.Config{
 				Host:           "192.168.1.1",
 				Port:           9000,
-				SessionFactory: newFakeFactory(nil),
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expectedHost: "192.168.1.1",
 			expectedPort: 9000,
@@ -223,7 +223,7 @@ func TestServer_Address(t *testing.T) {
 			name: "default host with explicit port",
 			config: &server.Config{
 				Port:           4483,
-				SessionFactory: newFakeFactory(nil),
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "127.0.0.1:4483",
 		},
@@ -231,7 +231,7 @@ func TestServer_Address(t *testing.T) {
 			name: "port 0 for dynamic allocation",
 			config: &server.Config{
 				Port:           0,
-				SessionFactory: newFakeFactory(nil),
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "127.0.0.1:0",
 		},
@@ -240,7 +240,7 @@ func TestServer_Address(t *testing.T) {
 			config: &server.Config{
 				Host:           "0.0.0.0",
 				Port:           8080,
-				SessionFactory: newFakeFactory(nil),
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "0.0.0.0:8080",
 		},
@@ -249,7 +249,7 @@ func TestServer_Address(t *testing.T) {
 			config: &server.Config{
 				Host:           "localhost",
 				Port:           3000,
-				SessionFactory: newFakeFactory(nil),
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "localhost:3000",
 		},
@@ -288,7 +288,7 @@ func TestServer_Stop(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-		s, err := server.New(context.Background(), &server.Config{SessionFactory: newFakeFactory(nil)}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+		s, err := server.New(context.Background(), &server.Config{SessionFactory: newNoopMockFactory(t)}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 		require.NoError(t, err)
 		err = s.Stop(context.Background())
 		require.NoError(t, err)
@@ -390,7 +390,7 @@ func TestNew_WithAuditConfig(t *testing.T) {
 
 			config := &server.Config{
 				AuditConfig:    tt.auditConfig,
-				SessionFactory: newFakeFactory(nil),
+				SessionFactory: newNoopMockFactory(t),
 			}
 
 			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
@@ -423,7 +423,7 @@ func TestServerStopClosesOptimizerStore(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerConfig: &optimizer.Config{}, SessionFactory: newFakeFactory(nil)},
+		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerConfig: &optimizer.Config{}, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -476,7 +476,7 @@ func TestHandler_ReturnsNonNilHandler(t *testing.T) {
 
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newFakeFactory(nil)},
+		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -518,7 +518,7 @@ func TestHandler_ReturnsErrorOnInvalidAuditConfig(t *testing.T) {
 				Component:   "vmcp-server",
 				MaxDataSize: -1,
 			},
-			SessionFactory: newFakeFactory(nil),
+			SessionFactory: newNoopMockFactory(t),
 		},
 		mockRouter,
 		mockBackendClient,
@@ -554,7 +554,7 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newFakeFactory(nil)},
+		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -640,7 +640,7 @@ func TestAcceptHeaderValidation(t *testing.T) {
 
 			srv, err := server.New(
 				t.Context(),
-				&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newFakeFactory(nil)},
+				&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)},
 				mockRouter,
 				mockBackendClient,
 				mockDiscoveryMgr,

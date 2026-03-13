@@ -16,11 +16,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
+	sessionmocks "github.com/stacklok/toolhive/pkg/vmcp/session/types/mocks"
 )
 
 // createTestSessionManager creates a session manager with StreamableSession factory for testing.
@@ -30,46 +30,6 @@ func createTestSessionManager(t *testing.T) *transportsession.Manager {
 	t.Cleanup(func() { _ = sessionMgr.Stop() })
 	return sessionMgr
 }
-
-// fakeMultiSession is a minimal MultiSession implementation for tests that need
-// a session with a preset routing table stored in the session manager.
-type fakeMultiSession struct {
-	transportsession.Session
-	routingTable *vmcp.RoutingTable
-	tools        []vmcp.Tool
-}
-
-func newFakeMultiSession(id string, routingTable *vmcp.RoutingTable, tools []vmcp.Tool) *fakeMultiSession {
-	return &fakeMultiSession{
-		Session:      transportsession.NewStreamableSession(id),
-		routingTable: routingTable,
-		tools:        tools,
-	}
-}
-
-func (f *fakeMultiSession) Tools() []vmcp.Tool                  { return f.tools }
-func (*fakeMultiSession) Resources() []vmcp.Resource            { return nil }
-func (*fakeMultiSession) Prompts() []vmcp.Prompt                { return nil }
-func (*fakeMultiSession) BackendSessions() map[string]string    { return nil }
-func (f *fakeMultiSession) GetRoutingTable() *vmcp.RoutingTable { return f.routingTable }
-
-func (*fakeMultiSession) CallTool(
-	_ context.Context, _ *auth.Identity, _ string, _ map[string]any, _ map[string]any,
-) (*vmcp.ToolCallResult, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (*fakeMultiSession) ReadResource(_ context.Context, _ *auth.Identity, _ string) (*vmcp.ResourceReadResult, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (*fakeMultiSession) GetPrompt(
-	_ context.Context, _ *auth.Identity, _ string, _ map[string]any,
-) (*vmcp.PromptGetResult, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (*fakeMultiSession) Close() error { return nil }
 
 // unorderedBackendsMatcher is a gomock matcher that compares backend slices without caring about order.
 // This is needed because ImmutableRegistry.List() iterates over a map which doesn't guarantee order.
@@ -236,9 +196,20 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 		Prompts:   make(map[string]*vmcp.BackendTarget),
 	}
 
-	// Add a fakeMultiSession with the routing table
-	sess := newFakeMultiSession("test-session-123", routingTable, nil)
-	err := sessionMgr.AddSession(sess)
+	// Add a MockMultiSession with the routing table
+	mockSess := sessionmocks.NewMockMultiSession(ctrl)
+	mockSess.EXPECT().ID().Return("test-session-123").AnyTimes()
+	mockSess.EXPECT().GetRoutingTable().Return(routingTable).AnyTimes()
+	mockSess.EXPECT().Tools().Return(nil).AnyTimes()
+	mockSess.EXPECT().Touch().AnyTimes()
+	mockSess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+	mockSess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+	mockSess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+	mockSess.EXPECT().GetData().Return(nil).AnyTimes()
+	mockSess.EXPECT().SetData(gomock.Any()).AnyTimes()
+	mockSess.EXPECT().GetMetadata().Return(nil).AnyTimes()
+	mockSess.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+	err := sessionMgr.AddSession(mockSess)
 	require.NoError(t, err, "failed to add session")
 
 	// Wrap handler with middleware

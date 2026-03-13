@@ -70,14 +70,14 @@ func ValidateOIDCIssuerURL(issuer string, allowInsecure bool) error {
 		return fmt.Errorf("OIDC issuer URL %q is malformed: missing scheme or host", issuer)
 	}
 
-	if u.Scheme == "http" && !allowInsecure {
+	if u.Scheme == schemeHTTP && !allowInsecure {
 		return fmt.Errorf(
 			"OIDC issuer URL %q uses HTTP scheme, which is insecure; "+
 				"use HTTPS or set insecureAllowHTTP: true for development only", issuer,
 		)
 	}
 
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		return fmt.Errorf("OIDC issuer URL %q has unsupported scheme %q; must be http or https", issuer, u.Scheme)
 	}
 

@@ -14,6 +14,8 @@ import (
 const grantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 
 // entraTokenURLTemplate is the Microsoft Entra v2.0 token endpoint format.
+//
+//nolint:gosec // G101: False positive - URL template, not a credential
 const entraTokenURLTemplate = "https://login.microsoftonline.com/%s/oauth2/v2.0/token"
 
 // validEntraTenantID matches Azure AD tenant IDs: GUIDs or verified domain names.
@@ -36,7 +38,7 @@ type EntraOBOHandler struct{}
 // ResolveTokenURL derives the Entra v2.0 token endpoint from the tenantId
 // parameter in config.RawConfig.Parameters. If TokenURL is already set on
 // the config (checked by the caller), this method will not be called.
-func (h *EntraOBOHandler) ResolveTokenURL(config *ExchangeConfig) (string, error) {
+func (*EntraOBOHandler) ResolveTokenURL(config *ExchangeConfig) (string, error) {
 	if config == nil {
 		return "", fmt.Errorf("token exchange: config must not be nil")
 	}
@@ -47,6 +49,12 @@ func (h *EntraOBOHandler) ResolveTokenURL(config *ExchangeConfig) (string, error
 	tenantID := config.RawConfig.Parameters["tenantId"]
 	if tenantID == "" {
 		return "", fmt.Errorf("token exchange: entra variant requires non-empty tenantId in RawConfig.Parameters")
+	}
+
+	// DNS labels are limited to 253 characters; GUIDs are 36.
+	const maxTenantIDLen = 253
+	if len(tenantID) > maxTenantIDLen {
+		return "", fmt.Errorf("token exchange: tenantId exceeds maximum length of %d characters", maxTenantIDLen)
 	}
 
 	if !validEntraTenantID.MatchString(tenantID) {
@@ -62,7 +70,7 @@ func (h *EntraOBOHandler) ResolveTokenURL(config *ExchangeConfig) (string, error
 //
 // SECURITY: The subjectToken and client_secret are bearer credentials and
 // MUST NOT appear in error messages or logs.
-func (h *EntraOBOHandler) BuildFormData(config *ExchangeConfig, subjectToken string) (url.Values, error) {
+func (*EntraOBOHandler) BuildFormData(config *ExchangeConfig, subjectToken string) (url.Values, error) {
 	if config == nil {
 		return nil, fmt.Errorf("token exchange: config must not be nil")
 	}
@@ -94,7 +102,7 @@ func (h *EntraOBOHandler) BuildFormData(config *ExchangeConfig, subjectToken str
 // response. Entra OBO does not return issued_token_type (unlike RFC 8693).
 // The shared Token() code already validates access_token and token_type, so
 // this method only performs a nil check.
-func (h *EntraOBOHandler) ValidateResponse(resp *Response) error {
+func (*EntraOBOHandler) ValidateResponse(resp *Response) error {
 	if resp == nil {
 		return fmt.Errorf("token exchange: response must not be nil")
 	}

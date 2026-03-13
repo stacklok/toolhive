@@ -438,7 +438,6 @@ func exchangeToken(
 	endpoint string,
 	request *exchangeRequest,
 	auth clientAuthentication,
-	client *http.Client,
 ) (*Response, error) {
 	data, err := buildTokenExchangeFormData(request)
 	if err != nil {
@@ -450,11 +449,7 @@ func exchangeToken(
 		return nil, err
 	}
 
-	if client == nil {
-		client = defaultHTTPClient
-	}
-
-	body, err := executeTokenExchangeRequest(client, req)
+	body, err := executeTokenExchangeRequest(defaultHTTPClient, req)
 	if err != nil {
 		return nil, err
 	}

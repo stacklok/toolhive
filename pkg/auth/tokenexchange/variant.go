@@ -115,7 +115,7 @@ type rfc8693Handler struct{}
 
 // ResolveTokenURL returns an empty string because RFC 8693 always uses the
 // token URL provided directly in ExchangeConfig.TokenURL.
-func (h *rfc8693Handler) ResolveTokenURL(config *ExchangeConfig) (string, error) {
+func (*rfc8693Handler) ResolveTokenURL(config *ExchangeConfig) (string, error) {
 	if config == nil {
 		return "", fmt.Errorf("token exchange: config must not be nil")
 	}
@@ -132,7 +132,7 @@ func (h *rfc8693Handler) ResolveTokenURL(config *ExchangeConfig) (string, error)
 // not yet included because ExchangeConfig does not have Resource or
 // ActingParty fields. When those fields are added to ExchangeConfig,
 // this method should be updated to emit them.
-func (h *rfc8693Handler) BuildFormData(config *ExchangeConfig, subjectToken string) (url.Values, error) {
+func (*rfc8693Handler) BuildFormData(config *ExchangeConfig, subjectToken string) (url.Values, error) {
 	if config == nil {
 		return nil, fmt.Errorf("token exchange: config must not be nil")
 	}
@@ -171,7 +171,7 @@ func (h *rfc8693Handler) BuildFormData(config *ExchangeConfig, subjectToken stri
 
 // ValidateResponse checks that the response contains issued_token_type,
 // which is required by RFC 8693 Section 2.2.1.
-func (h *rfc8693Handler) ValidateResponse(resp *Response) error {
+func (*rfc8693Handler) ValidateResponse(resp *Response) error {
 	if resp == nil {
 		return fmt.Errorf("token exchange: response must not be nil")
 	}

@@ -30,7 +30,8 @@ type workloadListResponse struct {
 //	@Description	Response containing workload status information
 type workloadStatusResponse struct {
 	// Current status of the workload
-	Status runtime.WorkloadStatus `json:"status"`
+	//nolint:lll // enums tag needed for swagger generation with --parseDependencyLevel
+	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated"`
 }
 
 // updateRequest represents the request to update an existing workload
@@ -60,7 +61,7 @@ type updateRequest struct {
 	// OIDC configuration options
 	OIDC oidcOptions `json:"oidc"`
 	// Permission profile to apply
-	PermissionProfile *permissions.Profile `json:"permission_profile" swaggerignore:"true"`
+	PermissionProfile *permissions.Profile `json:"permission_profile"`
 	// Proxy mode to use
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
@@ -77,7 +78,7 @@ type updateRequest struct {
 	// Remote server specific fields
 	URL         string             `json:"url,omitempty"`
 	OAuthConfig remoteOAuthConfig  `json:"oauth_config,omitempty"`
-	Headers     []*registry.Header `json:"headers,omitempty" swaggerignore:"true"`
+	Headers     []*registry.Header `json:"headers,omitempty"`
 
 	// HeaderForward configures headers to inject into requests to remote MCP servers.
 	// Use this to add custom headers like X-Tenant-ID or correlation IDs.

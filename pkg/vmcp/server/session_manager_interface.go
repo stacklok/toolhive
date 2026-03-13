@@ -30,4 +30,9 @@ type SessionManager interface {
 	// handlers. This enables session-scoped routing: each tool call goes through the
 	// session's backend connections rather than the global router.
 	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
+
+	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.
+	// Returns (nil, false) if the session does not exist or is still a placeholder.
+	// Used to access session-scoped backend tool metadata (e.g. for conflict validation).
+	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
 }

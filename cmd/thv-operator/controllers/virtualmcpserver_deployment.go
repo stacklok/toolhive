@@ -277,8 +277,10 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
-	// Mount HMAC secret for session token binding (Session Management V2)
-	if vmcp.Spec.Config.Operational != nil && vmcp.Spec.Config.Operational.SessionManagementV2 {
+	// Mount HMAC secret when SessionManagementV2 is enabled (nil = unset = default true).
+	// Skip only when explicitly set to false.
+	op := vmcp.Spec.Config.Operational
+	if op == nil || op.SessionManagementV2 == nil || *op.SessionManagementV2 {
 		env = append(env, r.buildHMACSecretEnvVar(vmcp))
 	}
 

@@ -35,7 +35,7 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		checkHeader   func(t *testing.T, req *http.Request)
 	}{
 		{
-			name: "skips authentication for health checks",
+			name: "injects header for health checks",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &authtypes.HeaderInjectionConfig{
@@ -47,7 +47,7 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
 				t.Helper()
-				assert.Empty(t, req.Header.Get("X-API-Key"), "X-API-Key header should not be set for health checks")
+				assert.Equal(t, "secret-key-123", req.Header.Get("X-API-Key"), "static header must be injected for health checks")
 			},
 		},
 		{

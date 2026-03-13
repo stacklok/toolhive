@@ -282,18 +282,34 @@ func handleSubsequentRequest(
 		return ctx, fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// If the session is a MultiSession, tools are already registered with the SDK via
-	// AddSessionTools and routed by session-scoped handlers. No routing-table
-	// reconstruction is needed — pass through without modifying the context.
+	// If the session is a MultiSession, backend tool calls are routed by session-scoped
+	// handlers registered with the SDK. However, composite tool workflow steps go through
+	// the shared router which requires DiscoveredCapabilities in the context. Inject
+	// capabilities built from the session's routing table so composite workflows can
+	// route backend tool calls correctly.
 	//
-	// TODO(sessionManagementV2): Remove this type coercion check once the sessionManagementV2
-	// migration is complete and all sessions are MultiSession instances. At that point, this
-	// early return becomes the only code path and the VMCPSession fallback below can be deleted.
-	if _, isMulti := rawSess.(vmcpsession.MultiSession); isMulti {
+	// TODO(sessionManagementV2): Remove the VMCPSession fallback below once the
+	// sessionManagementV2 migration is complete and all sessions are MultiSession instances.
+	if multiSess, isMulti := rawSess.(vmcpsession.MultiSession); isMulti {
+		routingTable := multiSess.GetRoutingTable()
+		if routingTable == nil {
+			// Session initialisation not yet complete; no capabilities to inject.
+			// Composite tool calls will fail routing, but backend tool calls are
+			// already registered with the SDK and will succeed.
+			//nolint:gosec // G706: session ID is not an injection vector
+			slog.Debug("multi-session routing table not yet initialised; skipping capability injection",
+				"session_id", sessionID)
+			return ctx, nil
+		}
 		//nolint:gosec // G706: session ID is not an injection vector
-		slog.Debug("session uses session-scoped tool routing; skipping routing-table reconstruction",
-			"session_id", sessionID)
-		return ctx, nil
+		slog.Debug("injecting capabilities from multi-session routing table for composite tool routing",
+			"session_id", sessionID,
+			"tool_count", len(routingTable.Tools))
+		capabilities := &aggregator.AggregatedCapabilities{
+			RoutingTable: routingTable,
+			Tools:        multiSess.Tools(),
+		}
+		return WithDiscoveredCapabilities(ctx, capabilities), nil
 	}
 
 	// Retrieve and validate the VMCPSession for routing-table access.

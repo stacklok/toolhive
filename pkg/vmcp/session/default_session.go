@@ -97,6 +97,12 @@ func (s *defaultMultiSession) BackendSessions() map[string]string {
 	return result
 }
 
+// GetRoutingTable returns the session's routing table.
+// The routing table is immutable after session creation, so no locking is needed.
+func (s *defaultMultiSession) GetRoutingTable() *vmcp.RoutingTable {
+	return s.routingTable
+}
+
 // lookupBackend resolves capName against table, admits the request via the
 // admission queue, and returns the live backend session, the resolved target,
 // and the done function that the caller MUST invoke when the I/O completes.
@@ -141,7 +147,8 @@ func (s *defaultMultiSession) CallTool(
 		return nil, err
 	}
 	defer done()
-	result, err := conn.CallTool(ctx, toolName, arguments, meta)
+	backendToolName := target.GetBackendCapabilityName(toolName)
+	result, err := conn.CallTool(ctx, backendToolName, arguments, meta)
 	if err != nil {
 		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}
@@ -159,7 +166,8 @@ func (s *defaultMultiSession) ReadResource(
 		return nil, err
 	}
 	defer done()
-	result, err := conn.ReadResource(ctx, uri)
+	backendURI := target.GetBackendCapabilityName(uri)
+	result, err := conn.ReadResource(ctx, backendURI)
 	if err != nil {
 		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}
@@ -180,7 +188,8 @@ func (s *defaultMultiSession) GetPrompt(
 		return nil, err
 	}
 	defer done()
-	result, err := conn.GetPrompt(ctx, name, arguments)
+	backendName := target.GetBackendCapabilityName(name)
+	result, err := conn.GetPrompt(ctx, backendName, arguments)
 	if err != nil {
 		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}

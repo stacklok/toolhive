@@ -7,6 +7,7 @@ package virtualmcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -636,6 +637,22 @@ func GetInstrumentedBackendStats(ctx context.Context, c client.Client, namespace
 		stats["bearer_token_requests"] = 1 // Simplified - just check if field exists and > 0
 	}
 	return stats, nil
+}
+
+// GetMockOAuth2Stats queries the /stats endpoint of the mock OAuth2 server (port 8080)
+// and returns the number of client_credentials grant requests recorded so far.
+func GetMockOAuth2Stats(ctx context.Context, c client.Client, namespace, serviceName string) (int, error) {
+	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 8080)
+	if err != nil {
+		return 0, err
+	}
+	var stats struct {
+		ClientCredentialsRequests int `json:"client_credentials_requests"`
+	}
+	if err := json.Unmarshal([]byte(logs), &stats); err != nil {
+		return 0, fmt.Errorf("failed to parse OAuth2 stats JSON %q: %w", logs, err)
+	}
+	return stats.ClientCredentialsRequests, nil
 }
 
 // MockOIDCServerHTTPScript is a mock OIDC server script with HTTP (for testing with private IPs)
@@ -1613,4 +1630,175 @@ func CleanupFakeEmbeddingServer(ctx context.Context, c client.Client, name, name
 	_ = c.Delete(ctx, &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 	})
+}
+
+// MockOAuth2ServerScript is a minimal OAuth2 server that accepts token requests and
+// tracks token request statistics. Designed to be used as the token endpoint for
+// TokenExchange health-check tests.
+//
+// Endpoints:
+//
+//	POST /token  – accepts grant_type=client_credentials (Basic Auth or form body)
+//	              returns {"access_token": "mock-health-check-token", ...}
+//	            – accepts grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+//	              returns {"access_token": "mock-exchanged-token", ..., "issued_token_type": "...access_token"}
+//	GET  /stats  – returns {"token_requests": N, "client_credentials_requests": N, "last_client_id": "..."}
+const MockOAuth2ServerScript = `
+pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
+from flask import Flask, jsonify, request
+import base64
+import sys
+
+app = Flask(__name__)
+
+stats = {
+    "token_requests": 0,
+    "client_credentials_requests": 0,
+    "last_client_id": None,
+}
+
+@app.route('/token', methods=['POST'])
+def token():
+    grant_type = request.form.get('grant_type', '')
+
+    # Extract client credentials from Basic Auth header first
+    client_id = None
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Basic '):
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
+            parts = decoded.split(':', 1)
+            if len(parts) == 2:
+                client_id = parts[0]
+        except Exception:
+            pass
+
+    # Fall back to form body
+    if not client_id:
+        client_id = request.form.get('client_id', '')
+
+    stats['token_requests'] += 1
+    stats['last_client_id'] = client_id
+
+    print(f"Token request #{stats['token_requests']}: grant_type={grant_type} client_id={client_id}", flush=True)
+    sys.stdout.flush()
+
+    if grant_type == 'client_credentials':
+        stats['client_credentials_requests'] += 1
+        return jsonify({
+            "access_token": "mock-health-check-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })
+
+    if grant_type == 'urn:ietf:params:oauth:grant-type:token-exchange':
+        return jsonify({
+            "access_token": "mock-exchanged-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        })
+
+    return jsonify({"error": "unsupported_grant_type"}), 400
+
+@app.route('/stats')
+def get_stats():
+    print(f"Stats request: {stats}", flush=True)
+    sys.stdout.flush()
+    return jsonify(stats)
+
+if __name__ == '__main__':
+    print("Mock OAuth2 server starting on port 8080", flush=True)
+    sys.stdout.flush()
+    app.run(host='0.0.0.0', port=8080)
+PYTHON_SCRIPT
+`
+
+// DeployMockOAuth2Server deploys a minimal OAuth2 server in-cluster that accepts
+// client_credentials and token-exchange grant requests, and exposes a /stats endpoint.
+// The service is ClusterIP — use GetMockOAuth2Stats to query /stats via a curl pod
+// rather than relying on NodePort reachability from the test process.
+//
+// Returns:
+//   - inClusterTokenURL: the /token URL reachable from inside the cluster
+//   - cleanup:           function that removes all created resources
+func DeployMockOAuth2Server(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) (inClusterTokenURL string, cleanup func()) {
+	inClusterTokenURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080/token", name, namespace)
+
+	ginkgo.By("Creating mock OAuth2 server pod: " + name)
+	gomega.Expect(c.Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app": name},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:    "mock-oauth2",
+				Image:   images.PythonImage,
+				Command: []string{"sh", "-c"},
+				Args:    []string{MockOAuth2ServerScript},
+				Ports:   []corev1.ContainerPort{{ContainerPort: 8080, Name: "http"}},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/stats",
+							Port: intstr.FromInt(8080),
+						},
+					},
+					InitialDelaySeconds: 5,
+					PeriodSeconds:       2,
+					FailureThreshold:    30,
+				},
+			}},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating mock OAuth2 server ClusterIP service: " + name)
+	gomega.Expect(c.Create(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": name},
+			Ports: []corev1.ServicePort{{
+				Port:       8080,
+				TargetPort: intstr.FromInt(8080),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for mock OAuth2 server to be ready")
+	gomega.Eventually(func() bool {
+		pod := &corev1.Pod{}
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod); err != nil {
+			return false
+		}
+		if pod.Status.Phase != corev1.PodRunning {
+			return false
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+		return false
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "mock OAuth2 server should be ready")
+
+	cleanup = func() {
+		_ = c.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		gomega.Eventually(func() bool {
+			pod := &corev1.Pod{}
+			svcObj := &corev1.Service{}
+			podGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod))
+			svcGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, svcObj))
+			return podGone && svcGone
+		}, timeout, pollingInterval).Should(gomega.BeTrue(), "mock OAuth2 pod and service should be fully deleted")
+	}
+	return inClusterTokenURL, cleanup
 }

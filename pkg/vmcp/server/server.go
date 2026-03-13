@@ -344,32 +344,23 @@ func New(
 	stateStore := composer.NewInMemoryStateStore(5*time.Minute, 1*time.Hour)
 	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore, workflowAuditor)
 
-	// Skip workflow validation and executor creation when SessionManagementV2 is enabled
-	// (composite tools are not supported in V2 path)
+	// Validate workflows and create executors (fail fast on invalid workflows)
 	var workflowExecutors map[string]adapter.WorkflowExecutor
 	var err error
-	if cfg.SessionManagementV2 && len(workflowDefs) > 0 {
-		slog.Warn("SessionManagementV2 does not support composite tools; skipping workflow validation",
-			"workflow_count", len(workflowDefs))
-		workflowDefs = nil
-		workflowExecutors = nil
-	} else {
-		// Validate workflows and create executors (fail fast on invalid workflows)
-		workflowDefs, workflowExecutors, err = validateAndCreateExecutors(workflowComposer, workflowDefs)
-		if err != nil {
-			return nil, fmt.Errorf("workflow validation failed: %w", err)
-		}
+	workflowDefs, workflowExecutors, err = validateAndCreateExecutors(workflowComposer, workflowDefs)
+	if err != nil {
+		return nil, fmt.Errorf("workflow validation failed: %w", err)
+	}
 
-		// Decorate workflow executors with telemetry if provider is configured
-		if cfg.TelemetryProvider != nil && len(workflowExecutors) > 0 {
-			workflowExecutors, err = monitorWorkflowExecutors(
-				cfg.TelemetryProvider.MeterProvider(),
-				cfg.TelemetryProvider.TracerProvider(),
-				workflowExecutors,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
-			}
+	// Decorate workflow executors with telemetry if provider is configured
+	if cfg.TelemetryProvider != nil && len(workflowExecutors) > 0 {
+		workflowExecutors, err = monitorWorkflowExecutors(
+			cfg.TelemetryProvider.MeterProvider(),
+			cfg.TelemetryProvider.TracerProvider(),
+			workflowExecutors,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
 		}
 	}
 
@@ -410,12 +401,6 @@ func New(
 		vmcpSessMgr = sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry)
 		slog.Info("session-scoped backend lifecycle enabled")
 
-		// Warn about incompatible optimizer configuration and disable it
-		if cfg.OptimizerConfig != nil {
-			slog.Warn("SessionManagementV2 does not support optimizer mode; optimizer configuration will be ignored")
-			cfg.OptimizerConfig = nil // Prevent optimizer initialization in Start()
-		}
-		// Note: Composite tools warning and disabling happens earlier before validation
 	}
 
 	// Create Server instance
@@ -1246,26 +1231,23 @@ func (s *Server) handleSessionRegistration(
 // It is invoked from handleSessionRegistration and:
 //  1. Creates a MultiSession with real backend HTTP connections via CreateSession().
 //  2. Retrieves SDK-format tools with session-scoped routing handlers.
-//  3. Registers the tools with the SDK MCPServer for the session.
+//  3. Registers backend tools and composite tools with the SDK MCPServer for the session.
 //
 // Tool calls are routed directly through the session's backend connections
 // rather than through the global router and discovery middleware.
+// Composite tool executors use the shared backend client and router.
 //
 // # Current capability surface
 //
-// Only backend tools are registered in this path. The following capabilities
-// are not yet supported and require future work:
+// The following capabilities are not yet supported and require future work:
 //
 //   - Resources: session-scoped resource handlers need to be added to
 //     vmcpSessionManager (analogous to GetAdaptedTools) before resources
 //     from MultiSession.Resources() can be registered via AddSessionResources.
 //
-//   - Composite tools: workflow-backed tools defined in s.workflowDefs are
-//     not wired into the V2 path. They need session-scoped executor adapters.
-//
-//   - Optimizer mode: the optimizer wraps all tools into find_tool/call_tool
-//     meta-tools. The optimizer path (injectOptimizerCapabilities) is not
-//     called here and is unsupported when SessionManagementV2 is enabled.
+//   - Optimizer mode: when configured, all tools (backend + composite) are
+//     indexed into the optimizer and only find_tool/call_tool are exposed,
+//     matching the v1 path but using session-scoped tool handlers.
 //
 //   - Prompts: not supported in either path until the SDK adds
 //     AddSessionPrompts.
@@ -1312,20 +1294,89 @@ func (s *Server) handleSessionRegistrationV2(ctx context.Context, session server
 		return retErr
 	}
 
-	if len(adaptedTools) > 0 {
-		// Set tools directly on the session to avoid stale notifications.
-		// See injectCapabilities for full rationale.
-		if retErr = setSessionToolsDirect(session, adaptedTools); retErr != nil {
-			slog.Error("failed to add session tools",
-				"session_id", sessionID,
-				"error", retErr)
-			return retErr
+	// Collect composite SDK tools (with name-collision check against backend tools).
+	compositeSDKTools, retErr := s.collectCompositeToolsV2(sessionID)
+	if retErr != nil {
+		return retErr
+	}
+
+	return s.injectV2Tools(ctx, session, adaptedTools, compositeSDKTools)
+}
+
+// collectCompositeToolsV2 converts workflow definitions to SDK tools for the SMv2 path,
+// validating that no composite tool name collides with a backend tool name.
+// Returns an empty slice (not an error) if no workflow defs are configured or conflicts are found.
+func (s *Server) collectCompositeToolsV2(sessionID string) ([]server.ServerTool, error) {
+	if len(s.workflowDefs) == 0 {
+		return nil, nil
+	}
+
+	compositeTools := convertWorkflowDefsToTools(s.workflowDefs)
+	multiSess, hasSess := s.vmcpSessionMgr.GetMultiSession(sessionID)
+	if !hasSess {
+		slog.Error("session not found after creation; skipping composite tools",
+			"session_id", sessionID)
+		return nil, nil
+	}
+	if err := validateNoToolConflicts(multiSess.Tools(), compositeTools); err != nil {
+		slog.Error("composite tool name conflict detected; skipping composite tools",
+			"session_id", sessionID,
+			"error", err)
+		return nil, nil
+	}
+
+	sdkTools, err := s.capabilityAdapter.ToCompositeToolSDKTools(compositeTools, s.workflowExecutors)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert composite tools: %w", err)
+	}
+	return sdkTools, nil
+}
+
+// injectV2Tools registers backend and composite tools into the session.
+// When the optimizer is configured, all tools are indexed and only
+// find_tool/call_tool are exposed; otherwise tools are registered directly.
+func (s *Server) injectV2Tools(
+	ctx context.Context,
+	session server.ClientSession,
+	adaptedTools []server.ServerTool,
+	compositeSDKTools []server.ServerTool,
+) error {
+	sessionID := session.SessionID()
+
+	if s.config.OptimizerFactory != nil {
+		allTools := append(adaptedTools, compositeSDKTools...)
+		opt, err := s.config.OptimizerFactory(ctx, allTools)
+		if err != nil {
+			return fmt.Errorf("failed to create optimizer: %w", err)
 		}
+		if err = setSessionToolsDirect(session, adapter.CreateOptimizerTools(opt)); err != nil {
+			slog.Error("failed to add optimizer tools to session", "session_id", sessionID, "error", err)
+			return err
+		}
+		slog.Info("session capabilities injected (optimizer mode)",
+			"session_id", sessionID,
+			"indexed_tool_count", len(allTools))
+		return nil
+	}
+
+	if len(adaptedTools) > 0 {
+		if err := setSessionToolsDirect(session, adaptedTools); err != nil {
+			slog.Error("failed to add session tools", "session_id", sessionID, "error", err)
+			return err
+		}
+	}
+	if len(compositeSDKTools) > 0 {
+		if err := setSessionToolsDirect(session, compositeSDKTools); err != nil {
+			slog.Error("failed to add composite tools to session", "session_id", sessionID, "error", err)
+			return err
+		}
+		slog.Debug("added composite tools to session", "session_id", sessionID, "count", len(compositeSDKTools))
 	}
 
 	slog.Info("session capabilities injected",
 		"session_id", sessionID,
-		"tool_count", len(adaptedTools))
+		"tool_count", len(adaptedTools),
+		"composite_tool_count", len(compositeSDKTools))
 	return nil
 }
 

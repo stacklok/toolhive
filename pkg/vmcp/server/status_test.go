@@ -241,3 +241,52 @@ func TestStatusEndpoint_BackendFieldMapping(t *testing.T) {
 	assert.Equal(t, "streamable-http", b.Transport)
 	assert.Equal(t, authtypes.StrategyTypeTokenExchange, b.AuthType)
 }
+
+func TestStatusEndpoint_NoCredentialsExposed(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{{
+		ID:           "b1",
+		Name:         "secure-backend",
+		BaseURL:      "https://secret-internal-url.example.com:9090/mcp",
+		HealthStatus: vmcp.BackendHealthy,
+		AuthConfig: &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeTokenExchange,
+		},
+	}}
+	srv := createTestServerWithBackends(t, backends, "")
+
+	resp, err := http.Get("http://" + srv.Address() + "/status")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Read raw response body to check what's exposed
+	var rawResponse map[string]interface{}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rawResponse))
+
+	// Verify no sensitive fields are exposed
+	respBackends, ok := rawResponse["backends"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, respBackends, 1)
+
+	backend, ok := respBackends[0].(map[string]interface{})
+	require.True(t, ok, "expected backends[0] to be a JSON object")
+
+	// Should NOT expose: BaseURL, credentials, tokens, internal URLs
+	_, hasBaseURL := backend["base_url"]
+	_, hasURL := backend["url"]
+	_, hasToken := backend["token"]
+	_, hasCredentials := backend["credentials"]
+
+	assert.False(t, hasBaseURL, "BaseURL should not be exposed")
+	assert.False(t, hasURL, "URL should not be exposed")
+	assert.False(t, hasToken, "Token should not be exposed")
+	assert.False(t, hasCredentials, "Credentials should not be exposed")
+
+	// Should expose: Name, Health, Transport, AuthType (safe metadata)
+	assert.Contains(t, backend, "name")
+	assert.Contains(t, backend, "health")
+	assert.Contains(t, backend, "transport")
+	assert.Contains(t, backend, "auth_type")
+}

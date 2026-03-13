@@ -18,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -68,6 +70,9 @@ type Manager struct {
 	storage         *transportsession.Manager
 	factory         vmcpsession.MultiSessionFactory
 	backendRegistry vmcp.BackendRegistry
+
+	// storageWarningOnce ensures we only log the distributed storage warning once
+	storageWarningOnce sync.Once
 }
 
 // New creates a Manager backed by the given transport
@@ -203,9 +208,14 @@ func (sm *Manager) CreateSession(
 		return nil, fmt.Errorf("Manager.CreateSession: failed to replace placeholder: %w", err)
 	}
 
-	slog.Debug("Manager: created multi-session",
+	backendNames := make([]string, len(backends))
+	for i, b := range backends {
+		backendNames[i] = b.Name
+	}
+	slog.Info("Manager: session created",
 		"session_id", sessionID,
-		"backend_count", len(backends))
+		"backend_count", len(backends),
+		"backends", backendNames)
 	return sess, nil
 }
 
@@ -268,6 +278,7 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 
 	// If the session is a fully-formed MultiSession, close its backend connections.
 	if multiSess, ok := sess.(vmcpsession.MultiSession); ok {
+		backendSessions := multiSess.BackendSessions()
 		if closeErr := multiSess.Close(); closeErr != nil {
 			slog.Warn("Manager.Terminate: error closing multi-session backend connections",
 				"session_id", sessionID, "error", closeErr)
@@ -276,37 +287,39 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 		if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
-	} else {
-		// Placeholder session (not yet upgraded to MultiSession).
-		//
-		// This handles the race condition where a client sends DELETE between
-		// Generate() (Phase 1) and CreateSession() (Phase 2). The two-phase
-		// pattern creates a window where the session exists as a placeholder:
-		//
-		//   1. Client sends initialize → Generate() creates placeholder
-		//   2. Client sends DELETE before OnRegisterSession hook fires
-		//   3. We mark the placeholder as terminated (don't delete it)
-		//   4. CreateSession() hook fires → sees terminated flag → fails fast
-		//
-		// Without this branch, CreateSession() would open backend HTTP connections
-		// for a session the client already terminated, silently resurrecting it.
-		//
-		// We mark (not delete) so Validate() can return isTerminated=true, which
-		// lets the SDK distinguish "actively terminated" from "never existed".
-		// TTL cleanup will remove the placeholder later.
-		sess.SetMetadata(MetadataKeyTerminated, MetadataValTrue)
-		if replaceErr := sm.storage.UpsertSession(sess); replaceErr != nil {
-			slog.Warn("Manager.Terminate: failed to persist terminated flag for placeholder; attempting delete fallback",
-				"session_id", sessionID, "error", replaceErr)
-			if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
-				return false, fmt.Errorf(
-					"Manager.Terminate: failed to persist terminated flag and delete placeholder: upsertErr=%v, deleteErr=%w",
-					replaceErr, deleteErr)
-			}
+		slog.Info("Manager: session terminated", "session_id", sessionID, "backend_count", len(backendSessions))
+		return false, nil
+	}
+
+	// Placeholder session (not yet upgraded to MultiSession).
+	//
+	// This handles the race condition where a client sends DELETE between
+	// Generate() (Phase 1) and CreateSession() (Phase 2). The two-phase
+	// pattern creates a window where the session exists as a placeholder:
+	//
+	//   1. Client sends initialize → Generate() creates placeholder
+	//   2. Client sends DELETE before OnRegisterSession hook fires
+	//   3. We mark the placeholder as terminated (don't delete it)
+	//   4. CreateSession() hook fires → sees terminated flag → fails fast
+	//
+	// Without this branch, CreateSession() would open backend HTTP connections
+	// for a session the client already terminated, silently resurrecting it.
+	//
+	// We mark (not delete) so Validate() can return isTerminated=true, which
+	// lets the SDK distinguish "actively terminated" from "never existed".
+	// TTL cleanup will remove the placeholder later.
+	sess.SetMetadata(MetadataKeyTerminated, MetadataValTrue)
+	if replaceErr := sm.storage.UpsertSession(sess); replaceErr != nil {
+		slog.Warn("Manager.Terminate: failed to persist terminated flag for placeholder; attempting delete fallback",
+			"session_id", sessionID, "error", replaceErr)
+		if deleteErr := sm.storage.Delete(sessionID); deleteErr != nil {
+			return false, fmt.Errorf(
+				"Manager.Terminate: failed to persist terminated flag and delete placeholder: upsertErr=%v, deleteErr=%w",
+				replaceErr, deleteErr)
 		}
 	}
 
-	slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
+	slog.Info("Manager: placeholder session terminated", "session_id", sessionID)
 	return false, nil
 }
 
@@ -403,4 +416,68 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 	}
 
 	return sdkTools, nil
+}
+
+// StartPeriodicLogging starts a background goroutine that logs active session
+// counts at the given interval until ctx is cancelled.
+//
+// This provides operational visibility into session load without exposing
+// session identifiers over the network.
+func (sm *Manager) StartPeriodicLogging(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		slog.Warn("Manager: StartPeriodicLogging called with non-positive interval, defaulting to 1m", "interval", interval)
+		interval = time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sm.logActiveSessions()
+			}
+		}
+	}()
+}
+
+// logActiveSessions logs a summary of all active vMCP sessions on this node.
+//
+// Storage Backend Limitation: Range() only works with LocalStorage. With
+// distributed backends (Redis, Valkey) it is a no-op and 0 sessions will be
+// reported even if sessions exist in the cluster. This is expected: sessions
+// hold in-process HTTP connections and are inherently node-local.
+func (sm *Manager) logActiveSessions() {
+	if !sm.storage.SupportsRange() {
+		sm.storageWarningOnce.Do(func() {
+			slog.Warn("Manager: session enumeration unavailable with current storage backend",
+				"reason", "Range() only works with LocalStorage; distributed storage (Redis, Valkey) cannot enumerate sessions",
+				"note", "Sessions are node-local; this is expected behavior")
+		})
+		return
+	}
+
+	activeCount := 0
+	backendSessionCounts := make(map[string]int) // backend ID -> session count
+
+	sm.storage.Range(func(key, value interface{}) bool {
+		_, ok := key.(string)
+		if !ok {
+			return true
+		}
+
+		multiSess, ok := value.(vmcpsession.MultiSession)
+		if !ok {
+			return true // placeholder, skip
+		}
+
+		activeCount++
+		for backendID := range multiSess.BackendSessions() {
+			backendSessionCounts[backendID]++
+		}
+		return true
+	})
+
+	slog.Info("Manager: active sessions", "total_sessions", activeCount, "backend_session_counts", backendSessionCounts)
 }

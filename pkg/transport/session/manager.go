@@ -219,6 +219,13 @@ func (m *Manager) Stop() error {
 	return nil
 }
 
+// SupportsRange reports whether the current storage backend supports Range().
+// Returns true only for LocalStorage; distributed backends (Redis, Valkey) return false.
+func (m *Manager) SupportsRange() bool {
+	_, ok := m.storage.(*LocalStorage)
+	return ok
+}
+
 // Range calls f sequentially for each key and value present in the map.
 // If f returns false, range stops the iteration.
 //

@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -30,4 +31,9 @@ type SessionManager interface {
 	// handlers. This enables session-scoped routing: each tool call goes through the
 	// session's backend connections rather than the global router.
 	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
+
+	// StartPeriodicLogging starts a background goroutine that periodically logs
+	// the active session count and per-backend session counts at the given interval.
+	// The goroutine stops when ctx is cancelled.
+	StartPeriodicLogging(ctx context.Context, interval time.Duration)
 }

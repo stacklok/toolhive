@@ -21,6 +21,10 @@ func TestDefaultOperationalConfig(t *testing.T) {
 	require.NotNil(t, cfg.FailureHandling)
 	require.NotNil(t, cfg.FailureHandling.CircuitBreaker)
 
+	// SessionManagementV2 defaults to *true
+	require.NotNil(t, cfg.SessionManagementV2, "SessionManagementV2 should be non-nil by default")
+	assert.True(t, *cfg.SessionManagementV2, "SessionManagementV2 should default to true")
+
 	// Verify all defaults match constants
 	assert.Equal(t, Duration(defaultTimeoutDefault), cfg.Timeouts.Default)
 	assert.Nil(t, cfg.Timeouts.PerWorkload)
@@ -240,4 +244,28 @@ func TestEnsureOperationalDefaults_Idempotent(t *testing.T) {
 	assert.Equal(t, Duration(defaultTimeoutDefault), cfg.Operational.Timeouts.Default)
 	assert.Equal(t, Duration(defaultHealthCheckInterval), cfg.Operational.FailureHandling.HealthCheckInterval)
 	assert.Equal(t, defaultUnhealthyThreshold, cfg.Operational.FailureHandling.UnhealthyThreshold)
+}
+
+func TestEnsureOperationalDefaults_SessionManagementV2OptOut(t *testing.T) {
+	t.Parallel()
+
+	// Explicit *false must survive EnsureOperationalDefaults (v1 opt-out).
+	falseBool := false
+	cfg := &Config{
+		Name:  "test-vmcp",
+		Group: "test-group",
+		Operational: &OperationalConfig{
+			SessionManagementV2: &falseBool,
+		},
+	}
+
+	cfg.EnsureOperationalDefaults()
+
+	require.NotNil(t, cfg.Operational.SessionManagementV2, "SessionManagementV2 should not be nil")
+	assert.False(t, *cfg.Operational.SessionManagementV2,
+		"explicit false opt-out must be preserved after EnsureOperationalDefaults")
+	// Pointer identity must be preserved: callers that retain the original *bool
+	// must see the updated value through their existing pointer, not a new allocation.
+	assert.Same(t, &falseBool, cfg.Operational.SessionManagementV2,
+		"EnsureOperationalDefaults must not change the pointer identity of SessionManagementV2")
 }

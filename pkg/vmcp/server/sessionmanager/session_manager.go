@@ -70,8 +70,8 @@ type Manager struct {
 	backendRegistry vmcp.BackendRegistry
 }
 
-// New creates a Manager backed by the given transport
-// manager, session factory, and backend registry.
+// New creates a Manager backed by the given transport manager, session factory,
+// and backend registry.
 func New(
 	storage *transportsession.Manager,
 	factory vmcpsession.MultiSessionFactory,
@@ -325,8 +325,14 @@ func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, 
 // GetAdaptedTools returns SDK-format tools for the given session, with handlers
 // that delegate tool invocations directly to the session's CallTool() method.
 //
-// This enables session-scoped routing: each tool call goes through the session's
-// backend connections rather than the global router.
+// When the session factory is configured with an aggregator (WithAggregator),
+// tools are in their final resolved form — overrides and conflict resolution
+// applied via ProcessPreQueriedCapabilities. Each handler passes the resolved
+// tool name to CallTool, which translates it back to the original backend name
+// via GetBackendCapabilityName.
+//
+// Without an aggregator, raw backend tool names are used as-is (no overrides
+// or conflict resolution applied).
 func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error) {
 	multiSess, ok := sm.GetMultiSession(sessionID)
 	if !ok {
@@ -337,8 +343,6 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 	sdkTools := make([]mcpserver.ServerTool, 0, len(domainTools))
 
 	for _, domainTool := range domainTools {
-		// Marshal InputSchema to JSON so the SDK exposes the full parameter
-		// schema to clients (matching the behaviour of CapabilityAdapter.ToSDKTools).
 		schemaJSON, err := json.Marshal(domainTool.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("Manager.GetAdaptedTools: failed to marshal schema for tool %s: %w", domainTool.Name, err)
@@ -350,32 +354,25 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 			RawInputSchema: schemaJSON,
 		}
 
-		// Build the session-scoped handler that captures multiSess, sessionID, and toolName
-		// by value. Using the captured toolName (not req.Params.Name) ensures
-		// routing is driven by the server-registered name, not client-supplied input.
 		capturedSess := multiSess
 		capturedSessionID := sessionID
-		toolName := domainTool.Name
+		capturedToolName := domainTool.Name
 		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, ok := req.Params.Arguments.(map[string]any)
 			if !ok {
 				wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, req.Params.Arguments)
-				slog.Warn("invalid arguments for tool", "tool", toolName, "error", wrappedErr)
+				slog.Warn("invalid arguments for tool", "tool", capturedToolName, "error", wrappedErr)
 				return mcp.NewToolResultError(wrappedErr.Error()), nil
 			}
 
 			meta := conversion.FromMCPMeta(req.Params.Meta)
-
-			// Extract caller identity from context
 			caller, _ := auth.IdentityFromContext(ctx)
 
-			result, callErr := capturedSess.CallTool(ctx, caller, toolName, args, meta)
+			result, callErr := capturedSess.CallTool(ctx, caller, capturedToolName, args, meta)
 			if callErr != nil {
-				// Handle authorization errors - terminate session immediately
 				if errors.Is(callErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(callErr, sessiontypes.ErrNilCaller) {
 					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "tool", toolName, "error", callErr)
-					// Terminate session to prevent further unauthorized attempts
+						"session_id", capturedSessionID, "tool", capturedToolName, "error", callErr)
 					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
 						slog.Error("failed to terminate session after auth failure",
 							"session_id", capturedSessionID, "error", termErr)

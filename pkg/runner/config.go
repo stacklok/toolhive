@@ -83,6 +83,9 @@ type RunConfig struct {
 	// TargetHost is the host to forward traffic to (only applicable to SSE transport)
 	TargetHost string `json:"target_host,omitempty" yaml:"target_host,omitempty"`
 
+	// Publish lists ports to publish to the host in format "hostPort:containerPort"
+	Publish []string `json:"publish,omitempty" yaml:"publish,omitempty"`
+
 	// PermissionProfileNameOrPath is the name or path of the permission profile
 	PermissionProfileNameOrPath string `json:"permission_profile_name_or_path,omitempty" yaml:"permission_profile_name_or_path,omitempty"` //nolint:lll
 

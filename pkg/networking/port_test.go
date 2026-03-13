@@ -71,16 +71,78 @@ func TestValidateCallbackPort(t *testing.T) {
 			err := networking.ValidateCallbackPort(tt.port, tt.clientID)
 
 			if tt.wantError {
-				if err == nil {
-					t.Errorf("ValidateCallbackPort() expected error but got nil")
-				} else if tt.errorMsg != "" && err.Error() != tt.errorMsg {
-					t.Errorf("ValidateCallbackPort() error = %v, want %v", err.Error(), tt.errorMsg)
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					require.EqualError(t, err, tt.errorMsg)
 				}
 			} else {
-				if err != nil {
-					t.Errorf("ValidateCallbackPort() unexpected error = %v", err)
-				}
+				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestParsePortSpec(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		portSpec          string
+		expectedHostPort  string
+		expectedContainer int
+		wantError         bool
+	}{
+		{
+			name:              "host:container",
+			portSpec:          "8003:8001",
+			expectedHostPort:  "8003",
+			expectedContainer: 8001,
+			wantError:         false,
+		},
+		{
+			name:              "container only",
+			portSpec:          "8001",
+			expectedHostPort:  "", // Random
+			expectedContainer: 8001,
+			wantError:         false,
+		},
+		{
+			name:              "invalid format",
+			portSpec:          "invalid",
+			expectedHostPort:  "",
+			expectedContainer: 0,
+			wantError:         true,
+		},
+		{
+			name:              "invalid host port",
+			portSpec:          "abc:8001",
+			expectedHostPort:  "",
+			expectedContainer: 0,
+			wantError:         true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			hostPort, containerPort, err := networking.ParsePortSpec(tt.portSpec)
+
+			if tt.wantError {
+				require.Error(t, err, "ParsePortSpec(%s) expected error", tt.portSpec)
+				return
+			}
+
+			require.NoError(t, err, "ParsePortSpec(%s) unexpected error", tt.portSpec)
+
+			if tt.expectedHostPort != "" {
+				require.Equal(t, tt.expectedHostPort, hostPort, "ParsePortSpec(%s) unexpected host port", tt.portSpec)
+			} else {
+				require.NotEmpty(t, hostPort, "ParsePortSpec(%s) hostPort is empty, want random port", tt.portSpec)
+			}
+
+			require.Equal(t, tt.expectedContainer, containerPort, "ParsePortSpec(%s) unexpected container port", tt.portSpec)
 		})
 	}
 }

@@ -793,6 +793,17 @@ const docTemplate = `{
                     },
                     "status": {
                         "description": "Status is the current status of the workload.",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
                         "type": "string"
                     },
                     "status_context": {
@@ -809,6 +820,12 @@ const docTemplate = `{
                     },
                     "transport_type": {
                         "description": "TransportType is the type of transport used for this workload.",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
                         "type": "string"
                     },
                     "url": {
@@ -979,6 +996,10 @@ const docTemplate = `{
                     },
                     "proxy_mode": {
                         "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                        "enum": [
+                            "sse",
+                            "streamable-http"
+                        ],
                         "type": "string"
                     },
                     "remote_auth_config": {
@@ -1038,6 +1059,12 @@ const docTemplate = `{
                     },
                     "transport": {
                         "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
                         "type": "string"
                     },
                     "trust_proxy_headers": {
@@ -2340,6 +2367,17 @@ const docTemplate = `{
                 "properties": {
                     "status": {
                         "description": "Current status of the workload",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
                         "type": "string"
                     }
                 },

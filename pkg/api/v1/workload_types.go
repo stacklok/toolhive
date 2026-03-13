@@ -30,7 +30,7 @@ type workloadListResponse struct {
 //	@Description	Response containing workload status information
 type workloadStatusResponse struct {
 	// Current status of the workload
-	Status runtime.WorkloadStatus `json:"status"`
+	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated"`
 }
 
 // updateRequest represents the request to update an existing workload

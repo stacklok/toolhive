@@ -772,6 +772,16 @@ components:
           type: string
         status:
           description: Status is the current status of the workload.
+          enum:
+          - running
+          - stopped
+          - error
+          - starting
+          - stopping
+          - unhealthy
+          - removing
+          - unknown
+          - unauthenticated
           type: string
         status_context:
           description: |-
@@ -786,6 +796,11 @@ components:
           uniqueItems: false
         transport_type:
           description: TransportType is the type of transport used for this workload.
+          enum:
+          - stdio
+          - sse
+          - streamable-http
+          - inspector
           type: string
         url:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
@@ -935,6 +950,9 @@ components:
           description: |-
             ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
             Note: "sse" is deprecated; use "streamable-http" instead.
+          enum:
+          - sse
+          - streamable-http
           type: string
         remote_auth_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config'
@@ -988,6 +1006,11 @@ components:
           type: object
         transport:
           description: Transport is the transport mode (stdio, sse, or streamable-http)
+          enum:
+          - stdio
+          - sse
+          - streamable-http
+          - inspector
           type: string
         trust_proxy_headers:
           description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
@@ -2008,6 +2031,16 @@ components:
       properties:
         status:
           description: Current status of the workload
+          enum:
+          - running
+          - stopped
+          - error
+          - starting
+          - stopping
+          - unhealthy
+          - removing
+          - unknown
+          - unauthenticated
           type: string
       type: object
     registry.EnvVar:

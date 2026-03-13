@@ -103,18 +103,6 @@ func newFakeFactory(tools []vmcp.Tool) *fakeMultiSessionFactory {
 	}
 }
 
-// MakeSession implements MultiSessionFactory (auto-generates ID).
-func (f *fakeMultiSessionFactory) MakeSession(
-	_ context.Context, _ *auth.Identity, _ []*vmcp.Backend,
-) (vmcpsession.MultiSession, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	sess := newFakeMultiSession(transportsession.NewStreamableSession("auto-id"), f.tools)
-	f.createdSessions["auto-id"] = sess
-	return sess, nil
-}
-
 // MakeSessionWithID implements MultiSessionFactory.
 func (f *fakeMultiSessionFactory) MakeSessionWithID(
 	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
@@ -207,8 +195,8 @@ func newTestTransportManager(t *testing.T) *transportsession.Manager {
 	return mgr
 }
 
-// newTestVMCPSessionManager is a convenience constructor for tests.
-func newTestVMCPSessionManager(
+// newTestSessionManager is a convenience constructor for tests.
+func newTestSessionManager(
 	t *testing.T,
 	factory vmcpsession.MultiSessionFactory,
 	registry vmcp.BackendRegistry,
@@ -222,7 +210,7 @@ func newTestVMCPSessionManager(
 // Tests: Generate
 // ---------------------------------------------------------------------------
 
-func TestVMCPSessionManager_Generate(t *testing.T) {
+func TestSessionManager_Generate(t *testing.T) {
 	t.Parallel()
 
 	t.Run("stores placeholder and returns valid UUID", func(t *testing.T) {
@@ -230,7 +218,7 @@ func TestVMCPSessionManager_Generate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, storage := newTestVMCPSessionManager(t, factory, registry)
+		sm, storage := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 
@@ -266,7 +254,7 @@ func TestVMCPSessionManager_Generate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		id1 := sm.Generate()
 		id2 := sm.Generate()
@@ -285,7 +273,7 @@ func TestVMCPSessionManager_Generate(t *testing.T) {
 // Tests: CreateSession
 // ---------------------------------------------------------------------------
 
-func TestVMCPSessionManager_CreateSession(t *testing.T) {
+func TestSessionManager_CreateSession(t *testing.T) {
 	t.Parallel()
 
 	t.Run("replaces placeholder with MultiSession", func(t *testing.T) {
@@ -294,7 +282,7 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "my-tool", Description: "does stuff"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, storage := newTestVMCPSessionManager(t, factory, registry)
+		sm, storage := newTestSessionManager(t, factory, registry)
 
 		// Generate placeholder.
 		sessionID := sm.Generate()
@@ -318,7 +306,7 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		_, err := sm.CreateSession(context.Background(), "")
 		require.Error(t, err)
@@ -332,7 +320,7 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 		factory := newFakeFactory(nil)
 		factory.err = factoryErr
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		// Generate a valid placeholder so the fast-fail guards pass and the
 		// error comes from the factory, not from a missing session entry.
@@ -350,7 +338,7 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "tool-a"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, storage := newTestVMCPSessionManager(t, factory, registry)
+		sm, storage := newTestSessionManager(t, factory, registry)
 
 		// Generate a placeholder and then delete it entirely — simulates a concurrent
 		// TTL expiry or a client DELETE that removes the record before the hook fires.
@@ -374,7 +362,7 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "tool-a"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		// Generate a placeholder and terminate it — simulates a client DELETE
 		// arriving before the OnRegisterSession hook fires. The placeholder
@@ -405,7 +393,7 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 		// but before MakeSessionWithID completes.
 		factory.delay = 50 * time.Millisecond
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		// Generate a placeholder.
 		sessionID := sm.Generate()
@@ -445,7 +433,7 @@ func TestVMCPSessionManager_CreateSession(t *testing.T) {
 // Tests: Validate
 // ---------------------------------------------------------------------------
 
-func TestVMCPSessionManager_Validate(t *testing.T) {
+func TestSessionManager_Validate(t *testing.T) {
 	t.Parallel()
 
 	t.Run("returns error for empty session ID", func(t *testing.T) {
@@ -453,7 +441,7 @@ func TestVMCPSessionManager_Validate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		isTerminated, err := sm.Validate("")
 		require.Error(t, err)
@@ -466,7 +454,7 @@ func TestVMCPSessionManager_Validate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		isTerminated, err := sm.Validate("non-existent-id")
 		require.Error(t, err)
@@ -479,7 +467,7 @@ func TestVMCPSessionManager_Validate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
@@ -494,7 +482,7 @@ func TestVMCPSessionManager_Validate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
@@ -515,7 +503,7 @@ func TestVMCPSessionManager_Validate(t *testing.T) {
 // Tests: Terminate
 // ---------------------------------------------------------------------------
 
-func TestVMCPSessionManager_Terminate(t *testing.T) {
+func TestSessionManager_Terminate(t *testing.T) {
 	t.Parallel()
 
 	t.Run("returns error for empty session ID", func(t *testing.T) {
@@ -523,7 +511,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		isNotAllowed, err := sm.Terminate("")
 		require.Error(t, err)
@@ -536,7 +524,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		isNotAllowed, err := sm.Terminate("ghost-session")
 		require.NoError(t, err)
@@ -549,7 +537,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "t1", Description: "tool 1"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
@@ -575,7 +563,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, storage := newTestVMCPSessionManager(t, factory, registry)
+		sm, storage := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
@@ -600,7 +588,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, storage := newTestVMCPSessionManager(t, factory, registry)
+		sm, storage := newTestSessionManager(t, factory, registry)
 
 		// Generate a placeholder (no CreateSession called).
 		sessionID := sm.Generate()
@@ -694,7 +682,7 @@ func TestVMCPSessionManager_Terminate(t *testing.T) {
 // Tests: GetMultiSession
 // ---------------------------------------------------------------------------
 
-func TestVMCPSessionManager_GetMultiSession(t *testing.T) {
+func TestSessionManager_GetMultiSession(t *testing.T) {
 	t.Parallel()
 
 	t.Run("returns nil for unknown session", func(t *testing.T) {
@@ -702,7 +690,7 @@ func TestVMCPSessionManager_GetMultiSession(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		multiSess, ok := sm.GetMultiSession("ghost")
 		assert.False(t, ok)
@@ -714,7 +702,7 @@ func TestVMCPSessionManager_GetMultiSession(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
@@ -731,7 +719,7 @@ func TestVMCPSessionManager_GetMultiSession(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "hello", Description: "says hello"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
@@ -752,7 +740,7 @@ func TestVMCPSessionManager_GetMultiSession(t *testing.T) {
 // Tests: GetAdaptedTools
 // ---------------------------------------------------------------------------
 
-func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
+func TestSessionManager_GetAdaptedTools(t *testing.T) {
 	t.Parallel()
 
 	t.Run("returns error for unknown session", func(t *testing.T) {
@@ -760,7 +748,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 
 		factory := newFakeFactory(nil)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		_, err := sm.GetAdaptedTools("no-such-session")
 		require.Error(t, err)
@@ -785,7 +773,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 		}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		_, err := sm.CreateSession(context.Background(), sessionID)
@@ -815,7 +803,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "greet", Description: "greets user"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		_, err := sm.CreateSession(context.Background(), sessionID)
@@ -853,7 +841,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "boom", Description: "always fails"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		_, err := sm.CreateSession(context.Background(), sessionID)
@@ -880,7 +868,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "strict", Description: "requires object args"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		_, err := sm.CreateSession(context.Background(), sessionID)
@@ -907,7 +895,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 		tools := []vmcp.Tool{{Name: "meta-tool", Description: "checks meta forwarding"}}
 		factory := newFakeFactory(tools)
 		registry := newFakeRegistry()
-		sm, _ := newTestVMCPSessionManager(t, factory, registry)
+		sm, _ := newTestSessionManager(t, factory, registry)
 
 		sessionID := sm.Generate()
 		_, err := sm.CreateSession(context.Background(), sessionID)
@@ -963,7 +951,7 @@ func TestVMCPSessionManager_GetAdaptedTools(t *testing.T) {
 				tools := []vmcp.Tool{{Name: "auth-tool", Description: "requires authorization"}}
 				factory := newFakeFactory(tools)
 				registry := newFakeRegistry()
-				sm, _ := newTestVMCPSessionManager(t, factory, registry)
+				sm, _ := newTestSessionManager(t, factory, registry)
 
 				sessionID := sm.Generate()
 				_, err := sm.CreateSession(context.Background(), sessionID)

@@ -64,11 +64,12 @@ func TestReadinessEndpoint_StaticMode(t *testing.T) {
 
 	// Create server without Watcher (static mode)
 	srv, err := server.New(ctx, &server.Config{
-		Name:    "test-vmcp",
-		Version: "1.0.0",
-		Host:    "127.0.0.1",
-		Port:    port,
-		Watcher: nil, // Static mode
+		Name:           "test-vmcp",
+		Version:        "1.0.0",
+		Host:           "127.0.0.1",
+		Port:           port,
+		Watcher:        nil, // Static mode
+		SessionFactory: newFakeFactory(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
@@ -139,11 +140,12 @@ func TestReadinessEndpoint_DynamicMode_CacheSynced(t *testing.T) {
 	mockWatcher.EXPECT().WaitForCacheSync(gomock.Any()).Return(true).AnyTimes()
 
 	srv, err := server.New(ctx, &server.Config{
-		Name:    "test-vmcp",
-		Version: "1.0.0",
-		Host:    "127.0.0.1",
-		Port:    port,
-		Watcher: mockWatcher, // Dynamic mode with synced cache
+		Name:           "test-vmcp",
+		Version:        "1.0.0",
+		Host:           "127.0.0.1",
+		Port:           port,
+		Watcher:        mockWatcher, // Dynamic mode with synced cache
+		SessionFactory: newFakeFactory(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
@@ -214,11 +216,12 @@ func TestReadinessEndpoint_DynamicMode_CacheNotSynced(t *testing.T) {
 	mockWatcher.EXPECT().WaitForCacheSync(gomock.Any()).Return(false).AnyTimes()
 
 	srv, err := server.New(ctx, &server.Config{
-		Name:    "test-vmcp",
-		Version: "1.0.0",
-		Host:    "127.0.0.1",
-		Port:    port,
-		Watcher: mockWatcher, // Dynamic mode with unsynced cache
+		Name:           "test-vmcp",
+		Version:        "1.0.0",
+		Host:           "127.0.0.1",
+		Port:           port,
+		Watcher:        mockWatcher, // Dynamic mode with unsynced cache
+		SessionFactory: newFakeFactory(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 

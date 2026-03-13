@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/telemetry"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
@@ -33,6 +35,126 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
+
+// ---------------------------------------------------------------------------
+// integrationTestSession / integrationTestFactory
+// ---------------------------------------------------------------------------
+// These types are used by infrastructure-focused integration tests (audit,
+// telemetry, etc.) that need a real SessionFactory but don't care about
+// per-session token binding or crypto internals.
+
+// integrationTestSession wraps fakeMultiSession but returns a configurable routing table.
+type integrationTestSession struct {
+	*fakeMultiSession
+	routingTable *vmcp.RoutingTable
+}
+
+func (s *integrationTestSession) GetRoutingTable() *vmcp.RoutingTable {
+	return s.routingTable
+}
+
+// integrationTestFactory creates sessions with configurable tools and routing table
+// for infrastructure-focused integration tests (audit, telemetry, etc.).
+type integrationTestFactory struct {
+	tools        []vmcp.Tool
+	routingTable *vmcp.RoutingTable
+}
+
+func (f *integrationTestFactory) MakeSessionWithID(
+	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
+) (vmcpsession.MultiSession, error) {
+	sess := transportsession.NewStreamableSession(id)
+	return &integrationTestSession{
+		fakeMultiSession: newFakeMultiSession(sess, f.tools),
+		routingTable:     f.routingTable,
+	}, nil
+}
+
+// Ensure integrationTestFactory satisfies the vmcpsession.MultiSessionFactory interface.
+var _ vmcpsession.MultiSessionFactory = (*integrationTestFactory)(nil)
+
+// ---------------------------------------------------------------------------
+// backendAwareTestSession / backendAwareTestFactory
+// ---------------------------------------------------------------------------
+// Used by tests that need tool calls to reach the real (mock) backend client
+// so that backend-level metrics/telemetry are recorded.
+
+// backendAwareTestSession delegates CallTool to a vmcp.BackendClient so that
+// the monitorBackends-wrapped client is exercised during tool calls.
+type backendAwareTestSession struct {
+	*fakeMultiSession
+	routingTable     *vmcp.RoutingTable
+	backendClientRef *backendClientRef // indirect reference so the wrapped client can be set post-New
+}
+
+func (s *backendAwareTestSession) GetRoutingTable() *vmcp.RoutingTable {
+	return s.routingTable
+}
+
+func (s *backendAwareTestSession) CallTool(
+	ctx context.Context, _ *auth.Identity, toolName string, args map[string]any, meta map[string]any,
+) (*vmcp.ToolCallResult, error) {
+	s.callToolCalled.Store(true)
+	client := s.backendClientRef.get()
+	if s.routingTable == nil || client == nil {
+		return s.callToolResult, s.callToolErr
+	}
+	target, ok := s.routingTable.Tools[toolName]
+	if !ok {
+		return s.callToolResult, s.callToolErr
+	}
+	return client.CallTool(ctx, target, toolName, args, meta)
+}
+
+// backendClientRef holds a vmcp.BackendClient that can be set after server creation
+// so that the session factory can delegate to the monitorBackends-wrapped client.
+type backendClientRef struct {
+	mu     sync.Mutex
+	client vmcp.BackendClient
+}
+
+func (r *backendClientRef) set(c vmcp.BackendClient) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.client = c
+}
+
+func (r *backendClientRef) get() vmcp.BackendClient {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.client
+}
+
+// backendAwareTestFactory creates sessions that delegate CallTool to the vmcp.BackendClient
+// held in a backendClientRef. The ref can be populated after server.New() returns so that
+// the sessions use the monitorBackends-wrapped client for backend-level telemetry.
+type backendAwareTestFactory struct {
+	tools        []vmcp.Tool
+	routingTable *vmcp.RoutingTable
+	clientRef    *backendClientRef
+}
+
+func newBackendAwareTestFactory(tools []vmcp.Tool, routingTable *vmcp.RoutingTable) (*backendAwareTestFactory, *backendClientRef) {
+	ref := &backendClientRef{}
+	return &backendAwareTestFactory{
+		tools:        tools,
+		routingTable: routingTable,
+		clientRef:    ref,
+	}, ref
+}
+
+func (f *backendAwareTestFactory) MakeSessionWithID(
+	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
+) (vmcpsession.MultiSession, error) {
+	sess := transportsession.NewStreamableSession(id)
+	return &backendAwareTestSession{
+		fakeMultiSession: newFakeMultiSession(sess, f.tools),
+		routingTable:     f.routingTable,
+		backendClientRef: f.clientRef,
+	}, nil
+}
+
+var _ vmcpsession.MultiSessionFactory = (*backendAwareTestFactory)(nil)
 
 // TestIntegration_AggregatorToRouterToServer tests the complete integration
 // of the aggregation pipeline with the router and server.
@@ -202,10 +324,11 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
 	srv, err := server.New(ctx, &server.Config{
-		Name:    "test-vmcp",
-		Version: "1.0.0",
-		Host:    "127.0.0.1",
-		Port:    4484,
+		Name:           "test-vmcp",
+		Version:        "1.0.0",
+		Host:           "127.0.0.1",
+		Port:           4484,
+		SessionFactory: newFakeFactory(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -249,210 +372,6 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	// Clean up: stop the server
 	cancelServer()
 	time.Sleep(100 * time.Millisecond) // Give server time to shutdown
-}
-
-// TestIntegration_HTTPRequestFlowWithRoutingTable reproduces the routing table initialization issue.
-// This test verifies that the routing table is properly stored in VMCPSession during initialization
-// and can be retrieved for subsequent requests via the complete HTTP request flow.
-func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-
-	ctx := context.Background()
-
-	// Create mock backend with test tool
-	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-	testCapabilities := &vmcp.CapabilityList{
-		Tools: []vmcp.Tool{
-			{
-				Name:        "test_tool",
-				Description: "A test tool",
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"input": map[string]any{"type": "string"},
-					},
-				},
-				BackendID: "test-backend",
-			},
-		},
-		Resources:        []vmcp.Resource{},
-		Prompts:          []vmcp.Prompt{},
-		SupportsLogging:  false,
-		SupportsSampling: false,
-	}
-
-	// Mock ListCapabilities for discovery
-	mockBackendClient.EXPECT().
-		ListCapabilities(gomock.Any(), gomock.Any()).
-		Return(testCapabilities, nil).
-		AnyTimes()
-
-	// Mock CallTool for tool execution
-	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "test_tool", gomock.Any(), gomock.Any()).
-		Return(&vmcp.ToolCallResult{
-			StructuredContent: map[string]any{"result": "success"},
-			Content:           []vmcp.Content{},
-		}, nil).
-		AnyTimes()
-
-	// Create real components
-	backends := []vmcp.Backend{
-		{
-			ID:            "test-backend",
-			Name:          "Test Backend",
-			BaseURL:       "http://test-backend:8080",
-			TransportType: "streamable-http",
-			HealthStatus:  vmcp.BackendHealthy,
-		},
-	}
-
-	// Create discovery manager
-	conflictResolver := aggregator.NewPrefixConflictResolver("{workload}_")
-	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil, nil)
-	discoveryMgr, err := discovery.NewManager(agg)
-	require.NoError(t, err)
-
-	// Create router
-	rt := router.NewDefaultRouter()
-
-	// Create identity middleware for auth (must set identity for discovery)
-	identityMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			identity := &auth.Identity{
-				Subject: "test-user",
-				Name:    "testuser",
-				Email:   "test@example.com",
-			}
-			ctx := auth.WithIdentity(r.Context(), identity)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-
-	// Create and start server
-	srv, err := server.New(ctx, &server.Config{
-		Name:           "test-vmcp",
-		Version:        "1.0.0",
-		Host:           "127.0.0.1",
-		Port:           0, // Use random available port
-		SessionTTL:     5 * time.Minute,
-		AuthMiddleware: identityMiddleware,
-	}, rt, mockBackendClient, discoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
-	require.NoError(t, err)
-
-	serverCtx, cancelServer := context.WithCancel(ctx)
-	t.Cleanup(cancelServer)
-
-	serverErrCh := make(chan error, 1)
-	go func() {
-		if err := srv.Start(serverCtx); err != nil && !errors.Is(err, context.Canceled) {
-			serverErrCh <- err
-		}
-	}()
-
-	// Wait for server ready
-	select {
-	case <-srv.Ready():
-	case err := <-serverErrCh:
-		t.Fatalf("Server failed to start: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Server timeout waiting for ready")
-	}
-
-	baseURL := "http://" + srv.Address()
-
-	// STEP 1: Send initialize request (no session ID)
-	t.Log("Sending initialize request")
-	initReq := map[string]any{
-		"method": "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{},
-			"clientInfo": map[string]any{
-				"name":    "test-client",
-				"version": "1.0.0",
-			},
-		},
-	}
-
-	initReqBody, err := json.Marshal(initReq)
-	require.NoError(t, err)
-
-	initResp, err := http.Post(baseURL+"/mcp", "application/json", bytes.NewReader(initReqBody))
-	require.NoError(t, err)
-	defer initResp.Body.Close()
-
-	require.Equal(t, http.StatusOK, initResp.StatusCode, "Initialize request should succeed")
-
-	// Extract session ID
-	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	require.NotEmpty(t, sessionID, "Session ID should be returned")
-
-	t.Logf("Got session ID: %s", sessionID)
-
-	// Give server time to complete AfterInitialize hook
-	time.Sleep(100 * time.Millisecond)
-
-	// CRITICAL CHECK: Verify routing table is stored in session
-	sess, ok := srv.SessionManager().Get(sessionID)
-	require.True(t, ok, "Session should exist in manager")
-	require.NotNil(t, sess, "Session should not be nil")
-
-	t.Logf("Session type: %T", sess)
-
-	vmcpSess, ok := sess.(*vmcpsession.VMCPSession)
-	require.True(t, ok, "Session should be VMCPSession type, got: %T", sess)
-
-	routingTable := vmcpSess.GetRoutingTable()
-	require.NotNil(t, routingTable, "Routing table should be stored")
-	if routingTable == nil {
-		// Debug: Check session data
-		t.Logf("Session ID: %s", vmcpSess.ID())
-		t.Logf("Session Type: %v", vmcpSess.Type())
-		t.Logf("Session Data: %v", vmcpSess.GetData())
-		t.Fatal("REPRODUCER: Routing table is nil after initialization - this is the bug!")
-		return
-	}
-
-	t.Logf("Routing table has %d tools", len(routingTable.Tools))
-	// Note: Tool name is prefixed with backend ID due to conflict resolution
-	require.Contains(t, routingTable.Tools, "test-backend_test_tool", "Routing table should have prefixed test_tool")
-
-	// STEP 2: Send tool call request (with session ID)
-	t.Log("Sending tool call request")
-	toolCallReq := map[string]any{
-		"method": "tools/call",
-		"params": map[string]any{
-			"name":      "test-backend_test_tool", // Prefixed name from conflict resolution
-			"arguments": map[string]any{"input": "test"},
-		},
-	}
-
-	toolCallReqBody, err := json.Marshal(toolCallReq)
-	require.NoError(t, err)
-
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(toolCallReqBody))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Mcp-Session-Id", sessionID)
-
-	toolCallResp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer toolCallResp.Body.Close()
-
-	if toolCallResp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(toolCallResp.Body)
-		t.Logf("Tool call failed with status %d: %s", toolCallResp.StatusCode, string(bodyBytes))
-	}
-
-	require.Equal(t, http.StatusOK, toolCallResp.StatusCode, "Tool call should succeed")
-
-	t.Log("Test passed - routing table working correctly")
-	cancelServer()
 }
 
 // TestIntegration_ConflictResolutionStrategies tests that different
@@ -676,11 +595,42 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		return string(data)
 	}
 
-	// Create server with audit config
+	// Build the tools and routing table that the session factory provides to each session.
+	// The aggregator prefixes tool names with "{workload}_", so "get_weather" becomes
+	// "weather-service_get_weather". The routing table maps prefixed names to backends.
+	auditTools := []vmcp.Tool{
+		{
+			Name:        "weather-service_get_weather",
+			Description: "Get weather information",
+			BackendID:   "weather-service",
+		},
+	}
+	auditRoutingTable := &vmcp.RoutingTable{
+		Tools: map[string]*vmcp.BackendTarget{
+			"weather-service_get_weather": {
+				WorkloadID:   "weather-service",
+				WorkloadName: "Weather Service",
+			},
+		},
+		Resources: map[string]*vmcp.BackendTarget{
+			"weather://current": {
+				WorkloadID:   "weather-service",
+				WorkloadName: "Weather Service",
+			},
+		},
+		Prompts: map[string]*vmcp.BackendTarget{},
+	}
+
+	// Create server with audit config using integrationTestFactory so sessions have
+	// the routing table needed for tool calls and resource reads to be logged correctly.
 	srv, err := server.New(ctx, &server.Config{
 		Host:        "127.0.0.1",
 		Port:        0, // Random port
 		AuditConfig: auditConfig,
+		SessionFactory: &integrationTestFactory{
+			tools:        auditTools,
+			routingTable: auditRoutingTable,
+		},
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -956,6 +906,7 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		Port:           0, // Let OS assign port
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
+		SessionFactory: newFakeFactory(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -1130,16 +1081,43 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 	// Create router
 	rt := router.NewDefaultRouter()
 
+	// Build the tools and routing table. The aggregator prefixes tool names with
+	// "{workload}_", so "search" becomes "search-svc_search".
+	telemetryTools := []vmcp.Tool{
+		{
+			Name:        "search-svc_search",
+			Description: "Search for items",
+			BackendID:   "search-svc",
+		},
+	}
+	telemetryRoutingTable := &vmcp.RoutingTable{
+		Tools: map[string]*vmcp.BackendTarget{
+			"search-svc_search": {
+				WorkloadID:   "search-svc",
+				WorkloadName: "Search Service",
+			},
+		},
+		Resources: map[string]*vmcp.BackendTarget{},
+		Prompts:   map[string]*vmcp.BackendTarget{},
+	}
+
 	// Create server with telemetry provider — this also wraps the backend
 	// client with monitorBackends() which instruments outgoing backend calls.
+	// Use backendAwareTestFactory so that CallTool delegates to the monitorBackends-wrapped
+	// backendClient, ensuring toolhive_vmcp_backend_requests metrics are recorded.
+	telemetryFactory, clientRef := newBackendAwareTestFactory(telemetryTools, telemetryRoutingTable)
 	srv, err := server.New(ctx, &server.Config{
 		Name:              "telemetry-vmcp",
 		Version:           "1.0.0",
 		Host:              "127.0.0.1",
 		Port:              0, // Random available port
 		TelemetryProvider: telemetryProvider,
+		SessionFactory:    telemetryFactory,
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
+	// Wire the monitorBackends-wrapped client into the session factory so that
+	// tool calls go through the telemetry instrumentation layer.
+	clientRef.set(srv.BackendClient())
 
 	// Start server
 	serverCtx, cancelServer := context.WithCancel(ctx)

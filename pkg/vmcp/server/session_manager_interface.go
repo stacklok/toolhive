@@ -12,7 +12,7 @@ import (
 )
 
 // SessionManager extends the SDK's SessionIdManager with Phase 2 session creation
-// and session-scoped tool retrieval for sessionManagementV2.
+// and session-scoped tool retrieval.
 //
 // This interface abstracts the session manager implementation to enable testing
 // and decouples the Server from concrete session management implementation details.

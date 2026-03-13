@@ -73,11 +73,12 @@ func createTestServerWithBackends(t *testing.T, backends []vmcp.Backend, groupRe
 	ctx, cancel := context.WithCancel(t.Context())
 
 	srv, err := server.New(ctx, &server.Config{
-		Name:     "test-vmcp",
-		Version:  "1.0.0",
-		Host:     "127.0.0.1",
-		Port:     port,
-		GroupRef: groupRef,
+		Name:           "test-vmcp",
+		Version:        "1.0.0",
+		Host:           "127.0.0.1",
+		Port:           port,
+		GroupRef:       groupRef,
+		SessionFactory: newFakeFactory(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 

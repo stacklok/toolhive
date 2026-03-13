@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -40,7 +41,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		identity := &auth.Identity{Subject: "alice", Token: rawToken}
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
-		sess, err := factory.MakeSession(t.Context(), identity, nil)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, false, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -62,7 +63,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
-		sess, err := factory.MakeSession(t.Context(), nil, nil)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, true, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -80,7 +81,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 
 		identity := &auth.Identity{Subject: "user", Token: ""}
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
-		sess, err := factory.MakeSession(t.Context(), identity, nil)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, true, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 

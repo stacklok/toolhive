@@ -29,7 +29,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -159,12 +158,8 @@ type Config struct {
 	// If nil, status reporting is disabled.
 	StatusReporter vmcpstatus.Reporter
 
-	// SessionManagementV2 enables session-scoped backend client lifecycle.
-	// When true, a SessionManager is used instead of sessionIDAdapter. Defaults to false.
-	SessionManagementV2 bool
-
-	// SessionFactory creates MultiSessions for Phase 2 session management.
-	// Required when SessionManagementV2 is true; ignored otherwise.
+	// SessionFactory creates MultiSessions for session management.
+	// Required; must not be nil.
 	SessionFactory vmcpsession.MultiSessionFactory
 }
 
@@ -205,15 +200,12 @@ type Server struct {
 	//   - Session storage and retrieval
 	//   - TTL-based cleanup of inactive sessions
 	//   - Session lifecycle management
-	// The mark3labs SDK calls our sessionIDAdapter, which delegates to this manager.
-	// The SDK does NOT manage sessions itself - it only provides the interface.
 	sessionManager *transportsession.Manager
 
 	// Capability adapter for converting aggregator types to SDK types
 	capabilityAdapter *adapter.CapabilityAdapter
 
-	// vmcpSessionMgr is the Phase 2 session manager. Non-nil only when
-	// Config.SessionManagementV2 is true and Config.SessionFactory is non-nil.
+	// vmcpSessionMgr manages session-scoped backend client lifecycle.
 	vmcpSessionMgr SessionManager
 
 	// Composite tool workflow definitions keyed by tool name.
@@ -364,9 +356,13 @@ func New(
 		}
 	}
 
-	// Create session manager with VMCPSession factory
-	// This enables type-safe access to routing tables while maintaining session lifecycle management
-	sessionManager := transportsession.NewManager(cfg.SessionTTL, vmcpsession.VMCPSessionFactory())
+	// Create session manager using StreamableSession as the transport-layer placeholder.
+	// StreamableSession is a lightweight implementation of transportsession.Session that
+	// handles disconnect tracking, TTL, and metadata for Streamable HTTP connections.
+	// It intentionally carries no vmcp-specific state — backend connections, routing
+	// tables, tool lists, and token binding all live in the separate sessionmanager.Manager,
+	// keyed by the same session ID.
+	sessionManager := transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
 
 	// Create handler factory (used by adapter and for future dynamic registration)
 	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
@@ -392,16 +388,12 @@ func New(
 		slog.Info("health monitoring disabled")
 	}
 
-	// Create session manager if the feature flag is enabled.
-	var vmcpSessMgr SessionManager
-	if cfg.SessionManagementV2 {
-		if cfg.SessionFactory == nil {
-			return nil, fmt.Errorf("SessionManagementV2 is enabled but no SessionFactory was provided")
-		}
-		vmcpSessMgr = sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry)
-		slog.Info("session-scoped backend lifecycle enabled")
-
+	// Create session manager
+	if cfg.SessionFactory == nil {
+		return nil, fmt.Errorf("SessionFactory is required but was not provided")
 	}
+	vmcpSessMgr := sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry)
+	slog.Info("session-scoped backend lifecycle enabled")
 
 	// Create Server instance
 	srv := &Server{
@@ -442,20 +434,11 @@ func New(
 // All returned handlers share the same underlying MCPServer and SessionManager,
 // so callers should not serve concurrent traffic through multiple handlers.
 func (s *Server) Handler(_ context.Context) (http.Handler, error) {
-	// Use vmcpSessionMgr (session-scoped backend lifecycle) when available;
-	// otherwise fall back to sessionIDAdapter.
-	sdkSessionMgr := func() server.SessionIdManager {
-		if s.vmcpSessionMgr != nil {
-			return s.vmcpSessionMgr
-		}
-		return newSessionIDAdapter(s.sessionManager)
-	}()
-
 	// Create Streamable HTTP server with ToolHive session management
 	streamableServer := server.NewStreamableHTTPServer(
 		s.mcpServer,
 		server.WithEndpointPath(s.config.EndpointPath),
-		server.WithSessionIdManager(sdkSessionMgr),
+		server.WithSessionIdManager(s.vmcpSessionMgr),
 		server.WithHeartbeatInterval(defaultHeartbeatInterval),
 	)
 
@@ -544,14 +527,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if healthMon != nil {
 		healthStatusProvider = healthMon
 	}
-	discoveryOpts := func() []discovery.MiddlewareOption {
-		if s.vmcpSessionMgr != nil {
-			return []discovery.MiddlewareOption{discovery.WithSessionScopedRouting()}
-		}
-		return nil
-	}()
 	mcpHandler = discovery.Middleware(
-		s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider, discoveryOpts...,
+		s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider,
+		discovery.WithSessionScopedRouting(),
 	)(mcpHandler)
 	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
 
@@ -800,6 +778,13 @@ func (s *Server) Address() string {
 	return fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 }
 
+// BackendClient returns the backend client used by this server.
+// When telemetry is configured, this is the monitorBackends-wrapped client.
+// This accessor is intended for testing purposes only.
+func (s *Server) BackendClient() vmcp.BackendClient {
+	return s.backendClient
+}
+
 // handleHealth handles /health and /ping HTTP requests.
 // Returns 200 OK if the server is running and able to respond.
 //
@@ -908,101 +893,6 @@ func (s *Server) Ready() <-chan struct{} {
 	return s.ready
 }
 
-// injectCapabilities injects capabilities into a newly created SDK session.
-//
-// This method is called ONCE per session during the OnRegisterSession hook, when the
-// session has just been created by the SDK and is empty. It:
-//  1. Converts aggregator types to SDK types using adapter
-//  2. Adds discovered backend capabilities via SDK APIs (AddSessionTools, AddSessionResources)
-//  3. Adds composite tool capabilities with workflow handlers
-//
-// Important constraints:
-//   - Called only during session creation (session state is empty)
-//   - No previous capabilities exist, so no deletion needed
-//   - Capabilities are IMMUTABLE for the session lifetime (see limitation below)
-//   - Discovery middleware does not re-run for subsequent requests
-//   - If injectOptimizerCapabilities is called, this should not be called again.
-//
-// LIMITATION: Session capabilities are fixed at creation time.
-// If backends change (new tools added, resources removed), existing sessions won't see updates.
-// Clients must create new sessions to discover updated capabilities.
-// This is a deliberate design choice to avoid notification spam and maintain simplicity.
-// Future enhancement: Implement capability refresh mechanism when SDK provides support.
-//
-// Note: SDK v0.43.0 does not support per-session prompts yet.
-func (s *Server) injectCapabilities(
-	session server.ClientSession,
-	caps *aggregator.AggregatedCapabilities,
-) error {
-	sessionID := session.SessionID()
-
-	// Convert and add backend tools directly to the session.
-	// We use SetSessionTools instead of MCPServer.AddSessionTools to avoid
-	// sending notifications through the session's notification channel.
-	// During session registration the notification-listening goroutine from
-	// the initialize request has already exited, so notifications would
-	// accumulate as stale messages and corrupt the next HTTP response
-	// (race between SSE upgrade and JSON response).
-	if len(caps.Tools) > 0 {
-		sdkTools, err := s.capabilityAdapter.ToSDKTools(caps.Tools)
-		if err != nil {
-			return fmt.Errorf("failed to convert tools to SDK format: %w", err)
-		}
-
-		if err := setSessionToolsDirect(session, sdkTools); err != nil {
-			return fmt.Errorf("failed to add session tools: %w", err)
-		}
-		slog.Debug("added session backend tools", "session_id", sessionID, "count", len(sdkTools))
-	}
-
-	// Convert and add composite tools
-	if len(caps.CompositeTools) > 0 {
-		compositeSDKTools, err := s.capabilityAdapter.ToCompositeToolSDKTools(caps.CompositeTools, s.workflowExecutors)
-		if err != nil {
-			return fmt.Errorf("failed to convert composite tools to SDK format: %w", err)
-		}
-
-		if err := setSessionToolsDirect(session, compositeSDKTools); err != nil {
-			return fmt.Errorf("failed to add session composite tools: %w", err)
-		}
-		slog.Debug("added session composite tools", "session_id", sessionID, "count", len(compositeSDKTools))
-	}
-
-	// Convert and add resources directly to the session (same rationale as tools above).
-	if len(caps.Resources) > 0 {
-		sdkResources := s.capabilityAdapter.ToSDKResources(caps.Resources)
-
-		if err := setSessionResourcesDirect(session, sdkResources); err != nil {
-			return fmt.Errorf("failed to add session resources: %w", err)
-		}
-		slog.Debug("added session resources", "session_id", sessionID, "count", len(sdkResources))
-	}
-
-	// Note: SDK v0.43.0 does not support per-session prompts yet.
-	// Per-session prompts are required to maintain multi-tenant security isolation.
-	// Prompts cannot be registered globally via mcpServer.AddPrompt() without leaking
-	// capability information across session boundaries (e.g., admin prompts visible to regular users).
-	if len(caps.Prompts) > 0 {
-		slog.Warn("prompts discovered but not exposed - awaiting SDK support for per-session prompts",
-			"session_id", sessionID,
-			"prompt_count", len(caps.Prompts),
-			"sdk_version", "v0.43.0",
-			"required_api", "AddSessionPrompts()",
-			"reason", "multi-tenant security requires per-session capability isolation")
-		// TODO(prompts): Implement when mark3labs/mcp-go adds AddSessionPrompts() API
-		// Conversion logic already exists in capability_adapter.ToSDKPrompts()
-		// Implementation will be: s.mcpServer.AddSessionPrompts(sessionID, sdkPrompts...)
-	}
-
-	slog.Info("session capabilities injected during initialization",
-		"session_id", sessionID,
-		"backend_tools", len(caps.Tools),
-		"composite_tools", len(caps.CompositeTools),
-		"resources", len(caps.Resources))
-
-	return nil
-}
-
 // setSessionToolsDirect sets tools directly on the session via the SessionWithTools
 // interface, bypassing MCPServer.AddSessionTools. This avoids sending notifications
 // through the session's notification channel, which would accumulate as stale
@@ -1027,206 +917,22 @@ func setSessionToolsDirect(session server.ClientSession, tools []server.ServerTo
 	return nil
 }
 
-// setSessionResourcesDirect sets resources directly on the session via the
-// SessionWithResources interface, bypassing MCPServer.AddSessionResources.
-// See setSessionToolsDirect for rationale.
-func setSessionResourcesDirect(session server.ClientSession, resources []server.ServerResource) error {
-	sessionWithResources, ok := session.(server.SessionWithResources)
-	if !ok {
-		return fmt.Errorf("session does not support per-session resources")
-	}
-
-	// Merge with any existing resources
-	existing := sessionWithResources.GetSessionResources()
-	resourceMap := make(map[string]server.ServerResource, len(existing)+len(resources))
-	for k, v := range existing {
-		resourceMap[k] = v
-	}
-	for _, resource := range resources {
-		resourceMap[resource.Resource.URI] = resource
-	}
-	sessionWithResources.SetSessionResources(resourceMap)
-	return nil
-}
-
-// injectOptimizerCapabilities injects all capabilities into the session, including optimizer tools.
-// It should not be called if not in optimizer mode and replaces injectCapabilities.
-//
-// When optimizer mode is enabled, instead of exposing all backend tools directly,
-// vMCP exposes only two meta-tools:
-//   - find_tool: Search for tools by description
-//   - call_tool: Invoke a tool by name with parameters
-//
-// This method:
-// 1. Converts all tools (backend + composite) to SDK format with handlers
-// 2. Injects the optimizer capabilities into the session
-func (s *Server) injectOptimizerCapabilities(
-	ctx context.Context,
-	session server.ClientSession,
-	caps *aggregator.AggregatedCapabilities,
-) error {
-	sessionID := session.SessionID()
-
-	tools := append([]vmcp.Tool{}, caps.Tools...)
-	tools = append(tools, caps.CompositeTools...)
-
-	sdkTools, err := s.capabilityAdapter.ToSDKTools(tools)
-	if err != nil {
-		return fmt.Errorf("failed to convert tools to SDK format: %w", err)
-	}
-
-	// Create optimizer instance from factory
-	opt, err := s.config.OptimizerFactory(ctx, sdkTools)
-	if err != nil {
-		return fmt.Errorf("failed to create optimizer: %w", err)
-	}
-
-	// Create optimizer tools (find_tool, call_tool)
-	optimizerTools := adapter.CreateOptimizerTools(opt)
-
-	slog.Debug("created optimizer tools for session",
-		"session_id", sessionID,
-		"backend_tool_count", len(caps.Tools),
-		"composite_tool_count", len(caps.CompositeTools),
-		"total_tools_indexed", len(sdkTools))
-
-	// Clear tools from caps - they're now wrapped by optimizer
-	// Resources and prompts are preserved and handled normally
-	capsCopy := *caps
-	capsCopy.Tools = nil
-	capsCopy.CompositeTools = nil
-
-	// Set optimizer tools directly on the session to avoid stale notifications.
-	// See injectCapabilities for full rationale.
-	if err := setSessionToolsDirect(session, optimizerTools); err != nil {
-		return fmt.Errorf("failed to add session tools: %w", err)
-	}
-
-	return s.injectCapabilities(session, &capsCopy)
-}
-
 // handleSessionRegistration processes a new MCP session registration.
-//
-// This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
-// fires BEFORE session registration), allowing us to safely set session capabilities.
-//
-// The discovery middleware populates capabilities in the context, which is available here.
-// We inject them into the SDK session and store the routing table for subsequent requests.
-//
-// This method performs the following steps:
-//  1. Retrieves discovered capabilities from context
-//  2. Adds composite tools from configuration
-//  3. Stores routing table in VMCPSession for request routing
-//  4. Injects capabilities into the SDK session
-//
-// IMPORTANT: Session capabilities are immutable after injection.
-//   - Capabilities discovered during initialize are fixed for the session lifetime
-//   - Backend changes (new tools, removed resources) won't be reflected in existing sessions
-//   - Clients must create new sessions to see updated capabilities
-//
-// TODO(dynamic-capabilities): Consider implementing capability refresh mechanism when SDK supports it
+// It fires AFTER the session is registered in the SDK.
 //
 // The sessionManager parameter is passed explicitly because this method is called
 // from a closure registered before the Server is fully constructed.
 func (s *Server) handleSessionRegistration(
 	ctx context.Context,
 	session server.ClientSession,
-	sessionManager *transportsession.Manager,
+	_ *transportsession.Manager,
 ) {
-	sessionID := session.SessionID()
-	slog.Debug("onRegisterSession hook called", "session_id", sessionID)
-
-	// Delegate to session-scoped backend lifecycle when vmcpSessionMgr is active.
-	if s.vmcpSessionMgr != nil {
-		// Error is logged and handled within handleSessionRegistrationV2.
-		// The session is terminated on failure; no further action needed here.
-		_ = s.handleSessionRegistrationV2(ctx, session)
-		return
-	}
-
-	// Get capabilities from context (discovered by middleware)
-	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-	if !ok || caps == nil {
-		slog.Warn("no discovered capabilities in context for OnRegisterSession hook",
-			"session_id", sessionID)
-		return
-	}
-
-	// Validate that routing table exists
-	if caps.RoutingTable == nil {
-		slog.Warn("routing table is nil in discovered capabilities",
-			"session_id", sessionID)
-		return
-	}
-
-	// Add composite tools to capabilities
-	// Composite tools are static (from configuration) and not discovered from backends
-	// They are added here to be exposed alongside backend tools in the session
-	if len(s.workflowDefs) > 0 {
-		compositeTools := convertWorkflowDefsToTools(s.workflowDefs)
-
-		// Validate no conflicts between composite tool names and backend tool names
-		if err := validateNoToolConflicts(caps.Tools, compositeTools); err != nil {
-			slog.Error("composite tool name conflict detected",
-				"session_id", sessionID,
-				"error", err)
-			// Don't add composite tools if there are conflicts
-			// This prevents ambiguity in routing/execution
-			return
-		}
-
-		caps.CompositeTools = compositeTools
-		slog.Debug("added composite tools to session capabilities",
-			"session_id", sessionID,
-			"composite_tool_count", len(compositeTools))
-	}
-
-	// Store routing table in VMCPSession for subsequent requests
-	// This enables the middleware to reconstruct capabilities from session
-	// without re-running discovery for every request
-	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
-	if err != nil {
-		slog.Error("failed to get VMCPSession for routing table storage",
-			"error", err,
-			"session_id", sessionID)
-		return
-	}
-
-	vmcpSess.SetRoutingTable(caps.RoutingTable)
-	vmcpSess.SetTools(caps.Tools)
-	slog.Debug("routing table and tools stored in VMCPSession",
-		"session_id", sessionID,
-		"tool_count", len(caps.RoutingTable.Tools),
-		"resource_count", len(caps.RoutingTable.Resources),
-		"prompt_count", len(caps.RoutingTable.Prompts))
-
-	if s.config.OptimizerFactory != nil {
-		err = s.injectOptimizerCapabilities(ctx, session, caps)
-		if err != nil {
-			slog.Error("failed to create optimizer tools",
-				"error", err,
-				"session_id", sessionID)
-		} else {
-			slog.Info("optimizer capabilities injected")
-		}
-		return
-	}
-
-	// Inject capabilities into SDK session directly (bypassing notification channel)
-	if err := s.injectCapabilities(session, caps); err != nil {
-		slog.Error("failed to inject session capabilities",
-			"error", err,
-			"session_id", sessionID)
-		return
-	}
-
-	slog.Info("session capabilities injected",
-		"session_id", sessionID,
-		"tool_count", len(caps.Tools),
-		"resource_count", len(caps.Resources))
+	// Error is logged and handled within handleSessionRegistrationImpl.
+	// The session is terminated on failure; no further action needed here.
+	_ = s.handleSessionRegistrationImpl(ctx, session)
 }
 
-// handleSessionRegistrationV2 handles session registration when SessionManagementV2 is enabled.
+// handleSessionRegistrationImpl handles session registration.
 //
 // It is invoked from handleSessionRegistration and:
 //  1. Creates a MultiSession with real backend HTTP connections via CreateSession().
@@ -1247,11 +953,10 @@ func (s *Server) handleSessionRegistration(
 //
 //   - Optimizer mode: when configured, all tools (backend + composite) are
 //     indexed into the optimizer and only find_tool/call_tool are exposed,
-//     matching the v1 path but using session-scoped tool handlers.
+//     using session-scoped tool handlers.
 //
-//   - Prompts: not supported in either path until the SDK adds
-//     AddSessionPrompts.
-func (s *Server) handleSessionRegistrationV2(ctx context.Context, session server.ClientSession) (retErr error) {
+//   - Prompts: not supported until the SDK adds AddSessionPrompts.
+func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session server.ClientSession) (retErr error) {
 	sessionID := session.SessionID()
 	slog.Debug("creating session-scoped backends", "session_id", sessionID)
 
@@ -1295,18 +1000,18 @@ func (s *Server) handleSessionRegistrationV2(ctx context.Context, session server
 	}
 
 	// Collect composite SDK tools (with name-collision check against backend tools).
-	compositeSDKTools, retErr := s.collectCompositeToolsV2(sessionID)
+	compositeSDKTools, retErr := s.collectCompositeTools(sessionID)
 	if retErr != nil {
 		return retErr
 	}
 
-	return s.injectV2Tools(ctx, session, adaptedTools, compositeSDKTools)
+	return s.injectTools(ctx, session, adaptedTools, compositeSDKTools)
 }
 
-// collectCompositeToolsV2 converts workflow definitions to SDK tools for the SMv2 path,
+// collectCompositeTools converts workflow definitions to SDK tools,
 // validating that no composite tool name collides with a backend tool name.
 // Returns an empty slice (not an error) if no workflow defs are configured or conflicts are found.
-func (s *Server) collectCompositeToolsV2(sessionID string) ([]server.ServerTool, error) {
+func (s *Server) collectCompositeTools(sessionID string) ([]server.ServerTool, error) {
 	if len(s.workflowDefs) == 0 {
 		return nil, nil
 	}
@@ -1332,10 +1037,10 @@ func (s *Server) collectCompositeToolsV2(sessionID string) ([]server.ServerTool,
 	return sdkTools, nil
 }
 
-// injectV2Tools registers backend and composite tools into the session.
+// injectTools registers backend and composite tools into the session.
 // When the optimizer is configured, all tools are indexed and only
 // find_tool/call_tool are exposed; otherwise tools are registered directly.
-func (s *Server) injectV2Tools(
+func (s *Server) injectTools(
 	ctx context.Context,
 	session server.ClientSession,
 	adaptedTools []server.ServerTool,

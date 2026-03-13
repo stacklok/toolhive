@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	mcpmcp "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
@@ -112,7 +113,7 @@ func TestSessionFactory_Integration_CapabilityDiscovery(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	require.NotNil(t, sess)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
@@ -141,7 +142,7 @@ func TestSessionFactory_Integration_CallTool(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -164,7 +165,7 @@ func TestSessionFactory_Integration_ReadResource(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -186,7 +187,7 @@ func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSession(context.Background(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -212,7 +213,7 @@ func TestSessionFactory_Integration_MultipleBackends(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSession(context.Background(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, backends)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -236,7 +237,7 @@ func TestTokenBinding_CallerRejection(t *testing.T) {
 	wrongCaller := &auth.Identity{Subject: "bob", Token: "wrong-token"}
 
 	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
-	sess, err := factory.MakeSession(context.Background(), identity, nil)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 
@@ -288,7 +289,7 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 	identity := &auth.Identity{Subject: "alice", Token: rawToken}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
-	sess, err := factory.MakeSession(context.Background(), identity, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -322,11 +323,11 @@ func TestTokenBinding_DifferentSecretsProduceDifferentHashes(t *testing.T) {
 	factoryA := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-A-exactly-32-bytes-long!!")))
 	factoryB := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-B-exactly-32-bytes-long!!")))
 
-	sessA, err := factoryA.MakeSession(context.Background(), identity, nil)
+	sessA, err := factoryA.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sessA.Close() })
 
-	sessB, err := factoryB.MakeSession(context.Background(), identity, nil)
+	sessB, err := factoryB.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sessB.Close() })
 
@@ -349,7 +350,7 @@ func TestTokenBinding_MetadataEncoding(t *testing.T) {
 	identity := &auth.Identity{Subject: "user", Token: "test-token-123"}
 
 	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
-	sess, err := factory.MakeSession(context.Background(), identity, nil)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 

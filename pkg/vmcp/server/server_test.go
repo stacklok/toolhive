@@ -67,7 +67,7 @@ func TestServerStartFailsWhenReporterStartFails(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr},
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newFakeFactory(nil)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -97,7 +97,7 @@ func TestServerStopRunsReporterShutdown(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr},
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newFakeFactory(nil)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -152,7 +152,7 @@ func TestNew(t *testing.T) {
 	}{
 		{
 			name:         "applies all defaults",
-			config:       &server.Config{},
+			config:       &server.Config{SessionFactory: newFakeFactory(nil)},
 			expectedHost: "127.0.0.1",
 			expectedPort: 4483,
 			expectedPath: "/mcp",
@@ -162,11 +162,12 @@ func TestNew(t *testing.T) {
 		{
 			name: "uses provided configuration",
 			config: &server.Config{
-				Name:         "custom-vmcp",
-				Version:      "1.0.0",
-				Host:         "0.0.0.0",
-				Port:         8080,
-				EndpointPath: "/api/mcp",
+				Name:           "custom-vmcp",
+				Version:        "1.0.0",
+				Host:           "0.0.0.0",
+				Port:           8080,
+				EndpointPath:   "/api/mcp",
+				SessionFactory: newFakeFactory(nil),
 			},
 			expectedHost: "0.0.0.0",
 			expectedPort: 8080,
@@ -177,8 +178,9 @@ func TestNew(t *testing.T) {
 		{
 			name: "applies partial defaults",
 			config: &server.Config{
-				Host: "192.168.1.1",
-				Port: 9000,
+				Host:           "192.168.1.1",
+				Port:           9000,
+				SessionFactory: newFakeFactory(nil),
 			},
 			expectedHost: "192.168.1.1",
 			expectedPort: 9000,
@@ -220,30 +222,34 @@ func TestServer_Address(t *testing.T) {
 		{
 			name: "default host with explicit port",
 			config: &server.Config{
-				Port: 4483,
+				Port:           4483,
+				SessionFactory: newFakeFactory(nil),
 			},
 			expected: "127.0.0.1:4483",
 		},
 		{
 			name: "port 0 for dynamic allocation",
 			config: &server.Config{
-				Port: 0,
+				Port:           0,
+				SessionFactory: newFakeFactory(nil),
 			},
 			expected: "127.0.0.1:0",
 		},
 		{
 			name: "custom host and port",
 			config: &server.Config{
-				Host: "0.0.0.0",
-				Port: 8080,
+				Host:           "0.0.0.0",
+				Port:           8080,
+				SessionFactory: newFakeFactory(nil),
 			},
 			expected: "0.0.0.0:8080",
 		},
 		{
 			name: "localhost",
 			config: &server.Config{
-				Host: "localhost",
-				Port: 3000,
+				Host:           "localhost",
+				Port:           3000,
+				SessionFactory: newFakeFactory(nil),
 			},
 			expected: "localhost:3000",
 		},
@@ -282,14 +288,14 @@ func TestServer_Stop(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-		s, err := server.New(context.Background(), &server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+		s, err := server.New(context.Background(), &server.Config{SessionFactory: newFakeFactory(nil)}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 		require.NoError(t, err)
 		err = s.Stop(context.Background())
 		require.NoError(t, err)
 	})
 }
 
-func TestNew_SessionManagementV2_NilFactoryReturnsError(t *testing.T) {
+func TestNew_NilSessionFactory_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -302,8 +308,7 @@ func TestNew_SessionManagementV2_NilFactoryReturnsError(t *testing.T) {
 	_, err := server.New(
 		context.Background(),
 		&server.Config{
-			SessionManagementV2: true,
-			SessionFactory:      nil, // deliberately omitted
+			SessionFactory: nil, // deliberately omitted
 		},
 		mockRouter, mockBackendClient, mockDiscoveryMgr,
 		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
@@ -384,7 +389,8 @@ func TestNew_WithAuditConfig(t *testing.T) {
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 			config := &server.Config{
-				AuditConfig: tt.auditConfig,
+				AuditConfig:    tt.auditConfig,
+				SessionFactory: newFakeFactory(nil),
 			}
 
 			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
@@ -417,7 +423,7 @@ func TestServerStopClosesOptimizerStore(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerConfig: &optimizer.Config{}},
+		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerConfig: &optimizer.Config{}, SessionFactory: newFakeFactory(nil)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -470,7 +476,7 @@ func TestHandler_ReturnsNonNilHandler(t *testing.T) {
 
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{Host: "127.0.0.1", Port: 0},
+		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newFakeFactory(nil)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -512,6 +518,7 @@ func TestHandler_ReturnsErrorOnInvalidAuditConfig(t *testing.T) {
 				Component:   "vmcp-server",
 				MaxDataSize: -1,
 			},
+			SessionFactory: newFakeFactory(nil),
 		},
 		mockRouter,
 		mockBackendClient,
@@ -547,7 +554,7 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{Host: "127.0.0.1", Port: 0},
+		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newFakeFactory(nil)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -633,7 +640,7 @@ func TestAcceptHeaderValidation(t *testing.T) {
 
 			srv, err := server.New(
 				t.Context(),
-				&server.Config{Host: "127.0.0.1", Port: 0},
+				&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newFakeFactory(nil)},
 				mockRouter,
 				mockBackendClient,
 				mockDiscoveryMgr,
@@ -645,27 +652,53 @@ func TestAcceptHeaderValidation(t *testing.T) {
 			handler, err := srv.Handler(t.Context())
 			require.NoError(t, err)
 
-			req := httptest.NewRequest(tt.method, "/mcp", nil)
+			reqCtx, reqCancel := context.WithCancel(t.Context())
+			t.Cleanup(reqCancel)
+
+			req := httptest.NewRequest(tt.method, "/mcp", nil).WithContext(reqCtx)
 			if tt.acceptHeader != "" {
 				req.Header.Set("Accept", tt.acceptHeader)
 			}
 
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			resp := rec.Result()
-			defer resp.Body.Close()
-
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
 
 			if tt.expectRejected {
+				// For rejected cases, ServeHTTP returns quickly with 406.
+				handler.ServeHTTP(rec, req)
+
+				resp := rec.Result()
+				defer resp.Body.Close()
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
 				assert.Equal(t, http.StatusNotAcceptable, resp.StatusCode)
 				assert.Contains(t, string(body), "Not Acceptable")
 				assert.Contains(t, string(body), "text/event-stream")
 				assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 			} else {
-				assert.NotEqual(t, http.StatusNotAcceptable, resp.StatusCode,
+				// Run the handler in a goroutine since it may block on streaming.
+				// The Accept validation middleware runs before any blocking, so a
+				// 406 would be written within the first 50 ms.
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					handler.ServeHTTP(rec, req)
+				}()
+
+				// Give the middleware time to write any immediate response (like 406).
+				time.Sleep(50 * time.Millisecond)
+				reqCancel() // Unblock any long-running handler (e.g. SSE).
+
+				// Require the goroutine to finish — it must exit once the context is
+				// canceled. Only read rec.Code after done to avoid a data race.
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatal("handler goroutine did not return after context cancellation")
+				}
+
+				assert.NotEqual(t, http.StatusNotAcceptable, rec.Code,
 					"expected request to pass Accept validation but got 406")
 			}
 		})

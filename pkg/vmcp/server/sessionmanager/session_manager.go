@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package sessionmanager provides session lifecycle management for sessionManagementV2.
+// Package sessionmanager provides session lifecycle management.
 //
 // This package implements the two-phase session creation pattern that bridges
 // the MCP SDK's session management with the vMCP server's backend lifecycle:
@@ -9,7 +9,7 @@
 //   - Phase 2 (CreateSession): Replaces placeholder with fully-initialized MultiSession
 //
 // The Manager type implements the server.SessionManager interface and is used by
-// the server package when SessionManagementV2 is enabled.
+// the server package.
 package sessionmanager
 
 import (

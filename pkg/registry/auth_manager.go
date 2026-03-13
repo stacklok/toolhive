@@ -6,11 +6,9 @@ package registry
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/stacklok/toolhive/pkg/auth/oauth"
-	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 // AuthManager provides operations for managing registry authentication configuration.
@@ -41,33 +39,11 @@ func NewAuthManager(provider config.Provider) AuthManager {
 // SetOAuthAuth configures OAuth/OIDC authentication for the registry.
 // PKCE (S256) is always enforced and not configurable.
 func (c *DefaultAuthManager) SetOAuthAuth(issuer, clientID, audience string, scopes []string) error {
-	// Validate OIDC issuer by attempting discovery
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_, err := oauth.DiscoverOIDCEndpoints(ctx, issuer)
+	updateFn, err := auth.ConfigureOAuth(context.Background(), issuer, clientID, audience, scopes)
 	if err != nil {
-		return fmt.Errorf("OIDC discovery failed for issuer %s: %w", issuer, err)
+		return fmt.Errorf("configuring OAuth: %w", err)
 	}
-
-	// Default to openid + offline_access if no scopes provided.
-	// offline_access is required to receive a refresh token from the provider.
-	if len(scopes) == 0 {
-		scopes = []string{"openid", "offline_access"}
-	}
-
-	return c.provider.UpdateConfig(func(cfg *config.Config) {
-		cfg.RegistryAuth = config.RegistryAuth{
-			Type: config.RegistryAuthTypeOAuth,
-			OAuth: &config.RegistryOAuthConfig{
-				Issuer:       issuer,
-				ClientID:     clientID,
-				Scopes:       scopes,
-				Audience:     audience,
-				CallbackPort: remote.DefaultCallbackPort,
-			},
-		}
-	})
+	return c.provider.UpdateConfig(updateFn)
 }
 
 // UnsetAuth removes registry authentication configuration.

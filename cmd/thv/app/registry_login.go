@@ -4,10 +4,13 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/registry/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var (
@@ -45,7 +48,7 @@ func init() {
 
 func registryLoginCmdFunc(cmd *cobra.Command, _ []string) error {
 	configProvider := config.NewDefaultProvider()
-	secretsProvider, err := auth.NewSecretsProvider(configProvider)
+	secretsProvider, err := newSecretsProvider(configProvider)
 	if err != nil {
 		return err
 	}
@@ -59,4 +62,17 @@ func registryLoginCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	return auth.Login(cmd.Context(), configProvider, secretsProvider, opts)
+}
+
+// newSecretsProvider creates a secrets provider from the given config provider.
+func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error) {
+	cfg, err := configProvider.LoadOrCreateConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("getting secrets provider type: %w", err)
+	}
+	return secrets.CreateSecretProvider(providerType)
 }

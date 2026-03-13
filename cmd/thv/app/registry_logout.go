@@ -23,7 +23,7 @@ func init() {
 
 func registryLogoutCmdFunc(cmd *cobra.Command, _ []string) error {
 	configProvider := config.NewDefaultProvider()
-	secretsProvider, err := auth.NewSecretsProvider(configProvider)
+	secretsProvider, err := newSecretsProvider(configProvider)
 	if err != nil {
 		return err
 	}

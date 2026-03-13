@@ -5,20 +5,23 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/adrg/xdg"
-
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
+
+// DefaultOAuthScopes returns the default OAuth scopes for registry authentication.
+// openid is required for OIDC, offline_access is required for refresh tokens.
+func DefaultOAuthScopes() []string {
+	return []string{"openid", "offline_access"}
+}
 
 // LoginOptions holds optional flag-based overrides for Login.
 // When provided, these values are validated and saved to config before
@@ -45,6 +48,15 @@ func Login(
 	cfg, err := configProvider.LoadOrCreateConfig()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Reject local file registries early -- OAuth login makes no sense for them.
+	if cfg.LocalRegistryPath != "" && cfg.RegistryApiUrl == "" && cfg.RegistryUrl == "" {
+		return fmt.Errorf(
+			"OAuth login is not supported for local file registries (path: %s); "+
+				"use a remote registry URL with --registry instead",
+			cfg.LocalRegistryPath,
+		)
 	}
 
 	// Check all missing configuration upfront so the user gets a single
@@ -110,19 +122,6 @@ func Logout(ctx context.Context, configProvider config.Provider, secretsProvider
 	})
 }
 
-// NewSecretsProvider creates a secrets provider from the given config provider.
-func NewSecretsProvider(configProvider config.Provider) (secrets.Provider, error) {
-	cfg, err := configProvider.LoadOrCreateConfig()
-	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
-	}
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, fmt.Errorf("getting secrets provider type: %w", err)
-	}
-	return secrets.CreateSecretProvider(providerType)
-}
-
 // validateOAuthConfig checks that registry OAuth authentication is configured.
 func validateOAuthConfig(cfg *config.Config) error {
 	if cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
@@ -160,7 +159,7 @@ func checkMissingLoginConfig(cfg *config.Config, opts LoginOptions) error {
 			"The following flags are needed:\n\n"+
 			"%s\n\n"+
 			"Example:\n\n"+
-			"  thv registry login --registry <url> --issuer <url> --client-id <id>\n: %w",
+			"  thv registry login --registry <url> --issuer <url> --client-id <id>: %w",
 		strings.Join(missing, "\n"),
 		ErrRegistryAuthRequired,
 	)
@@ -213,33 +212,11 @@ func ensureOAuthConfig(
 		return fmt.Errorf("OAuth config missing and --issuer/--client-id not provided: %w", ErrRegistryAuthRequired)
 	}
 
-	// Validate the OIDC issuer with a reasonable timeout.
-	discoveryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if _, err := oauth.DiscoverOIDCEndpoints(discoveryCtx, opts.Issuer); err != nil {
-		return fmt.Errorf("OIDC discovery failed for issuer %s: %w", opts.Issuer, err)
+	updateFn, err := ConfigureOAuth(ctx, opts.Issuer, opts.ClientID, opts.Audience, opts.Scopes)
+	if err != nil {
+		return err
 	}
-
-	scopes := func() []string {
-		if len(opts.Scopes) > 0 {
-			return opts.Scopes
-		}
-		return []string{"openid", "offline_access"}
-	}()
-
-	return configProvider.UpdateConfig(func(c *config.Config) {
-		c.RegistryAuth = config.RegistryAuth{
-			Type: config.RegistryAuthTypeOAuth,
-			OAuth: &config.RegistryOAuthConfig{
-				Issuer:       opts.Issuer,
-				ClientID:     opts.ClientID,
-				Scopes:       scopes,
-				Audience:     opts.Audience,
-				CallbackPort: remote.DefaultCallbackPort,
-			},
-		}
-	})
+	return configProvider.UpdateConfig(updateFn)
 }
 
 // registryURLFromConfig returns the registry URL, preferring RegistryApiUrl.
@@ -250,17 +227,50 @@ func registryURLFromConfig(cfg *config.Config) string {
 	return cfg.RegistryUrl
 }
 
+// ConfigureOAuth validates the OIDC issuer, resolves default scopes, and returns
+// a config update function that persists the OAuth settings. This is the shared
+// implementation used by both Login and AuthManager.SetOAuthAuth.
+func ConfigureOAuth(
+	ctx context.Context, issuer, clientID, audience string, scopes []string,
+) (func(*config.Config), error) {
+	if err := validateIssuerURL(issuer); err != nil {
+		return nil, err
+	}
+
+	discoveryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if _, err := oauth.DiscoverOIDCEndpoints(discoveryCtx, issuer); err != nil {
+		return nil, fmt.Errorf("OIDC discovery failed for issuer %s: %w", issuer, err)
+	}
+
+	resolvedScopes := func() []string {
+		if len(scopes) > 0 {
+			return scopes
+		}
+		return DefaultOAuthScopes()
+	}()
+
+	return func(c *config.Config) {
+		c.RegistryAuth = config.RegistryAuth{
+			Type: config.RegistryAuthTypeOAuth,
+			OAuth: &config.RegistryOAuthConfig{
+				Issuer:       issuer,
+				ClientID:     clientID,
+				Scopes:       resolvedScopes,
+				Audience:     audience,
+				CallbackPort: remote.DefaultCallbackPort,
+			},
+		}
+	}, nil
+}
+
 // clearRegistryCache removes the persistent cache file for the given registry URL.
-// Uses the same path derivation as CachedAPIRegistryProvider.
 func clearRegistryCache(registryURL string) error {
 	if registryURL == "" {
 		return nil
 	}
-	hash := sha256.Sum256([]byte(registryURL))
-	cacheFile, err := xdg.CacheFile(fmt.Sprintf("toolhive/cache/registry-%x.json", hash[:4]))
-	if err != nil {
-		return fmt.Errorf("resolving cache path: %w", err)
-	}
+	cacheFile := registryCachePath(registryURL)
 	if err := os.Remove(cacheFile); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing cache file: %w", err)
 	}

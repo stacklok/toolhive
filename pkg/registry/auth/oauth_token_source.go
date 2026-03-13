@@ -173,7 +173,7 @@ func ensureOfflineAccess(scopes []string) []string {
 			return scopes
 		}
 	}
-	return append(scopes, "offline_access")
+	return append(scopes[:len(scopes):len(scopes)], "offline_access")
 }
 
 // buildOAuth2Config creates an oauth2.Config for token refresh via OIDC discovery.

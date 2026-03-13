@@ -398,13 +398,15 @@ func TestEnsureOAuthConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		cfg       *config.Config
-		opts      LoginOptions
-		setupMock func(m *configmocks.MockProvider)
-		useOIDC   bool // whether to start the test OIDC server
-		wantErr   bool
-		errMsg    string
+		name             string
+		cfg              *config.Config
+		opts             LoginOptions
+		setupMock        func(m *configmocks.MockProvider)
+		useOIDC          bool // whether to start the test OIDC server
+		overrideScopes   []string
+		overrideAudience string
+		wantErr          bool
+		errMsg           string
 	}{
 		{
 			name:      "already configured - noop",
@@ -460,9 +462,10 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "custom scopes override defaults",
-			cfg:     &config.Config{},
-			useOIDC: true,
+			name:           "custom scopes override defaults",
+			cfg:            &config.Config{},
+			useOIDC:        true,
+			overrideScopes: []string{"openid", "email"},
 			setupMock: func(m *configmocks.MockProvider) {
 				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
 					c := &config.Config{}
@@ -474,9 +477,10 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "audience is passed through",
-			cfg:     &config.Config{},
-			useOIDC: true,
+			name:             "audience is passed through",
+			cfg:              &config.Config{},
+			useOIDC:          true,
+			overrideAudience: "api://my-api",
 			setupMock: func(m *configmocks.MockProvider) {
 				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
 					c := &config.Config{}
@@ -516,12 +520,11 @@ func TestEnsureOAuthConfig(t *testing.T) {
 				if opts.ClientID == "" {
 					opts.ClientID = "my-client"
 				}
-				// Apply test-specific overrides for the custom scopes/audience cases.
-				if tt.name == "custom scopes override defaults" {
-					opts.Scopes = []string{"openid", "email"}
+				if len(tt.overrideScopes) > 0 {
+					opts.Scopes = tt.overrideScopes
 				}
-				if tt.name == "audience is passed through" {
-					opts.Audience = "api://my-api"
+				if tt.overrideAudience != "" {
+					opts.Audience = tt.overrideAudience
 				}
 			}
 
@@ -567,6 +570,20 @@ func TestLogin_ConfigLoadError(t *testing.T) {
 	err := Login(context.Background(), mockCfg, nil, LoginOptions{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "loading config")
+}
+
+func TestLogin_RejectsLocalRegistryPath(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	mockCfg := configmocks.NewMockProvider(ctrl)
+	mockCfg.EXPECT().LoadOrCreateConfig().Return(&config.Config{
+		LocalRegistryPath: "/tmp/registry.json",
+	}, nil)
+
+	err := Login(context.Background(), mockCfg, nil, LoginOptions{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not supported for local file registries")
 }
 
 func TestLogin_MissingConfig(t *testing.T) {
@@ -693,41 +710,6 @@ func TestLogout_UpdateConfigError(t *testing.T) {
 	err := Logout(context.Background(), mockCfg, mockSecrets)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "write failed")
-}
-
-// --- NewSecretsProvider ---
-
-func TestNewSecretsProvider_ConfigLoadError(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	mockCfg := configmocks.NewMockProvider(ctrl)
-	mockCfg.EXPECT().LoadOrCreateConfig().Return(nil, errors.New("corrupt"))
-
-	provider, err := NewSecretsProvider(mockCfg)
-	require.Error(t, err)
-	require.Nil(t, provider)
-	require.Contains(t, err.Error(), "loading config")
-}
-
-func TestNewSecretsProvider_InvalidProviderType(t *testing.T) {
-	t.Parallel()
-
-	cfg := &config.Config{
-		Secrets: config.Secrets{
-			ProviderType:   "bogus-type",
-			SetupCompleted: true,
-		},
-	}
-
-	ctrl := gomock.NewController(t)
-	mockCfg := configmocks.NewMockProvider(ctrl)
-	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
-
-	provider, err := NewSecretsProvider(mockCfg)
-	require.Error(t, err)
-	require.Nil(t, provider)
-	require.Contains(t, err.Error(), "secrets provider type")
 }
 
 // --- resolvedTempDir helper ---

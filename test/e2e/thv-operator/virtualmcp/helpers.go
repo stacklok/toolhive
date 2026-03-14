@@ -1802,3 +1802,70 @@ func DeployMockOAuth2Server(
 	}
 	return inClusterTokenURL, cleanup
 }
+
+// ---- /status and /api/backends/health HTTP helpers ----
+
+// VMCPStatusResponse mirrors server.StatusResponse
+// (pkg/vmcp/server/status.go) for test deserialization.
+type VMCPStatusResponse struct {
+	Backends []VMCPBackendStatus `json:"backends"`
+	Healthy  bool                `json:"healthy"`
+	Version  string              `json:"version"`
+	GroupRef string              `json:"group_ref"`
+}
+
+// VMCPBackendStatus mirrors server.BackendStatus
+// (pkg/vmcp/server/status.go) for test deserialization.
+type VMCPBackendStatus struct {
+	Name      string `json:"name"`
+	Health    string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
+	Transport string `json:"transport"`
+	AuthType  string `json:"auth_type,omitempty"`
+}
+
+// VMCPBackendsHealthResponse mirrors server.BackendHealthResponse
+// (pkg/vmcp/server/server.go) for test deserialization.
+type VMCPBackendsHealthResponse struct {
+	MonitoringEnabled bool                               `json:"monitoring_enabled"`
+	Backends          map[string]*VMCPBackendHealthState `json:"backends,omitempty"`
+}
+
+// VMCPBackendHealthState mirrors health.State for test deserialization.
+// Field names are capitalized (no json tags on the server struct).
+type VMCPBackendHealthState struct {
+	Status              string `json:"Status"`
+	ConsecutiveFailures int    `json:"ConsecutiveFailures"`
+	LastErrorCategory   string `json:"LastErrorCategory"`
+}
+
+// getAndDecodeJSON issues a GET to url, checks for HTTP 200, and decodes the
+// JSON body into a value of type T. Returns a pointer to the decoded value.
+func getAndDecodeJSON[T any](url, label string) (*T, error) {
+	resp, err := http.Get(url) //nolint:gosec // test helper, URL is constructed from controlled input
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", label, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s returned HTTP %d", label, resp.StatusCode)
+	}
+	var result T
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", label, err)
+	}
+	return &result, nil
+}
+
+// GetVMCPStatus queries the /status endpoint on the given NodePort and returns
+// the parsed response.
+func GetVMCPStatus(nodePort int32) (*VMCPStatusResponse, error) {
+	return getAndDecodeJSON[VMCPStatusResponse](
+		fmt.Sprintf("http://localhost:%d/status", nodePort), "/status")
+}
+
+// GetVMCPBackendsHealth queries the /api/backends/health endpoint on the given
+// NodePort and returns the parsed response.
+func GetVMCPBackendsHealth(nodePort int32) (*VMCPBackendsHealthResponse, error) {
+	return getAndDecodeJSON[VMCPBackendsHealthResponse](
+		fmt.Sprintf("http://localhost:%d/api/backends/health", nodePort), "/api/backends/health")
+}

@@ -336,6 +336,40 @@ func TestEntraOBOHandler_ValidateResponse(t *testing.T) {
 	}
 }
 
+// TestEntraOBOHandler_ClientAuth verifies that EntraOBOHandler returns empty
+// clientAuthentication regardless of config credentials, because Entra OBO
+// sends credentials as form parameters, not HTTP Basic Auth.
+func TestEntraOBOHandler_ClientAuth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config *ExchangeConfig
+	}{
+		{
+			name: "returns empty even with credentials in config",
+			config: &ExchangeConfig{
+				ClientID:     "my-client-id",
+				ClientSecret: "my-client-secret",
+			},
+		},
+		{
+			name:   "returns empty for empty config",
+			config: &ExchangeConfig{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &EntraOBOHandler{}
+			got := h.ClientAuth(tt.config)
+			assert.Equal(t, clientAuthentication{}, got)
+		})
+	}
+}
+
 // TestEntraOBOHandler_Registration verifies that the init() function in
 // entra_obo.go registered the EntraOBOHandler in the DefaultVariantRegistry.
 func TestEntraOBOHandler_Registration(t *testing.T) {

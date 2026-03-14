@@ -109,6 +109,13 @@ func (*EntraOBOHandler) ValidateResponse(resp *Response) error {
 	return nil
 }
 
+// ClientAuth returns an empty clientAuthentication because Entra OBO sends
+// client credentials as form parameters (client_id and client_secret in the
+// POST body), not via HTTP Basic Auth.
+func (*EntraOBOHandler) ClientAuth(_ *ExchangeConfig) clientAuthentication {
+	return clientAuthentication{}
+}
+
 func init() {
 	RegisterVariantHandler("entra", &EntraOBOHandler{})
 }

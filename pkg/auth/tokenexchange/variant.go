@@ -42,6 +42,18 @@ type VariantHandler interface {
 	// HTTP response has been parsed into a response struct. Implementations
 	// should return an error if required fields are missing or invalid.
 	ValidateResponse(resp *Response) error
+
+	// ClientAuth returns the client credentials that should be sent via
+	// HTTP Basic Auth for the token exchange request. Variants that use
+	// Basic Auth (e.g., RFC 8693) return populated credentials from the
+	// config. Variants that embed credentials in the form body (e.g.,
+	// Entra OBO) should return an empty clientAuthentication{}.
+	//
+	// INVARIANT: A handler MUST place credentials in exactly one location.
+	// If ClientAuth returns populated credentials, BuildFormData MUST NOT
+	// include client_id or client_secret in the form data, and vice versa.
+	// Violating this invariant sends credentials on two channels simultaneously.
+	ClientAuth(config *ExchangeConfig) clientAuthentication
 }
 
 // VariantRegistry holds a set of named VariantHandler implementations.
@@ -179,4 +191,16 @@ func (*rfc8693Handler) ValidateResponse(resp *Response) error {
 		return fmt.Errorf("token exchange: server returned empty issued_token_type (required by RFC 8693)")
 	}
 	return nil
+}
+
+// ClientAuth returns the client credentials for HTTP Basic Auth as
+// recommended by RFC 6749 Section 2.3.1 for confidential clients.
+func (*rfc8693Handler) ClientAuth(config *ExchangeConfig) clientAuthentication {
+	if config == nil {
+		return clientAuthentication{}
+	}
+	return clientAuthentication{
+		ClientID:     config.ClientID,
+		ClientSecret: config.ClientSecret,
+	}
 }

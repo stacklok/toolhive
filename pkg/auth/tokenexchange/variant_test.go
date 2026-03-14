@@ -277,6 +277,49 @@ func TestRFC8693Handler_ValidateResponse(t *testing.T) {
 	}
 }
 
+// TestRFC8693Handler_ClientAuth tests the rfc8693Handler ClientAuth method.
+func TestRFC8693Handler_ClientAuth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config *ExchangeConfig
+		want   clientAuthentication
+	}{
+		{
+			name: "returns populated credentials from config",
+			config: &ExchangeConfig{
+				ClientID:     "my-client-id",
+				ClientSecret: "my-client-secret",
+			},
+			want: clientAuthentication{
+				ClientID:     "my-client-id",
+				ClientSecret: "my-client-secret",
+			},
+		},
+		{
+			name:   "returns empty credentials when config has none",
+			config: &ExchangeConfig{},
+			want:   clientAuthentication{},
+		},
+		{
+			name:   "nil config returns empty credentials",
+			config: nil,
+			want:   clientAuthentication{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &rfc8693Handler{}
+			got := h.ClientAuth(tt.config)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestExchangeConfig_ResolveHandler tests the resolveHandler method on ExchangeConfig.
 func TestExchangeConfig_ResolveHandler(t *testing.T) {
 	t.Parallel()

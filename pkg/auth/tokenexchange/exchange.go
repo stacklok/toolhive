@@ -330,18 +330,10 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("failed to build token exchange form data: %w", err)
 	}
 
-	// Client auth split: RFC 8693 (no variant) uses HTTP Basic Auth per
-	// RFC 6749 §2.3.1. All other variant handlers include credentials in
-	// form data if needed, so we pass empty client authentication.
-	clientAuth := func() clientAuthentication {
-		if conf.Variant == "" {
-			return clientAuthentication{
-				ClientID:     conf.ClientID,
-				ClientSecret: conf.ClientSecret,
-			}
-		}
-		return clientAuthentication{}
-	}()
+	// Delegate client authentication to the variant handler. RFC 8693 returns
+	// populated credentials for HTTP Basic Auth; variants that embed credentials
+	// in the form body (e.g., Entra OBO) return an empty clientAuthentication.
+	clientAuth := ts.handler.ClientAuth(conf)
 
 	req, err := createTokenExchangeRequest(ts.ctx, conf.TokenURL, data, clientAuth)
 	if err != nil {

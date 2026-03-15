@@ -64,7 +64,7 @@ func (r *resourceTokenSource) refreshWithResource(ctx context.Context) (*oauth2.
 
 	// Use x/oauth2 internals via Exchange() so we get:
 	// - expires_in -> Expiry handling
-	// - defaulting to HTTP Basic auth (or auto-detection)
+	// - AuthStyle from the Config's Endpoint (AuthStyleInParams)
 	// - structured error parsing via oauth2.RetrieveError
 	//
 	// Note: Exchange() will include an empty "code" parameter in the body.

@@ -124,8 +124,9 @@ func NewFlow(config *Config) (*Flow, error) {
 		RedirectURL:  redirectURL,
 		Scopes:       config.Scopes,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  config.AuthURL,
-			TokenURL: config.TokenURL,
+			AuthURL:   config.AuthURL,
+			TokenURL:  config.TokenURL,
+			AuthStyle: oauth2.AuthStyleInParams,
 		},
 	}
 

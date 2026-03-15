@@ -256,8 +256,9 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		ClientSecret: clientSecret,
 		Scopes:       scopes,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  h.config.AuthorizeURL,
-			TokenURL: h.config.TokenURL,
+			AuthURL:   h.config.AuthorizeURL,
+			TokenURL:  h.config.TokenURL,
+			AuthStyle: oauth2.AuthStyleInParams,
 		},
 	}
 

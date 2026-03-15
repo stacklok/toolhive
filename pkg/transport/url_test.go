@@ -165,6 +165,36 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			targetURI:     "http://remote.com/api",
 			expected:      "http://localhost:12345/api#test-container",
 		},
+		{
+			name:          "Streamable HTTP with query parameters in targetURI",
+			transportType: types.TransportTypeStreamableHTTP.String(),
+			proxyMode:     "",
+			host:          "localhost",
+			port:          12345,
+			containerName: "test-container",
+			targetURI:     "https://mcp.datadoghq.com/api/unstable/mcp?toolsets=core,alerting,apm",
+			expected:      "http://localhost:12345/api/unstable/mcp?toolsets=core,alerting,apm",
+		},
+		{
+			name:          "SSE transport with query parameters in targetURI",
+			transportType: types.TransportTypeSSE.String(),
+			proxyMode:     "",
+			host:          "localhost",
+			port:          12345,
+			containerName: "test-container",
+			targetURI:     "https://mcp.example.com/sse?token=abc123",
+			expected:      "http://localhost:12345/sse?token=abc123#test-container",
+		},
+		{
+			name:          "SSE transport with query parameters and no path in targetURI",
+			transportType: types.TransportTypeSSE.String(),
+			proxyMode:     "",
+			host:          "localhost",
+			port:          12345,
+			containerName: "test-container",
+			targetURI:     "https://mcp.example.com?token=abc123",
+			expected:      "http://localhost:12345/sse?token=abc123#test-container",
+		},
 	}
 
 	for _, tt := range tests {

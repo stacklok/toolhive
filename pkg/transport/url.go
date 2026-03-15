@@ -48,28 +48,7 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 
 	// ---- Remote path case ----
 	if remoteURL != "" {
-		targetURL, err := url.Parse(remoteURL)
-		if err != nil {
-			slog.Error("failed to parse target URI", "error", err)
-			return ""
-		}
-
-		// Use remote path as-is; treat "/" as empty
-		path := targetURL.EscapedPath()
-		if path == "/" {
-			path = ""
-		}
-
-		if isSSE {
-			if path == "" {
-				path = ssecommon.HTTPSSEEndpoint
-			}
-			return fmt.Sprintf("%s%s#%s", base, path, url.PathEscape(containerName))
-		}
-		if isStreamable {
-			return fmt.Sprintf("%s%s", base, path)
-		}
-		return ""
+		return generateRemoteMCPServerURL(base, containerName, remoteURL, isSSE, isStreamable)
 	}
 
 	// ---- Local path case (use constants as-is) ----
@@ -84,4 +63,41 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 	}
 
 	return ""
+}
+
+// generateRemoteMCPServerURL builds the proxy URL for a remote MCP server,
+// preserving both the path and query parameters from the remote URL.
+func generateRemoteMCPServerURL(base, containerName, remoteURL string, isSSE, isStreamable bool) string {
+	targetURL, err := url.Parse(remoteURL)
+	if err != nil {
+		slog.Error("failed to parse target URI", "error", err)
+		return ""
+	}
+
+	// Use remote path as-is; treat "/" as empty
+	path := targetURL.EscapedPath()
+	if path == "/" {
+		path = ""
+	}
+	rawQuery := targetURL.RawQuery
+
+	if isSSE {
+		if path == "" {
+			path = ssecommon.HTTPSSEEndpoint
+		}
+		sseURL := appendQuery(fmt.Sprintf("%s%s", base, path), rawQuery)
+		return fmt.Sprintf("%s#%s", sseURL, url.PathEscape(containerName))
+	}
+	if isStreamable {
+		return appendQuery(fmt.Sprintf("%s%s", base, path), rawQuery)
+	}
+	return ""
+}
+
+// appendQuery appends a raw query string to a URL if non-empty.
+func appendQuery(u, rawQuery string) string {
+	if rawQuery == "" {
+		return u
+	}
+	return u + "?" + rawQuery
 }

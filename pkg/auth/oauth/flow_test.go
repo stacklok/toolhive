@@ -1215,7 +1215,6 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 //  3. The authorization code is single-use — consumed by the rejected first attempt
 //  4. The retry with client_id in POST body gets "invalid_grant" because the code
 //     was already burned
-//
 func TestAuthStyleInParams_StrictPublicClientServer(t *testing.T) {
 	t.Parallel()
 

@@ -13,4 +13,6 @@ import (
 	_ "github.com/stacklok/toolhive/pkg/container/docker"
 	// Import Kubernetes runtime to register it
 	_ "github.com/stacklok/toolhive/pkg/container/kubernetes"
+	// Import go-microvm microVM runtime to register it
+	_ "github.com/stacklok/toolhive/pkg/container/gomicrovm"
 )

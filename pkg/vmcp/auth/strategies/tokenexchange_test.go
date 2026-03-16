@@ -377,6 +377,48 @@ func TestTokenExchangeStrategy_Validate(t *testing.T) {
 			expectError: "",
 		},
 		{
+			name: "valid entra variant without tokenUrl",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					ClientID: "entra-client",
+					Variant:  authtypes.TokenExchangeVariantEntra,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						Parameters: map[string]string{"tenantId": "my-tenant-id"},
+					},
+				},
+			},
+			expectError: "",
+		},
+		{
+			name: "valid raw variant with tokenUrl",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+					Variant:  authtypes.TokenExchangeVariantRaw,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						GrantTypeURN: "urn:custom:grant-type",
+						Parameters:   map[string]string{"extra": "value"},
+					},
+				},
+			},
+			expectError: "",
+		},
+		{
+			name: "error on raw variant missing tokenUrl",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					Variant: authtypes.TokenExchangeVariantRaw,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						GrantTypeURN: "urn:custom:grant-type",
+					},
+				},
+			},
+			expectError: "TokenURL is required",
+		},
+		{
 			name: "error on missing token_url",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type:          authtypes.StrategyTypeTokenExchange,
@@ -721,4 +763,43 @@ func TestTokenExchangeStrategy_ClientSecretEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTokenExchangeStrategy_VariantCacheSeparation(t *testing.T) {
+	t.Parallel()
+
+	server := createSuccessfulTokenServer(t, "backend-token", nil)
+	defer server.Close()
+
+	mockEnv := createMockEnvReader(t)
+	strategy := NewTokenExchangeStrategy(mockEnv)
+	ctx := createContextWithIdentity("variant-cache-user", "test-token")
+
+	// Standard RFC 8693
+	strategyConfig1 := createTokenExchangeStrategy(server.URL)
+	req1 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	err := strategy.Authenticate(ctx, req1, strategyConfig1)
+	require.NoError(t, err)
+
+	// Same URL but with entra variant — should be a separate cache entry.
+	// Entra OBO requires ClientID, ClientSecret, and tenantId parameter.
+	strategyConfig2 := &authtypes.BackendAuthStrategy{
+		Type: authtypes.StrategyTypeTokenExchange,
+		TokenExchange: &authtypes.TokenExchangeConfig{
+			TokenURL:     server.URL,
+			ClientID:     "entra-client",
+			ClientSecret: "entra-secret",
+			Variant:      authtypes.TokenExchangeVariantEntra,
+			Raw: &authtypes.TokenExchangeRawAuthConfig{
+				Parameters: map[string]string{"tenantId": "00000000-0000-0000-0000-000000000001"},
+			},
+		},
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	err = strategy.Authenticate(ctx, req2, strategyConfig2)
+	require.NoError(t, err)
+
+	strategy.mu.RLock()
+	assert.Len(t, strategy.exchangeConfigs, 2, "Different variants should have separate cache entries")
+	strategy.mu.RUnlock()
 }

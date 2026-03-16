@@ -281,10 +281,12 @@ func handleSubsequentRequest(
 		return ctx, fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// Backend tool calls are routed by session-scoped handlers registered with the SDK.
-	// However, composite tool workflow steps go through the shared router which requires
-	// DiscoveredCapabilities in the context. Inject capabilities built from the session's
-	// routing table so composite workflows can route backend tool calls correctly.
+	// Backend tool handlers (created by DefaultHandlerFactory) resolve their backend
+	// target by calling router.RouteTool(ctx, name), which reads DiscoveredCapabilities
+	// from the request context. Inject capabilities built from the session's routing
+	// table so these handlers can route correctly on subsequent requests.
+	// Note: composite tool workflow engines are created per-session and route via
+	// SessionRouter directly, so they no longer depend on this context value.
 	multiSess, isMulti := rawSess.(vmcpsession.MultiSession)
 	if !isMulti {
 		// The session is still a StreamableSession placeholder — Phase 2

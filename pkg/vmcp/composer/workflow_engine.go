@@ -17,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 )
@@ -45,6 +44,10 @@ type workflowEngine struct {
 
 	// backendClient makes calls to backend MCP servers.
 	backendClient vmcp.BackendClient
+
+	// tools is the resolved tool list for the session, used by getToolInputSchema
+	// for argument type coercion. Set via NewSessionWorkflowEngine.
+	tools []vmcp.Tool
 
 	// templateExpander handles template expansion.
 	templateExpander TemplateExpander
@@ -90,6 +93,30 @@ func NewWorkflowEngine(
 		dagExecutor:        newDAGExecutor(defaultMaxParallelSteps),
 		stateStore:         stateStore,
 		auditor:            auditor,
+	}
+}
+
+// NewSessionWorkflowEngine creates a per-session workflow engine bound to a resolved tool list.
+// tools is required: it enables argument type coercion against the session's tool schemas.
+// Use this when creating per-session engines via router.NewSessionRouter.
+func NewSessionWorkflowEngine(
+	rtr router.Router,
+	backendClient vmcp.BackendClient,
+	elicitationHandler ElicitationProtocolHandler,
+	stateStore WorkflowStateStore,
+	auditor *audit.WorkflowAuditor,
+	tools []vmcp.Tool,
+) Composer {
+	return &workflowEngine{
+		router:             rtr,
+		backendClient:      backendClient,
+		templateExpander:   NewTemplateExpander(),
+		contextManager:     newWorkflowContextManager(),
+		elicitationHandler: elicitationHandler,
+		dagExecutor:        newDAGExecutor(defaultMaxParallelSteps),
+		stateStore:         stateStore,
+		auditor:            auditor,
+		tools:              tools,
 	}
 }
 
@@ -407,7 +434,7 @@ func (e *workflowEngine) executeToolStep(
 	// Coerce expanded arguments to expected types based on backend tool schema.
 	// Template expansion returns strings, but backend tools expect typed values
 	// (integer, boolean, number) as defined in their InputSchema.
-	rawSchema := e.getToolInputSchema(ctx, step.Tool)
+	rawSchema := e.getToolInputSchema(step.Tool)
 	s := schema.MakeSchema(rawSchema)
 	if coerced, ok := s.TryCoerce(expandedArgs).(map[string]any); ok {
 		expandedArgs = coerced
@@ -1223,20 +1250,13 @@ func (e *workflowEngine) auditStepSkipped(
 	}
 }
 
-// getToolInputSchema looks up a tool's InputSchema from discovered capabilities.
-// Returns nil if the tool is not found or capabilities are not in context.
-func (*workflowEngine) getToolInputSchema(ctx context.Context, toolName string) map[string]any {
-	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-	if !ok || caps == nil {
-		return nil
-	}
-
-	// Search in backend tools
-	for i := range caps.Tools {
-		if caps.Tools[i].Name == toolName {
-			return caps.Tools[i].InputSchema
+// getToolInputSchema looks up a tool's InputSchema from the session-bound tools list.
+// Returns nil if the engine has no tools list or the tool is not found.
+func (e *workflowEngine) getToolInputSchema(toolName string) map[string]any {
+	for i := range e.tools {
+		if e.tools[i].Name == toolName {
+			return e.tools[i].InputSchema
 		}
 	}
-
 	return nil
 }

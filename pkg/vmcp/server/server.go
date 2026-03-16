@@ -217,11 +217,17 @@ type Server struct {
 	// Thread-safety: Safe for concurrent reads (no writes after initialization).
 	workflowDefs map[string]*composer.WorkflowDefinition
 
-	// Workflow executors for composite tools (adapters around composer + definition).
-	// Used by capability adapter to create composite tool handlers.
-	// Initialized during construction and read-only thereafter.
-	// Thread-safety: Safe for concurrent reads (no writes after initialization).
-	workflowExecutors map[string]adapter.WorkflowExecutor
+	// composerFactory creates a per-session workflow Composer bound to the
+	// session's routing table and tool list. Called at session registration
+	// time so that composite tool execution routes via the session rather than
+	// depending on the discovery middleware injecting DiscoveredCapabilities
+	// into the request context.
+	composerFactory func(rt *vmcp.RoutingTable, tools []vmcp.Tool) composer.Composer
+
+	// workflowInstruments holds pre-created OTEL metric instruments for workflow
+	// telemetry. Nil when telemetry is disabled. Created once at server startup
+	// and shared across all per-session executor wrappers.
+	workflowInstruments *workflowExecutorInstruments
 
 	// Ready channel signals when the server is ready to accept connections.
 	// Closed once the listener is created and serving.
@@ -340,23 +346,34 @@ func New(
 	stateStore := composer.NewInMemoryStateStore(5*time.Minute, 1*time.Hour)
 	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore, workflowAuditor)
 
-	// Validate workflows and create executors (fail fast on invalid workflows)
-	var workflowExecutors map[string]adapter.WorkflowExecutor
+	// composerFactory builds a per-session workflow engine at session registration
+	// time, binding composite tool routing to the session's own routing table and
+	// tool list. This removes composite tools' dependency on the discovery middleware
+	// injecting DiscoveredCapabilities into the request context.
+	sessionComposerFactory := func(sessionRT *vmcp.RoutingTable, sessionTools []vmcp.Tool) composer.Composer {
+		return composer.NewSessionWorkflowEngine(
+			router.NewSessionRouter(sessionRT), backendClient, elicitationHandler, stateStore, workflowAuditor,
+			sessionTools,
+		)
+	}
+
+	// Validate workflows (fail fast on invalid definitions)
 	var err error
-	workflowDefs, workflowExecutors, err = validateAndCreateExecutors(workflowComposer, workflowDefs)
+	workflowDefs, err = validateWorkflows(workflowComposer, workflowDefs)
 	if err != nil {
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
-	// Decorate workflow executors with telemetry if provider is configured
-	if cfg.TelemetryProvider != nil && len(workflowExecutors) > 0 {
-		workflowExecutors, err = monitorWorkflowExecutors(
+	// Pre-create workflow telemetry instruments once so they can be reused
+	// across all per-session executor wrappers without re-registering metrics.
+	var workflowInstruments *workflowExecutorInstruments
+	if cfg.TelemetryProvider != nil && len(workflowDefs) > 0 {
+		workflowInstruments, err = newWorkflowExecutorInstruments(
 			cfg.TelemetryProvider.MeterProvider(),
 			cfg.TelemetryProvider.TracerProvider(),
-			workflowExecutors,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
+			return nil, fmt.Errorf("failed to create workflow executor telemetry: %w", err)
 		}
 	}
 
@@ -400,21 +417,22 @@ func New(
 
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backendRegistry:   backendRegistry,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		workflowDefs:      workflowDefs,
-		workflowExecutors: workflowExecutors,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
-		statusReporter:    cfg.StatusReporter,
-		vmcpSessionMgr:    vmcpSessMgr,
+		config:              cfg,
+		mcpServer:           mcpServer,
+		router:              rt,
+		backendClient:       backendClient,
+		handlerFactory:      handlerFactory,
+		discoveryMgr:        discoveryMgr,
+		backendRegistry:     backendRegistry,
+		sessionManager:      sessionManager,
+		capabilityAdapter:   capabilityAdapter,
+		workflowDefs:        workflowDefs,
+		composerFactory:     sessionComposerFactory,
+		workflowInstruments: workflowInstruments,
+		ready:               make(chan struct{}),
+		healthMonitor:       healthMon,
+		statusReporter:      cfg.StatusReporter,
+		vmcpSessionMgr:      vmcpSessMgr,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -1036,21 +1054,29 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	return s.injectTools(ctx, session, adaptedTools, compositeSDKTools)
 }
 
-// collectCompositeTools converts workflow definitions to SDK tools,
+// collectCompositeTools converts workflow definitions to SDK tools for the given session,
 // validating that no composite tool name collides with a backend tool name.
 // Returns an empty slice (not an error) if no workflow defs are configured or conflicts are found.
+// Composite tools whose underlying backend tools are not routable in this session are excluded,
+// so a session that lacks access to a backend tool also cannot access composite tools that depend on it.
 func (s *Server) collectCompositeTools(sessionID string) ([]server.ServerTool, error) {
 	if len(s.workflowDefs) == 0 {
 		return nil, nil
 	}
 
-	compositeTools := convertWorkflowDefsToTools(s.workflowDefs)
 	multiSess, hasSess := s.vmcpSessionMgr.GetMultiSession(sessionID)
 	if !hasSess {
 		slog.Error("session not found after creation; skipping composite tools",
 			"session_id", sessionID)
 		return nil, nil
 	}
+
+	sessionDefs := filterWorkflowDefsForSession(s.workflowDefs, multiSess.GetRoutingTable())
+	if len(sessionDefs) == 0 {
+		return nil, nil
+	}
+
+	compositeTools := convertWorkflowDefsToTools(sessionDefs)
 	if err := validateNoToolConflicts(multiSess.Tools(), compositeTools); err != nil {
 		slog.Error("composite tool name conflict detected; skipping composite tools",
 			"session_id", sessionID,
@@ -1058,7 +1084,20 @@ func (s *Server) collectCompositeTools(sessionID string) ([]server.ServerTool, e
 		return nil, nil
 	}
 
-	sdkTools, err := s.capabilityAdapter.ToCompositeToolSDKTools(compositeTools, s.workflowExecutors)
+	// Build per-session workflow executors so that composite tool routing uses
+	// the session's own routing table rather than DiscoveredCapabilities from
+	// the request context (which is injected by the discovery middleware).
+	sessionComposer := s.composerFactory(multiSess.GetRoutingTable(), multiSess.Tools())
+	sessionExecutors := make(map[string]adapter.WorkflowExecutor, len(sessionDefs))
+	for name, def := range sessionDefs {
+		ex := newComposerWorkflowExecutor(sessionComposer, def)
+		if s.workflowInstruments != nil {
+			ex = s.workflowInstruments.wrapExecutor(name, ex)
+		}
+		sessionExecutors[name] = ex
+	}
+
+	sdkTools, err := s.capabilityAdapter.ToCompositeToolSDKTools(compositeTools, sessionExecutors)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert composite tools: %w", err)
 	}
@@ -1113,33 +1152,30 @@ func (s *Server) injectTools(
 	return nil
 }
 
-// validateAndCreateExecutors validates workflow definitions and creates executors.
+// validateWorkflows validates workflow definitions, returning only the valid ones.
 //
 // This function:
 //  1. Validates each workflow definition (cycle detection, tool references, etc.)
 //  2. Returns error on first validation failure (fail-fast)
-//  3. Creates workflow executors for all valid workflows
 //
 // Failing fast on invalid workflows provides immediate user feedback and prevents
 // security issues (resource exhaustion from cycles, information disclosure from errors).
-func validateAndCreateExecutors(
+func validateWorkflows(
 	validator composer.Composer,
 	workflowDefs map[string]*composer.WorkflowDefinition,
-) (map[string]*composer.WorkflowDefinition, map[string]adapter.WorkflowExecutor, error) {
+) (map[string]*composer.WorkflowDefinition, error) {
 	if len(workflowDefs) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	validDefs := make(map[string]*composer.WorkflowDefinition, len(workflowDefs))
-	validExecutors := make(map[string]adapter.WorkflowExecutor, len(workflowDefs))
 
 	for name, def := range workflowDefs {
 		if err := validator.ValidateWorkflow(context.Background(), def); err != nil {
-			return nil, nil, fmt.Errorf("invalid workflow definition '%s': %w", name, err)
+			return nil, fmt.Errorf("invalid workflow definition '%s': %w", name, err)
 		}
 
 		validDefs[name] = def
-		validExecutors[name] = newComposerWorkflowExecutor(validator, def)
 		slog.Debug("validated workflow definition", "name", name)
 	}
 
@@ -1147,7 +1183,7 @@ func validateAndCreateExecutors(
 		slog.Info("loaded valid composite tool workflows", "count", len(validDefs))
 	}
 
-	return validDefs, validExecutors, nil
+	return validDefs, nil
 }
 
 // GetBackendHealthStatus returns the health status of a specific backend.

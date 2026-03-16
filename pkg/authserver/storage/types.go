@@ -53,7 +53,8 @@ const DefaultPendingAuthorizationTTL = 10 * time.Minute
 // ProviderID for multi-IDP support.
 type UpstreamTokens struct {
 	// ProviderID identifies which upstream provider issued these tokens.
-	// Example values: "google", "github", "okta"
+	// This is the logical provider name matching UpstreamConfig.Name,
+	// used as the storage key for multi-upstream token lookups.
 	ProviderID string
 
 	// Token values from the upstream IDP
@@ -156,6 +157,16 @@ type PendingAuthorization struct {
 	// ID Token. See OIDC Core Section 3.1.2.1.
 	UpstreamNonce string
 
+	// UpstreamProviderName identifies the upstream provider being authenticated in this
+	// authorization chain leg. Used in multi-upstream scenarios to route the callback
+	// to the correct provider.
+	UpstreamProviderName string
+
+	// SessionID is the TSID for session accumulation across authorization chain legs.
+	// In multi-upstream scenarios, the same session accumulates tokens from multiple
+	// providers across successive authorization legs.
+	SessionID string
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }
@@ -195,19 +206,28 @@ type ClientRegistry interface {
 // The auth server exposes this interface via Server.UpstreamTokenStorage() for use by
 // middleware that needs to retrieve upstream tokens (e.g., token swap middleware that
 // replaces JWT auth with upstream IDP tokens for backend requests).
+//
+// Tokens are keyed by (sessionID, providerName) to support multiple upstream providers
+// per session. Each provider's tokens are stored and retrieved independently.
 type UpstreamTokenStorage interface {
-	// StoreUpstreamTokens stores the upstream IDP tokens for a session.
-	StoreUpstreamTokens(ctx context.Context, sessionID string, tokens *UpstreamTokens) error
+	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
+	// The providerName identifies which upstream provider these tokens belong to.
+	StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *UpstreamTokens) error
 
-	// GetUpstreamTokens retrieves the upstream IDP tokens for a session.
-	// Returns ErrNotFound if the session does not exist.
+	// GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
+	// Returns ErrNotFound if the session/provider combination does not exist.
 	// Returns ErrExpired if the tokens have expired. When ErrExpired is returned,
 	// the token data (including refresh token) is also returned to allow callers
 	// to attempt a token refresh.
 	// Returns ErrInvalidBinding if binding validation fails.
-	GetUpstreamTokens(ctx context.Context, sessionID string) (*UpstreamTokens, error)
+	GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*UpstreamTokens, error)
 
-	// DeleteUpstreamTokens removes the upstream IDP tokens for a session.
+	// GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.
+	// Returns a map of providerName -> tokens. Returns an empty map (not error) for unknown sessions.
+	// Includes expired tokens (no expiry filtering at bulk-read level).
+	GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*UpstreamTokens, error)
+
+	// DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
 	// Returns ErrNotFound if the session does not exist.
 	DeleteUpstreamTokens(ctx context.Context, sessionID string) error
 }

@@ -45,16 +45,16 @@ func NewInProcessService(
 	}
 }
 
-// GetValidTokens returns a valid upstream credential for a session.
+// GetValidTokens returns a valid upstream credential for a session and provider.
 // It transparently refreshes expired access tokens using the refresh token.
-func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID string) (*UpstreamCredential, error) {
-	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID)
+func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error) {
+	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID, providerName)
 	if err != nil {
 		// ErrExpired returns tokens (including refresh token) alongside the error.
 		// Attempt a refresh before giving up.
 		if errors.Is(err, storage.ErrExpired) {
 			if tokens != nil {
-				return s.refreshOrFail(ctx, sessionID, tokens)
+				return s.refreshOrFail(ctx, sessionID, providerName, tokens)
 			}
 			// Expired but storage returned nil tokens — can't refresh.
 			return nil, ErrNoRefreshToken
@@ -71,7 +71,7 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID string)
 	// Defense in depth: some storage implementations may return tokens
 	// without checking expiry (the interface does not require it).
 	if !tokens.ExpiresAt.IsZero() && tokens.IsExpired(time.Now()) {
-		return s.refreshOrFail(ctx, sessionID, tokens)
+		return s.refreshOrFail(ctx, sessionID, providerName, tokens)
 	}
 
 	return &UpstreamCredential{AccessToken: tokens.AccessToken}, nil
@@ -82,6 +82,7 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID string)
 func (s *InProcessService) refreshOrFail(
 	ctx context.Context,
 	sessionID string,
+	providerName string,
 	expired *storage.UpstreamTokens,
 ) (*UpstreamCredential, error) {
 	if expired.RefreshToken == "" {
@@ -93,7 +94,7 @@ func (s *InProcessService) refreshOrFail(
 		return nil, ErrNoRefreshToken
 	}
 
-	result, err, _ := s.sfGroup.Do(sessionID, func() (any, error) {
+	result, err, _ := s.sfGroup.Do(sessionID+":"+providerName, func() (any, error) {
 		// Detach from the triggering request's context so that if the first
 		// caller disconnects, the refresh still completes for waiting callers.
 		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)

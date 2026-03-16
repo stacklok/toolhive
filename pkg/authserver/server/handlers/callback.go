@@ -94,8 +94,9 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	idpTokens := result.Tokens
 	providerSubject := result.Subject
 
-	// Get provider ID
-	providerID := string(h.upstream.Type())
+	// Use the logical upstream name as the provider identifier for storage and identity lookups.
+	// This ensures write-side (StoreUpstreamTokens) and read-side (GetUpstreamTokens) keys match.
+	providerID := h.upstreamName
 
 	// Resolve or create internal user
 	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
@@ -124,7 +125,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		UpstreamSubject: providerSubject, // Upstream IDP's subject claim
 	}
 
-	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, storageTokens); err != nil {
+	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {
 		slog.Error("failed to store upstream tokens",
 			"error", err,
 		)

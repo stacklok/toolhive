@@ -190,8 +190,9 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		}).AnyTimes()
 
 	// Setup mock expectations for upstream tokens storage
-	stor.EXPECT().StoreUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, sessionID string, tokens *storage.UpstreamTokens) error {
+	// Assert the providerName matches the handler's upstreamName ("test-upstream")
+	stor.EXPECT().StoreUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Eq("test-upstream"), gomock.Any()).DoAndReturn(
+		func(_ context.Context, sessionID, _ string, tokens *storage.UpstreamTokens) error {
 			storState.upstreamTokens[sessionID] = tokens
 			storState.idpTokenCount++
 			return nil
@@ -335,7 +336,7 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		},
 	}
 
-	handler := NewHandler(provider, oauth2Config, stor, mockUpstream)
+	handler := NewHandler(provider, oauth2Config, stor, mockUpstream, "test-upstream")
 
 	return handler, storState, mockUpstream
 }

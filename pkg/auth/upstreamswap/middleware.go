@@ -35,6 +35,10 @@ type Config struct {
 
 	// CustomHeaderName is the header name when HeaderStrategy is "custom".
 	CustomHeaderName string `json:"custom_header_name,omitempty" yaml:"custom_header_name,omitempty"`
+
+	// ProviderName identifies which upstream provider's tokens to retrieve for injection.
+	// This is required and must match a configured upstream provider name.
+	ProviderName string `json:"provider_name" yaml:"provider_name"`
 }
 
 // MiddlewareParams represents the JSON parameters for the middleware factory.
@@ -94,6 +98,11 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 
 // validateConfig validates the upstream swap configuration.
 func validateConfig(cfg *Config) error {
+	// ProviderName is required to identify which upstream provider's tokens to retrieve
+	if cfg.ProviderName == "" {
+		return fmt.Errorf("provider_name is required")
+	}
+
 	// Validate header strategy
 	if cfg.HeaderStrategy != "" &&
 		cfg.HeaderStrategy != HeaderStrategyReplace &&
@@ -187,7 +196,7 @@ func createMiddlewareFunc(cfg *Config, serviceGetter ServiceGetter) types.Middle
 			}
 
 			// 4. Get valid upstream tokens (with transparent refresh)
-			cred, err := svc.GetValidTokens(r.Context(), tsid)
+			cred, err := svc.GetValidTokens(r.Context(), tsid, cfg.ProviderName)
 			if err != nil {
 				slog.Warn("Failed to get upstream tokens",
 					"middleware", "upstreamswap", "error", err)

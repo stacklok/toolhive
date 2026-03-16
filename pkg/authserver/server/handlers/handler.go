@@ -31,21 +31,29 @@ type Handler struct {
 	config       *server.AuthorizationServerConfig
 	storage      storage.Storage
 	upstream     upstream.OAuth2Provider
+	upstreamName string
 	userResolver *UserResolver
 }
 
 // NewHandler creates a new Handler with the given dependencies.
+// The upstreamName identifies the logical upstream provider (matching UpstreamConfig.Name).
+// If empty, it defaults to "default".
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
 	upstreamIDP upstream.OAuth2Provider,
+	upstreamName string,
 ) *Handler {
+	if upstreamName == "" {
+		upstreamName = "default"
+	}
 	return &Handler{
 		provider:     provider,
 		config:       config,
 		storage:      stor,
 		upstream:     upstreamIDP,
+		upstreamName: upstreamName,
 		userResolver: NewUserResolver(stor),
 	}
 }

@@ -434,9 +434,9 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 				AccessToken: "upstream-access", RefreshToken: "upstream-refresh", IDToken: "upstream-id",
 				ExpiresAt: time.Now().Add(time.Hour), UserID: "user-123", ClientID: "test-client-id",
 			}
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-123", tokens))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-123", "provider-a", tokens))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-123")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-123", "provider-a")
 			require.NoError(t, err)
 			assert.Equal(t, tokens.AccessToken, retrieved.AccessToken)
 			assert.Equal(t, tokens.RefreshToken, retrieved.RefreshToken)
@@ -447,26 +447,26 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("get non-existent", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			_, err := s.GetUpstreamTokens(ctx, "non-existent")
+			_, err := s.GetUpstreamTokens(ctx, "non-existent", "provider-a")
 			requireNotFoundError(t, err)
 		})
 	})
 
 	t.Run("delete", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "to-delete", &UpstreamTokens{AccessToken: "test"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "to-delete", "provider-a", &UpstreamTokens{AccessToken: "test"}))
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "to-delete"))
-			_, err := s.GetUpstreamTokens(ctx, "to-delete")
+			_, err := s.GetUpstreamTokens(ctx, "to-delete", "provider-a")
 			requireNotFoundError(t, err)
 		})
 	})
 
 	t.Run("overwrite existing tokens", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-1", UserID: "user1"}))
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-2", UserID: "user2"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-1", UserID: "user1"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-2", UserID: "user2"}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
 			require.NoError(t, err)
 			assert.Equal(t, "token-2", retrieved.AccessToken)
 			assert.Equal(t, "user2", retrieved.UserID)
@@ -475,20 +475,154 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("get expired tokens returns ErrExpired with token data", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", "provider-a", &UpstreamTokens{
 				AccessToken:  "expired-token",
 				RefreshToken: "refresh-token",
 				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
 			assert.Equal(t, 1, s.Stats().UpstreamTokens)
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "expired")
+			retrieved, err := s.GetUpstreamTokens(ctx, "expired", "provider-a")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
 			// Tokens should be returned alongside ErrExpired for refresh purposes
 			require.NotNil(t, retrieved)
 			assert.Equal(t, "expired-token", retrieved.AccessToken)
 			assert.Equal(t, "refresh-token", retrieved.RefreshToken)
+		})
+	})
+
+	t.Run("multi-provider store and get", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			tokensA := &UpstreamTokens{AccessToken: "access-a", RefreshToken: "refresh-a", ExpiresAt: time.Now().Add(time.Hour)}
+			tokensB := &UpstreamTokens{AccessToken: "access-b", RefreshToken: "refresh-b", ExpiresAt: time.Now().Add(time.Hour)}
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", tokensA))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", tokensB))
+
+			retrievedA, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "access-a", retrievedA.AccessToken)
+
+			retrievedB, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			require.NoError(t, err)
+			assert.Equal(t, "access-b", retrievedB.AccessToken)
+		})
+	})
+
+	t.Run("cross-provider isolation", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			tokensA := &UpstreamTokens{AccessToken: "access-a", ExpiresAt: time.Now().Add(time.Hour)}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", tokensA))
+
+			// Provider B should not be affected by provider A's data
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			requireNotFoundError(t, err)
+
+			// Store provider B and verify provider A is unchanged
+			tokensB := &UpstreamTokens{AccessToken: "access-b", ExpiresAt: time.Now().Add(time.Hour)}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", tokensB))
+
+			retrievedA, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "access-a", retrievedA.AccessToken)
+		})
+	})
+
+	t.Run("GetAllUpstreamTokens with two providers", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			tokensA := &UpstreamTokens{AccessToken: "access-a", ExpiresAt: time.Now().Add(time.Hour)}
+			tokensB := &UpstreamTokens{AccessToken: "access-b", ExpiresAt: time.Now().Add(time.Hour)}
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", tokensA))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", tokensB))
+
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			require.NoError(t, err)
+			assert.Len(t, all, 2)
+			assert.Equal(t, "access-a", all["provider-a"].AccessToken)
+			assert.Equal(t, "access-b", all["provider-b"].AccessToken)
+		})
+	})
+
+	t.Run("GetAllUpstreamTokens unknown session", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			all, err := s.GetAllUpstreamTokens(ctx, "unknown-session")
+			require.NoError(t, err)
+			assert.Empty(t, all)
+		})
+	})
+
+	t.Run("GetAllUpstreamTokens includes expired tokens", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{
+				AccessToken:  "expired-access",
+				RefreshToken: "expired-refresh",
+				ExpiresAt:    time.Now().Add(-time.Hour),
+			}))
+
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			require.NoError(t, err)
+			require.Len(t, all, 1)
+			assert.Equal(t, "expired-access", all["provider-a"].AccessToken)
+			assert.Equal(t, "expired-refresh", all["provider-a"].RefreshToken)
+		})
+	})
+
+	t.Run("session delete wipes all providers", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{AccessToken: "a"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", &UpstreamTokens{AccessToken: "b"}))
+			assert.Equal(t, 2, s.Stats().UpstreamTokens)
+
+			require.NoError(t, s.DeleteUpstreamTokens(ctx, "session-1"))
+
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			requireNotFoundError(t, err)
+			_, err = s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			requireNotFoundError(t, err)
+			assert.Equal(t, 0, s.Stats().UpstreamTokens)
+		})
+	})
+
+	t.Run("empty providerName returns error for Store", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.StoreUpstreamTokens(ctx, "session-1", "", &UpstreamTokens{AccessToken: "test"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+	t.Run("empty providerName returns error for Get", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+	t.Run("empty inner map cleanup", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Store a single provider with an already-expired storage TTL
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{
+				AccessToken: "test",
+				ExpiresAt:   time.Now().Add(-DefaultRefreshTokenTTL - time.Hour),
+			}))
+
+			// Verify the inner map exists
+			s.mu.RLock()
+			_, sessionExists := s.upstreamTokens["session-1"]
+			s.mu.RUnlock()
+			assert.True(t, sessionExists, "session inner map should exist before cleanup")
+
+			// Run cleanup to expire the single provider entry
+			s.cleanupExpired()
+
+			// Verify the inner map is cleaned up (session key removed entirely)
+			s.mu.RLock()
+			_, sessionExists = s.upstreamTokens["session-1"]
+			s.mu.RUnlock()
+			assert.False(t, sessionExists, "empty inner map should be cleaned up")
 		})
 	})
 }
@@ -643,16 +777,16 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 			name: "upstream tokens",
 			setup: func(ctx context.Context, s *MemoryStorage) {
 				// Entry must be older than DefaultRefreshTokenTTL past access token expiry to be cleaned up
-				_ = s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{AccessToken: "exp", ExpiresAt: time.Now().Add(-DefaultRefreshTokenTTL - time.Hour)})
-				_ = s.StoreUpstreamTokens(ctx, "valid", &UpstreamTokens{AccessToken: "val", ExpiresAt: time.Now().Add(time.Hour)})
+				_ = s.StoreUpstreamTokens(ctx, "expired", "provider-a", &UpstreamTokens{AccessToken: "exp", ExpiresAt: time.Now().Add(-DefaultRefreshTokenTTL - time.Hour)})
+				_ = s.StoreUpstreamTokens(ctx, "valid", "provider-a", &UpstreamTokens{AccessToken: "val", ExpiresAt: time.Now().Add(time.Hour)})
 			},
 			getStats: func(st Stats) int { return st.UpstreamTokens },
 			verifyGone: func(ctx context.Context, s *MemoryStorage) error {
-				_, err := s.GetUpstreamTokens(ctx, "expired")
+				_, err := s.GetUpstreamTokens(ctx, "expired", "provider-a")
 				return err
 			},
 			verifyKeep: func(ctx context.Context, s *MemoryStorage) error {
-				_, err := s.GetUpstreamTokens(ctx, "valid")
+				_, err := s.GetUpstreamTokens(ctx, "valid", "provider-a")
 				return err
 			},
 		},
@@ -770,7 +904,7 @@ func TestMemoryStorage_Stats(t *testing.T) {
 		_ = s.CreateAccessTokenSession(ctx, "access-1", request)
 		_ = s.CreateRefreshTokenSession(ctx, "refresh-1", "access-1", request)
 		_ = s.CreatePKCERequestSession(ctx, "pkce-1", request)
-		_ = s.StoreUpstreamTokens(ctx, "upstream-1", &UpstreamTokens{AccessToken: "test"})
+		_ = s.StoreUpstreamTokens(ctx, "upstream-1", "provider-a", &UpstreamTokens{AccessToken: "test"})
 		_ = s.InvalidateAuthorizeCodeSession(ctx, "code-1")
 		_ = s.SetClientAssertionJWT(ctx, "jti-1", time.Now().Add(time.Hour))
 
@@ -868,7 +1002,7 @@ func TestMemoryStorage_InputValidation(t *testing.T) {
 			return s.CreatePKCERequestSession(ctx, "sig", nil)
 		}, fosite.ErrInvalidRequest},
 		{"StoreUpstreamTokens empty sessionID", func(ctx context.Context, s *MemoryStorage) error {
-			return s.StoreUpstreamTokens(ctx, "", &UpstreamTokens{AccessToken: "t"})
+			return s.StoreUpstreamTokens(ctx, "", "provider-a", &UpstreamTokens{AccessToken: "t"})
 		}, fosite.ErrInvalidRequest},
 		{"StorePendingAuthorization empty state", func(ctx context.Context, s *MemoryStorage) error {
 			return s.StorePendingAuthorization(ctx, "", &PendingAuthorization{ClientID: "c"})
@@ -890,8 +1024,8 @@ func TestMemoryStorage_InputValidation(t *testing.T) {
 
 	t.Run("StoreUpstreamTokens nil tokens is valid", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", nil))
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-id")
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", "provider-a", nil))
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-id", "provider-a")
 			require.NoError(t, err)
 			assert.Nil(t, retrieved)
 		})
@@ -1169,8 +1303,8 @@ func TestMemoryStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 			ProviderID: "google", AccessToken: "other-token", UserID: "other-user",
 			UpstreamSubject: "other-google-sub", ClientID: "client-1",
 		}
-		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-user", userTokens))
-		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-other", otherTokens))
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-user", "google", userTokens))
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-other", "google", otherTokens))
 
 		assert.Equal(t, 2, s.Stats().Users)
 		assert.Equal(t, 3, s.Stats().ProviderIdentities)
@@ -1189,7 +1323,7 @@ func TestMemoryStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the user's upstream tokens are gone
-		_, err = s.GetUpstreamTokens(ctx, "session-user")
+		_, err = s.GetUpstreamTokens(ctx, "session-user", "google")
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the other user's identity is still there
@@ -1198,7 +1332,7 @@ func TestMemoryStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.Equal(t, "other-user", retrieved.UserID)
 
 		// Verify the other user's upstream tokens are still there
-		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other")
+		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other", "google")
 		require.NoError(t, err)
 		assert.Equal(t, "other-token", otherRetrieved.AccessToken)
 	})

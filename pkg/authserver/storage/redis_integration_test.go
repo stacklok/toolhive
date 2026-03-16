@@ -625,9 +625,9 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 				UpstreamSubject: "google-sub",
 				ClientID:        "client-up-1",
 			}
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-up-1", tokens))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-up-1", "provider-a", tokens))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "sess-up-1")
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-up-1", "provider-a")
 			require.NoError(t, err)
 			assert.Equal(t, "upstream-access", retrieved.AccessToken)
 			assert.Equal(t, "user-up-1", retrieved.UserID)
@@ -637,8 +637,8 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 
 	t.Run("nil tokens stored and retrieved", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-nil", nil))
-			retrieved, err := s.GetUpstreamTokens(ctx, "sess-nil")
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-nil", "provider-a", nil))
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-nil", "provider-a")
 			require.NoError(t, err)
 			assert.Nil(t, retrieved)
 		})
@@ -646,13 +646,13 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 
 	t.Run("overwrite tokens", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-ow", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-ow", "provider-a", &UpstreamTokens{
 				AccessToken: "old", UserID: "user1", ExpiresAt: time.Now().Add(time.Hour),
 			}))
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-ow", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-ow", "provider-a", &UpstreamTokens{
 				AccessToken: "new", UserID: "user2", ExpiresAt: time.Now().Add(time.Hour),
 			}))
-			retrieved, err := s.GetUpstreamTokens(ctx, "sess-ow")
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-ow", "provider-a")
 			require.NoError(t, err)
 			assert.Equal(t, "new", retrieved.AccessToken)
 			assert.Equal(t, "user2", retrieved.UserID)
@@ -661,12 +661,12 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 
 	t.Run("expired tokens return ErrExpired with token data", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-exp", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-exp", "provider-a", &UpstreamTokens{
 				AccessToken:  "expired-token",
 				RefreshToken: "expired-refresh",
 				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
-			tokens, err := s.GetUpstreamTokens(ctx, "sess-exp")
+			tokens, err := s.GetUpstreamTokens(ctx, "sess-exp", "provider-a")
 			assert.ErrorIs(t, err, ErrExpired)
 			// Expired tokens should still return the data (needed for refresh)
 			require.NotNil(t, tokens, "expired tokens should return data for refresh")
@@ -677,11 +677,11 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-del", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-del", "provider-a", &UpstreamTokens{
 				AccessToken: "del-me", ExpiresAt: time.Now().Add(time.Hour),
 			}))
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "sess-del"))
-			_, err := s.GetUpstreamTokens(ctx, "sess-del")
+			_, err := s.GetUpstreamTokens(ctx, "sess-del", "provider-a")
 			requireRedisNotFoundError(t, err)
 		})
 	})
@@ -823,7 +823,7 @@ func TestIntegration_ProviderIdentity(t *testing.T) {
 			require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
 				UserID: "cascade-user", ProviderID: "google", ProviderSubject: "cascade-sub", LinkedAt: now,
 			}))
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "cascade-sess", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "cascade-sess", "provider-a", &UpstreamTokens{
 				ProviderID: "google", AccessToken: "cascade-token",
 				UserID: "cascade-user", ExpiresAt: now.Add(time.Hour),
 			}))
@@ -834,7 +834,7 @@ func TestIntegration_ProviderIdentity(t *testing.T) {
 			assert.ErrorIs(t, err, ErrNotFound)
 			_, err = s.GetProviderIdentity(ctx, "google", "cascade-sub")
 			assert.ErrorIs(t, err, ErrNotFound)
-			_, err = s.GetUpstreamTokens(ctx, "cascade-sess")
+			_, err = s.GetUpstreamTokens(ctx, "cascade-sess", "provider-a")
 			assert.ErrorIs(t, err, ErrNotFound)
 		})
 	})

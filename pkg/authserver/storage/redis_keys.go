@@ -47,6 +47,10 @@ const (
 	// KeyTypeReqIDRefresh is the key type for request ID to refresh token mappings.
 	KeyTypeReqIDRefresh = "reqid:refresh"
 
+	// KeyTypeUpstreamIdx is the key type for the session index set that tracks all provider keys
+	// for a given session. Used with GetAllUpstreamTokens and atomic session deletion.
+	KeyTypeUpstreamIdx = "upstream:idx"
+
 	// KeyTypeUserUpstream is the key type for user to upstream token reverse lookups.
 	KeyTypeUserUpstream = "user:upstream"
 
@@ -80,6 +84,13 @@ func redisKey(prefix, keyType, id string) string {
 // Uses length-prefixed format to handle colons in provider IDs/subjects.
 func redisProviderKey(prefix, providerID, providerSubject string) string {
 	return fmt.Sprintf("%s%s:%d:%s:%s", prefix, KeyTypeProvider, len(providerID), providerID, providerSubject)
+}
+
+// redisUpstreamKey generates a Redis key for a per-provider upstream token entry.
+// Format: "{prefix}upstream:{sessionID}:{providerName}"
+// This enables storing tokens from multiple upstream providers per session.
+func redisUpstreamKey(prefix, sessionID, providerName string) string {
+	return fmt.Sprintf("%s%s:%s:%s", prefix, KeyTypeUpstream, sessionID, providerName)
 }
 
 // redisSetKey generates a Redis key for a set that tracks multiple items.

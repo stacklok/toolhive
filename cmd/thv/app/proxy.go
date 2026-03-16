@@ -428,7 +428,7 @@ func createTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.Middle
 
 // addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
 func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSource oauth2.TokenSource) error {
-	if remoteAuthFlags.TokenExchangeURL != "" {
+	if remoteAuthFlags.TokenExchangeURL != "" || remoteAuthFlags.TokenExchangeVariant != "" {
 		// Use token exchange middleware when token exchange is configured
 		tokenExchangeConfig, err := remoteAuthFlags.BuildTokenExchangeConfig()
 		if err != nil {

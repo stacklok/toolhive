@@ -866,6 +866,130 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			expectCondition: mcpv1alpha1.ConditionReasonConfigurationValid,
 			conditionStatus: metav1.ConditionTrue,
 		},
+		{
+			name: "invalid Cedar policy syntax is rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "invalid-cedar-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "test",
+						},
+					},
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineAuthzConfig{
+							Policies: []string{"not valid cedar"},
+						},
+					},
+				},
+			},
+			expectError:     true,
+			errContains:     "invalid syntax",
+			expectCondition: mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "referenced authz ConfigMap not found is rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "missing-configmap-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "test",
+						},
+					},
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+							Name: "does-not-exist",
+						},
+					},
+				},
+			},
+			expectError:     true,
+			errContains:     "not found",
+			expectCondition: mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "referenced header secret not found is rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "missing-header-secret-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "test",
+						},
+					},
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "missing-secret",
+									Key:  "api-key",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError:     true,
+			errContains:     "not found",
+			expectCondition: mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "malformed remote URL is rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "bad-scheme-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "ftp://bad-scheme.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "test",
+						},
+					},
+				},
+			},
+			expectError:     true,
+			errContains:     "scheme",
+			expectCondition: mcpv1alpha1.ConditionReasonRemoteURLInvalid,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "HTTP JWKS URL is rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "http-jwks-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "test",
+							JWKSURL:  "http://jwks.example.com",
+						},
+					},
+				},
+			},
+			expectError:     true,
+			errContains:     "HTTPS",
+			expectCondition: mcpv1alpha1.ConditionReasonJWKSURLInvalid,
+			conditionStatus: metav1.ConditionFalse,
+		},
 	}
 
 	for _, tt := range tests {

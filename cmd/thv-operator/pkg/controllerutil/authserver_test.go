@@ -979,6 +979,43 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 				assert.Equal(t, UpstreamClientSecretEnvVar+"_GITHUB", github.OAuth2Config.ClientSecretEnvVar)
 			},
 		},
+		{
+			name: "DisableUpstreamTokenInjection is wired through",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				DisableUpstreamTokenInjection: true,
+			},
+			oidcConfig: defaultOIDCConfig,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.DisableUpstreamTokenInjection,
+					"DisableUpstreamTokenInjection should be wired from CRD to RunConfig")
+			},
+		},
+		{
+			name: "DisableUpstreamTokenInjection defaults to false",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			oidcConfig: defaultOIDCConfig,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.DisableUpstreamTokenInjection,
+					"DisableUpstreamTokenInjection should default to false")
+			},
+		},
 	}
 
 	for _, tt := range tests {

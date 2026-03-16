@@ -203,6 +203,16 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
 
+	// DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+	// upstream IdP tokens into requests forwarded to the backend MCP server.
+	// When true, the embedded auth server still handles OAuth flows for clients
+	// but does not swap ToolHive JWTs for upstream tokens on outgoing requests.
+	// This is useful when the backend MCP server does not require authentication
+	// (e.g., public documentation servers) but you still want client authentication.
+	// +kubebuilder:default=false
+	// +optional
+	DisableUpstreamTokenInjection bool `json:"disableUpstreamTokenInjection,omitempty"`
+
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
 

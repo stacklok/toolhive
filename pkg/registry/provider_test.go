@@ -343,6 +343,123 @@ func TestLocalRegistryProviderWithLocalFile(t *testing.T) {
 	}
 }
 
+func TestLocalRegistryProviderWithUpstreamFormatFile(t *testing.T) {
+	t.Parallel()
+
+	// Create a temporary upstream-format registry file
+	tempDir := t.TempDir()
+	registryFile := filepath.Join(tempDir, "upstream_registry.json")
+
+	testRegistry := `{
+		"$schema": "https://cdn.mcpregistry.io/schema/v0/registry.json",
+		"version": "1.0.0",
+		"meta": {
+			"last_updated": "2025-01-01T00:00:00Z"
+		},
+		"data": {
+			"servers": [
+				{
+					"name": "io.example.test-server",
+					"description": "Test server",
+					"packages": [
+						{
+							"registryType": "oci",
+							"identifier": "example/test-server:latest",
+							"transport": {
+								"type": "stdio"
+							}
+						}
+					]
+				}
+			]
+		}
+	}`
+
+	err := os.WriteFile(registryFile, []byte(testRegistry), 0644)
+	require.NoError(t, err)
+
+	provider := NewLocalRegistryProvider(registryFile)
+
+	registry, err := provider.GetRegistry()
+	require.NoError(t, err)
+	require.NotNil(t, registry)
+
+	assert.NotEmpty(t, registry.Servers, "Should have at least one container server")
+}
+
+func TestLocalRegistryProviderLegacyFormatFallback(t *testing.T) {
+	t.Parallel()
+
+	// Create a legacy-format registry file
+	tempDir := t.TempDir()
+	registryFile := filepath.Join(tempDir, "legacy_registry.json")
+
+	testRegistry := `{
+		"version": "1.0.0",
+		"last_updated": "2023-01-01T00:00:00Z",
+		"servers": {
+			"test-server": {
+				"image": "test/image:latest",
+				"description": "Test server"
+			}
+		}
+	}`
+
+	err := os.WriteFile(registryFile, []byte(testRegistry), 0644)
+	require.NoError(t, err)
+
+	provider := NewLocalRegistryProvider(registryFile)
+
+	registry, err := provider.GetRegistry()
+	require.NoError(t, err)
+	require.NotNil(t, registry)
+
+	assert.Len(t, registry.Servers, 1)
+	server, exists := registry.Servers["test-server"]
+	assert.True(t, exists)
+	assert.Equal(t, "test/image:latest", server.Image)
+}
+
+func TestRemoteRegistryProvider_UpstreamFormat(t *testing.T) {
+	t.Parallel()
+
+	responseBody := `{
+		"$schema": "https://cdn.mcpregistry.io/schema/v0/registry.json",
+		"version": "1.0.0",
+		"meta": {
+			"last_updated": "2025-01-01T00:00:00Z"
+		},
+		"data": {
+			"servers": [
+				{
+					"name": "io.example.test-server",
+					"description": "Test server",
+					"packages": [
+						{
+							"registryType": "oci",
+							"identifier": "example/test-server:latest",
+							"transport": {
+								"type": "stdio"
+							}
+						}
+					]
+				}
+			]
+		}
+	}`
+
+	server := createTestServer(responseBody, 200)
+	defer server.Close()
+
+	provider, err := NewRemoteRegistryProvider(server.URL, true)
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+
+	registry, err := provider.GetRegistry()
+	require.NoError(t, err)
+	assert.NotEmpty(t, registry.Servers, "Should have at least one container server")
+}
+
 // getTypeName returns the type name of an interface value
 func getTypeName(v interface{}) string {
 	switch v.(type) {
@@ -421,8 +538,8 @@ func TestGetServer(t *testing.T) {
 	provider, err := NewRegistryProvider(cfg)
 	require.NoError(t, err)
 
-	// Test getting an existing server
-	server, err := provider.GetServer("osv")
+	// Test getting an existing server (using upstream reverse-DNS name)
+	server, err := provider.GetServer("io.github.stacklok/osv")
 	if err != nil {
 		t.Fatalf("Failed to get server: %v", err)
 	}

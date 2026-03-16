@@ -40,21 +40,6 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
-// GetImageServer mocks base method.
-func (m *MockProvider) GetImageServer(name string) (*registry.ImageMetadata, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetImageServer", name)
-	ret0, _ := ret[0].(*registry.ImageMetadata)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetImageServer indicates an expected call of GetImageServer.
-func (mr *MockProviderMockRecorder) GetImageServer(name any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetImageServer", reflect.TypeOf((*MockProvider)(nil).GetImageServer), name)
-}
-
 // GetRegistry mocks base method.
 func (m *MockProvider) GetRegistry() (*registry.Registry, error) {
 	m.ctrl.T.Helper()
@@ -85,21 +70,6 @@ func (mr *MockProviderMockRecorder) GetServer(name any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServer", reflect.TypeOf((*MockProvider)(nil).GetServer), name)
 }
 
-// ListImageServers mocks base method.
-func (m *MockProvider) ListImageServers() ([]*registry.ImageMetadata, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListImageServers")
-	ret0, _ := ret[0].([]*registry.ImageMetadata)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ListImageServers indicates an expected call of ListImageServers.
-func (mr *MockProviderMockRecorder) ListImageServers() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListImageServers", reflect.TypeOf((*MockProvider)(nil).ListImageServers))
-}
-
 // ListServers mocks base method.
 func (m *MockProvider) ListServers() ([]registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()
@@ -113,21 +83,6 @@ func (m *MockProvider) ListServers() ([]registry.ServerMetadata, error) {
 func (mr *MockProviderMockRecorder) ListServers() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListServers", reflect.TypeOf((*MockProvider)(nil).ListServers))
-}
-
-// SearchImageServers mocks base method.
-func (m *MockProvider) SearchImageServers(query string) ([]*registry.ImageMetadata, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SearchImageServers", query)
-	ret0, _ := ret[0].([]*registry.ImageMetadata)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// SearchImageServers indicates an expected call of SearchImageServers.
-func (mr *MockProviderMockRecorder) SearchImageServers(query any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchImageServers", reflect.TypeOf((*MockProvider)(nil).SearchImageServers), query)
 }
 
 // SearchServers mocks base method.

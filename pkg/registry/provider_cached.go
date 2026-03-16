@@ -365,22 +365,6 @@ func (p *CachedAPIRegistryProvider) cleanupOldCaches() {
 // Ensure CachedAPIRegistryProvider implements Provider interface
 var _ Provider = (*CachedAPIRegistryProvider)(nil)
 
-// Override methods that query individual servers to ensure they use cache
-
-// GetImageServer returns a specific container server by name (uses cache).
-func (p *CachedAPIRegistryProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
-	server, err := p.GetServer(name)
-	if err != nil {
-		return nil, err
-	}
-
-	if img, ok := server.(*types.ImageMetadata); ok {
-		return img, nil
-	}
-
-	return nil, fmt.Errorf("server %s is not a container server", name)
-}
-
 // GetRemoteServer returns a specific remote server by name (uses cache).
 func (p *CachedAPIRegistryProvider) GetRemoteServer(name string) (*types.RemoteServerMetadata, error) {
 	server, err := p.GetServer(name)

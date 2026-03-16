@@ -128,11 +128,11 @@ func TestGetMCPServer_WithoutGroup(t *testing.T) {
 	// Test that passing empty group name still works (normal behavior)
 	imageURL, serverMetadata, err := GetMCPServer(
 		ctx,
-		"osv",               // Use a known server from the registry
-		"",                  // rawCACertPath
-		VerifyImageDisabled, // verificationType
-		"",                  // empty groupName should use normal registry lookup
-		nil,                 // no runtime override
+		"io.github.stacklok/osv", // Use a known server from the registry (upstream reverse-DNS name)
+		"",                       // rawCACertPath
+		VerifyImageDisabled,      // verificationType
+		"",                       // empty groupName should use normal registry lookup
+		nil,                      // no runtime override
 	)
 
 	// This should work as it's the normal flow

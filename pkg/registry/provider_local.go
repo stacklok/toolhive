@@ -6,7 +6,9 @@ package registry
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
+	"sync"
 
 	catalog "github.com/stacklok/toolhive-catalog/pkg/catalog/toolhive"
 	types "github.com/stacklok/toolhive-core/registry/types"
@@ -16,6 +18,8 @@ import (
 type LocalRegistryProvider struct {
 	*BaseProvider
 	filePath string
+	skillsMu sync.RWMutex
+	skills   []types.Skill
 }
 
 // NewLocalRegistryProvider creates a new local registry provider
@@ -38,22 +42,36 @@ func NewLocalRegistryProvider(filePath ...string) *LocalRegistryProvider {
 
 // GetRegistry returns the registry data from file path or embedded data
 func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
-	var data []byte
-	var err error
+	var registry *types.Registry
 
 	if p.filePath != "" {
-		// Read from local file
-		data, err = os.ReadFile(p.filePath)
+		// Read from local file — auto-detect format
+		data, err := os.ReadFile(p.filePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read local registry file %s: %w", p.filePath, err)
 		}
-	} else {
-		data = catalog.Legacy()
-	}
 
-	registry, err := parseRegistryData(data)
-	if err != nil {
-		return nil, err
+		var skills []types.Skill
+		var isLegacy bool
+		registry, skills, isLegacy, err = parseRegistryAutoDetect(data)
+		if err != nil {
+			return nil, err
+		}
+		p.setSkills(skills)
+		if isLegacy {
+			slog.Warn("Registry file uses legacy format; please migrate to the upstream MCP format. "+
+				"Legacy format support will be removed in a future release.",
+				"file", p.filePath)
+		}
+	} else {
+		// Embedded catalog — always upstream format
+		var err error
+		var skills []types.Skill
+		registry, skills, err = parseUpstreamRegistry(catalog.Upstream())
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse embedded upstream registry: %w", err)
+		}
+		p.setSkills(skills)
 	}
 
 	// Set name field on each server based on map key
@@ -78,6 +96,12 @@ func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
 	}
 
 	return registry, nil
+}
+
+func (p *LocalRegistryProvider) setSkills(skills []types.Skill) {
+	p.skillsMu.Lock()
+	defer p.skillsMu.Unlock()
+	p.skills = skills
 }
 
 // parseRegistryData parses JSON data into a Registry struct

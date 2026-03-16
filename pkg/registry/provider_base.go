@@ -78,59 +78,6 @@ func (p *BaseProvider) ListServers() ([]types.ServerMetadata, error) {
 	return reg.GetAllServers(), nil
 }
 
-// Legacy methods for backward compatibility
-
-// GetImageServer returns a specific container server by name (legacy method)
-func (p *BaseProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
-	server, err := p.GetServer(name)
-	if err != nil {
-		return nil, err
-	}
-
-	// Type assert to ImageMetadata
-	if img, ok := server.(*types.ImageMetadata); ok {
-		return img, nil
-	}
-
-	return nil, fmt.Errorf("server %s is not a container server", name)
-}
-
-// SearchImageServers searches for container servers matching the query (legacy method)
-func (p *BaseProvider) SearchImageServers(query string) ([]*types.ImageMetadata, error) {
-	servers, err := p.SearchServers(query)
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter to only container servers
-	var results []*types.ImageMetadata
-	for _, server := range servers {
-		if img, ok := server.(*types.ImageMetadata); ok {
-			results = append(results, img)
-		}
-	}
-
-	return results, nil
-}
-
-// ListImageServers returns all container servers (legacy method)
-func (p *BaseProvider) ListImageServers() ([]*types.ImageMetadata, error) {
-	servers, err := p.ListServers()
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter to only container servers
-	var results []*types.ImageMetadata
-	for _, server := range servers {
-		if img, ok := server.(*types.ImageMetadata); ok {
-			results = append(results, img)
-		}
-	}
-
-	return results, nil
-}
-
 // matchesQuery checks if a server matches the search query
 func matchesQuery(name, description string, tags []string, query string) bool {
 	// Search in name

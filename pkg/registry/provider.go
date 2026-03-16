@@ -20,14 +20,4 @@ type Provider interface {
 
 	// ListServers returns all available servers (both container and remote)
 	ListServers() ([]types.ServerMetadata, error)
-
-	// Legacy methods for backward compatibility
-	// GetImageServer returns a specific container server by name
-	GetImageServer(name string) (*types.ImageMetadata, error)
-
-	// SearchImageServers searches for container servers matching the query
-	SearchImageServers(query string) ([]*types.ImageMetadata, error)
-
-	// ListImageServers returns all available container servers
-	ListImageServers() ([]*types.ImageMetadata, error)
 }

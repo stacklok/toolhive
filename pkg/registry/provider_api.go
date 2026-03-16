@@ -171,23 +171,6 @@ func (p *APIRegistryProvider) ListServers() ([]types.ServerMetadata, error) {
 	return ConvertServersToMetadata(servers)
 }
 
-// GetImageServer returns a specific container server by name (overrides BaseProvider)
-// This override is necessary because BaseProvider.GetImageServer calls p.GetServer,
-// which would call BaseProvider.GetServer instead of APIRegistryProvider.GetServer
-func (p *APIRegistryProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
-	server, err := p.GetServer(name)
-	if err != nil {
-		return nil, err
-	}
-
-	// Type assert to ImageMetadata
-	if img, ok := server.(*types.ImageMetadata); ok {
-		return img, nil
-	}
-
-	return nil, fmt.Errorf("server %s is not a container server", name)
-}
-
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata
 // Uses converters from converters.go (same package)
 // Note: Only handles OCI packages and remote servers, skips npm/pypi by design

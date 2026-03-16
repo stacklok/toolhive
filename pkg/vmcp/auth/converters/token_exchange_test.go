@@ -55,7 +55,7 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 						Audience:                "https://api.example.com",
 						Scopes:                  []string{"read", "write"},
 						SubjectTokenType:        "access_token",
-						ExternalTokenHeaderName: "X-Upstream-Token",
+						ExternalTokenHeaderName: "X-Upstream-Token", // Not mapped by converter; handled by controllerutil for MCPServer path
 					},
 				},
 			},
@@ -212,6 +212,134 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 				TokenExchange: &authtypes.TokenExchangeConfig{
 					TokenURL: "https://auth.example.com/token",
 					Scopes:   []string{"openid", "profile", "email"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "standard RFC 8693 no variant preserves existing behavior",
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rfc8693-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://auth.example.com/token",
+						ClientID: "test-client",
+						Audience: "https://api.example.com",
+					},
+				},
+			},
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+					ClientID: "test-client",
+					Audience: "https://api.example.com",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "entra variant with raw parameters",
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "entra-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						ClientID: "entra-client-id",
+						Audience: "api://target-app",
+						Variant:  "entra",
+						Raw: &mcpv1alpha1.TokenExchangeRawConfig{
+							Parameters: map[string]string{
+								"tenantId": "my-tenant-id",
+							},
+						},
+					},
+				},
+			},
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					ClientID: "entra-client-id",
+					Audience: "api://target-app",
+					Variant:  "entra",
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						Parameters: map[string]string{
+							"tenantId": "my-tenant-id",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "raw variant with grantTypeUrn and parameters",
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "raw-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://custom-idp.example.com/token",
+						ClientID: "raw-client",
+						Variant:  "raw",
+						Raw: &mcpv1alpha1.TokenExchangeRawConfig{
+							GrantTypeURN: "urn:custom:grant-type:exchange",
+							Parameters: map[string]string{
+								"custom_param": "custom_value",
+								"scope":        "read write",
+							},
+						},
+					},
+				},
+			},
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://custom-idp.example.com/token",
+					ClientID: "raw-client",
+					Variant:  "raw",
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						GrantTypeURN: "urn:custom:grant-type:exchange",
+						Parameters: map[string]string{
+							"custom_param": "custom_value",
+							"scope":        "read write",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "variant set without raw config passes through nil",
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "entra-no-raw",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://login.microsoftonline.com/my-tenant/oauth2/v2.0/token",
+						ClientID: "entra-client",
+						Variant:  "entra",
+					},
+				},
+			},
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://login.microsoftonline.com/my-tenant/oauth2/v2.0/token",
+					ClientID: "entra-client",
+					Variant:  "entra",
 				},
 			},
 			wantErr: false,

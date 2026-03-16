@@ -81,14 +81,37 @@ type MCPExternalAuthConfigSpec struct {
 	AWSSts *AWSStsConfig `json:"awsSts,omitempty"`
 }
 
-// TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
-// This configuration is used to exchange incoming authentication tokens for tokens
-// that can be used with external services.
+// TokenExchangeRawConfig holds extension configuration for non-standard token exchange flows.
+// For variant "raw": grantTypeUrn and parameters are used directly.
+// For named variants (e.g., "entra"): the handler reads variant-specific keys from parameters.
+type TokenExchangeRawConfig struct {
+	// GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.
+	// Required for variant "raw". Not used by named variants (handler sets it).
+	// +optional
+	GrantTypeURN string `json:"grantTypeUrn,omitempty"`
+
+	// Parameters are additional key-value pairs passed to the variant handler.
+	// +kubebuilder:validation:MaxProperties=20
+	// +optional
+	Parameters map[string]string `json:"parameters,omitempty"`
+}
+
+// TokenExchangeConfig holds configuration for OAuth 2.0 token exchange.
+// When no variant is specified, standard RFC 8693 token exchange is used.
+// Named variants (e.g., "entra") provide purpose-built configuration for
+// specific identity providers. The "raw" variant allows custom grant types.
 // The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
+//
+// +kubebuilder:validation:XValidation:rule="(!has(self.variant) || self.variant == ” || self.variant == 'raw') ? self.tokenUrl != ” : true",message="tokenUrl is required for standard (no variant) and 'raw' variant token exchange"
+// +kubebuilder:validation:XValidation:rule="(has(self.variant) && self.variant == 'raw') ? (has(self.raw) && self.raw.grantTypeUrn != ”) : true",message="raw.grantTypeUrn is required when variant is 'raw'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type TokenExchangeConfig struct {
-	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange
-	// +kubebuilder:validation:Required
-	TokenURL string `json:"tokenUrl"`
+	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange.
+	// Required for standard RFC 8693 and "raw" variants.
+	// Optional for named variants (e.g., "entra") which derive the URL from parameters.
+	// +optional
+	TokenURL string `json:"tokenUrl,omitempty"`
 
 	// ClientID is the OAuth 2.0 client identifier
 	// Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
@@ -123,6 +146,19 @@ type TokenExchangeConfig struct {
 	// If empty or not set, the exchanged token will replace the Authorization header (default behavior).
 	// +optional
 	ExternalTokenHeaderName string `json:"externalTokenHeaderName,omitempty"`
+
+	// Variant selects a token exchange variant with purpose-built configuration.
+	// When omitted, standard RFC 8693 token exchange is used (existing behavior).
+	// Named variants (e.g., "entra") provide purpose-built configuration for
+	// specific identity providers. The "raw" variant allows custom grant types.
+	// +kubebuilder:validation:Enum="";entra;raw
+	// +optional
+	Variant string `json:"variant,omitempty"`
+
+	// Raw holds extension configuration for non-standard token exchange flows.
+	// Required when variant is "raw". Optional for named variants.
+	// +optional
+	Raw *TokenExchangeRawConfig `json:"raw,omitempty"`
 }
 
 // HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.

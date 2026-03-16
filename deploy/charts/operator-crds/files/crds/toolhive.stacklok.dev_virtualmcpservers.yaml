@@ -824,6 +824,23 @@ spec:
                                     ClientSecretEnv is the environment variable name containing the client secret.
                                     The value will be resolved at runtime from this environment variable.
                                   type: string
+                                raw:
+                                  description: |-
+                                    Raw holds extension configuration for non-standard token exchange flows.
+                                    Required when variant is "raw". Optional for named variants.
+                                  properties:
+                                    grantTypeUrn:
+                                      description: |-
+                                        GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.
+                                        Required for variant "raw". Not used by named variants (handler sets it).
+                                      type: string
+                                    parameters:
+                                      additionalProperties:
+                                        type: string
+                                      description: Parameters are additional key-value
+                                        pairs passed to the variant handler.
+                                      type: object
+                                  type: object
                                 scopes:
                                   description: Scopes are the requested scopes for
                                     the exchanged token.
@@ -838,6 +855,11 @@ spec:
                                 tokenUrl:
                                   description: TokenURL is the OAuth token endpoint
                                     URL for token exchange.
+                                  type: string
+                                variant:
+                                  description: |-
+                                    Variant selects a token exchange variant with purpose-built configuration.
+                                    When omitted, standard RFC 8693 token exchange is used (existing behavior).
                                   type: string
                               required:
                               - tokenUrl
@@ -900,6 +922,23 @@ spec:
                                   ClientSecretEnv is the environment variable name containing the client secret.
                                   The value will be resolved at runtime from this environment variable.
                                 type: string
+                              raw:
+                                description: |-
+                                  Raw holds extension configuration for non-standard token exchange flows.
+                                  Required when variant is "raw". Optional for named variants.
+                                properties:
+                                  grantTypeUrn:
+                                    description: |-
+                                      GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.
+                                      Required for variant "raw". Not used by named variants (handler sets it).
+                                    type: string
+                                  parameters:
+                                    additionalProperties:
+                                      type: string
+                                    description: Parameters are additional key-value
+                                      pairs passed to the variant handler.
+                                    type: object
+                                type: object
                               scopes:
                                 description: Scopes are the requested scopes for the
                                   exchanged token.
@@ -914,6 +953,11 @@ spec:
                               tokenUrl:
                                 description: TokenURL is the OAuth token endpoint
                                   URL for token exchange.
+                                type: string
+                              variant:
+                                description: |-
+                                  Variant selects a token exchange variant with purpose-built configuration.
+                                  When omitted, standard RFC 8693 token exchange is used (existing behavior).
                                 type: string
                             required:
                             - tokenUrl

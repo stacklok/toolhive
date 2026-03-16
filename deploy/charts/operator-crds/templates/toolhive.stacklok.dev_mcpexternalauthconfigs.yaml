@@ -779,6 +779,24 @@ spec:
                       If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").
                       If empty or not set, the exchanged token will replace the Authorization header (default behavior).
                     type: string
+                  raw:
+                    description: |-
+                      Raw holds extension configuration for non-standard token exchange flows.
+                      Required when variant is "raw". Optional for named variants.
+                    properties:
+                      grantTypeUrn:
+                        description: |-
+                          GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.
+                          Required for variant "raw". Not used by named variants (handler sets it).
+                        type: string
+                      parameters:
+                        additionalProperties:
+                          type: string
+                        description: Parameters are additional key-value pairs passed
+                          to the variant handler.
+                        maxProperties: 20
+                        type: object
+                    type: object
                   scopes:
                     description: Scopes is a list of OAuth 2.0 scopes to request for
                       the exchanged token
@@ -796,13 +814,33 @@ spec:
                     pattern: ^(access_token|id_token|jwt|urn:ietf:params:oauth:token-type:(access_token|id_token|jwt))?$
                     type: string
                   tokenUrl:
-                    description: TokenURL is the OAuth 2.0 token endpoint URL for
-                      token exchange
+                    description: |-
+                      TokenURL is the OAuth 2.0 token endpoint URL for token exchange.
+                      Required for standard RFC 8693 and "raw" variants.
+                      Optional for named variants (e.g., "entra") which derive the URL from parameters.
+                    type: string
+                  variant:
+                    description: |-
+                      Variant selects a token exchange variant with purpose-built configuration.
+                      When omitted, standard RFC 8693 token exchange is used (existing behavior).
+                      Named variants (e.g., "entra") provide purpose-built configuration for
+                      specific identity providers. The "raw" variant allows custom grant types.
+                    enum:
+                    - ""
+                    - entra
+                    - raw
                     type: string
                 required:
                 - audience
-                - tokenUrl
                 type: object
+                x-kubernetes-validations:
+                - message: tokenUrl is required for standard (no variant) and 'raw'
+                    variant token exchange
+                  rule: '(!has(self.variant) || self.variant == '''' || self.variant
+                    == ''raw'') ? self.tokenUrl != '''' : true'
+                - message: raw.grantTypeUrn is required when variant is 'raw'
+                  rule: '(has(self.variant) && self.variant == ''raw'') ? (has(self.raw)
+                    && self.raw.grantTypeUrn != '''') : true'
               type:
                 description: Type is the type of external authentication to configure
                 enum:

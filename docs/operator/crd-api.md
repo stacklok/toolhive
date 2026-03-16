@@ -2773,9 +2773,10 @@ _Appears in:_
 
 
 
-TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
-This configuration is used to exchange incoming authentication tokens for tokens
-that can be used with external services.
+TokenExchangeConfig holds configuration for OAuth 2.0 token exchange.
+When no variant is specified, standard RFC 8693 token exchange is used.
+Named variants (e.g., "entra") provide purpose-built configuration for
+specific identity providers. The "raw" variant allows custom grant types.
 The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
 
 
@@ -2785,13 +2786,34 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `tokenUrl` _string_ | TokenURL is the OAuth 2.0 token endpoint URL for token exchange |  | Required: \{\} <br /> |
+| `tokenUrl` _string_ | TokenURL is the OAuth 2.0 token endpoint URL for token exchange.<br />Required for standard RFC 8693 and "raw" variants.<br />Optional for named variants (e.g., "entra") which derive the URL from parameters. |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier<br />Optional for some token exchange flows (e.g., Google Cloud Workforce Identity) |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret<br />Optional for some token exchange flows (e.g., Google Cloud Workforce Identity) |  | Optional: \{\} <br /> |
 | `audience` _string_ | Audience is the target audience for the exchanged token |  | Required: \{\} <br /> |
 | `scopes` _string array_ | Scopes is a list of OAuth 2.0 scopes to request for the exchanged token |  | Optional: \{\} <br /> |
 | `subjectTokenType` _string_ | SubjectTokenType is the type of the incoming subject token.<br />Accepts short forms: "access_token" (default), "id_token", "jwt"<br />Or full URNs: "urn:ietf:params:oauth:token-type:access_token",<br />              "urn:ietf:params:oauth:token-type:id_token",<br />              "urn:ietf:params:oauth:token-type:jwt"<br />For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token" |  | Pattern: `^(access_token\|id_token\|jwt\|urn:ietf:params:oauth:token-type:(access_token\|id_token\|jwt))?$` <br />Optional: \{\} <br /> |
 | `externalTokenHeaderName` _string_ | ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.<br />If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").<br />If empty or not set, the exchanged token will replace the Authorization header (default behavior). |  | Optional: \{\} <br /> |
+| `variant` _string_ | Variant selects a token exchange variant with purpose-built configuration.<br />When omitted, standard RFC 8693 token exchange is used (existing behavior).<br />Named variants (e.g., "entra") provide purpose-built configuration for<br />specific identity providers. The "raw" variant allows custom grant types. |  | Enum: [ entra raw] <br />Optional: \{\} <br /> |
+| `raw` _[api.v1alpha1.TokenExchangeRawConfig](#apiv1alpha1tokenexchangerawconfig)_ | Raw holds extension configuration for non-standard token exchange flows.<br />Required when variant is "raw". Optional for named variants. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.TokenExchangeRawConfig
+
+
+
+TokenExchangeRawConfig holds extension configuration for non-standard token exchange flows.
+For variant "raw": grantTypeUrn and parameters are used directly.
+For named variants (e.g., "entra"): the handler reads variant-specific keys from parameters.
+
+
+
+_Appears in:_
+- [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `grantTypeUrn` _string_ | GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.<br />Required for variant "raw". Not used by named variants (handler sets it). |  | Optional: \{\} <br /> |
+| `parameters` _object (keys:string, values:string)_ | Parameters are additional key-value pairs passed to the variant handler. |  | MaxProperties: 20 <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.TokenLifespanConfig

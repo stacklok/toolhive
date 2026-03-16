@@ -53,6 +53,23 @@ func (*TokenExchangeConverter) ConvertToStrategy(
 		Audience:         tokenExchange.Audience,
 		Scopes:           tokenExchange.Scopes,
 		SubjectTokenType: subjectTokenType,
+		Variant:          tokenExchange.Variant,
+	}
+
+	// Pass through raw config if present.
+	// Deep-copy the Parameters map to prevent aliasing with the CRD object.
+	if tokenExchange.Raw != nil {
+		var params map[string]string
+		if tokenExchange.Raw.Parameters != nil {
+			params = make(map[string]string, len(tokenExchange.Raw.Parameters))
+			for k, v := range tokenExchange.Raw.Parameters {
+				params[k] = v
+			}
+		}
+		tokenExchangeConfig.Raw = &authtypes.TokenExchangeRawAuthConfig{
+			GrantTypeURN: tokenExchange.Raw.GrantTypeURN,
+			Parameters:   params,
+		}
 	}
 
 	// Note: ClientSecretEnv is set by the controller when used in operator-managed ConfigMaps.

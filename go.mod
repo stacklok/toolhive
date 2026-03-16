@@ -44,7 +44,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.25.6
 	github.com/spf13/viper v1.21.0
 	github.com/stacklok/toolhive-catalog v0.20260316.0
-	github.com/stacklok/toolhive-core v0.0.11
+	github.com/stacklok/toolhive-core v0.0.12
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
@@ -285,7 +285,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
 	golang.org/x/exp/event v0.0.0-20260218203240-3dfff04db8fa // indirect
-	golang.org/x/net v0.51.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect

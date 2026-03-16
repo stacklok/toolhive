@@ -58,10 +58,11 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:default=streamable-http
 	Transport string `json:"transport,omitempty"`
 
-	// OIDCConfig defines OIDC authentication configuration for the proxy
-	// This validates incoming tokens from clients. Required for proxy mode.
-	// +kubebuilder:validation:Required
-	OIDCConfig OIDCConfigRef `json:"oidcConfig"`
+	// OIDCConfig defines OIDC authentication configuration for the proxy.
+	// When set, incoming requests are validated against the configured OIDC provider.
+	// When omitted, the proxy allows anonymous access (no authentication required).
+	// +optional
+	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
 
 	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
 	// When specified, the proxy will exchange validated incoming tokens for remote service tokens.
@@ -331,7 +332,7 @@ func (m *MCPRemoteProxy) GetNamespace() string {
 
 // GetOIDCConfig returns the OIDC configuration reference
 func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
-	return &m.Spec.OIDCConfig
+	return m.Spec.OIDCConfig
 }
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy

@@ -57,7 +57,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
 					ProxyPort: 8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
 							Issuer:   "https://login.salesforce.com",
@@ -77,7 +77,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					ProxyPort: 8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
 							Issuer:   "https://auth.example.com",
@@ -89,8 +89,20 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 			expectError: true,
 			errContains: "remote URL must not be empty",
 		},
-		// Note: "missing OIDC config" test removed - OIDCConfig is now a required value type
-		// with kubebuilder:validation:Required, so the API server prevents resources without it
+		{
+			name: "valid spec without OIDC config (anonymous access)",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "anon-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://docs.example.com/mcp",
+					ProxyPort: 8080,
+				},
+			},
+			expectError: false,
+		},
 		{
 			name: "with valid external auth config",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
@@ -101,7 +113,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
 							Issuer:   "https://auth.company.com",
@@ -159,7 +171,7 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.salesforce.com",
 			ProxyPort: 8080,
-			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+			OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 				Type: mcpv1alpha1.OIDCConfigTypeInline,
 				Inline: &mcpv1alpha1.InlineOIDCConfig{
 					Issuer:   "https://login.salesforce.com",

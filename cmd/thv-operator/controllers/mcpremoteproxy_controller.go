@@ -423,6 +423,9 @@ func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason,
 // validateOIDCIssuerURL validates the OIDC issuer URL scheme.
 func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	oidcConfig := proxy.Spec.OIDCConfig
+	if oidcConfig == nil {
+		return nil
+	}
 
 	switch oidcConfig.Type {
 	case mcpv1alpha1.OIDCConfigTypeInline:

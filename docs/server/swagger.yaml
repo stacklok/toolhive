@@ -1,57 +1,5 @@
 components:
   schemas:
-    auth.TokenValidatorConfig:
-      description: |-
-        DEPRECATED: Middleware configuration.
-        OIDCConfig contains OIDC configuration
-      properties:
-        allowPrivateIP:
-          description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
-          type: boolean
-        audience:
-          description: Audience is the expected audience for the token
-          type: string
-        authTokenFile:
-          description: AuthTokenFile is the path to file containing bearer token for
-            authentication
-          type: string
-        cacertPath:
-          description: CACertPath is the path to the CA certificate bundle for HTTPS
-            requests
-          type: string
-        clientID:
-          description: ClientID is the OIDC client ID
-          type: string
-        clientSecret:
-          description: ClientSecret is the optional OIDC client secret for introspection
-          type: string
-        insecureAllowHTTP:
-          description: |-
-            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
-            WARNING: This is insecure and should NEVER be used in production
-          type: boolean
-        introspectionURL:
-          description: IntrospectionURL is the optional introspection endpoint for
-            validating tokens
-          type: string
-        issuer:
-          description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
-          type: string
-        jwksurl:
-          description: JWKSURL is the URL to fetch the JWKS from
-          type: string
-        resourceURL:
-          description: ResourceURL is the explicit resource URL for OAuth discovery
-            (RFC 9728)
-          type: string
-        scopes:
-          description: |-
-            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
-            If empty, defaults to ["openid"]
-          items:
-            type: string
-          type: array
-      type: object
     github_com_stacklok_toolhive-core_registry_types.Registry:
       description: Full registry data
       properties:
@@ -140,6 +88,58 @@ components:
             +kubebuilder:default=1024
             +optional
           type: integer
+      type: object
+    github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig:
+      description: |-
+        DEPRECATED: Middleware configuration.
+        OIDCConfig contains OIDC configuration
+      properties:
+        allowPrivateIP:
+          description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+          type: boolean
+        audience:
+          description: Audience is the expected audience for the token
+          type: string
+        authTokenFile:
+          description: AuthTokenFile is the path to file containing bearer token for
+            authentication
+          type: string
+        cacertPath:
+          description: CACertPath is the path to the CA certificate bundle for HTTPS
+            requests
+          type: string
+        clientID:
+          description: ClientID is the OIDC client ID
+          type: string
+        clientSecret:
+          description: ClientSecret is the optional OIDC client secret for introspection
+          type: string
+        insecureAllowHTTP:
+          description: |-
+            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+            WARNING: This is insecure and should NEVER be used in production
+          type: boolean
+        introspectionURL:
+          description: IntrospectionURL is the optional introspection endpoint for
+            validating tokens
+          type: string
+        issuer:
+          description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
+          type: string
+        jwksurl:
+          description: JWKSURL is the URL to fetch the JWKS from
+          type: string
+        resourceURL:
+          description: ResourceURL is the explicit resource URL for OAuth discovery
+            (RFC 9728)
+          type: string
+        scopes:
+          description: |-
+            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+            If empty, defaults to ["openid"]
+          items:
+            type: string
+          type: array
       type: object
     github_com_stacklok_toolhive_pkg_auth_awssts.Config:
       description: AWSStsConfig contains AWS STS token exchange configuration for
@@ -326,11 +326,6 @@ components:
           description: 'HeaderStrategy determines how to inject the token: "replace"
             (default) or "custom".'
           type: string
-        provider_name:
-          description: |-
-            ProviderName identifies which upstream provider's tokens to retrieve for injection.
-            This is required and must match a configured upstream provider name.
-          type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig:
       description: |-
@@ -429,13 +424,12 @@ components:
             type: string
           type: array
           uniqueItems: false
-        authorization_endpoint_base_url:
+        disable_upstream_token_injection:
           description: |-
-            AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
-            in the OAuth discovery document. When set, the discovery document will advertise
-            `{authorization_endpoint_base_url}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
-            All other endpoints remain derived from the issuer.
-          type: string
+            DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
+            When true, the embedded auth server handles OAuth flows for clients but does not
+            inject upstream IdP tokens into requests forwarded to the backend MCP server.
+          type: boolean
         hmac_secret_files:
           description: |-
             HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes
@@ -467,14 +461,14 @@ components:
         signing_key_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig'
         storage:
-          $ref: '#/components/schemas/storage.RunConfig'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig'
         token_lifespans:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig'
         upstreams:
           description: |-
             Upstreams configures connections to upstream Identity Providers.
             At least one upstream is required - the server delegates authentication to these providers.
-            Multiple upstreams are supported for sequential authorization chains.
+            Currently only a single upstream is supported.
           items:
             $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig'
           type: array
@@ -629,6 +623,86 @@ components:
             If not specified, defaults to GET.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig:
+      description: ACLUserConfig contains ACL user authentication configuration.
+      properties:
+        password_env_var:
+          description: PasswordEnvVar is the environment variable containing the Redis
+            password.
+          type: string
+        username_env_var:
+          description: UsernameEnvVar is the environment variable containing the Redis
+            username.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig:
+      description: RedisConfig is the Redis-specific configuration when Type is "redis".
+      properties:
+        acl_user_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig'
+        auth_type:
+          description: AuthType must be "aclUser" - only ACL user authentication is
+            supported.
+          type: string
+        dial_timeout:
+          description: DialTimeout is the timeout for establishing connections (e.g.,
+            "5s").
+          type: string
+        key_prefix:
+          description: KeyPrefix for multi-tenancy, typically "thv:auth:{ns}:{name}:".
+          type: string
+        read_timeout:
+          description: ReadTimeout is the timeout for read operations (e.g., "3s").
+          type: string
+        sentinel_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig'
+        sentinel_tls:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig'
+        tls:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig'
+        write_timeout:
+          description: WriteTimeout is the timeout for write operations (e.g., "3s").
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig:
+      description: |-
+        SentinelTLS configures TLS for Sentinel connections.
+        Falls back to TLS config when nil.
+      properties:
+        ca_cert_file:
+          description: CACertFile is the path to a PEM-encoded CA certificate file.
+          type: string
+        insecure_skip_verify:
+          description: InsecureSkipVerify skips certificate verification.
+          type: boolean
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig:
+      description: |-
+        Storage configures the storage backend for the auth server.
+        If nil, defaults to in-memory storage.
+      properties:
+        redis_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig'
+        type:
+          description: Type specifies the storage backend type. Defaults to "memory".
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig:
+      description: SentinelConfig contains Sentinel-specific configuration.
+      properties:
+        db:
+          description: 'DB is the Redis database number (default: 0).'
+          type: integer
+        master_name:
+          description: MasterName is the name of the Redis Sentinel master.
+          type: string
+        sentinel_addrs:
+          description: SentinelAddrs is the list of Sentinel addresses (host:port).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     github_com_stacklok_toolhive_pkg_authz.Config:
       description: |-
         DEPRECATED: Middleware configuration.
@@ -719,6 +793,47 @@ components:
         name:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp'
       type: object
+    github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus:
+      description: Current status of the workload
+      enum:
+      - running
+      - stopped
+      - error
+      - starting
+      - stopping
+      - unhealthy
+      - removing
+      - unknown
+      - unauthenticated
+      - running
+      - stopped
+      - error
+      - starting
+      - stopping
+      - unhealthy
+      - removing
+      - unknown
+      - unauthenticated
+      - running
+      - stopped
+      - error
+      - starting
+      - stopping
+      - unhealthy
+      - removing
+      - unknown
+      - unauthenticated
+      type: string
+      x-enum-varnames:
+      - WorkloadStatusRunning
+      - WorkloadStatusStopped
+      - WorkloadStatusError
+      - WorkloadStatusStarting
+      - WorkloadStatusStopping
+      - WorkloadStatusUnhealthy
+      - WorkloadStatusRemoving
+      - WorkloadStatusUnknown
+      - WorkloadStatusUnauthenticated
     github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig:
       description: |-
         RuntimeConfig allows overriding the default runtime configuration
@@ -726,8 +841,7 @@ components:
       properties:
         additional_packages:
           description: |-
-            AdditionalPackages lists extra packages to install in the builder and
-            runtime stages.
+            AdditionalPackages lists extra packages to install in builder stage
             Examples for Alpine: ["git", "make", "gcc"]
             Examples for Debian: ["git", "build-essential"]
           items:
@@ -736,8 +850,7 @@ components:
           uniqueItems: false
         builder_image:
           description: |-
-            BuilderImage is the full image reference for the builder stage.
-            An empty string signals "use the default for this transport type" during config merging.
+            BuilderImage is the full image reference for the builder stage
             Examples: "golang:1.25-alpine", "node:22-alpine", "python:3.13-slim"
           type: string
       type: object
@@ -785,18 +898,7 @@ components:
             restart)
           type: string
         status:
-          description: Status is the current status of the workload.
-          enum:
-          - running
-          - stopped
-          - error
-          - starting
-          - stopping
-          - unhealthy
-          - removing
-          - unknown
-          - unauthenticated
-          type: string
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus'
         status_context:
           description: |-
             StatusContext provides additional context about the workload's status.
@@ -809,13 +911,7 @@ components:
           type: array
           uniqueItems: false
         transport_type:
-          description: TransportType is the type of transport used for this workload.
-          enum:
-          - stdio
-          - sse
-          - streamable-http
-          - inspector
-          type: string
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType'
         url:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
           type: string
@@ -835,22 +931,15 @@ components:
           type: array
           uniqueItems: false
       type: object
-    github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig:
-      description: |-
-        AuthConfig contains the non-secret OAuth configuration when auth is configured.
-        Nil when auth_status is "none".
+    github_com_stacklok_toolhive_pkg_ignore.Config:
+      description: IgnoreConfig contains configuration for ignore processing
       properties:
-        audience:
-          type: string
-        client_id:
-          type: string
-        issuer:
-          type: string
-        scopes:
-          items:
-            type: string
-          type: array
-          uniqueItems: false
+        loadGlobal:
+          description: Whether to load global ignore patterns
+          type: boolean
+        printOverlays:
+          description: Whether to print resolved overlay paths for debugging
+          type: boolean
       type: object
     github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig:
       description: HeaderForward contains configuration for injecting headers into
@@ -939,7 +1028,7 @@ components:
           description: Host is the host for the HTTP proxy
           type: string
         ignore_config:
-          $ref: '#/components/schemas/ignore.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ignore.Config'
         image:
           description: Image is the Docker image to run
           type: string
@@ -962,14 +1051,14 @@ components:
             MiddlewareConfigs contains the list of middleware to apply to the transport
             and the configuration for each middleware.
           items:
-            $ref: '#/components/schemas/types.MiddlewareConfig'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig'
           type: array
           uniqueItems: false
         name:
           description: Name is the name of the MCP server
           type: string
         oidc_config:
-          $ref: '#/components/schemas/auth.TokenValidatorConfig'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig'
         permission_profile_name_or_path:
           description: PermissionProfileNameOrPath is the name or path of the permission
             profile
@@ -978,19 +1067,7 @@ components:
           description: Port is the port for the HTTP proxy to listen on (host port)
           type: integer
         proxy_mode:
-          description: |-
-            ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
-            Note: "sse" is deprecated; use "streamable-http" instead.
-          enum:
-          - sse
-          - streamable-http
-          type: string
-        publish:
-          description: Publish lists ports to publish to the host in format "hostPort:containerPort"
-          items:
-            type: string
-          type: array
-          uniqueItems: false
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.ProxyMode'
         remote_auth_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config'
         remote_url:
@@ -998,8 +1075,6 @@ components:
           type: string
         runtime_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig'
-        scaling_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig'
         schema_version:
           description: SchemaVersion is the version of the RunConfig schema
           type: string
@@ -1044,26 +1119,13 @@ components:
             ToolsOverride is a map from an actual tool to its overridden name and/or description
           type: object
         transport:
-          description: Transport is the transport mode (stdio, sse, or streamable-http)
-          enum:
-          - stdio
-          - sse
-          - streamable-http
-          - inspector
-          type: string
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType'
         trust_proxy_headers:
           description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
             headers from reverse proxies
           type: boolean
         upstream_swap_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config'
-        validating_webhooks:
-          description: ValidatingWebhooks contains the configuration for validating
-            webhook middleware.
-          items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config'
-          type: array
-          uniqueItems: false
         volumes:
           description: |-
             Volumes are the directory mounts to pass to the container
@@ -1072,39 +1134,6 @@ components:
             type: string
           type: array
           uniqueItems: false
-      type: object
-    github_com_stacklok_toolhive_pkg_runner.ScalingConfig:
-      description: |-
-        ScalingConfig contains configuration for horizontal scaling of the proxy runner.
-        Only applicable when running in Kubernetes with the ToolHive operator.
-        When nil, no scaling configuration is applied (single-replica default behavior).
-      properties:
-        backend_replicas:
-          description: |-
-            BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.
-            When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
-            When set (including 0), the value is an explicit replica count.
-          type: integer
-        session_redis:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig'
-      type: object
-    github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig:
-      description: |-
-        SessionRedis holds non-sensitive Redis connection parameters for distributed session storage.
-        Populated only when MCPServer.spec.sessionStorage.provider == "redis".
-        The Redis password is not included — it is injected as env var THV_SESSION_REDIS_PASSWORD.
-        +optional
-      properties:
-        address:
-          description: Address is the Redis server address (host:port).
-          type: string
-        db:
-          description: DB is the Redis database number.
-          type: integer
-        key_prefix:
-          description: KeyPrefix is an optional prefix applied to all Redis keys used
-            by ToolHive.
-          type: string
       type: object
     github_com_stacklok_toolhive_pkg_runner.ToolOverride:
       properties:
@@ -1345,65 +1374,51 @@ components:
             +optional
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_webhook.Config:
+    github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig:
       properties:
-        failure_policy:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.FailurePolicy'
-        hmac_secret_ref:
-          description: HMACSecretRef is an optional reference to an HMAC secret for
-            payload signing.
-          type: string
-        name:
-          description: Name is a unique identifier for this webhook.
-          type: string
-        timeout:
-          description: Timeout is the maximum time to wait for a webhook response.
-          type: integer
-        tls_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.TLSConfig'
-        url:
-          description: URL is the HTTPS endpoint to call.
+        parameters:
+          description: |-
+            Parameters is a JSON object containing the middleware parameters.
+            It is stored as a raw message to allow flexible parameter types.
+          type: object
+        type:
+          description: Type is a string representing the middleware type.
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_webhook.FailurePolicy:
-      description: FailurePolicy determines behavior when the webhook call fails.
+    github_com_stacklok_toolhive_pkg_transport_types.ProxyMode:
+      description: |-
+        ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+        Note: "sse" is deprecated; use "streamable-http" instead.
       enum:
-      - fail
-      - ignore
+      - sse
+      - streamable-http
+      - sse
+      - streamable-http
       type: string
       x-enum-varnames:
-      - FailurePolicyFail
-      - FailurePolicyIgnore
-    github_com_stacklok_toolhive_pkg_webhook.TLSConfig:
-      description: TLSConfig holds optional TLS configuration (CA bundles, client
-        certs).
-      properties:
-        ca_bundle_path:
-          description: CABundlePath is the path to a CA certificate bundle for server
-            verification.
-          type: string
-        client_cert_path:
-          description: ClientCertPath is the path to a client certificate for mTLS.
-          type: string
-        client_key_path:
-          description: ClientKeyPath is the path to a client key for mTLS.
-          type: string
-        insecure_skip_verify:
-          description: |-
-            InsecureSkipVerify disables server certificate verification.
-            WARNING: This should only be used for development/testing.
-          type: boolean
-      type: object
-    ignore.Config:
-      description: IgnoreConfig contains configuration for ignore processing
-      properties:
-        loadGlobal:
-          description: Whether to load global ignore patterns
-          type: boolean
-        printOverlays:
-          description: Whether to print resolved overlay paths for debugging
-          type: boolean
-      type: object
+      - ProxyModeSSE
+      - ProxyModeStreamableHTTP
+    github_com_stacklok_toolhive_pkg_transport_types.TransportType:
+      description: Transport is the transport mode (stdio, sse, or streamable-http)
+      enum:
+      - stdio
+      - sse
+      - streamable-http
+      - inspector
+      - stdio
+      - sse
+      - streamable-http
+      - inspector
+      - stdio
+      - sse
+      - streamable-http
+      - inspector
+      type: string
+      x-enum-varnames:
+      - TransportTypeStdio
+      - TransportTypeSSE
+      - TransportTypeStreamableHTTP
+      - TransportTypeInspector
     permissions.InboundNetworkPermissions:
       description: Inbound defines inbound network permissions
       properties:
@@ -1493,25 +1508,6 @@ components:
       - RegistryTypeURL
       - RegistryTypeAPI
       - RegistryTypeDefault
-    pkg_api_v1.UpdateRegistryAuthRequest:
-      description: OAuth authentication configuration (optional)
-      properties:
-        audience:
-          description: OAuth audience (optional)
-          type: string
-        client_id:
-          description: OAuth client ID
-          type: string
-        issuer:
-          description: OIDC issuer URL
-          type: string
-        scopes:
-          description: OAuth scopes (optional)
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
     pkg_api_v1.UpdateRegistryRequest:
       description: Request containing registry configuration updates
       properties:
@@ -1521,8 +1517,6 @@ components:
         api_url:
           description: MCP Registry API URL
           type: string
-        auth:
-          $ref: '#/components/schemas/pkg_api_v1.UpdateRegistryAuthRequest'
         local_path:
           description: Local registry file path
           type: string
@@ -1737,18 +1731,6 @@ components:
     pkg_api_v1.getRegistryResponse:
       description: Response containing registry details
       properties:
-        auth_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig'
-        auth_status:
-          description: |-
-            AuthStatus is one of: "none", "configured", "authenticated".
-            Intentionally omits omitempty — see registryInfo for rationale.
-          type: string
-        auth_type:
-          description: |-
-            AuthType is "oauth", "bearer" (future), or empty string when no auth.
-            Intentionally omits omitempty — see registryInfo for rationale.
-          type: string
         last_updated:
           description: Last updated timestamp
           type: string
@@ -1936,20 +1918,6 @@ components:
     pkg_api_v1.registryInfo:
       description: Basic information about a registry
       properties:
-        auth_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig'
-        auth_status:
-          description: |-
-            AuthStatus is one of: "none", "configured", "authenticated".
-            Intentionally omits omitempty so clients always receive the field,
-            even when the value is "none" (the zero-value equivalent).
-          type: string
-        auth_type:
-          description: |-
-            AuthType is "oauth", "bearer" (future), or empty string when no auth.
-            Intentionally omits omitempty so clients can distinguish "no auth
-            configured" (empty string) from "field missing" without extra logic.
-          type: string
         last_updated:
           description: Last updated timestamp
           type: string
@@ -2205,18 +2173,7 @@ components:
       description: Response containing workload status information
       properties:
         status:
-          description: Current status of the workload
-          enum:
-          - running
-          - stopped
-          - error
-          - starting
-          - stopping
-          - unhealthy
-          - removing
-          - unknown
-          - unauthenticated
-          type: string
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus'
       type: object
     registry.EnvVar:
       properties:
@@ -2604,97 +2561,6 @@ components:
       properties:
         predicate: {}
         predicate_type:
-          type: string
-      type: object
-    storage.ACLUserRunConfig:
-      description: ACLUserConfig contains ACL user authentication configuration.
-      properties:
-        password_env_var:
-          description: PasswordEnvVar is the environment variable containing the Redis
-            password.
-          type: string
-        username_env_var:
-          description: UsernameEnvVar is the environment variable containing the Redis
-            username.
-          type: string
-      type: object
-    storage.RedisRunConfig:
-      description: RedisConfig is the Redis-specific configuration when Type is "redis".
-      properties:
-        acl_user_config:
-          $ref: '#/components/schemas/storage.ACLUserRunConfig'
-        auth_type:
-          description: AuthType must be "aclUser" - only ACL user authentication is
-            supported.
-          type: string
-        dial_timeout:
-          description: DialTimeout is the timeout for establishing connections (e.g.,
-            "5s").
-          type: string
-        key_prefix:
-          description: KeyPrefix for multi-tenancy, typically "thv:auth:{ns}:{name}:".
-          type: string
-        read_timeout:
-          description: ReadTimeout is the timeout for read operations (e.g., "3s").
-          type: string
-        sentinel_config:
-          $ref: '#/components/schemas/storage.SentinelRunConfig'
-        sentinel_tls:
-          $ref: '#/components/schemas/storage.RedisTLSRunConfig'
-        tls:
-          $ref: '#/components/schemas/storage.RedisTLSRunConfig'
-        write_timeout:
-          description: WriteTimeout is the timeout for write operations (e.g., "3s").
-          type: string
-      type: object
-    storage.RedisTLSRunConfig:
-      description: |-
-        SentinelTLS configures TLS for Sentinel connections.
-        Falls back to TLS config when nil.
-      properties:
-        ca_cert_file:
-          description: CACertFile is the path to a PEM-encoded CA certificate file.
-          type: string
-        insecure_skip_verify:
-          description: InsecureSkipVerify skips certificate verification.
-          type: boolean
-      type: object
-    storage.RunConfig:
-      description: |-
-        Storage configures the storage backend for the auth server.
-        If nil, defaults to in-memory storage.
-      properties:
-        redis_config:
-          $ref: '#/components/schemas/storage.RedisRunConfig'
-        type:
-          description: Type specifies the storage backend type. Defaults to "memory".
-          type: string
-      type: object
-    storage.SentinelRunConfig:
-      description: SentinelConfig contains Sentinel-specific configuration.
-      properties:
-        db:
-          description: 'DB is the Redis database number (default: 0).'
-          type: integer
-        master_name:
-          description: MasterName is the name of the Redis Sentinel master.
-          type: string
-        sentinel_addrs:
-          description: SentinelAddrs is the list of Sentinel addresses (host:port).
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
-    types.MiddlewareConfig:
-      properties:
-        parameters:
-          description: |-
-            Parameters is a JSON object containing the middleware parameters.
-            It is stored as a raw message to allow flexible parameter types.
-          type: object
-        type:
-          description: Type is a string representing the middleware type.
           type: string
       type: object
 externalDocs:
@@ -3210,62 +3076,6 @@ paths:
                 type: string
           description: Not Found
       summary: Get a server from a registry
-      tags:
-      - registry
-  /api/v1beta/registry/auth/login:
-    post:
-      description: Trigger an interactive OAuth flow to authenticate with the configured
-        registry. Only available in serve mode.
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                additionalProperties:
-                  type: string
-                type: object
-          description: Authenticated successfully
-        "400":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Bad Request - Registry OAuth not configured
-        "500":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Internal Server Error
-      summary: Registry login
-      tags:
-      - registry
-  /api/v1beta/registry/auth/logout:
-    post:
-      description: Clear cached OAuth tokens for the configured registry. Only available
-        in serve mode.
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                additionalProperties:
-                  type: string
-                type: object
-          description: Logged out successfully
-        "400":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Bad Request - Registry OAuth not configured
-        "500":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Internal Server Error
-      summary: Registry logout
       tags:
       - registry
   /api/v1beta/secrets:

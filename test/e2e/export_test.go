@@ -164,14 +164,14 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 		Context("when exporting with invalid format", func() {
 			It("should fail with an appropriate error", func() {
 				By("Starting an OSV MCP server")
-				_, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Attempting to export with an invalid format")
 				exportPath := filepath.Join(tempDir, "invalid.txt")
-				_, stderr, err = e2e.NewTHVCommand(config, "export", serverName, exportPath, "--format", "invalid").ExpectFailure()
+				_, stderr, err := e2e.NewTHVCommand(config, "export", serverName, exportPath, "--format", "invalid").ExpectFailure()
 				Expect(stderr).To(ContainSubstring("invalid format"))
 				Expect(err).To(HaveOccurred())
 			})

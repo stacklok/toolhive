@@ -34,18 +34,155 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "valid tokenExchange type",
+			name: "valid tokenExchange type (standard RFC 8693)",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-token",
 					Namespace: "default",
 				},
 				Spec: MCPExternalAuthConfigSpec{
-					Type:          ExternalAuthTypeTokenExchange,
-					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://example.com/token",
+						Audience: "https://api.example.com",
+					},
 				},
 			},
 			expectErr: false,
+		},
+		{
+			name: "valid tokenExchange entra variant (no tokenUrl, no audience)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-entra",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						Variant:  "entra",
+						ClientID: "client-id",
+						Scopes:   []string{"https://graph.microsoft.com/.default"},
+						Raw: &TokenExchangeRawConfig{
+							Parameters: map[string]string{"tenantId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid tokenExchange raw variant",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-raw",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						Variant:  "raw",
+						TokenURL: "https://auth.example.com/token",
+						ClientID: "client-id",
+						Raw: &TokenExchangeRawConfig{
+							GrantTypeURN: "urn:corp:custom:grant-type:delegation",
+							Parameters:   map[string]string{"key": "value"},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid standard tokenExchange missing audience",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-no-audience",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://example.com/token",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "tokenExchange: audience is required",
+		},
+		{
+			name: "invalid standard tokenExchange missing tokenUrl",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-no-url",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						Audience: "https://api.example.com",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "tokenExchange: tokenUrl is required",
+		},
+		{
+			name: "invalid raw variant missing raw config",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-raw-no-config",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						Variant:  "raw",
+						TokenURL: "https://auth.example.com/token",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "tokenExchange: raw config is required when variant is 'raw'",
+		},
+		{
+			name: "invalid raw variant missing grantTypeUrn",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-raw-no-grant",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						Variant:  "raw",
+						TokenURL: "https://auth.example.com/token",
+						Raw:      &TokenExchangeRawConfig{},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "tokenExchange: raw.grantTypeUrn is required when variant is 'raw'",
+		},
+		{
+			name: "invalid raw variant missing tokenUrl",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-raw-no-url",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						Variant: "raw",
+						Raw: &TokenExchangeRawConfig{
+							GrantTypeURN: "urn:corp:custom:grant-type:delegation",
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "tokenExchange: tokenUrl is required when variant is 'raw'",
 		},
 		{
 			name: "valid headerInjection type",

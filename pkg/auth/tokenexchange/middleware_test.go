@@ -905,3 +905,147 @@ func TestCreateMiddlewareFromTokenSource_NilTokenSource(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tokenSource cannot be nil")
 }
+
+// TestCreateTokenExchangeMiddleware_EntraVariant tests the Entra OBO variant through the middleware path.
+func TestCreateTokenExchangeMiddleware_EntraVariant(t *testing.T) {
+	t.Parallel()
+
+	// Capture form data sent to the token endpoint
+	var receivedGrantType, receivedAssertion, receivedTokenUse, receivedClientID string
+
+	// Create mock Entra token endpoint
+	entraServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		receivedGrantType = r.Form.Get("grant_type")
+		receivedAssertion = r.Form.Get("assertion")
+		receivedTokenUse = r.Form.Get("requested_token_use")
+		receivedClientID = r.Form.Get("client_id")
+
+		// Entra OBO response does NOT include issued_token_type
+		resp := map[string]interface{}{
+			"access_token": "entra-obo-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+			"scope":        "https://graph.microsoft.com/user.read",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer entraServer.Close()
+
+	config := Config{
+		TokenURL:     entraServer.URL, // Use tokenUrl override (sovereign clouds path)
+		ClientID:     "test-entra-client-id",
+		ClientSecret: "test-entra-client-secret",
+		Scopes:       []string{"https://graph.microsoft.com/user.read"},
+		Variant:      "entra",
+		RawConfig: &RawExchangeConfig{
+			Parameters: map[string]string{"tenantId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+		},
+	}
+
+	middleware, err := createTokenExchangeMiddleware(config, nil, defaultEnvGetter)
+	require.NoError(t, err)
+
+	// Verify the exchanged token is injected
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer entra-obo-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer original-user-token")
+	identity := &auth.Identity{Subject: "user123", Claims: jwt.MapClaims{"sub": "user123"}}
+	ctx := auth.WithIdentity(req.Context(), identity)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	handler := middleware(testHandler)
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	// Verify Entra OBO form data
+	assert.Equal(t, "urn:ietf:params:oauth:grant-type:jwt-bearer", receivedGrantType)
+	assert.Equal(t, "original-user-token", receivedAssertion)
+	assert.Equal(t, "on_behalf_of", receivedTokenUse)
+	assert.Equal(t, "test-entra-client-id", receivedClientID)
+}
+
+// TestCreateTokenExchangeMiddleware_VariantPropagation verifies that variant and raw config
+// fields on the middleware Config are propagated through to the ExchangeConfig.
+func TestCreateTokenExchangeMiddleware_VariantPropagation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		variant           string
+		rawConfig         *RawExchangeConfig
+		expectedGrantType string
+	}{
+		{
+			name:              "standard RFC 8693 (no variant)",
+			variant:           "",
+			rawConfig:         nil,
+			expectedGrantType: "urn:ietf:params:oauth:grant-type:token-exchange",
+		},
+		{
+			name:    "entra variant",
+			variant: "entra",
+			rawConfig: &RawExchangeConfig{
+				Parameters: map[string]string{"tenantId": "test-tenant-id"},
+			},
+			expectedGrantType: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var receivedGrantType string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.NoError(t, r.ParseForm())
+				receivedGrantType = r.Form.Get("grant_type")
+
+				resp := map[string]interface{}{
+					"access_token":      "test-token",
+					"token_type":        "Bearer",
+					"expires_in":        3600,
+					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			config := Config{
+				TokenURL:     server.URL,
+				ClientID:     "client-id",
+				ClientSecret: "client-secret",
+				Audience:     "https://api.example.com",
+				Variant:      tt.variant,
+				RawConfig:    tt.rawConfig,
+			}
+
+			middleware, err := createTokenExchangeMiddleware(config, nil, defaultEnvGetter)
+			require.NoError(t, err)
+
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req.Header.Set("Authorization", "Bearer subject-token")
+			identity := &auth.Identity{Subject: "user", Claims: jwt.MapClaims{"sub": "user"}}
+			ctx := auth.WithIdentity(req.Context(), identity)
+			req = req.WithContext(ctx)
+
+			rec := httptest.NewRecorder()
+			middleware(testHandler).ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, tt.expectedGrantType, receivedGrantType)
+		})
+	}
+}

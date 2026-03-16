@@ -93,14 +93,20 @@ type RemoteAuthFlags struct {
 	TokenExchangeScopes           []string
 	TokenExchangeSubjectTokenType string
 	TokenExchangeHeaderName       string
+
+	// Token Exchange Variant Configuration
+	TokenExchangeVariant      string
+	TokenExchangeRawGrantType string
+	TokenExchangeParams       map[string]string
 }
 
 // BuildTokenExchangeConfig creates a TokenExchangeConfig from the RemoteAuthFlags.
-// Returns nil if TokenExchangeURL is empty (token exchange is not configured).
+// Returns nil if no token exchange is configured (no URL and no variant).
 // Returns error if there is a configuration error (e.g., file read failure).
 func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, error) {
-	// Only create config if token exchange URL is provided
-	if f.TokenExchangeURL == "" {
+	// Token exchange is configured if either a URL is provided or a variant is set
+	// (named variants like "entra" can derive the URL from parameters)
+	if f.TokenExchangeURL == "" && f.TokenExchangeVariant == "" {
 		return nil, nil
 	}
 
@@ -124,9 +130,10 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 		headerStrategy = tokenexchange.HeaderStrategyReplace
 	}
 
-	// Normalize token type from user input (allows short forms like "access_token")
+	// Normalize token type from user input only for standard RFC 8693 (no variant).
+	// Variant handlers handle their own token type semantics.
 	normalizedTokenType := f.TokenExchangeSubjectTokenType
-	if normalizedTokenType != "" {
+	if normalizedTokenType != "" && f.TokenExchangeVariant == "" {
 		var err error
 		normalizedTokenType, err = tokenexchange.NormalizeTokenType(normalizedTokenType)
 		if err != nil {
@@ -134,7 +141,7 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 		}
 	}
 
-	return &tokenexchange.Config{
+	config := &tokenexchange.Config{
 		TokenURL:                f.TokenExchangeURL,
 		ClientID:                f.TokenExchangeClientID,
 		ClientSecret:            clientSecret,
@@ -143,7 +150,18 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 		SubjectTokenType:        normalizedTokenType,
 		HeaderStrategy:          headerStrategy,
 		ExternalTokenHeaderName: externalTokenHeaderName,
-	}, nil
+		Variant:                 f.TokenExchangeVariant,
+	}
+
+	// Build RawConfig from variant parameters
+	if f.TokenExchangeVariant != "" {
+		config.RawConfig = &tokenexchange.RawExchangeConfig{
+			GrantTypeURN: f.TokenExchangeRawGrantType,
+			Parameters:   f.TokenExchangeParams,
+		}
+	}
+
+	return config, nil
 }
 
 // AddRemoteAuthFlags adds the common remote authentication flags to a command
@@ -204,4 +222,12 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 		"Custom header name for injecting exchanged token (default: replaces Authorization header)")
 
 	cmd.MarkFlagsMutuallyExclusive("token-exchange-client-secret", "token-exchange-client-secret-file")
+
+	// Token Exchange Variant flags
+	cmd.Flags().StringVar(&config.TokenExchangeVariant, "token-exchange-variant", "",
+		"Token exchange variant: 'entra' (Entra OBO), 'raw' (custom grant type), or empty (RFC 8693)")
+	cmd.Flags().StringVar(&config.TokenExchangeRawGrantType, "token-exchange-raw-grant-type", "",
+		"Custom grant_type URN for 'raw' variant (e.g., urn:corp:custom:grant-type:delegation)")
+	cmd.Flags().StringToStringVar(&config.TokenExchangeParams, "token-exchange-params", nil,
+		"Key=value parameters for variant handler (e.g., tenantId=xxx)")
 }

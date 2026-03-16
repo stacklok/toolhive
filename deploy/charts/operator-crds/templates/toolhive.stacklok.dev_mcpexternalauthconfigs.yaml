@@ -750,8 +750,9 @@ spec:
                   Only used when Type is "tokenExchange"
                 properties:
                   audience:
-                    description: Audience is the target audience for the exchanged
-                      token
+                    description: |-
+                      Audience is the target audience for the exchanged token.
+                      Required for standard RFC 8693 token exchange. Not used by entra (use scopes instead).
                     type: string
                   clientId:
                     description: |-
@@ -830,17 +831,7 @@ spec:
                     - entra
                     - raw
                     type: string
-                required:
-                - audience
                 type: object
-                x-kubernetes-validations:
-                - message: tokenUrl is required for standard (no variant) and 'raw'
-                    variant token exchange
-                  rule: '(!has(self.variant) || self.variant == '''' || self.variant
-                    == ''raw'') ? self.tokenUrl != '''' : true'
-                - message: raw.grantTypeUrn is required when variant is 'raw'
-                  rule: '(has(self.variant) && self.variant == ''raw'') ? (has(self.raw)
-                    && self.raw.grantTypeUrn != '''') : true'
               type:
                 description: Type is the type of external authentication to configure
                 enum:

@@ -102,10 +102,8 @@ type TokenExchangeRawConfig struct {
 // specific identity providers. The "raw" variant allows custom grant types.
 // The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
 //
-// +kubebuilder:validation:XValidation:rule="(!has(self.variant) || self.variant == ” || self.variant == 'raw') ? self.tokenUrl != ” : true",message="tokenUrl is required for standard (no variant) and 'raw' variant token exchange"
-// +kubebuilder:validation:XValidation:rule="(has(self.variant) && self.variant == 'raw') ? (has(self.raw) && self.raw.grantTypeUrn != ”) : true",message="raw.grantTypeUrn is required when variant is 'raw'"
-//
-//nolint:lll // CEL validation rules exceed line length limit
+// TODO: Add CEL admission rules for variant-conditional field requirements (tokenUrl, audience,
+// raw.grantTypeUrn). Currently enforced by validateTokenExchange() at reconciliation time.
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange.
 	// Required for standard RFC 8693 and "raw" variants.
@@ -123,9 +121,10 @@ type TokenExchangeConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// Audience is the target audience for the exchanged token
-	// +kubebuilder:validation:Required
-	Audience string `json:"audience"`
+	// Audience is the target audience for the exchanged token.
+	// Required for standard RFC 8693 token exchange. Not used by entra (use scopes instead).
+	// +optional
+	Audience string `json:"audience,omitempty"`
 
 	// Scopes is a list of OAuth 2.0 scopes to request for the exchanged token
 	// +optional
@@ -759,8 +758,9 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		return r.validateEmbeddedAuthServer()
 	case ExternalAuthTypeAWSSts:
 		return r.validateAWSSts()
-	case ExternalAuthTypeTokenExchange,
-		ExternalAuthTypeHeaderInjection,
+	case ExternalAuthTypeTokenExchange:
+		return r.validateTokenExchange()
+	case ExternalAuthTypeHeaderInjection,
 		ExternalAuthTypeBearerToken,
 		ExternalAuthTypeUnauthenticated:
 		// No complex validation needed for these types
@@ -845,6 +845,39 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	}
 	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
+	}
+
+	return nil
+}
+
+// validateTokenExchange validates tokenExchange type configuration.
+// This provides defense-in-depth alongside CEL validation rules.
+func (r *MCPExternalAuthConfig) validateTokenExchange() error {
+	tc := r.Spec.TokenExchange
+	if tc == nil {
+		return nil
+	}
+
+	switch tc.Variant {
+	case "": // Standard RFC 8693
+		if tc.TokenURL == "" {
+			return fmt.Errorf("tokenExchange: tokenUrl is required")
+		}
+		if tc.Audience == "" {
+			return fmt.Errorf("tokenExchange: audience is required")
+		}
+	case "entra":
+		// No CRD-level validation — enterprise handler validates its own params at runtime
+	case "raw":
+		if tc.Raw == nil {
+			return fmt.Errorf("tokenExchange: raw config is required when variant is 'raw'")
+		}
+		if tc.Raw.GrantTypeURN == "" {
+			return fmt.Errorf("tokenExchange: raw.grantTypeUrn is required when variant is 'raw'")
+		}
+		if tc.TokenURL == "" {
+			return fmt.Errorf("tokenExchange: tokenUrl is required when variant is 'raw'")
+		}
 	}
 
 	return nil

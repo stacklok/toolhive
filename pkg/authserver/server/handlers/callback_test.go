@@ -61,14 +61,16 @@ func TestCallbackHandler_UpstreamError(t *testing.T) {
 	// Store a pending authorization
 	internalState := testInternalState
 	pending := &storage.PendingAuthorization{
-		ClientID:      testAuthClientID,
-		RedirectURI:   testAuthRedirectURI,
-		State:         "client-state",
-		PKCEChallenge: "challenge123",
-		PKCEMethod:    "S256",
-		Scopes:        []string{"openid"},
-		InternalState: internalState,
-		CreatedAt:     time.Now(),
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		SessionID:            "session-upstream-error",
+		UpstreamProviderName: "test-upstream",
+		CreatedAt:            time.Now(),
 	}
 	storState.pendingAuths[internalState] = pending
 
@@ -99,14 +101,16 @@ func TestCallbackHandler_ExchangeCodeFailure(t *testing.T) {
 	// Store a pending authorization
 	internalState := testInternalState
 	pending := &storage.PendingAuthorization{
-		ClientID:      testAuthClientID,
-		RedirectURI:   testAuthRedirectURI,
-		State:         "client-state",
-		PKCEChallenge: "challenge123",
-		PKCEMethod:    "S256",
-		Scopes:        []string{"openid"},
-		InternalState: internalState,
-		CreatedAt:     time.Now(),
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		SessionID:            "session-exchange-fail",
+		UpstreamProviderName: "test-upstream",
+		CreatedAt:            time.Now(),
 	}
 	storState.pendingAuths[internalState] = pending
 
@@ -138,6 +142,8 @@ func TestCallbackHandler_Success(t *testing.T) {
 		Scopes:               []string{"openid", "profile"},
 		InternalState:        internalState,
 		UpstreamPKCEVerifier: upstreamVerifier,
+		SessionID:            "session-success",
+		UpstreamProviderName: "test-upstream",
 		CreatedAt:            time.Now(),
 	}
 	storState.pendingAuths[internalState] = pending
@@ -184,6 +190,8 @@ func TestCallbackHandler_ScopeFiltering(t *testing.T) {
 		Scopes:               []string{"openid", "sneaky_admin"},
 		InternalState:        internalState,
 		UpstreamPKCEVerifier: "test-upstream-pkce-verifier-12345678901234567890",
+		SessionID:            "session-scope-filter",
+		UpstreamProviderName: "test-upstream",
 		CreatedAt:            time.Now(),
 	}
 	storState.pendingAuths[internalState] = pending
@@ -209,23 +217,23 @@ func TestCallbackHandler_ScopeFiltering(t *testing.T) {
 	}
 }
 
-func TestCallbackHandler_NoIDPProvider(t *testing.T) {
+func TestCallbackHandler_UnknownUpstreamProvider(t *testing.T) {
 	t.Parallel()
 	handler, storState, _ := handlerTestSetup(t)
-	// Remove upstream provider
-	handler.upstream = nil
 
-	// Store a pending authorization
+	// Store a pending authorization with a provider name that doesn't exist in the handler's map
 	internalState := testInternalState
 	pending := &storage.PendingAuthorization{
-		ClientID:      testAuthClientID,
-		RedirectURI:   testAuthRedirectURI,
-		State:         "client-state",
-		PKCEChallenge: "challenge123",
-		PKCEMethod:    "S256",
-		Scopes:        []string{"openid"},
-		InternalState: internalState,
-		CreatedAt:     time.Now(),
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		SessionID:            "session-unknown-provider",
+		UpstreamProviderName: "nonexistent-provider",
+		CreatedAt:            time.Now(),
 	}
 	storState.pendingAuths[internalState] = pending
 
@@ -286,14 +294,16 @@ func TestCallbackHandler_IdentityResolutionFailure(t *testing.T) {
 	// Store a pending authorization
 	internalState := testInternalState
 	pending := &storage.PendingAuthorization{
-		ClientID:      testAuthClientID,
-		RedirectURI:   testAuthRedirectURI,
-		State:         "client-state",
-		PKCEChallenge: "challenge123",
-		PKCEMethod:    "S256",
-		Scopes:        []string{"openid"},
-		InternalState: internalState,
-		CreatedAt:     time.Now(),
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		SessionID:            "session-identity-fail",
+		UpstreamProviderName: "test-upstream",
+		CreatedAt:            time.Now(),
 	}
 	storState.pendingAuths[internalState] = pending
 

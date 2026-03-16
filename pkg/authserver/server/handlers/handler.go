@@ -15,7 +15,7 @@
 package handlers
 
 import (
-	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -28,39 +28,55 @@ import (
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider     fosite.OAuth2Provider
-	config       *server.AuthorizationServerConfig
-	storage      storage.Storage
-	upstream     upstream.OAuth2Provider
-	upstreamName string
-	userResolver *UserResolver
+	provider      fosite.OAuth2Provider
+	config        *server.AuthorizationServerConfig
+	storage       storage.Storage
+	upstreams     map[string]upstream.OAuth2Provider
+	upstreamOrder []string
+	userResolver  *UserResolver
 }
 
 // NewHandler creates a new Handler with the given dependencies.
-// The upstreamName identifies the logical upstream provider (matching UpstreamConfig.Name).
-// If empty, it defaults to "default".
+// upstreams maps logical provider names to their OAuth2Provider implementations.
+// upstreamOrder defines the sequence in which upstream providers are consulted
+// during multi-upstream authorization flows (e.g., sequential token acquisition).
+//
+// Panics if upstreamOrder is empty, or if any name in upstreamOrder does not
+// exist in the upstreams map. These are programming errors caught at construction
+// time; configuration validation must happen before calling NewHandler.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
-	upstreamIDP upstream.OAuth2Provider,
-	upstreamName string,
-	userResolver *UserResolver,
-) (*Handler, error) {
-	if userResolver == nil {
-		return nil, errors.New("userResolver must not be nil")
+	upstreams map[string]upstream.OAuth2Provider,
+	upstreamOrder []string,
+) *Handler {
+	if len(upstreamOrder) == 0 {
+		panic("handlers: upstreamOrder must not be empty")
 	}
-	if upstreamName == "" {
-		upstreamName = "default"
+	if len(upstreamOrder) != len(upstreams) {
+		panic(fmt.Sprintf(
+			"handlers: upstreamOrder length (%d) does not match upstreams map length (%d)",
+			len(upstreamOrder), len(upstreams),
+		))
+	}
+	for _, name := range upstreamOrder {
+		p, ok := upstreams[name]
+		if !ok {
+			panic(fmt.Sprintf("handlers: upstream %q in upstreamOrder not found in upstreams map", name))
+		}
+		if p == nil {
+			panic(fmt.Sprintf("handlers: upstream %q has nil provider", name))
+		}
 	}
 	return &Handler{
-		provider:     provider,
-		config:       config,
-		storage:      stor,
-		upstream:     upstreamIDP,
-		upstreamName: upstreamName,
-		userResolver: userResolver,
-	}, nil
+		provider:      provider,
+		config:        config,
+		storage:       stor,
+		upstreams:     upstreams,
+		upstreamOrder: upstreamOrder,
+		userResolver:  NewUserResolver(stor),
+	}
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.

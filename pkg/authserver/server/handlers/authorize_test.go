@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
@@ -156,29 +157,15 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
-func TestAuthorizeHandler_NoIDPProvider(t *testing.T) {
+func TestNewHandler_PanicsOnEmptyUpstreams(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := handlerTestSetup(t)
-	// Remove upstream provider
-	handler.upstream = nil
+	require.Panics(t, func() {
+		NewHandler(nil, nil, nil, nil, nil)
+	}, "NewHandler should panic when upstreamOrder is empty")
 
-	params := url.Values{
-		"client_id":             {testAuthClientID},
-		"redirect_uri":          {testAuthRedirectURI},
-		"response_type":         {"code"},
-		"state":                 {"test-state"},
-		"code_challenge":        {"challenge123"},
-		"code_challenge_method": {"S256"},
-	}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
-	rec := httptest.NewRecorder()
-
-	handler.AuthorizeHandler(rec, req)
-
-	// fosite uses 303 See Other for error redirects per RFC 6749
-	assert.Equal(t, http.StatusSeeOther, rec.Code)
-	location := rec.Header().Get("Location")
-	assert.Contains(t, location, "error=server_error")
+	require.Panics(t, func() {
+		NewHandler(nil, nil, nil, map[string]upstream.OAuth2Provider{}, []string{})
+	}, "NewHandler should panic when upstreamOrder is empty slice")
 }
 
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {

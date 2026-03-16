@@ -204,6 +204,15 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 			return nil
 		}).AnyTimes()
 
+	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ string) (map[string]*storage.UpstreamTokens, error) {
+			result := make(map[string]*storage.UpstreamTokens)
+			for _, tokens := range storState.upstreamTokens {
+				result[tokens.ProviderID] = tokens
+			}
+			return result, nil
+		}).AnyTimes()
+
 	// Setup mock expectations for authorization code storage (needed by fosite)
 	stor.EXPECT().CreateAuthorizeCodeSession(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, code string, req fosite.Requester) error {
@@ -336,8 +345,8 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		},
 	}
 
-	handler, err := NewHandler(provider, oauth2Config, stor, mockUpstream, "test-upstream", NewUserResolver(stor))
-	require.NoError(t, err)
+	upstreams := map[string]upstream.OAuth2Provider{"test-upstream": mockUpstream}
+	handler := NewHandler(provider, oauth2Config, stor, upstreams, []string{"test-upstream"})
 
 	return handler, storState, mockUpstream
 }

@@ -59,9 +59,9 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	codeChallengeMethod := ar.GetRequestForm().Get("code_challenge_method")
 	scopes := []string(ar.GetRequestedScopes())
 
-	// Check if upstream provider is configured
-	if h.upstream == nil {
-		slog.Error("upstream provider not configured")
+	// Check if upstream providers are configured (defensive; constructor panics on empty)
+	if len(h.upstreams) == 0 {
+		slog.Error("upstream providers not configured")
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("authorization server not configured"))
 		return
 	}
@@ -73,7 +73,10 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	// Generate secrets for upstream authorization
 	secrets := newUpstreamAuthSecrets()
 
-	// Create and store pending authorization
+	// Create and store pending authorization.
+	// SessionID is generated here at the start of the chain so it can be
+	// threaded through all legs of a multi-upstream authorization flow.
+	// The first leg always targets upstreamOrder[0].
 	pending := &storage.PendingAuthorization{
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
@@ -84,7 +87,8 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		InternalState:        secrets.State,
 		UpstreamPKCEVerifier: secrets.PKCEVerifier,
 		UpstreamNonce:        secrets.Nonce,
-		UpstreamProviderName: h.upstreamName,
+		UpstreamProviderName: h.upstreamOrder[0],
+		SessionID:            rand.Text(),
 		CreatedAt:            time.Now(),
 	}
 
@@ -102,7 +106,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	upstreamURL, err := h.upstream.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
+	upstreamURL, err := h.upstreams[h.upstreamOrder[0]].AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
 		slog.Error("failed to build upstream authorization URL",
 			"error", err,

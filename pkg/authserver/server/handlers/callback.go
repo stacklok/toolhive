@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -73,28 +72,19 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Validate the callback was delivered to the handler that originated the authorization.
-	// UpstreamProviderName is written by AuthorizeHandler and must match this handler's
-	// upstream to prevent misrouted callbacks from associating sessions with the wrong provider.
-	if pending.UpstreamProviderName != "" && pending.UpstreamProviderName != h.upstreamName {
-		slog.Error("callback provider mismatch — possible misrouted callback",
-			"pending_provider", pending.UpstreamProviderName,
-			"handler_provider", h.upstreamName,
-		)
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("authorization state mismatch"))
-		return
-	}
-
-	// Check if upstream provider is configured
-	if h.upstream == nil {
-		slog.Error("upstream provider not configured")
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("authorization server not configured"))
+	// Look up the upstream provider that was used for this authorization leg.
+	// Validating against pending.UpstreamProviderName (set during authorize) provides
+	// IDP mix-up defense: we only accept callbacks for the provider we redirected to.
+	upstreamProvider, ok := h.upstreams[pending.UpstreamProviderName]
+	if !ok {
+		slog.Error("upstream provider not found", "provider", pending.UpstreamProviderName)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider not configured"))
 		return
 	}
 
 	// Exchange code and resolve identity in a single atomic operation.
 	// This ensures OIDC nonce validation cannot be accidentally skipped.
-	result, err := h.upstream.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
+	result, err := upstreamProvider.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
 	if err != nil {
 		slog.Error("failed to exchange code or resolve identity",
 			"error", err,
@@ -108,7 +98,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Use the logical upstream name as the provider identifier for storage and identity lookups.
 	// This ensures write-side (StoreUpstreamTokens) and read-side (GetUpstreamTokens) keys match.
-	providerID := h.upstreamName
+	providerID := pending.UpstreamProviderName
 
 	// Resolve or create internal user
 	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
@@ -122,8 +112,9 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Update last authentication timestamp (supports OIDC max_age)
 	h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 
-	// Generate session ID for this authorization
-	sessionID := rand.Text()
+	// Use the session ID from the pending authorization.
+	// This was generated in authorize.go and will be reused across all legs of the chain.
+	sessionID := pending.SessionID
 
 	// Convert IDP tokens to storage tokens with binding fields
 	storageTokens := &storage.UpstreamTokens{

@@ -525,9 +525,9 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 			// Merge query parameters from the remote URL into the outbound request.
 			// Remote params are prepended so they appear first; most HTTP servers
-			// adopt first-value-wins semantics for duplicate keys, so operator-
+			// adopt first-value-wins semantics for duplicate keys, ensuring operator
 			// configured values (e.g., toolsets=core,alerting) take precedence over
-			// any same-named params a client might send.
+			// any client-supplied params with the same key.
 			// Raw string concatenation is intentional: url.Values.Encode() would
 			// percent-encode characters like commas that some APIs expect as literals.
 			if p.remoteRawQuery != "" {

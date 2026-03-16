@@ -66,7 +66,14 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 }
 
 // generateRemoteMCPServerURL builds the proxy URL for a remote MCP server,
-// preserving both the path and query parameters from the remote URL.
+// using only the path from the remote URL.
+//
+// Query parameters are intentionally excluded from the generated client URL.
+// The transparent proxy forwards them on every outbound request via
+// WithRemoteRawQuery, so including them here would cause duplication —
+// the upstream would receive the same parameter twice (e.g.
+// "toolsets=core&toolsets=core"). Clients connect to the clean proxy
+// URL; the proxy transparently appends the configured query string.
 func generateRemoteMCPServerURL(base, containerName, remoteURL string, isSSE, isStreamable bool) string {
 	targetURL, err := url.Parse(remoteURL)
 	if err != nil {
@@ -79,25 +86,15 @@ func generateRemoteMCPServerURL(base, containerName, remoteURL string, isSSE, is
 	if path == "/" {
 		path = ""
 	}
-	rawQuery := targetURL.RawQuery
 
 	if isSSE {
 		if path == "" {
 			path = ssecommon.HTTPSSEEndpoint
 		}
-		sseURL := appendQuery(fmt.Sprintf("%s%s", base, path), rawQuery)
-		return fmt.Sprintf("%s#%s", sseURL, url.PathEscape(containerName))
+		return fmt.Sprintf("%s%s#%s", base, path, url.PathEscape(containerName))
 	}
 	if isStreamable {
-		return appendQuery(fmt.Sprintf("%s%s", base, path), rawQuery)
+		return fmt.Sprintf("%s%s", base, path)
 	}
 	return ""
-}
-
-// appendQuery appends a raw query string to a URL if non-empty.
-func appendQuery(u, rawQuery string) string {
-	if rawQuery == "" {
-		return u
-	}
-	return u + "?" + rawQuery
 }

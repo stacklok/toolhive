@@ -166,34 +166,40 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			expected:      "http://localhost:12345/api#test-container",
 		},
 		{
-			name:          "Streamable HTTP with query parameters in targetURI",
+			// Query params are excluded from the client URL — the proxy forwards
+			// them transparently via WithRemoteRawQuery to avoid duplication.
+			name:          "Streamable HTTP with query parameters in targetURI strips query from client URL",
 			transportType: types.TransportTypeStreamableHTTP.String(),
 			proxyMode:     "",
 			host:          "localhost",
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "https://mcp.datadoghq.com/api/unstable/mcp?toolsets=core,alerting,apm",
-			expected:      "http://localhost:12345/api/unstable/mcp?toolsets=core,alerting,apm",
+			expected:      "http://localhost:12345/api/unstable/mcp",
 		},
 		{
-			name:          "SSE transport with query parameters in targetURI",
+			// Query params are excluded from the client URL — the proxy forwards
+			// them transparently via WithRemoteRawQuery to avoid duplication.
+			name:          "SSE transport with query parameters in targetURI strips query from client URL",
 			transportType: types.TransportTypeSSE.String(),
 			proxyMode:     "",
 			host:          "localhost",
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "https://mcp.example.com/sse?token=abc123",
-			expected:      "http://localhost:12345/sse?token=abc123#test-container",
+			expected:      "http://localhost:12345/sse#test-container",
 		},
 		{
-			name:          "SSE transport with query parameters and no path in targetURI",
+			// Query params are excluded from the client URL — the proxy forwards
+			// them transparently via WithRemoteRawQuery to avoid duplication.
+			name:          "SSE transport with query parameters and no path in targetURI strips query from client URL",
 			transportType: types.TransportTypeSSE.String(),
 			proxyMode:     "",
 			host:          "localhost",
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "https://mcp.example.com?token=abc123",
-			expected:      "http://localhost:12345/sse?token=abc123#test-container",
+			expected:      "http://localhost:12345/sse#test-container",
 		},
 	}
 

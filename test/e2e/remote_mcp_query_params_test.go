@@ -39,11 +39,11 @@ var _ = Describe("Remote MCP server with URL query parameters",
 				}
 			})
 
-			It("should preserve URL query parameters in the registered workload URL [Serial]", func() {
+			It("should not include URL query parameters in the generated proxy URL [Serial]", func() {
 				By("Starting a remote MCP server with query parameters in the URL")
 				// Use the standard remote test server with a query parameter appended.
-				// The server ignores unknown params; we verify ToolHive preserves them
-				// in the proxy URL it generates (testing the url.go fix end-to-end).
+				// The server ignores unknown params; we verify ToolHive strips them
+				// from the client-facing proxy URL (the proxy forwards them transparently).
 				registrationURL := remoteServerURL + "?toolsets=query-test"
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
@@ -53,7 +53,7 @@ var _ = Describe("Remote MCP server with URL query parameters",
 				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
 
-				By("Verifying the proxy URL preserves the query parameters from the registration URL")
+				By("Verifying the proxy URL does not contain query parameters from the registration URL")
 				stdout, _ := e2e.NewTHVCommand(config, "list", "--format", "json").ExpectSuccess()
 
 				var workloads []WorkloadInfo
@@ -69,8 +69,11 @@ var _ = Describe("Remote MCP server with URL query parameters",
 				}
 
 				Expect(serverInfo).ToNot(BeNil(), "Server should appear in the list")
-				Expect(serverInfo.URL).To(ContainSubstring("toolsets=query-test"),
-					"Proxy URL should preserve query parameters from the registration URL")
+				// The proxy URL must not include query params — the transparent proxy
+				// forwards them to the upstream on every request via WithRemoteRawQuery.
+				// Including them in the client URL would cause duplication at the upstream.
+				Expect(serverInfo.URL).NotTo(ContainSubstring("toolsets=query-test"),
+					"Proxy URL should not include query parameters — the proxy forwards them transparently")
 			})
 		})
 	})

@@ -989,6 +989,7 @@ _Appears in:_
 | `tokenLifespans` _[api.v1alpha1.TokenLifespanConfig](#apiv1alpha1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `storage` _[api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
+| `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients<br />but does not swap ToolHive JWTs for upstream tokens on outgoing requests.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.EmbeddingResourceOverrides

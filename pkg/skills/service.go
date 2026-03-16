@@ -3,7 +3,11 @@
 
 package skills
 
-import "context"
+import (
+	"context"
+
+	types "github.com/stacklok/toolhive-core/registry/types"
+)
 
 //go:generate mockgen -destination=mocks/mock_service.go -package=mocks -source=service.go SkillService
 
@@ -23,4 +27,6 @@ type SkillService interface {
 	Build(ctx context.Context, opts BuildOptions) (*BuildResult, error)
 	// Push pushes a built skill artifact to a remote registry.
 	Push(ctx context.Context, opts PushOptions) error
+	// ListAvailable returns skills available from the registry.
+	ListAvailable(ctx context.Context) ([]types.Skill, error)
 }

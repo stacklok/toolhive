@@ -39,6 +39,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
@@ -251,7 +252,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			_ = store.Close()
 			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
 		}
-		registry, regErr := ociskills.NewRegistry()
+		ociRegistry, regErr := ociskills.NewRegistry()
 		if regErr != nil {
 			_ = store.Close()
 			// ociStore is directory-backed with no open handles; no cleanup needed.
@@ -259,12 +260,21 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		}
 		packager := ociskills.NewPackager(ociStore)
 
+		// Get registry provider for skill discovery (best-effort)
+		regProvider, regProviderErr := registry.GetDefaultProvider()
+		var regOpts []skillsvc.Option
+		if regProviderErr == nil {
+			regOpts = append(regOpts, skillsvc.WithRegistryProvider(regProvider))
+		}
+
 		b.skillManager = skillsvc.New(store,
-			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
-			skillsvc.WithOCIStore(ociStore),
-			skillsvc.WithPackager(packager),
-			skillsvc.WithRegistryClient(registry),
-			skillsvc.WithGroupManager(b.groupManager),
+			append([]skillsvc.Option{
+				skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
+				skillsvc.WithOCIStore(ociStore),
+				skillsvc.WithPackager(packager),
+				skillsvc.WithRegistryClient(ociRegistry),
+				skillsvc.WithGroupManager(b.groupManager),
+			}, regOpts...)...,
 		)
 	}
 

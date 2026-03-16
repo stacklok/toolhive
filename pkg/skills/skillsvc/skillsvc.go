@@ -23,7 +23,9 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
@@ -73,6 +75,13 @@ func WithGroupManager(mgr groups.Manager) Option {
 	}
 }
 
+// WithRegistryProvider sets the registry provider for discovering available skills.
+func WithRegistryProvider(p registry.Provider) Option {
+	return func(s *service) {
+		s.registryProvider = p
+	}
+}
+
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
@@ -101,14 +110,15 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 
 // service is the default implementation of skills.SkillService.
 type service struct {
-	locks        skillLock
-	store        storage.SkillStore
-	groupManager groups.Manager
-	pathResolver skills.PathResolver
-	installer    skills.Installer
-	ociStore     *ociskills.Store
-	packager     ociskills.SkillPackager
-	registry     ociskills.RegistryClient
+	locks            skillLock
+	store            storage.SkillStore
+	groupManager     groups.Manager
+	pathResolver     skills.PathResolver
+	installer        skills.Installer
+	ociStore         *ociskills.Store
+	packager         ociskills.SkillPackager
+	registry         ociskills.RegistryClient
+	registryProvider registry.Provider
 }
 
 // New creates a new SkillService backed by the given store.
@@ -171,6 +181,14 @@ func (s *service) List(ctx context.Context, opts skills.ListOptions) ([]skills.I
 		}
 	}
 	return filtered, nil
+}
+
+// ListAvailable returns skills available from the registry provider.
+func (s *service) ListAvailable(_ context.Context) ([]types.Skill, error) {
+	if s.registryProvider == nil {
+		return nil, nil
+	}
+	return s.registryProvider.ListAvailableSkills()
 }
 
 // Install installs a skill. When the Name field contains an OCI reference

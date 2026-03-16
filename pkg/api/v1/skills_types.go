@@ -3,7 +3,10 @@
 
 package v1
 
-import "github.com/stacklok/toolhive/pkg/skills"
+import (
+	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/skills"
+)
 
 // skillListResponse represents the response for listing skills.
 //
@@ -65,4 +68,12 @@ type buildSkillRequest struct {
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
+}
+
+// availableSkillsResponse represents the response for listing available skills from the registry.
+//
+//	@Description	Response containing skills available from the registry
+type availableSkillsResponse struct {
+	// List of available skills from the registry
+	Skills []types.Skill `json:"skills"`
 }

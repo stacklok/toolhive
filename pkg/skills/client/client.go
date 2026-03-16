@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive-core/httperr"
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
@@ -251,6 +252,15 @@ func (c *Client) doJSONRequest(
 	}
 
 	return nil
+}
+
+// ListAvailable returns skills available from the registry via the API.
+func (c *Client) ListAvailable(ctx context.Context) ([]types.Skill, error) {
+	var resp availableSkillsResponse
+	if err := c.doJSONRequest(ctx, http.MethodGet, "/available", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Skills, nil
 }
 
 // handleErrorResponse reads the response body and returns an *httperr.CodedError.

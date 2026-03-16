@@ -20,4 +20,7 @@ type Provider interface {
 
 	// ListServers returns all available servers (both container and remote)
 	ListServers() ([]types.ServerMetadata, error)
+
+	// ListAvailableSkills returns skills discovered from the registry data
+	ListAvailableSkills() ([]types.Skill, error)
 }

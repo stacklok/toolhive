@@ -3,7 +3,10 @@
 
 package client
 
-import "github.com/stacklok/toolhive/pkg/skills"
+import (
+	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/skills"
+)
 
 // --- request/response dto (mirror pkg/api/v1/skills_types.go) ---
 
@@ -35,4 +38,8 @@ type listResponse struct {
 
 type installResponse struct {
 	Skill skills.InstalledSkill `json:"skill"`
+}
+
+type availableSkillsResponse struct {
+	Skills []types.Skill `json:"skills"`
 }

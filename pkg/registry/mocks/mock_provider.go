@@ -70,6 +70,21 @@ func (mr *MockProviderMockRecorder) GetServer(name any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServer", reflect.TypeOf((*MockProvider)(nil).GetServer), name)
 }
 
+// ListAvailableSkills mocks base method.
+func (m *MockProvider) ListAvailableSkills() ([]registry.Skill, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListAvailableSkills")
+	ret0, _ := ret[0].([]registry.Skill)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListAvailableSkills indicates an expected call of ListAvailableSkills.
+func (mr *MockProviderMockRecorder) ListAvailableSkills() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAvailableSkills", reflect.TypeOf((*MockProvider)(nil).ListAvailableSkills))
+}
+
 // ListServers mocks base method.
 func (m *MockProvider) ListServers() ([]registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()

@@ -174,6 +174,13 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 	return registry, nil
 }
 
+// ListAvailableSkills returns skills discovered from the remote registry data.
+func (p *RemoteRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
+	p.skillsMu.RLock()
+	defer p.skillsMu.RUnlock()
+	return p.skills, nil
+}
+
 func (p *RemoteRegistryProvider) setSkills(skills []types.Skill) {
 	p.skillsMu.Lock()
 	defer p.skillsMu.Unlock()

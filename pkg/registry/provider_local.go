@@ -104,6 +104,13 @@ func (p *LocalRegistryProvider) setSkills(skills []types.Skill) {
 	p.skills = skills
 }
 
+// ListAvailableSkills returns skills discovered from the upstream registry data.
+func (p *LocalRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
+	p.skillsMu.RLock()
+	defer p.skillsMu.RUnlock()
+	return p.skills, nil
+}
+
 // parseRegistryData parses JSON data into a Registry struct
 func parseRegistryData(data []byte) (*types.Registry, error) {
 	registry := &types.Registry{}

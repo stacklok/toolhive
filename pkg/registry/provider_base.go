@@ -78,6 +78,12 @@ func (p *BaseProvider) ListServers() ([]types.ServerMetadata, error) {
 	return reg.GetAllServers(), nil
 }
 
+// ListAvailableSkills returns an empty slice by default.
+// Providers that support skills (local, remote) override this.
+func (*BaseProvider) ListAvailableSkills() ([]types.Skill, error) {
+	return nil, nil
+}
+
 // matchesQuery checks if a server matches the search query
 func matchesQuery(name, description string, tags []string, query string) bool {
 	// Search in name

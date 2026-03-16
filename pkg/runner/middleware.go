@@ -330,14 +330,20 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 
 // addUpstreamSwapMiddleware adds upstream swap middleware if the embedded auth server is configured.
 // This middleware exchanges ToolHive JWTs for upstream IdP tokens.
-// The middleware is only added when EmbeddedAuthServerConfig is set; if UpstreamSwapConfig
-// is nil, default configuration values are used.
+// The middleware is only added when EmbeddedAuthServerConfig is set and
+// DisableUpstreamTokenInjection is false. If UpstreamSwapConfig is nil,
+// default configuration values are used.
 func addUpstreamSwapMiddleware(
 	middlewares []types.MiddlewareConfig,
 	config *RunConfig,
 ) ([]types.MiddlewareConfig, error) {
 	// Only add middleware if embedded auth server is configured
 	if config.EmbeddedAuthServerConfig == nil {
+		return middlewares, nil
+	}
+
+	// Skip upstream token injection if explicitly disabled
+	if config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection {
 		return middlewares, nil
 	}
 

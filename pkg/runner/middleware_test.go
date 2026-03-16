@@ -286,6 +286,15 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			wantAppended: true,
 		},
 		{
+			name: "EmbeddedAuthServerConfig with DisableUpstreamTokenInjection skips middleware",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{EmbeddedAuthServerConfig: cfg}
+			}(),
+			wantAppended: false,
+		},
+		{
 			name: "EmbeddedAuthServerConfig set with explicit UpstreamSwapConfig uses provided config",
 			config: &RunConfig{
 				EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
@@ -360,6 +369,15 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 		{
 			name:             "no EmbeddedAuthServerConfig omits upstream-swap",
 			config:           &RunConfig{EmbeddedAuthServerConfig: nil},
+			wantUpstreamSwap: false,
+		},
+		{
+			name: "DisableUpstreamTokenInjection omits upstream-swap",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{EmbeddedAuthServerConfig: cfg}
+			}(),
 			wantUpstreamSwap: false,
 		},
 		{

@@ -117,9 +117,15 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 			providerID:      testProviderID,
 			providerSubject: testProviderSubject,
 			setupMock: func(m *mocks.MockUserStorage) {
-				// No existing identity found
+				// No existing identity found (current or legacy)
 				m.EXPECT().
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oauth2", testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				// Create new user succeeds
 				m.EXPECT().
@@ -159,6 +165,12 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oauth2", testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
 					CreateUser(gomock.Any(), gomock.Any()).
 					Return(errors.New("user creation failed"))
 			},
@@ -174,6 +186,12 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 
 				m.EXPECT().
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oauth2", testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				m.EXPECT().
 					CreateUser(gomock.Any(), gomock.Any()).
@@ -202,6 +220,12 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 			setupMock: func(m *mocks.MockUserStorage) {
 				m.EXPECT().
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
+					Return(nil, storage.ErrNotFound)
+				m.EXPECT().
+					GetProviderIdentity(gomock.Any(), "oauth2", testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				m.EXPECT().
 					CreateUser(gomock.Any(), gomock.Any()).

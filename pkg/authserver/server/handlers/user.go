@@ -51,7 +51,17 @@ func (r *UserResolver) ResolveUser(
 		if !errors.Is(err, storage.ErrNotFound) {
 			return nil, fmt.Errorf("failed to lookup provider identity: %w", err)
 		}
-		// No existing identity - create new user and link
+		// Not found under current provider ID — check legacy IDs before creating new user.
+		// TODO: Remove legacy migration once all deployments have migrated.
+		if legacyIdentity, legacyErr := r.findLegacyProviderIdentity(ctx, providerID, providerSubject); legacyErr == nil {
+			r.linkMigratedIdentity(ctx, providerID, providerSubject, legacyIdentity.UserID)
+			user, userErr := r.storage.GetUser(ctx, legacyIdentity.UserID)
+			if userErr != nil {
+				return nil, fmt.Errorf("migrated identity but user not found: %w", userErr)
+			}
+			return user, nil
+		}
+		// No existing or legacy identity — create new user and link
 		return r.createUserWithIdentity(ctx, providerID, providerSubject)
 	}
 
@@ -104,6 +114,63 @@ func (r *UserResolver) createUserWithIdentity(
 	)
 
 	return user, nil
+}
+
+// legacyProviderIDs are the protocol-based provider IDs used before multi-upstream
+// support. These were derived from upstream.ProviderType ("oidc", "oauth2").
+// TODO: Remove once all deployments have migrated.
+var legacyProviderIDs = []string{"oidc", "oauth2"}
+
+// findLegacyProviderIdentity checks legacy protocol-based provider IDs for an
+// existing identity, enabling transparent migration to logical provider names.
+func (r *UserResolver) findLegacyProviderIdentity(
+	ctx context.Context,
+	currentProviderID string,
+	providerSubject string,
+) (*storage.ProviderIdentity, error) {
+	for _, legacyID := range legacyProviderIDs {
+		if legacyID == currentProviderID {
+			continue
+		}
+		identity, err := r.storage.GetProviderIdentity(ctx, legacyID, providerSubject)
+		if err == nil {
+			slog.Info("found legacy provider identity",
+				"legacy_provider_id", legacyID,
+				"new_provider_id", currentProviderID,
+				"user_id", identity.UserID)
+			return identity, nil
+		}
+		if !errors.Is(err, storage.ErrNotFound) {
+			slog.Warn("error checking legacy provider identity",
+				"legacy_provider_id", legacyID, "error", err)
+		}
+	}
+	return nil, storage.ErrNotFound
+}
+
+// linkMigratedIdentity creates a new provider identity under the current provider
+// ID pointing to the same user, preserving internal user ID continuity.
+// Best-effort: errors are logged but do not fail the request.
+func (r *UserResolver) linkMigratedIdentity(
+	ctx context.Context,
+	providerID, providerSubject, userID string,
+) {
+	identity := &storage.ProviderIdentity{
+		UserID:          userID,
+		ProviderID:      providerID,
+		ProviderSubject: providerSubject,
+		LinkedAt:        time.Now(),
+		LastUsedAt:      time.Now(),
+	}
+	if err := r.storage.CreateProviderIdentity(ctx, identity); err != nil {
+		if !errors.Is(err, storage.ErrAlreadyExists) {
+			slog.Warn("failed to create migrated provider identity",
+				"user_id", userID, "provider_id", providerID, "error", err)
+		}
+	} else {
+		slog.Info("migrated provider identity to new provider name",
+			"user_id", userID, "provider_id", providerID)
+	}
 }
 
 // UpdateLastAuthenticated updates the last authentication timestamp for a provider identity.

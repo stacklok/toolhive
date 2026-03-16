@@ -950,7 +950,49 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID, provide
 	}
 
 	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
-	return s.getUpstreamTokensFromKey(ctx, key)
+	tokens, err := s.getUpstreamTokensFromKey(ctx, key)
+	if err != nil && errors.Is(err, ErrNotFound) {
+		// Legacy fallback: try the old key format (upstream:{sessionID}) for
+		// backwards compatibility with pre-multi-upstream deployments.
+		// If found, migrate to the new key format and delete the legacy key.
+		// TODO: Remove this fallback once all deployments have migrated.
+		legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, sessionID)
+		legacyTokens, legacyErr := s.getUpstreamTokensFromKey(ctx, legacyKey)
+		if legacyErr != nil || legacyTokens == nil {
+			return tokens, err
+		}
+		return s.migrateLegacyUpstreamTokens(ctx, sessionID, providerName, legacyKey, legacyTokens)
+	}
+	return tokens, err
+}
+
+// migrateLegacyUpstreamTokens moves a legacy upstream token entry from the old
+// key format (upstream:{sessionID}) to the new format (upstream:{sessionID}:{providerName}).
+// It patches ProviderID to the logical provider name so that subsequent refreshes
+// write to the correct key. The legacy key is deleted to prevent stale reads.
+// TODO: Remove once all deployments have migrated.
+func (s *RedisStorage) migrateLegacyUpstreamTokens(
+	ctx context.Context,
+	sessionID, providerName, legacyKey string,
+	legacyTokens *UpstreamTokens,
+) (*UpstreamTokens, error) {
+	// Patch ProviderID from legacy value (e.g. "oidc") to the logical name
+	// (e.g. "default") so the refresher writes to the correct new key.
+	legacyTokens.ProviderID = providerName
+
+	if storeErr := s.StoreUpstreamTokens(ctx, sessionID, providerName, legacyTokens); storeErr != nil {
+		slog.Warn("legacy upstream token migration: store failed, returning legacy tokens",
+			"session_id", sessionID, "error", storeErr)
+	} else {
+		warnOnCleanupErr(s.client.Del(ctx, legacyKey).Err(), "Del", legacyKey)
+		slog.Debug("migrated legacy upstream tokens to new key format",
+			"session_id", sessionID, "provider_name", providerName)
+	}
+
+	if !legacyTokens.ExpiresAt.IsZero() && legacyTokens.IsExpired(time.Now()) {
+		return legacyTokens, ErrExpired
+	}
+	return legacyTokens, nil
 }
 
 // GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.

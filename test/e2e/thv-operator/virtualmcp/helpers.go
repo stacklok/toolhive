@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -76,6 +77,27 @@ func WaitForVirtualMCPServerReady(
 		}
 		return fmt.Errorf("ready condition not found")
 	}, timeout, pollingInterval).Should(gomega.Succeed())
+}
+
+// WaitForVirtualMCPServerPod waits for the VirtualMCPServer's own pod to be running and
+// ready, without requiring any backend health condition to be True. Use this when the
+// VirtualMCPServer is expected to remain Degraded (e.g., when testing auth-retry
+// exhaustion with a permanently-failing backend).
+func WaitForVirtualMCPServerPod(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) {
+	labels := map[string]string{
+		"app.kubernetes.io/name":     "virtualmcpserver",
+		"app.kubernetes.io/instance": name,
+	}
+	gomega.Eventually(func() error {
+		return checkPodsReady(ctx, c, namespace, labels)
+	}, timeout, pollingInterval).Should(gomega.Succeed(),
+		"VirtualMCPServer pod should be running")
 }
 
 // checkPodsReady waits for at least one pod matching the given labels to be ready.
@@ -811,6 +833,18 @@ type BackendConfig struct {
 	// defaultMCPServerResources() is used to ensure containers are scheduled
 	// with reasonable resource guarantees and do not compete excessively.
 	Resources *mcpv1alpha1.ResourceRequirements
+	// Args are extra arguments passed to the MCP server image entry-point.
+	// Useful for images like python:3.x-slim where the script is provided
+	// inline (e.g. Args: []string{"-c", "<python script>"}).
+	Args []string
+	// PodTemplateSpec is an optional JSON-encoded patch applied to the pod
+	// spec that the toolhive runner creates for the MCP server container.
+	// Use this to override readiness probes, resource limits, etc.
+	PodTemplateSpec *runtime.RawExtension
+	// SkipReadinessWait skips waiting for this backend to reach MCPServerPhaseRunning.
+	// Use this for backends that are intentionally broken (e.g. persistent 401 servers)
+	// where the operator is expected to mark the MCPServer as Failed.
+	SkipReadinessWait bool
 }
 
 // defaultMCPServerResources returns conservative resource requests/limits that
@@ -864,6 +898,8 @@ func CreateMultipleMCPServersInParallel(
 				ExternalAuthConfigRef: backends[idx].ExternalAuthConfigRef,
 				Secrets:               backends[idx].Secrets,
 				Resources:             resources,
+				Args:                  backends[idx].Args,
+				PodTemplateSpec:       backends[idx].PodTemplateSpec,
 				Env: append([]mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: backendTransport},
 				}, backends[idx].Env...),
@@ -872,9 +908,14 @@ func CreateMultipleMCPServersInParallel(
 		gomega.Expect(c.Create(ctx, backend)).To(gomega.Succeed())
 	}
 
-	// Wait for all backends to be ready in parallel (single Eventually checking all)
+	// Wait for all backends that require readiness to reach Running phase.
+	// Backends with SkipReadinessWait=true are created but excluded from this check
+	// (e.g. intentionally broken servers expected to be marked Failed by the operator).
 	gomega.Eventually(func() error {
 		for _, cfg := range backends {
+			if cfg.SkipReadinessWait {
+				continue
+			}
 			server := &mcpv1alpha1.MCPServer{}
 			err := c.Get(ctx, types.NamespacedName{
 				Name:      cfg.Name,
@@ -891,7 +932,7 @@ func CreateMultipleMCPServersInParallel(
 				return fmt.Errorf("%s not ready yet, phase: %s", cfg.Name, server.Status.Phase)
 			}
 		}
-		// All backends are ready
+		// All watched backends are ready
 		return nil
 	}, timeout, pollingInterval).Should(gomega.Succeed(), "All MCPServers should be ready")
 }
@@ -1804,6 +1845,9 @@ func DeployMockOAuth2Server(
 }
 
 // ---- /status and /api/backends/health HTTP helpers ----
+
+// backendHealthStatusHealthy is the health status string for a healthy backend.
+const backendHealthStatusHealthy = "healthy"
 
 // VMCPStatusResponse mirrors server.StatusResponse
 // (pkg/vmcp/server/status.go) for test deserialization.

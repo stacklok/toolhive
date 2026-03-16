@@ -421,14 +421,14 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			if !inHealth {
 				return fmt.Errorf("unstable backend %q not found in /api/backends/health", backend2Name)
 			}
-			if unstableHealthState.Status == "healthy" {
+			if unstableHealthState.Status == backendHealthStatusHealthy {
 				return fmt.Errorf("unstable backend %q still healthy in /api/backends/health", backend2Name)
 			}
 			unstableStatusHealth, inStatus := statusHealthByName[backend2Name]
 			if !inStatus {
 				return fmt.Errorf("unstable backend %q not found in /status", backend2Name)
 			}
-			if unstableStatusHealth == "healthy" {
+			if unstableStatusHealth == backendHealthStatusHealthy {
 				return fmt.Errorf("unstable backend %q still healthy in /status (issue #4103 regression)", backend2Name)
 			}
 

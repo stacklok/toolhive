@@ -67,14 +67,14 @@ jobs:
 
       - name: Upload coverage reports to Codecov with GitHub Action
         if: startsWith(matrix.os, 'ubuntu')
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: stacklok/toolhive
 
       - name: Upload coverage to Coveralls
         if: startsWith(matrix.os, 'ubuntu')
-        uses: coverallsapp/github-action@v2
+        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2
         with:
           file: coverage/coverage.out
           fail-on-error: false

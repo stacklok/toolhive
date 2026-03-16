@@ -174,6 +174,17 @@ func TestParsingMiddleware(t *testing.T) {
 			expectedID:     int64(6),
 			expectedResID:  "debug",
 		},
+		{
+			name:           "notifications/elicitation/complete notification",
+			method:         "POST",
+			path:           "/messages",
+			contentType:    "application/json",
+			body:           `{"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{"elicitationId":"550e8400-e29b-41d4-a716-446655440000"}}`,
+			expectParsed:   true,
+			expectedMethod: "notifications/elicitation/complete",
+			expectedID:     nil,
+			expectedResID:  "550e8400-e29b-41d4-a716-446655440000",
+		},
 	}
 
 	for _, tt := range tests {
@@ -769,6 +780,22 @@ func TestExtractResourceAndArguments(t *testing.T) {
 			params:             `{"cursor":"page-2"}`,
 			expectedResourceID: "page-2",
 			expectedArguments:  nil,
+		},
+		{
+			name:               "notifications/elicitation/complete with elicitationId",
+			method:             "notifications/elicitation/complete",
+			params:             `{"elicitationId":"550e8400-e29b-41d4-a716-446655440000"}`,
+			expectedResourceID: "550e8400-e29b-41d4-a716-446655440000",
+			expectedArguments: map[string]interface{}{
+				"elicitationId": "550e8400-e29b-41d4-a716-446655440000",
+			},
+		},
+		{
+			name:               "notifications/elicitation/complete with missing elicitationId",
+			method:             "notifications/elicitation/complete",
+			params:             `{}`,
+			expectedResourceID: "",
+			expectedArguments:  map[string]interface{}{},
 		},
 	}
 

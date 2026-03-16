@@ -184,30 +184,31 @@ type methodHandler func(map[string]interface{}) (string, map[string]interface{})
 
 // methodHandlers maps MCP methods to their respective handlers
 var methodHandlers = map[string]methodHandler{
-	"initialize":                 handleInitializeMethod,
-	"tools/call":                 handleNamedResourceMethod,
-	"prompts/get":                handleNamedResourceMethod,
-	"resources/read":             handleResourceReadMethod,
-	"resources/list":             handleListMethod,
-	"tools/list":                 handleListMethod,
-	"prompts/list":               handleListMethod,
-	"progress/update":            handleProgressMethod,
-	"notifications/message":      handleNotificationMethod,
-	"logging/setLevel":           handleLoggingMethod,
-	"completion/complete":        handleCompletionMethod,
-	"elicitation/create":         handleElicitationMethod,
-	"sampling/createMessage":     handleSamplingMethod,
-	"resources/subscribe":        handleResourceSubscribeMethod,
-	"resources/unsubscribe":      handleResourceUnsubscribeMethod,
-	"resources/templates/list":   handleListMethod,
-	"roots/list":                 handleListMethod,
-	"notifications/progress":     handleProgressNotificationMethod,
-	"notifications/cancelled":    handleCancelledNotificationMethod,
-	"tasks/list":                 handleListMethod,
-	"tasks/get":                  handleTaskIDMethod,
-	"tasks/cancel":               handleTaskIDMethod,
-	"tasks/result":               handleTaskIDMethod,
-	"notifications/tasks/status": handleTaskStatusNotificationMethod,
+	"initialize":                         handleInitializeMethod,
+	"tools/call":                         handleNamedResourceMethod,
+	"prompts/get":                        handleNamedResourceMethod,
+	"resources/read":                     handleResourceReadMethod,
+	"resources/list":                     handleListMethod,
+	"tools/list":                         handleListMethod,
+	"prompts/list":                       handleListMethod,
+	"progress/update":                    handleProgressMethod,
+	"notifications/message":              handleNotificationMethod,
+	"logging/setLevel":                   handleLoggingMethod,
+	"completion/complete":                handleCompletionMethod,
+	"elicitation/create":                 handleElicitationMethod,
+	"sampling/createMessage":             handleSamplingMethod,
+	"resources/subscribe":                handleResourceSubscribeMethod,
+	"resources/unsubscribe":              handleResourceUnsubscribeMethod,
+	"resources/templates/list":           handleListMethod,
+	"roots/list":                         handleListMethod,
+	"notifications/progress":             handleProgressNotificationMethod,
+	"notifications/cancelled":            handleCancelledNotificationMethod,
+	"tasks/list":                         handleListMethod,
+	"tasks/get":                          handleTaskIDMethod,
+	"tasks/cancel":                       handleTaskIDMethod,
+	"tasks/result":                       handleTaskIDMethod,
+	"notifications/tasks/status":         handleTaskStatusNotificationMethod,
+	"notifications/elicitation/complete": handleElicitationCompleteNotificationMethod,
 }
 
 // staticResourceIDs maps methods to their static resource IDs
@@ -355,6 +356,16 @@ func handleElicitationMethod(paramsMap map[string]interface{}) (string, map[stri
 	// The message field could be used as a resource identifier
 	if message, ok := paramsMap["message"].(string); ok {
 		return message, paramsMap
+	}
+	return "", paramsMap
+}
+
+// handleElicitationCompleteNotificationMethod extracts resource ID for elicitation complete notifications.
+// This notification is sent by the server when an out-of-band URL-mode elicitation is completed.
+// Returns the elicitationId as the resource identifier.
+func handleElicitationCompleteNotificationMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	if elicitationId, ok := paramsMap["elicitationId"].(string); ok {
+		return elicitationId, paramsMap
 	}
 	return "", paramsMap
 }

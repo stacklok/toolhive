@@ -7,6 +7,8 @@
 // introducing an import cycle.
 package types
 
+//go:generate mockgen -destination=mocks/mock_session.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/session/types MultiSession
+
 import (
 	"context"
 	"errors"

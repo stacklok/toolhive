@@ -497,7 +497,7 @@ func (a *defaultAggregator) AggregateCapabilities(
 
 // ProcessPreQueriedCapabilities implements Aggregator.ProcessPreQueriedCapabilities.
 // It reuses processBackendTools, ResolveConflicts, and shouldAdvertiseTool so that
-// the v2 session path applies identical transforms to the v1 aggregation path.
+// the session path applies identical transforms to the aggregation path.
 func (a *defaultAggregator) ProcessPreQueriedCapabilities(
 	ctx context.Context,
 	toolsByBackend map[string][]vmcp.Tool,

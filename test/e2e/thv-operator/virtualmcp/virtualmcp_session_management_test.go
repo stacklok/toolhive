@@ -23,14 +23,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
+var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 	const (
 		timeout           = time.Minute * 2
 		pollInterval      = time.Second * 2
@@ -42,7 +41,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 	// Context 1: HMAC secret auto-management and functional session tests
 	// ---------------------------------------------------------------------------
 
-	ginkgo.Context("When SessionManagementV2 is enabled", ginkgo.Ordered, func() {
+	ginkgo.Context("When session management is enabled", ginkgo.Ordered, func() {
 		var (
 			mcpGroupName       string
 			virtualMCPName     string
@@ -53,15 +52,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 
 		ginkgo.BeforeAll(func() {
 			timestamp := time.Now().UnixNano()
-			mcpGroupName = fmt.Sprintf("e2e-smv2-%d", timestamp)
-			virtualMCPName = fmt.Sprintf("e2e-vmcp-smv2-%d", timestamp)
-			backendName = fmt.Sprintf("e2e-yardstick-smv2-%d", timestamp)
+			mcpGroupName = fmt.Sprintf("e2e-sm-%d", timestamp)
+			virtualMCPName = fmt.Sprintf("e2e-vmcp-sm-%d", timestamp)
+			backendName = fmt.Sprintf("e2e-yardstick-sm-%d", timestamp)
 			expectedSecretName = virtualMCPName + "-hmac-secret"
 
 			ginkgo.By("Creating MCPGroup")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
-				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Session management V2 e2e group"},
+				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Session management e2e group"},
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Creating yardstick backend MCPServer")
@@ -76,15 +75,12 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 				},
 			})).To(gomega.Succeed())
 
-			ginkgo.By("Creating VirtualMCPServer with SessionManagementV2 enabled")
+			ginkgo.By("Creating VirtualMCPServer")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
-						Operational: &vmcpconfig.OperationalConfig{
-							SessionManagementV2: ptr.To(true),
-						},
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 					ServiceType:  "NodePort",
@@ -281,15 +277,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 		ginkgo.It("Should route tool calls through the session to the backend", func() {
 			// TestToolListingAndCall discovers the actual (possibly-prefixed) tool name via
 			// ListTools and calls it with alphanumeric-only input (yardstick requirement).
-			TestToolListingAndCall(vmcpNodePort, "tool-call-client", "echo", "sessionv2test")
+			TestToolListingAndCall(vmcpNodePort, "tool-call-client", "echo", "sessiontest")
 		})
 	})
 
 	// ---------------------------------------------------------------------------
-	// Context 2: HMAC secret created by default (no explicit flag = v2 enabled)
+	// Context 2: HMAC secret created by default
 	// ---------------------------------------------------------------------------
 
-	ginkgo.Context("When creating VirtualMCPServer without explicit SessionManagementV2 flag", ginkgo.Ordered, func() {
+	ginkgo.Context("When creating VirtualMCPServer without explicit session management flag", ginkgo.Ordered, func() {
 		var (
 			mcpGroupName       string
 			virtualMCPName     string
@@ -298,17 +294,17 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 
 		ginkgo.BeforeAll(func() {
 			timestamp := time.Now().UnixNano()
-			mcpGroupName = fmt.Sprintf("e2e-default-smv2-%d", timestamp)
-			virtualMCPName = fmt.Sprintf("e2e-vmcp-default-smv2-%d", timestamp)
+			mcpGroupName = fmt.Sprintf("e2e-default-sm-%d", timestamp)
+			virtualMCPName = fmt.Sprintf("e2e-vmcp-default-sm-%d", timestamp)
 			expectedSecretName = virtualMCPName + "-hmac-secret"
 
 			ginkgo.By("Creating MCPGroup")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
-				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Default session management V2 group"},
+				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Default session management group"},
 			})).To(gomega.Succeed())
 
-			ginkgo.By("Creating VirtualMCPServer without explicit SessionManagementV2 flag")
+			ginkgo.By("Creating VirtualMCPServer with default configuration")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
@@ -333,7 +329,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 					Name:      expectedSecretName,
 					Namespace: defaultNamespace,
 				}, &corev1.Secret{})
-			}, timeout, pollInterval).Should(gomega.Succeed(), "HMAC secret should be created when no SessionManagementV2 flag is set (default is true)")
+			}, timeout, pollInterval).Should(gomega.Succeed(), "HMAC secret should be created when no session management flag is set (default is true)")
 		})
 
 		ginkgo.It("Should inject HMAC secret env var by default when no flag is set", func() {
@@ -453,17 +449,14 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 				},
 			})).To(gomega.Succeed())
 
-			// ---- Deploy VirtualMCPServer with OIDC incoming auth + V2 ----
+			// ---- Deploy VirtualMCPServer with OIDC incoming auth ----
 
-			ginkgo.By("Creating VirtualMCPServer with OIDC incoming auth and SessionManagementV2")
+			ginkgo.By("Creating VirtualMCPServer with OIDC incoming auth")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
-						Operational: &vmcpconfig.OperationalConfig{
-							SessionManagementV2: ptr.To(true),
-						},
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
@@ -622,108 +615,6 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management V2", func() {
 			bobResult, err := bobClient.CallTool(ctx, callReq)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			gomega.Expect(bobResult.IsError).To(gomega.BeFalse())
-		})
-	})
-
-	// ---------------------------------------------------------------------------
-	// Context 4: Explicit opt-out (sessionManagementV2: false) uses v1 behaviour
-	// ---------------------------------------------------------------------------
-
-	ginkgo.Context("When SessionManagementV2 is explicitly disabled", ginkgo.Ordered, func() {
-		var (
-			mcpGroupName       string
-			virtualMCPName     string
-			expectedSecretName string
-		)
-
-		ginkgo.BeforeAll(func() {
-			timestamp := time.Now().UnixNano()
-			mcpGroupName = fmt.Sprintf("e2e-v1opt-%d", timestamp)
-			virtualMCPName = fmt.Sprintf("e2e-vmcp-v1opt-%d", timestamp)
-			expectedSecretName = virtualMCPName + "-hmac-secret"
-
-			ginkgo.By("Creating MCPGroup")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
-				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Session management V1 opt-out group"},
-			})).To(gomega.Succeed())
-
-			ginkgo.By("Creating VirtualMCPServer with SessionManagementV2 explicitly disabled")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{
-						Group: mcpGroupName,
-						Operational: &vmcpconfig.OperationalConfig{
-							SessionManagementV2: ptr.To(false),
-						},
-					},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
-				},
-			})).To(gomega.Succeed())
-		})
-
-		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
-			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
-			})
-		})
-
-		ginkgo.It("Should NOT create HMAC secret when v2 is explicitly disabled", func() {
-			ginkgo.By("Waiting for deployment to exist, proving the operator has reconciled")
-			gomega.Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      virtualMCPName,
-					Namespace: defaultNamespace,
-				}, &appsv1.Deployment{})
-			}, timeout, pollInterval).Should(gomega.Succeed())
-
-			ginkgo.By("Asserting HMAC secret is consistently absent after reconciliation")
-			gomega.Consistently(func() error {
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      expectedSecretName,
-					Namespace: defaultNamespace,
-				}, &corev1.Secret{})
-				if apierrors.IsNotFound(err) {
-					return nil
-				}
-				if err != nil {
-					return err
-				}
-				return fmt.Errorf("HMAC secret %s exists but should not when SessionManagementV2 is explicitly false", expectedSecretName)
-			}, 30*time.Second, pollInterval).Should(gomega.Succeed(),
-				"HMAC secret should NOT be created when SessionManagementV2 is explicitly false")
-		})
-
-		ginkgo.It("Should NOT inject HMAC secret env var when v2 is explicitly disabled", func() {
-			deployment := &appsv1.Deployment{}
-
-			ginkgo.By("Waiting for deployment to be created")
-			gomega.Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      virtualMCPName,
-					Namespace: defaultNamespace,
-				}, deployment)
-			}, timeout, pollInterval).Should(gomega.Succeed())
-
-			ginkgo.By("Finding vmcp container")
-			var vmcpContainer *corev1.Container
-			for i, container := range deployment.Spec.Template.Spec.Containers {
-				if container.Name == vmcpContainerName {
-					vmcpContainer = &deployment.Spec.Template.Spec.Containers[i]
-					break
-				}
-			}
-			gomega.Expect(vmcpContainer).NotTo(gomega.BeNil())
-
-			ginkgo.By("Verifying VMCP_SESSION_HMAC_SECRET env var is absent")
-			for _, env := range vmcpContainer.Env {
-				gomega.Expect(env.Name).NotTo(gomega.Equal("VMCP_SESSION_HMAC_SECRET"),
-					"VMCP_SESSION_HMAC_SECRET should not be present when SessionManagementV2 is explicitly false")
-			}
 		})
 	})
 

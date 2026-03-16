@@ -64,7 +64,7 @@ type Aggregator interface {
 
 	// ProcessPreQueriedCapabilities applies the same aggregation pipeline (overrides,
 	// conflict resolution, advertising filter) to tools that have already been fetched
-	// from live backends. Used by the v2 session management path to reuse aggregator
+	// from live backends. Used by the session management path to reuse aggregator
 	// logic without re-querying backends over HTTP.
 	//
 	// toolsByBackend maps backend WorkloadID → raw tools as returned by the backend.

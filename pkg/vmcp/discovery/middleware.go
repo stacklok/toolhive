@@ -7,18 +7,16 @@
 // its lifetime. This ensures deterministic behavior and prevents notification spam from
 // redundant capability updates when backends haven't changed.
 //
+// For MultiSession requests, the middleware injects routing context from the session's
+// routing table so that composite tool workflow steps can route backend tool calls correctly.
+// Tool routing for non-composite tools is handled by session-scoped handlers registered
+// with AddSessionTools.
+//
 // Future enhancement: Add manager-level capability cache to share discoveries across
 // sessions, plus separate background refresh worker (not in middleware request path)
 // that periodically rediscovers capabilities, detects changes via hash comparison, and
 // pushes updates to active sessions via MCP tools/list_changed notifications. Middleware
 // flow remains unchanged - still just retrieves from session cache on subsequent requests.
-//
-// TODO(sessionManagementV2): This entire middleware package can be deleted after the
-// sessionManagementV2 migration is complete. For MultiSession (the new path), the
-// middleware does nothing except validate that the session exists, which is already
-// handled by the SDK via SessionIdManager.Validate(). Tool routing is handled by
-// session-scoped handlers registered with AddSessionTools. This middleware only exists
-// for VMCPSession backward compatibility (routing table reconstruction from session data).
 package discovery
 
 import (
@@ -68,11 +66,12 @@ func WithDiscoveryTimeout(timeout time.Duration) MiddlewareOption {
 	}
 }
 
-// Middleware performs capability discovery on session initialization and retrieves
-// cached capabilities for subsequent requests. Must be placed after auth middleware.
+// Middleware performs capability discovery on session initialization and injects
+// routing context for subsequent requests. Must be placed after auth middleware.
 //
 // Initialize requests (no session ID): discovers capabilities and stores in context.
-// Subsequent requests: retrieves routing table from VMCPSession and reconstructs context.
+// Subsequent requests (MultiSession): injects routing table from session into context
+// so composite tool workflow steps can route backend tool calls correctly.
 //
 // Returns HTTP 504 for timeouts, HTTP 503 for discovery errors.
 //
@@ -282,75 +281,42 @@ func handleSubsequentRequest(
 		return ctx, fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// If the session is a MultiSession, backend tool calls are routed by session-scoped
-	// handlers registered with the SDK. However, composite tool workflow steps go through
-	// the shared router which requires DiscoveredCapabilities in the context. Inject
-	// capabilities built from the session's routing table so composite workflows can
-	// route backend tool calls correctly.
-	//
-	// TODO(sessionManagementV2): Remove the VMCPSession fallback below once the
-	// sessionManagementV2 migration is complete and all sessions are MultiSession instances.
-	if multiSess, isMulti := rawSess.(vmcpsession.MultiSession); isMulti {
-		routingTable := multiSess.GetRoutingTable()
-		if routingTable == nil {
-			// Session initialisation not yet complete; no capabilities to inject.
-			// Composite tool calls will fail routing, but backend tool calls are
-			// already registered with the SDK and will succeed.
-			//nolint:gosec // G706: session ID is not an injection vector
-			slog.Debug("multi-session routing table not yet initialised; skipping capability injection",
-				"session_id", sessionID)
-			return ctx, nil
-		}
+	// Backend tool calls are routed by session-scoped handlers registered with the SDK.
+	// However, composite tool workflow steps go through the shared router which requires
+	// DiscoveredCapabilities in the context. Inject capabilities built from the session's
+	// routing table so composite workflows can route backend tool calls correctly.
+	multiSess, isMulti := rawSess.(vmcpsession.MultiSession)
+	if !isMulti {
+		// The session is still a StreamableSession placeholder — Phase 2
+		// (OnRegisterSession / CreateSession) has not yet replaced it with a
+		// MultiSession. This can happen if the client sends a request in the
+		// brief window between receiving the session ID and the hook completing.
+		// Skip capability injection and let the SDK respond (tools list will be
+		// temporarily empty, but no 500 is returned to the client).
 		//nolint:gosec // G706: session ID is not an injection vector
-		slog.Debug("injecting capabilities from multi-session routing table for composite tool routing",
-			"session_id", sessionID,
-			"tool_count", len(routingTable.Tools))
-		capabilities := &aggregator.AggregatedCapabilities{
-			RoutingTable: routingTable,
-			Tools:        multiSess.Tools(),
-		}
-		return WithDiscoveredCapabilities(ctx, capabilities), nil
+		slog.Debug("session initialisation in progress, skipping capability injection",
+			"session_id", sessionID)
+		return ctx, nil
 	}
 
-	// Retrieve and validate the VMCPSession for routing-table access.
-	vmcpSess, ok := rawSess.(*vmcpsession.VMCPSession)
-	if !ok {
-		//nolint:gosec // G706: session ID and request fields are not injection vectors
-		slog.Error("invalid session type",
-			"session_id", sessionID,
-			"type", fmt.Sprintf("%T", rawSess),
-			"method", r.Method,
-			"path", r.URL.Path)
-		return ctx, fmt.Errorf("invalid session type: %T (expected *VMCPSession)", rawSess)
-	}
-
-	// Get routing table from session
-	routingTable := vmcpSess.GetRoutingTable()
+	routingTable := multiSess.GetRoutingTable()
 	if routingTable == nil {
-		//nolint:gosec // G706: session ID and request fields are not injection vectors
-		slog.Error("routing table not initialized in VMCPSession",
-			"session_id", sessionID,
-			"method", r.Method,
-			"path", r.URL.Path)
-		return ctx, fmt.Errorf("routing table not initialized")
+		// Session initialisation not yet complete; no capabilities to inject.
+		// Composite tool calls will fail routing, but backend tool calls are
+		// already registered with the SDK and will succeed.
+		//nolint:gosec // G706: session ID is not an injection vector
+		slog.Debug("multi-session routing table not yet initialised; skipping capability injection",
+			"session_id", sessionID)
+		return ctx, nil
 	}
-
-	// Get tools from session (needed for type coercion in composite tool workflows)
-	tools := vmcpSess.GetTools()
-
-	// Reconstruct AggregatedCapabilities for routing and type coercion
+	//nolint:gosec // G706: session ID is not an injection vector
+	slog.Debug("injecting capabilities from multi-session routing table for composite tool routing",
+		"session_id", sessionID,
+		"tool_count", len(routingTable.Tools))
 	capabilities := &aggregator.AggregatedCapabilities{
 		RoutingTable: routingTable,
-		Tools:        tools,
+		Tools:        multiSess.Tools(),
 	}
-
-	//nolint:gosec // G706: session ID is not an injection vector
-	slog.Debug("capabilities retrieved from session",
-		"session_id", sessionID,
-		"tool_count", len(routingTable.Tools),
-		"resource_count", len(routingTable.Resources),
-		"prompt_count", len(routingTable.Prompts))
-
 	return WithDiscoveredCapabilities(ctx, capabilities), nil
 }
 
@@ -365,12 +331,6 @@ func handleDiscoveryError(w http.ResponseWriter, _ *http.Request, err error) {
 	errMsg := err.Error()
 	if strings.Contains(errMsg, "session not found") {
 		http.Error(w, "Session not found", http.StatusUnauthorized)
-		return
-	}
-
-	if strings.Contains(errMsg, "invalid session type") ||
-		strings.Contains(errMsg, "routing table not initialized") {
-		http.Error(w, errMsg, http.StatusInternalServerError)
 		return
 	}
 

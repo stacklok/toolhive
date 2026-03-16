@@ -35,10 +35,10 @@ import (
 
 // startRealMCPBackend is defined in testutil_test.go as a shared test utility.
 
-// newRealV2Server builds a vMCP server with SessionManagementV2 enabled and a
+// newRealTestServer builds a vMCP server with session management and and a
 // real SessionFactory. The BackendRegistry mock returns the backend at backendURL
 // so that CreateSession() opens a real HTTP connection to the MCP server.
-func newRealV2Server(t *testing.T, backendURL string) *httptest.Server {
+func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -56,7 +56,7 @@ func newRealV2Server(t *testing.T, backendURL string) *httptest.Server {
 	}
 
 	// BackendRegistry.List() is called by CreateSession() to build the backend list.
-	// Discover() is not called in the V2 path (WithSessionScopedRouting skips discovery).
+	// Discover() is not called in the session management path (WithSessionScopedRouting skips discovery).
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{backend}).AnyTimes()
 	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).
 		Return(&aggregator.AggregatedCapabilities{}, nil).AnyTimes()
@@ -73,11 +73,10 @@ func newRealV2Server(t *testing.T, backendURL string) *httptest.Server {
 	srv, err := server.New(
 		context.Background(),
 		&server.Config{
-			Host:                "127.0.0.1",
-			Port:                0,
-			SessionTTL:          5 * time.Minute,
-			SessionManagementV2: true,
-			SessionFactory:      factory,
+			Host:           "127.0.0.1",
+			Port:           0,
+			SessionTTL:     5 * time.Minute,
+			SessionFactory: factory,
 		},
 		rt,
 		mockBackendClient,
@@ -119,15 +118,15 @@ func waitForEchoTool(t *testing.T, baseURL, sessionID string) {
 // Integration tests — real MCP backend, real SessionFactory
 // ---------------------------------------------------------------------------
 
-// TestIntegration_V2RealBackend_ToolDiscovery verifies that when a client
-// initializes a V2 session, the vMCP server connects to the real backend and
+// TestIntegration_RealBackend_ToolDiscovery verifies that when a client
+// initializes a session, the vMCP server connects to the real backend and
 // registers its tools. A subsequent tools/list request must return the "echo"
 // tool discovered from the backend.
-func TestIntegration_V2RealBackend_ToolDiscovery(t *testing.T) {
+func TestIntegration_RealBackend_ToolDiscovery(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealV2Server(t, backendURL)
+	ts := newRealTestServer(t, backendURL)
 
 	// Initialize session using the test client.
 	client := NewMCPTestClient(t, ts.URL)
@@ -159,14 +158,14 @@ func TestIntegration_V2RealBackend_ToolDiscovery(t *testing.T) {
 	assert.Equal(t, "Echoes the input back", rpc.Result.Tools[0].Description)
 }
 
-// TestIntegration_V2RealBackend_ToolCall verifies the full tool-call path:
+// TestIntegration_RealBackend_ToolCall verifies the full tool-call path:
 // a tools/call request travels through the vMCP session manager to the real
 // backend MCP server and the result is returned to the client.
-func TestIntegration_V2RealBackend_ToolCall(t *testing.T) {
+func TestIntegration_RealBackend_ToolCall(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealV2Server(t, backendURL)
+	ts := newRealTestServer(t, backendURL)
 
 	// Initialize session.
 	client := NewMCPTestClient(t, ts.URL)
@@ -176,7 +175,7 @@ func TestIntegration_V2RealBackend_ToolCall(t *testing.T) {
 	waitForEchoTool(t, ts.URL, client.SessionID())
 
 	// Call the echo tool and verify the result from the real backend.
-	toolResp := client.CallTool("echo", map[string]any{"input": "hello from V2"})
+	toolResp := client.CallTool("echo", map[string]any{"input": "hello from backend"})
 	defer toolResp.Body.Close()
 
 	body, err := io.ReadAll(toolResp.Body)
@@ -196,17 +195,17 @@ func TestIntegration_V2RealBackend_ToolCall(t *testing.T) {
 	require.Len(t, rpc.Result.Content, 1)
 	assert.False(t, rpc.Result.IsError)
 	assert.Equal(t, "text", rpc.Result.Content[0].Type)
-	assert.Equal(t, "hello from V2", rpc.Result.Content[0].Text)
+	assert.Equal(t, "hello from backend", rpc.Result.Content[0].Text)
 }
 
-// TestIntegration_V2RealBackend_Termination verifies the session termination path
+// TestIntegration_RealBackend_Termination verifies the session termination path
 // against a real backend: a DELETE request closes the backend connection, and
 // subsequent requests with the terminated session ID are rejected.
-func TestIntegration_V2RealBackend_Termination(t *testing.T) {
+func TestIntegration_RealBackend_Termination(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealV2Server(t, backendURL)
+	ts := newRealTestServer(t, backendURL)
 
 	// Initialize session.
 	client := NewMCPTestClient(t, ts.URL)

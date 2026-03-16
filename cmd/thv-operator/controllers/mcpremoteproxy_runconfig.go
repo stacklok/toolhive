@@ -124,15 +124,15 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	// Add OIDC configuration (required for proxy mode)
-	// Supports both legacy inline OIDCConfig and new MCPOIDCConfigRef paths
+	// Add OIDC configuration
+	// Supports both legacy inline OIDCConfig and new MCPOIDCConfigRef paths.
+	// Returns nil when neither is set (anonymous access).
 	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(apiCtx, proxy, &options)
 	if err != nil {
 		return nil, err
 	}
 
-	// Add external auth configuration if specified (updated call)
-	// Will fail if embedded auth server is used without OIDC config or resourceUrl
+	// Add external auth configuration if specified
 	if err := ctrlutil.AddExternalAuthConfigOptions(
 		apiCtx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
 		resolvedOIDCConfig, &options,
@@ -179,11 +179,17 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 
 // resolveAndAddOIDCConfig resolves OIDC configuration from either the shared MCPOIDCConfigRef
 // or the legacy inline OIDCConfig, adds the appropriate runner options, and returns the resolved config.
+// Returns nil when neither OIDCConfig nor OIDCConfigRef is set (anonymous access).
 func (r *MCPRemoteProxyReconciler) resolveAndAddOIDCConfig(
 	ctx context.Context,
 	proxy *mcpv1alpha1.MCPRemoteProxy,
 	options *[]runner.RunConfigBuilderOption,
 ) (*oidc.OIDCConfig, error) {
+	// No OIDC config = anonymous access (no auth middleware)
+	if proxy.Spec.OIDCConfig == nil && proxy.Spec.OIDCConfigRef == nil {
+		return nil, nil
+	}
+
 	resolver := oidc.NewResolver(r.Client)
 
 	if proxy.Spec.OIDCConfigRef != nil {

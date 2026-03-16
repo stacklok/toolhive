@@ -51,6 +51,50 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 		validateResult func(*testing.T, *mcpv1alpha1.MCPRemoteProxy, client.Client)
 	}{
 		{
+			name: "anonymous proxy without OIDC config",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "anon-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://docs.example.com/mcp",
+					ProxyPort: 8080,
+					Transport: "streamable-http",
+				},
+			},
+			validateResult: func(t *testing.T, proxy *mcpv1alpha1.MCPRemoteProxy, c client.Client) {
+				t.Helper()
+
+				// Verify RunConfig ConfigMap created with no OIDC config
+				cm := &corev1.ConfigMap{}
+				err := c.Get(context.TODO(), types.NamespacedName{
+					Name:      fmt.Sprintf("%s-runconfig", proxy.Name),
+					Namespace: proxy.Namespace,
+				}, cm)
+				assert.NoError(t, err, "RunConfig ConfigMap should be created")
+				assert.Contains(t, cm.Data, "runconfig.json")
+				// OIDC config should not be present in the RunConfig
+				assert.NotContains(t, cm.Data["runconfig.json"], "oidc_issuer")
+
+				// Verify Deployment created
+				dep := &appsv1.Deployment{}
+				err = c.Get(context.TODO(), types.NamespacedName{
+					Name:      proxy.Name,
+					Namespace: proxy.Namespace,
+				}, dep)
+				assert.NoError(t, err, "Deployment should be created")
+
+				// Verify Service created
+				svc := &corev1.Service{}
+				err = c.Get(context.TODO(), types.NamespacedName{
+					Name:      createProxyServiceName(proxy.Name),
+					Namespace: proxy.Namespace,
+				}, svc)
+				assert.NoError(t, err, "Service should be created")
+			},
+		},
+		{
 			name: "basic proxy with inline OIDC",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{

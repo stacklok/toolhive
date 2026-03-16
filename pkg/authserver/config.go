@@ -83,6 +83,7 @@ type RunConfig struct {
 	// DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
 	// When true, the embedded auth server handles OAuth flows for clients but does not
 	// inject upstream IdP tokens into requests forwarded to the backend MCP server.
+	//nolint:lll // field tags require full JSON+YAML names
 	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
 }
 

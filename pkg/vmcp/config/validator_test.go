@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -623,6 +624,218 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 			if tt.wantErr && err != nil && tt.errMsg != "" {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateCompositeTools() error message = %v, want to contain %v", err.Error(), tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestValidator_ValidateBackendAuthStrategy_TokenExchange(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		strategy *authtypes.BackendAuthStrategy
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name: "standard RFC 8693 with tokenUrl is valid",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "standard RFC 8693 missing tokenUrl",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type:          authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{},
+			},
+			wantErr: true,
+			errMsg:  "tokenExchange requires tokenUrl field",
+		},
+		{
+			name: "variant entra without tokenUrl is valid",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					Variant: authtypes.TokenExchangeVariantEntra,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						Parameters: map[string]string{"tenantId": "my-tenant"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "variant entra with tokenUrl override is valid",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://login.microsoftonline.us/my-tenant/oauth2/v2.0/token",
+					Variant:  "entra",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "variant raw with full config is valid",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+					Variant:  authtypes.TokenExchangeVariantRaw,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						GrantTypeURN: "urn:custom:grant-type",
+						Parameters:   map[string]string{"foo": "bar"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "variant raw missing tokenUrl",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					Variant: "raw",
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						GrantTypeURN: "urn:custom:grant-type",
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "tokenExchange requires tokenUrl when variant is 'raw'",
+		},
+		{
+			name: "variant raw missing raw config",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+					Variant:  authtypes.TokenExchangeVariantRaw,
+				},
+			},
+			wantErr: true,
+			errMsg:  "tokenExchange requires raw configuration when variant is 'raw'",
+		},
+		{
+			name: "variant raw missing grantTypeUrn",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+					Variant:  authtypes.TokenExchangeVariantRaw,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						Parameters: map[string]string{"foo": "bar"},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "tokenExchange requires raw.grantTypeUrn when variant is 'raw'",
+		},
+		{
+			name: "unknown variant",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+					Variant:  "unsupported",
+				},
+			},
+			wantErr: true,
+			errMsg:  `tokenExchange has unsupported variant "unsupported"`,
+		},
+		{
+			name: "nil TokenExchange config",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+			},
+			wantErr: true,
+			errMsg:  "tokenExchange requires TokenExchange configuration",
+		},
+		{
+			name: "variant name is case-insensitive",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					Variant: "ENTRA",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "variant raw with whitespace-only grantTypeUrn",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+					Variant:  authtypes.TokenExchangeVariantRaw,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						GrantTypeURN: "   ",
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "tokenExchange requires raw.grantTypeUrn when variant is 'raw'",
+		},
+		{
+			name: "variant raw with empty parameter key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+					Variant:  authtypes.TokenExchangeVariantRaw,
+					Raw: &authtypes.TokenExchangeRawAuthConfig{
+						GrantTypeURN: "urn:custom:grant-type",
+						Parameters:   map[string]string{"": "value"},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "tokenExchange raw.parameters contains empty key",
+		},
+		{
+			name: "variant raw with too many parameters",
+			strategy: func() *authtypes.BackendAuthStrategy {
+				params := make(map[string]string, 21)
+				for i := range 21 {
+					params[fmt.Sprintf("key%d", i)] = "value"
+				}
+				return &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeTokenExchange,
+					TokenExchange: &authtypes.TokenExchangeConfig{
+						TokenURL: "https://example.com/token",
+						Variant:  authtypes.TokenExchangeVariantRaw,
+						Raw: &authtypes.TokenExchangeRawAuthConfig{
+							GrantTypeURN: "urn:custom:grant-type",
+							Parameters:   params,
+						},
+					},
+				}
+			}(),
+			wantErr: true,
+			errMsg:  "tokenExchange raw.parameters exceeds maximum of 20 entries",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := NewValidator()
+			err := v.validateBackendAuthStrategy("test-backend", tt.strategy)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateBackendAuthStrategy() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateBackendAuthStrategy() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
 			}
 		})

@@ -512,6 +512,121 @@ aggregation:
 			errMsg:  "environment variable EMPTY_TOKEN not set or empty",
 		},
 		{
+			name: "valid entra variant token exchange config",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    graph-api:
+      type: token_exchange
+      tokenExchange:
+        clientId: entra-client
+        clientSecretEnv: ENTRA_SECRET
+        variant: entra
+        raw:
+          parameters:
+            tenantId: my-tenant-id
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			envVars: map[string]string{
+				"ENTRA_SECRET": "entra-secret-value",
+			},
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				backend, ok := cfg.OutgoingAuth.Backends["graph-api"]
+				if !ok {
+					t.Fatal("graph-api backend not found")
+				}
+				if backend.TokenExchange == nil {
+					t.Fatal("TokenExchange is nil")
+				}
+				te := backend.TokenExchange
+				if te.Variant != "entra" {
+					t.Errorf("Variant = %v, want entra", te.Variant)
+				}
+				if te.ClientID != "entra-client" {
+					t.Errorf("ClientID = %v, want entra-client", te.ClientID)
+				}
+				if te.Raw == nil {
+					t.Fatal("Raw is nil")
+				}
+				if te.Raw.Parameters["tenantId"] != "my-tenant-id" {
+					t.Errorf("Raw.Parameters[tenantId] = %v, want my-tenant-id", te.Raw.Parameters["tenantId"])
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid raw variant token exchange config",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    custom-api:
+      type: token_exchange
+      tokenExchange:
+        tokenUrl: https://custom.example.com/token
+        clientId: raw-client
+        clientSecretEnv: RAW_SECRET
+        variant: raw
+        raw:
+          grantTypeUrn: "urn:custom:grant-type:example"
+          parameters:
+            extra_param: extra_value
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			envVars: map[string]string{
+				"RAW_SECRET": "raw-secret-value",
+			},
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				backend, ok := cfg.OutgoingAuth.Backends["custom-api"]
+				if !ok {
+					t.Fatal("custom-api backend not found")
+				}
+				if backend.TokenExchange == nil {
+					t.Fatal("TokenExchange is nil")
+				}
+				te := backend.TokenExchange
+				if te.Variant != "raw" {
+					t.Errorf("Variant = %v, want raw", te.Variant)
+				}
+				if te.TokenURL != "https://custom.example.com/token" {
+					t.Errorf("TokenURL = %v, want https://custom.example.com/token", te.TokenURL)
+				}
+				if te.Raw == nil {
+					t.Fatal("Raw is nil")
+				}
+				if te.Raw.GrantTypeURN != "urn:custom:grant-type:example" {
+					t.Errorf("Raw.GrantTypeURN = %v, want urn:custom:grant-type:example", te.Raw.GrantTypeURN)
+				}
+				if te.Raw.Parameters["extra_param"] != "extra_value" {
+					t.Errorf("Raw.Parameters[extra_param] = %v, want extra_value", te.Raw.Parameters["extra_param"])
+				}
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid audit configuration",
 			yaml: `
 name: test-vmcp

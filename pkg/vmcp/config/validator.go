@@ -198,12 +198,11 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 	// Validate type-specific requirements
 	switch strategy.Type {
 	case authtypes.StrategyTypeTokenExchange:
-		// Token exchange requires TokenExchange config with tokenUrl
 		if strategy.TokenExchange == nil {
 			return fmt.Errorf("tokenExchange requires TokenExchange configuration")
 		}
-		if strategy.TokenExchange.TokenURL == "" {
-			return fmt.Errorf("tokenExchange requires tokenUrl field")
+		if err := validateTokenExchangeVariant(strategy.TokenExchange); err != nil {
+			return err
 		}
 
 	case authtypes.StrategyTypeHeaderInjection:
@@ -430,6 +429,62 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 		refNames[ref.Name] = true
 	}
 
+	return nil
+}
+
+// validateTokenExchangeVariant validates the token exchange configuration
+// based on the variant discriminator. Variant names are case-insensitive
+// (normalized to lowercase) to match VariantRegistry behavior.
+func validateTokenExchangeVariant(te *authtypes.TokenExchangeConfig) error {
+	variant := strings.ToLower(te.Variant)
+
+	switch variant {
+	case "": // Standard RFC 8693 — tokenUrl is required
+		if te.TokenURL == "" {
+			return fmt.Errorf("tokenExchange requires tokenUrl field")
+		}
+
+	case authtypes.TokenExchangeVariantEntra:
+		// Named variant — tokenUrl is optional (handler derives it from parameters).
+		// Runtime validation is handled by the variant handler.
+
+	case authtypes.TokenExchangeVariantRaw:
+		if te.TokenURL == "" {
+			return fmt.Errorf("tokenExchange requires tokenUrl when variant is 'raw'")
+		}
+		if te.Raw == nil {
+			return fmt.Errorf("tokenExchange requires raw configuration when variant is 'raw'")
+		}
+		if strings.TrimSpace(te.Raw.GrantTypeURN) == "" {
+			return fmt.Errorf("tokenExchange requires raw.grantTypeUrn when variant is 'raw'")
+		}
+		if err := validateRawParameters(te.Raw); err != nil {
+			return err
+		}
+
+	default:
+		return fmt.Errorf("tokenExchange has unsupported variant %q", te.Variant)
+	}
+
+	return nil
+}
+
+// maxRawParameters is the maximum number of entries allowed in raw.parameters.
+const maxRawParameters = 20
+
+// validateRawParameters validates the Parameters map on a TokenExchangeRawAuthConfig.
+func validateRawParameters(raw *authtypes.TokenExchangeRawAuthConfig) error {
+	if raw == nil || raw.Parameters == nil {
+		return nil
+	}
+	if len(raw.Parameters) > maxRawParameters {
+		return fmt.Errorf("tokenExchange raw.parameters exceeds maximum of %d entries", maxRawParameters)
+	}
+	for k := range raw.Parameters {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("tokenExchange raw.parameters contains empty key")
+		}
+	}
 	return nil
 }
 

@@ -47,6 +47,7 @@ type testServer struct {
 	Server     *httptest.Server
 	PrivateKey *rsa.PrivateKey
 	authServer Server
+	storage    storage.UpstreamTokenStorage
 }
 
 // testServerOptions configures the test server setup.
@@ -192,6 +193,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		Server:     httpServer,
 		PrivateKey: privateKey,
 		authServer: srv,
+		storage:    srv.IDPTokenStorage(),
 	}
 }
 
@@ -867,6 +869,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC) *testSe
 			Server:     httpServer,
 			PrivateKey: privateKey,
 			authServer: srv,
+			storage:    srv.IDPTokenStorage(),
 		},
 		mockOIDC: m,
 	}
@@ -1205,7 +1208,7 @@ func TestIntegration_UpstreamTokenService_GetValidTokens(t *testing.T) {
 	)
 
 	// The service should return the upstream access token stored during callback.
-	cred, err := svc.GetValidTokens(context.Background(), tsid)
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.NotEmpty(t, cred.AccessToken, "upstream access token should be present")
@@ -1241,7 +1244,7 @@ func TestIntegration_UpstreamTokenService_RefreshExpiredTokens(t *testing.T) {
 	stor := ts.authServer.IDPTokenStorage()
 
 	// Read the stored tokens, then overwrite them with an expired ExpiresAt.
-	original, err := stor.GetUpstreamTokens(context.Background(), tsid)
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
 	require.NoError(t, err)
 	require.NotNil(t, original)
 	originalAccessToken := original.AccessToken
@@ -1263,18 +1266,18 @@ func TestIntegration_UpstreamTokenService_RefreshExpiredTokens(t *testing.T) {
 		UpstreamSubject: original.UpstreamSubject,
 		ClientID:        original.ClientID,
 	}
-	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), tsid, expired))
+	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), tsid, "default", expired))
 
 	// The service should transparently refresh the expired tokens.
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
 
-	cred, err := svc.GetValidTokens(context.Background(), tsid)
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.NotEmpty(t, cred.AccessToken, "refreshed upstream access token should be present")
 
 	// Verify storage was updated with non-expired tokens after refresh.
-	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid)
+	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
 	require.NoError(t, err, "refreshed tokens should be retrievable without ErrExpired")
 	assert.True(t, refreshed.ExpiresAt.After(time.Now()),
 		"refreshed tokens should have a future expiry, got %v", refreshed.ExpiresAt)
@@ -1294,7 +1297,7 @@ func TestIntegration_UpstreamTokenService_SessionNotFound(t *testing.T) {
 		ts.authServer.UpstreamTokenRefresher(),
 	)
 
-	cred, err := svc.GetValidTokens(context.Background(), "non-existent-session-id")
+	cred, err := svc.GetValidTokens(context.Background(), "non-existent-session-id", "default")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, upstreamtoken.ErrSessionNotFound)
 	assert.Nil(t, cred)
@@ -1313,7 +1316,7 @@ func TestIntegration_UpstreamTokenService_NoRefreshToken(t *testing.T) {
 
 	// Store expired tokens without a refresh token.
 	sessionID := "no-refresh-session"
-	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), sessionID, &storage.UpstreamTokens{
+	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), sessionID, "test", &storage.UpstreamTokens{
 		ProviderID:      "test",
 		AccessToken:     "expired-access",
 		RefreshToken:    "", // no refresh token
@@ -1325,7 +1328,7 @@ func TestIntegration_UpstreamTokenService_NoRefreshToken(t *testing.T) {
 
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
 
-	cred, err := svc.GetValidTokens(context.Background(), sessionID)
+	cred, err := svc.GetValidTokens(context.Background(), sessionID, "test")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, upstreamtoken.ErrNoRefreshToken)
 	assert.Nil(t, cred)
@@ -1347,4 +1350,162 @@ func extractTSID(t *testing.T, accessToken string, publicKey any) string {
 	require.NotEmpty(t, tsid)
 
 	return tsid
+}
+
+// ============================================================================
+// Upstream Token Storage Integration Tests
+// ============================================================================
+
+// TestIntegration_UpstreamTokenStorage verifies that upstream IDP tokens are stored
+// and retrievable by (sessionID, providerName) after a successful authorization flow.
+func TestIntegration_UpstreamTokenStorage(t *testing.T) {
+	t.Parallel()
+
+	// Setup: Start mock IDP and auth server
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Complete full PKCE flow
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "upstream-storage-test",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	// Parse the access token JWT to extract the tsid claim
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err, "should be able to parse JWT")
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err, "JWT signature should be valid")
+
+	tsid, ok := claims["tsid"].(string)
+	require.True(t, ok, "tsid claim should be a string")
+	require.NotEmpty(t, tsid, "tsid claim should not be empty")
+
+	ctx := context.Background()
+
+	// Extract the sub claim for binding validation
+	sub, ok := claims["sub"].(string)
+	require.True(t, ok, "sub claim should be a string")
+
+	t.Run("tokens_retrievable_by_provider_name", func(t *testing.T) {
+		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
+		require.NoError(t, err, "GetUpstreamTokens should not return error")
+		require.NotNil(t, tokens, "tokens should not be nil")
+		assert.NotEmpty(t, tokens.AccessToken, "upstream access token should not be empty")
+	})
+
+	t.Run("provider_id_is_logical_name", func(t *testing.T) {
+		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
+		require.NoError(t, err)
+		assert.Equal(t, "default", tokens.ProviderID, "ProviderID should be the logical name 'default', not 'oidc' or 'oauth2'")
+	})
+
+	t.Run("binding_fields_populated", func(t *testing.T) {
+		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
+		require.NoError(t, err)
+		assert.NotEmpty(t, tokens.UserID, "UserID should not be empty")
+		assert.NotEmpty(t, tokens.UpstreamSubject, "UpstreamSubject should not be empty")
+		assert.Equal(t, testClientID, tokens.ClientID, "ClientID should match the test client")
+		assert.Equal(t, sub, tokens.UserID, "UserID should match the sub claim from the JWT")
+	})
+}
+
+// TestIntegration_RefreshPreservesUpstreamTokenBinding verifies that refreshing
+// an access token preserves the upstream token binding (same tsid, same provider).
+func TestIntegration_RefreshPreservesUpstreamTokenBinding(t *testing.T) {
+	t.Parallel()
+
+	// Setup: Start mock IDP and auth server
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Complete full PKCE flow with offline_access to get a refresh token
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "refresh-upstream-test",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	// Exchange code for tokens (no resource/audience to avoid audience mismatch on refresh)
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+	})
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "initial token request should succeed")
+	tokenData := parseTokenResponse(t, resp)
+
+	// Parse the access token JWT to extract the tsid claim
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err, "should be able to parse JWT")
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err, "JWT signature should be valid")
+
+	originalTSID, ok := claims["tsid"].(string)
+	require.True(t, ok, "tsid claim should be a string")
+	require.NotEmpty(t, originalTSID, "tsid claim should not be empty")
+
+	// Extract the refresh token
+	refreshToken, ok := tokenData["refresh_token"].(string)
+	require.True(t, ok, "refresh_token should be present when offline_access is requested")
+	require.NotEmpty(t, refreshToken, "refresh_token should not be empty")
+
+	ctx := context.Background()
+
+	// Verify upstream tokens exist before refresh
+	tokens, err := ts.storage.GetUpstreamTokens(ctx, originalTSID, "default")
+	require.NoError(t, err, "upstream tokens should exist before refresh")
+	require.NotNil(t, tokens, "upstream tokens should not be nil before refresh")
+
+	// Perform refresh token grant
+	refreshResp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {testClientID},
+	})
+	defer refreshResp.Body.Close()
+	require.Equal(t, http.StatusOK, refreshResp.StatusCode, "refresh token request should succeed")
+	refreshData := parseTokenResponse(t, refreshResp)
+
+	// Parse the new access token JWT to extract the new tsid
+	newAccessToken, ok := refreshData["access_token"].(string)
+	require.True(t, ok, "new access_token should be a string")
+	newParsedToken, err := jwt.ParseSigned(newAccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err, "should be able to parse new JWT")
+	var newClaims map[string]interface{}
+	err = newParsedToken.Claims(ts.PrivateKey.Public(), &newClaims)
+	require.NoError(t, err, "new JWT signature should be valid")
+
+	newTSID, ok := newClaims["tsid"].(string)
+	require.True(t, ok, "new tsid claim should be a string")
+
+	// Assert tsid is preserved across refresh (fosite preserves session claims)
+	assert.Equal(t, originalTSID, newTSID, "tsid should be preserved across token refresh")
+
+	// Verify upstream tokens are still retrievable at (tsid, "default")
+	tokensAfterRefresh, err := ts.storage.GetUpstreamTokens(ctx, newTSID, "default")
+	require.NoError(t, err, "upstream tokens should still be retrievable after refresh")
+	require.NotNil(t, tokensAfterRefresh, "upstream tokens should not be nil after refresh")
+	assert.Equal(t, "default", tokensAfterRefresh.ProviderID, "ProviderID should still be 'default' after refresh")
 }

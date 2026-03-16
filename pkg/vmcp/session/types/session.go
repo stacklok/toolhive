@@ -7,6 +7,8 @@
 // introducing an import cycle.
 package types
 
+//go:generate mockgen -destination=mocks/mock_session.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/session/types MultiSession
+
 import (
 	"context"
 	"errors"
@@ -124,6 +126,11 @@ type MultiSession interface {
 	// backend MCP server and is used to correlate vMCP sessions with backend
 	// sessions for debugging and auditing.
 	BackendSessions() map[string]string
+
+	// GetRoutingTable returns the session's routing table.
+	// Used by the discovery middleware to inject DiscoveredCapabilities into the
+	// request context so composite tool workflow steps can route backend tool calls.
+	GetRoutingTable() *vmcp.RoutingTable
 }
 
 const (

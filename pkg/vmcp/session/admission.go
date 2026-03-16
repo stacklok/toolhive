@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package session provides vMCP session management types and utilities,
+// including the AdmissionQueue used to coordinate concurrent session access.
 package session
 
 import "sync"

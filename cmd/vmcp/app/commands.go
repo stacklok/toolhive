@@ -297,11 +297,20 @@ func discoverBackends(
 //   - Otherwise: logs warning and creates factory with default insecure secret
 //
 // Returns an error only when running in Kubernetes without a secret (fail-fast for production).
-func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcpsession.MultiSessionFactory, error) {
+func createSessionFactory(
+	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
+	agg aggregator.Aggregator,
+) (vmcpsession.MultiSessionFactory, error) {
 	const (
 		envKey                  = "VMCP_SESSION_HMAC_SECRET"
 		minRecommendedSecretLen = 32
 	)
+
+	// Build base options, conditionally including aggregator only when provided.
+	opts := []vmcpsession.MultiSessionFactoryOption{}
+	if agg != nil {
+		opts = append(opts, vmcpsession.WithAggregator(agg))
+	}
 
 	hmacSecret := os.Getenv(envKey)
 
@@ -316,10 +325,8 @@ func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcps
 			)
 		}
 		slog.Info("using HMAC secret from VMCP_SESSION_HMAC_SECRET environment variable for session token binding")
-		return vmcpsession.NewSessionFactory(
-			outgoingRegistry,
-			vmcpsession.WithHMACSecret([]byte(hmacSecret)),
-		), nil
+		opts = append(opts, vmcpsession.WithHMACSecret([]byte(hmacSecret)))
+		return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
 	}
 
 	// No secret provided - check if we're in Kubernetes (production environment)
@@ -332,7 +339,7 @@ func createSessionFactory(outgoingRegistry vmcpauth.OutgoingAuthRegistry) (vmcps
 
 	// Development mode: use default insecure secret with warning
 	slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
-	return vmcpsession.NewSessionFactory(outgoingRegistry), nil
+	return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
 }
 
 // runServe implements the serve command logic
@@ -395,15 +402,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, tracerProvider)
 
-	// Use DynamicRegistry for version-based cache invalidation
-	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
-	// In standalone mode: backends from config file, no dynamic updates
-	// In K8s mode with discovered auth: backends watched dynamically via BackendWatcher
+	// DynamicRegistry tracks backends for dynamic discovery in Kubernetes mode.
+	// In standalone mode: backends from config file, no dynamic updates.
+	// In K8s mode with discovered auth: backends watched dynamically via BackendWatcher.
 	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
 	backendRegistry := vmcp.BackendRegistry(dynamicRegistry)
 
-	// Use NewManagerWithRegistry to enable version-based cache invalidation
-	discoveryMgr, err := discovery.NewManagerWithRegistry(agg, dynamicRegistry)
+	discoveryMgr, err := discovery.NewManager(agg)
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
@@ -522,13 +527,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
-	// Create session factory only when SessionManagementV2 is enabled
-	var sessionFactory vmcpsession.MultiSessionFactory
-	if cfg.Operational.SessionManagementV2 {
-		sessionFactory, err = createSessionFactory(outgoingRegistry)
-		if err != nil {
-			return err
-		}
+	sessionFactory, err := createSessionFactory(outgoingRegistry, agg)
+	if err != nil {
+		return err
 	}
 
 	serverCfg := &vmcpserver.Config{
@@ -547,7 +548,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
-		SessionManagementV2:     cfg.Operational.SessionManagementV2,
 		SessionFactory:          sessionFactory,
 	}
 
@@ -569,55 +569,4 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Start server (blocks until shutdown signal)
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
-}
-
-// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-// It may be removed in a future cleanup or used for startup-time capability caching.
-//
-//nolint:unused // Unused until we implement startup aggregation or caching
-func aggregateCapabilities(
-	ctx context.Context,
-	agg aggregator.Aggregator,
-	backends []vmcp.Backend,
-) (*aggregator.AggregatedCapabilities, error) {
-	slog.Info("aggregating capabilities from backends")
-
-	if len(backends) > 0 {
-		aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		capabilities, err := agg.AggregateCapabilities(aggCtx, backends)
-		if err != nil {
-			return nil, fmt.Errorf("failed to aggregate capabilities: %w", err)
-		}
-
-		slog.Info(fmt.Sprintf("Aggregated %d tools, %d resources, %d prompts from %d backends",
-			capabilities.Metadata.ToolCount,
-			capabilities.Metadata.ResourceCount,
-			capabilities.Metadata.PromptCount,
-			capabilities.Metadata.BackendCount))
-
-		return capabilities, nil
-	}
-
-	// No backends available - create empty capabilities
-	slog.Warn("no backends available - starting with empty capabilities")
-	return &aggregator.AggregatedCapabilities{
-		Tools:     []vmcp.Tool{},
-		Resources: []vmcp.Resource{},
-		Prompts:   []vmcp.Prompt{},
-		RoutingTable: &vmcp.RoutingTable{
-			Tools:     make(map[string]*vmcp.BackendTarget),
-			Resources: make(map[string]*vmcp.BackendTarget),
-			Prompts:   make(map[string]*vmcp.BackendTarget),
-		},
-		Metadata: &aggregator.AggregationMetadata{
-			BackendCount:  0,
-			ToolCount:     0,
-			ResourceCount: 0,
-			PromptCount:   0,
-		},
-	}, nil
 }

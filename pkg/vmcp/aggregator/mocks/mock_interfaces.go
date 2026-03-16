@@ -111,6 +111,22 @@ func (mr *MockAggregatorMockRecorder) MergeCapabilities(ctx, resolved, registry 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MergeCapabilities", reflect.TypeOf((*MockAggregator)(nil).MergeCapabilities), ctx, resolved, registry)
 }
 
+// ProcessPreQueriedCapabilities mocks base method.
+func (m *MockAggregator) ProcessPreQueriedCapabilities(ctx context.Context, toolsByBackend map[string][]vmcp.Tool, targets map[string]*vmcp.BackendTarget) ([]vmcp.Tool, map[string]*vmcp.BackendTarget, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ProcessPreQueriedCapabilities", ctx, toolsByBackend, targets)
+	ret0, _ := ret[0].([]vmcp.Tool)
+	ret1, _ := ret[1].(map[string]*vmcp.BackendTarget)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// ProcessPreQueriedCapabilities indicates an expected call of ProcessPreQueriedCapabilities.
+func (mr *MockAggregatorMockRecorder) ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessPreQueriedCapabilities", reflect.TypeOf((*MockAggregator)(nil).ProcessPreQueriedCapabilities), ctx, toolsByBackend, targets)
+}
+
 // QueryAllCapabilities mocks base method.
 func (m *MockAggregator) QueryAllCapabilities(ctx context.Context, backends []vmcp.Backend) (map[string]*aggregator.BackendCapabilities, error) {
 	m.ctrl.T.Helper()

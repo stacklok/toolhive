@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+//go:generate mockgen -destination=mocks/mock_factory.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/session MultiSessionFactory
+
 package session
 
 import (
@@ -12,11 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
@@ -46,24 +47,6 @@ var (
 
 // MultiSessionFactory creates new MultiSessions for connecting clients.
 type MultiSessionFactory interface {
-	// MakeSession creates a new MultiSession for the given identity against the
-	// provided set of backends. Backend clients are initialised in parallel
-	// with bounded concurrency (see WithMaxBackendInitConcurrency).
-	//
-	// Partial initialisation: if a backend fails to initialise, a warning is
-	// logged and the session continues with the remaining backends. The caller
-	// receives a valid session as long as at least one backend succeeded.
-	//
-	// If all backends fail, MakeSession still returns a valid (empty) session
-	// rather than an error, allowing clients to connect even when all backends
-	// are temporarily unavailable.
-	//
-	// TODO(sessionManagementV2): MakeSession is only used by tests for convenience
-	// (auto-generates UUID). Production code uses MakeSessionWithID exclusively.
-	// This method can be removed once the sessionManagementV2 migration is complete
-	// and VMCPSession is deleted. Tests can be updated to generate their own UUIDs.
-	MakeSession(ctx context.Context, identity *auth.Identity, backends []*vmcp.Backend) (MultiSession, error)
-
 	// MakeSessionWithID creates a new MultiSession with a specific session ID.
 	// This is used by SessionManager to create sessions using the SDK-assigned ID
 	// rather than generating a new UUID internally.
@@ -111,7 +94,8 @@ type defaultMultiSessionFactory struct {
 	connector          backendConnector
 	maxConcurrency     int
 	backendInitTimeout time.Duration
-	hmacSecret         []byte // Server-managed secret for HMAC-SHA256 token hashing
+	hmacSecret         []byte                // Server-managed secret for HMAC-SHA256 token hashing
+	aggregator         aggregator.Aggregator // Optional: applies tool transforms (overrides, conflict resolution, filter)
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -155,6 +139,15 @@ func WithHMACSecret(secret []byte) MultiSessionFactoryOption {
 		}
 		// Make a defensive copy to prevent external modification
 		f.hmacSecret = append([]byte(nil), secret...)
+	}
+}
+
+// WithAggregator configures the factory to apply per-backend tool overrides,
+// conflict resolution, and advertising filters when building sessions.
+// If not set, raw backend tool names are used unchanged.
+func WithAggregator(agg aggregator.Aggregator) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.aggregator = agg
 	}
 }
 
@@ -262,13 +255,52 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 	return rt, tools, resources, prompts
 }
 
-// MakeSession implements MultiSessionFactory.
-func (f *defaultMultiSessionFactory) MakeSession(
+// buildRoutingTableWithAggregator applies the aggregator's full transformation
+// pipeline (overrides, conflict resolution, advertising filter) to the raw
+// backend capabilities in results, producing resolved tool names identical to
+// the standard aggregation path. Resources and prompts pass through unchanged.
+func buildRoutingTableWithAggregator(
 	ctx context.Context,
-	identity *auth.Identity,
-	backends []*vmcp.Backend,
-) (MultiSession, error) {
-	return f.makeSession(ctx, uuid.New().String(), identity, backends)
+	agg aggregator.Aggregator,
+	results []initResult,
+) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
+	toolsByBackend := make(map[string][]vmcp.Tool, len(results))
+	targets := make(map[string]*vmcp.BackendTarget, len(results))
+	for i := range results {
+		r := &results[i]
+		toolsByBackend[r.target.WorkloadID] = r.caps.Tools
+		targets[r.target.WorkloadID] = r.target
+	}
+
+	allTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	rt := &vmcp.RoutingTable{
+		Tools:     toolsRouting,
+		Resources: make(map[string]*vmcp.BackendTarget),
+		Prompts:   make(map[string]*vmcp.BackendTarget),
+	}
+
+	var allResources []vmcp.Resource
+	var allPrompts []vmcp.Prompt
+	for _, r := range results {
+		for _, res := range r.caps.Resources {
+			if _, ok := rt.Resources[res.URI]; !ok {
+				allResources = append(allResources, res)
+				rt.Resources[res.URI] = r.target
+			}
+		}
+		for _, prompt := range r.caps.Prompts {
+			if _, ok := rt.Prompts[prompt.Name]; !ok {
+				allPrompts = append(allPrompts, prompt)
+				rt.Prompts[prompt.Name] = r.target
+			}
+		}
+	}
+
+	return rt, allTools, allResources, allPrompts, nil
 }
 
 // MakeSessionWithID implements MultiSessionFactory.
@@ -390,8 +422,28 @@ func (f *defaultMultiSessionFactory) makeSession(
 			"backendCount", len(backends))
 	}
 
-	// Build the routing table; first-writer (alphabetically) wins on conflicts.
-	routingTable, allTools, allResources, allPrompts := buildRoutingTable(results)
+	// Build the routing table and capability lists.
+	// When an aggregator is configured, apply the full transformation pipeline
+	// (per-backend overrides, conflict resolution, advertising filter) to produce
+	// resolved tool names — identical to the standard aggregation path.
+	// Without an aggregator, the raw backend names are used directly.
+	var (
+		routingTable *vmcp.RoutingTable
+		allTools     []vmcp.Tool
+		allResources []vmcp.Resource
+		allPrompts   []vmcp.Prompt
+	)
+
+	if f.aggregator != nil {
+		var aggErr error
+		routingTable, allTools, allResources, allPrompts, aggErr = buildRoutingTableWithAggregator(ctx, f.aggregator, results)
+		if aggErr != nil {
+			return nil, fmt.Errorf("failed to process backend capabilities: %w", aggErr)
+		}
+	} else {
+		// Build the routing table; first-writer (alphabetically) wins on conflicts.
+		routingTable, allTools, allResources, allPrompts = buildRoutingTable(results)
+	}
 
 	transportSess := transportsession.NewStreamableSession(sessID)
 

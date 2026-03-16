@@ -96,11 +96,11 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 		checkAuthHeader func(t *testing.T, req *http.Request)
 	}{
 		{
-			name:     "skips authentication for health checks",
+			name:     "health check without client credentials skips authentication",
 			setupCtx: func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-					t.Error("Server should not be called for health checks")
+					t.Error("token endpoint should not be called when no client credentials are configured")
 				}))
 			},
 			strategy: func(server *httptest.Server) *authtypes.BackendAuthStrategy {
@@ -109,7 +109,39 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 			expectError: false,
 			checkAuthHeader: func(t *testing.T, req *http.Request) {
 				t.Helper()
-				assert.Empty(t, req.Header.Get("Authorization"), "Authorization header should not be set for health checks")
+				assert.Empty(t, req.Header.Get("Authorization"), "Authorization header should not be set when no client credentials are available")
+			},
+		},
+		{
+			name:     "health check with client credentials uses client credentials grant",
+			setupCtx: func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					t.Helper()
+					require.NoError(t, r.ParseForm())
+					assert.Equal(t, "client_credentials", r.Form.Get("grant_type"))
+					clientID, clientSecret, ok := r.BasicAuth()
+					assert.True(t, ok, "expected Basic Auth credentials")
+					assert.Equal(t, "health-client-id", clientID)
+					assert.Equal(t, "health-client-secret", clientSecret)
+
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{
+						"access_token": "health-check-token",
+						"token_type":   "Bearer",
+					})
+				}))
+			},
+			strategy: func(server *httptest.Server) *authtypes.BackendAuthStrategy {
+				return createTokenExchangeStrategy(server.URL, func(cfg *authtypes.TokenExchangeConfig) {
+					cfg.ClientID = "health-client-id"
+					cfg.ClientSecret = "health-client-secret"
+				})
+			},
+			expectError: false,
+			checkAuthHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Equal(t, "Bearer health-check-token", req.Header.Get("Authorization"))
 			},
 		},
 		{

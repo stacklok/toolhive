@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 var (
@@ -47,7 +48,7 @@ func init() {
 	setRegistryAuthCmd.Flags().StringVar(&authClientID, "client-id", "", "OAuth client ID (required)")
 	setRegistryAuthCmd.Flags().StringVar(&authAudience, "audience", "", "OAuth audience parameter")
 	setRegistryAuthCmd.Flags().StringSliceVar(
-		&authScopes, "scopes", []string{"openid", "offline_access"}, "OAuth scopes",
+		&authScopes, "scopes", auth.DefaultOAuthScopes(), "OAuth scopes",
 	)
 
 	_ = setRegistryAuthCmd.MarkFlagRequired("issuer")

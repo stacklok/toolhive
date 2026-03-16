@@ -681,11 +681,6 @@ func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Only ensure HMAC secret if Session Management V2 is enabled
-	if vmcp.Spec.Config.Operational == nil || !vmcp.Spec.Config.Operational.SessionManagementV2 {
-		return nil
-	}
-
 	secretName := fmt.Sprintf("%s-hmac-secret", vmcp.Name)
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: vmcp.Namespace}, secret)

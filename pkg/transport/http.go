@@ -252,6 +252,11 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// paths so they reach the correct endpoint on the remote server.
 	var remoteBasePath string
 
+	// remoteRawQuery holds the raw query string from the remote URL (e.g.,
+	// "toolsets=core,alerting" from "https://mcp.example.com/mcp?toolsets=core,alerting").
+	// This must be forwarded on every outbound request or it is silently dropped.
+	var remoteRawQuery string
+
 	if t.remoteURL != "" {
 		// For remote MCP servers, construct target URI from remote URL
 		remoteURL, err := url.Parse(t.remoteURL)
@@ -267,9 +272,11 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		// The target URI only has scheme+host, so without this the remote path is lost.
 		remoteBasePath = remoteURL.Path
 
+		remoteRawQuery = remoteURL.RawQuery
+
 		//nolint:gosec // G706: logging proxy port and remote URL from config
 		slog.Debug("setting up transparent proxy to forward to remote URL",
-			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath)
+			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath, "raw_query", remoteRawQuery)
 	} else {
 		if t.containerName == "" {
 			return transporterrors.ErrContainerNameNotSet
@@ -311,6 +318,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	if remoteBasePath != "" {
 		proxyOptions = append(proxyOptions, transparent.WithRemoteBasePath(remoteBasePath))
 	}
+	proxyOptions = append(proxyOptions, transparent.WithRemoteRawQuery(remoteRawQuery))
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxyWithOptions(

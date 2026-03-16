@@ -108,6 +108,12 @@ type TransparentProxy struct {
 	// URI only contains the scheme and host.
 	remoteBasePath string
 
+	// remoteRawQuery holds the raw query string from the remote URL (e.g.,
+	// "toolsets=core,alerting" from "https://mcp.example.com/mcp?toolsets=core,alerting").
+	// When set, it is merged into every outbound request so query parameters
+	// from the original registration URL are never silently dropped.
+	remoteRawQuery string
+
 	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
 	trustProxyHeaders bool
 
@@ -175,6 +181,18 @@ func withHealthCheckRetryDelay(delay time.Duration) Option {
 func WithRemoteBasePath(basePath string) Option {
 	return func(p *TransparentProxy) {
 		p.remoteBasePath = basePath
+	}
+}
+
+// WithRemoteRawQuery sets the raw query string from the remote URL.
+// When set, these query parameters are merged into every outbound request,
+// ensuring query parameters from the original registration URL are always forwarded.
+// Ignores empty strings; default (no query forwarding) will be used.
+func WithRemoteRawQuery(rawQuery string) Option {
+	return func(p *TransparentProxy) {
+		if rawQuery != "" {
+			p.remoteRawQuery = rawQuery
+		}
 	}
 }
 
@@ -505,6 +523,21 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 				pr.Out.URL.RawPath = ""
 			}
 
+			// Merge query parameters from the remote URL into the outbound request.
+			// Remote params are prepended so they appear first; most HTTP servers
+			// adopt first-value-wins semantics for duplicate keys, ensuring operator
+			// configured values (e.g., toolsets=core,alerting) take precedence over
+			// any client-supplied params with the same key.
+			// Raw string concatenation is intentional: url.Values.Encode() would
+			// percent-encode characters like commas that some APIs expect as literals.
+			if p.remoteRawQuery != "" {
+				merged := p.remoteRawQuery
+				if pr.Out.URL.RawQuery != "" {
+					merged += "&" + pr.Out.URL.RawQuery
+				}
+				pr.Out.URL.RawQuery = merged
+			}
+
 			// Inject OpenTelemetry trace propagation headers for downstream tracing
 			if pr.Out.Context() != nil {
 				otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
@@ -603,6 +636,15 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// ListenerAddr returns the network address the proxy is listening on.
+// Returns an empty string if the proxy has not been started.
+func (p *TransparentProxy) ListenerAddr() string {
+	if p.listener == nil {
+		return ""
+	}
+	return p.listener.Addr().String()
 }
 
 // CloseListener closes the listener for the transparent proxy.

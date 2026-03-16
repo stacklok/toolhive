@@ -14,11 +14,13 @@ import (
 )
 
 // upstreamTokenRefresher implements storage.UpstreamTokenRefresher by wrapping
-// an upstream OAuth2Provider (for token refresh) and UpstreamTokenStorage (for
-// persisting the refreshed tokens).
+// a set of upstream OAuth2Providers (keyed by provider name) and
+// UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
+// call it dispatches to the correct provider based on the expired token's
+// ProviderID.
 type upstreamTokenRefresher struct {
-	provider upstream.OAuth2Provider
-	storage  storage.UpstreamTokenStorage
+	providers map[string]upstream.OAuth2Provider
+	storage   storage.UpstreamTokenStorage
 }
 
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
@@ -43,8 +45,14 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 		"provider_id", expired.ProviderID,
 	)
 
+	// Look up the provider that issued this token
+	provider, ok := r.providers[expired.ProviderID]
+	if !ok {
+		return nil, fmt.Errorf("no upstream provider configured for %q", expired.ProviderID)
+	}
+
 	// Refresh tokens via the upstream provider
-	newTokens, err := r.provider.RefreshTokens(ctx, expired.RefreshToken, expired.UpstreamSubject)
+	newTokens, err := provider.RefreshTokens(ctx, expired.RefreshToken, expired.UpstreamSubject)
 	if err != nil {
 		return nil, fmt.Errorf("upstream token refresh failed: %w", err)
 	}

@@ -167,6 +167,18 @@ type PendingAuthorization struct {
 	// providers across successive authorization legs.
 	SessionID string
 
+	// ResolvedUserID is the internal user ID resolved from the primary (first) upstream.
+	// Empty on the first leg; populated after the first callback for subsequent legs.
+	ResolvedUserID string
+
+	// ResolvedUserName is the user display name from the primary upstream.
+	// Empty on the first leg; populated after the first callback for subsequent legs.
+	ResolvedUserName string
+
+	// ResolvedUserEmail is the user email from the primary upstream.
+	// Empty on the first leg; populated after the first callback for subsequent legs.
+	ResolvedUserEmail string
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }

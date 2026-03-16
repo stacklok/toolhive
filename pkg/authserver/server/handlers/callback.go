@@ -15,6 +15,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
 // CallbackHandler handles GET /oauth/callback requests.
@@ -100,21 +101,31 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This ensures write-side (StoreUpstreamTokens) and read-side (GetUpstreamTokens) keys match.
 	providerID := pending.UpstreamProviderName
 
-	// Resolve or create internal user
-	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
-	if err != nil {
-		slog.Error("failed to resolve user", "error", err)
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
-		return
-	}
-	subject := user.ID
-
-	// Update last authentication timestamp (supports OIDC max_age)
-	h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
-
 	// Use the session ID from the pending authorization.
 	// This was generated in authorize.go and will be reused across all legs of the chain.
 	sessionID := pending.SessionID
+
+	// Determine identity: first leg resolves from upstream, subsequent legs carry from pending
+	var subject, userName, userEmail string
+	if pending.ResolvedUserID == "" {
+		// First leg — this is the identity provider
+		user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
+		if err != nil {
+			slog.Error("failed to resolve user", "error", err)
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
+			return
+		}
+		subject = user.ID
+		userName = result.Name
+		userEmail = result.Email
+		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+	} else {
+		// Subsequent leg — use identity carried from first leg
+		subject = pending.ResolvedUserID
+		userName = pending.ResolvedUserName
+		userEmail = pending.ResolvedUserEmail
+		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+	}
 
 	// Convert IDP tokens to storage tokens with binding fields
 	storageTokens := &storage.UpstreamTokens{
@@ -132,22 +143,13 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		slog.Error("failed to store upstream tokens",
 			"error", err,
 		)
+		// Clean up any tokens stored by earlier legs of a multi-upstream chain.
+		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store session"))
 		return
 	}
 
-	// Generate authorization code and redirect to client using fosite's RFC 6749 compliant handler
-	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, result.Name, result.Email); err != nil {
-		slog.Error("failed to create authorization response",
-			"error", err,
-		)
-		// Clean up stored upstream tokens
-		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
-		return
-	}
-
-	slog.Info("authorization successful, redirecting to client")
+	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, subject, userName, userEmail)
 }
 
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.
@@ -279,6 +281,10 @@ func (h *Handler) handleUpstreamError(
 		pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
 		if err == nil {
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
+			// Clean up any upstream tokens stored by earlier legs of a multi-upstream chain.
+			if pending.SessionID != "" {
+				_ = h.storage.DeleteUpstreamTokens(ctx, pending.SessionID)
+			}
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {
 				// Use generic error hint to avoid exposing upstream IDP details to clients.
@@ -293,4 +299,120 @@ func (h *Handler) handleUpstreamError(
 	// Cannot redirect to client, show generic error page.
 	// Detailed error information is logged above for server-side diagnostics.
 	http.Error(w, "upstream authentication failed", http.StatusBadGateway)
+}
+
+// continueChainOrComplete checks whether all upstream providers in the authorization
+// chain have been satisfied. If so, it issues the authorization code and redirects
+// to the client. If not, it redirects to the next upstream provider to continue
+// the chain. Called after StoreUpstreamTokens succeeds for each leg.
+func (h *Handler) continueChainOrComplete(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req *http.Request,
+	ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization,
+	sessionID string,
+	subject string,
+	name string,
+	email string,
+) {
+	nextProvider, err := h.nextMissingUpstream(ctx, sessionID)
+	if err != nil {
+		slog.Error("failed to determine next upstream", "error", err)
+		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to check authorization chain state"))
+		return
+	}
+
+	if nextProvider == "" {
+		// Defense-in-depth: verify identity consistency across chain legs.
+		// The subject was resolved from the first leg's upstream and carried through
+		// PendingAuthorization. Cross-check it against the stored upstream tokens.
+		if len(h.upstreamOrder) > 1 {
+			allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+			if err != nil {
+				slog.Error("failed to verify identity consistency", "error", err)
+				_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to verify identity consistency"))
+				return
+			}
+			firstProvider := h.upstreamOrder[0]
+			if firstTokens, ok := allTokens[firstProvider]; ok && firstTokens.UserID != subject {
+				slog.Error("identity mismatch between chain state and stored tokens",
+					"expected", subject,
+					"got", firstTokens.UserID,
+					"provider", firstProvider,
+				)
+				_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
+				return
+			}
+		}
+
+		// All upstreams satisfied — issue authorization code
+		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
+			slog.Error("failed to create authorization response", "error", err)
+			_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+		}
+		return
+	}
+
+	// Chain continues — redirect to next upstream.
+	// TODO: If the user abandons the flow here (closes browser), upstream tokens from
+	// completed legs remain in storage until their TTL expires. Add cascading cleanup
+	// when pending authorizations expire to also delete associated upstream tokens.
+	secrets := newUpstreamAuthSecrets()
+	nextPending := &storage.PendingAuthorization{
+		// Carry client request fields
+		ClientID:      pending.ClientID,
+		RedirectURI:   pending.RedirectURI,
+		State:         pending.State,
+		PKCEChallenge: pending.PKCEChallenge,
+		PKCEMethod:    pending.PKCEMethod,
+		Scopes:        pending.Scopes,
+		// Fresh per-leg secrets
+		InternalState:        secrets.State,
+		UpstreamPKCEVerifier: secrets.PKCEVerifier,
+		UpstreamNonce:        secrets.Nonce,
+		// Chain state
+		UpstreamProviderName: nextProvider,
+		SessionID:            sessionID,
+		// Carry resolved identity from first leg
+		ResolvedUserID:    subject,
+		ResolvedUserName:  name,
+		ResolvedUserEmail: email,
+		CreatedAt:         time.Now(),
+	}
+
+	if err := h.storage.StorePendingAuthorization(ctx, secrets.State, nextPending); err != nil {
+		slog.Error("failed to store next chain leg", "error", err)
+		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to continue authorization chain"))
+		return
+	}
+
+	// Build authorization URL for next upstream
+	var authOpts []upstream.AuthorizationOption
+	if secrets.Nonce != "" {
+		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
+	}
+	nextUpstream, ok := h.upstreams[nextProvider]
+	if !ok {
+		slog.Error("next upstream provider not found in map", "provider", nextProvider)
+		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
+		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider configuration error"))
+		return
+	}
+	nextURL, err := nextUpstream.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
+	if err != nil {
+		slog.Error("failed to build next upstream authorization URL", "error", err)
+		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
+		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
+		return
+	}
+
+	http.Redirect(w, req, nextURL, http.StatusFound)
 }

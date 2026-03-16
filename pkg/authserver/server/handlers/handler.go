@@ -15,6 +15,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -104,4 +105,21 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 	r.Get("/.well-known/jwks.json", h.JWKSHandler)
 	r.Get("/.well-known/oauth-authorization-server", h.OAuthDiscoveryHandler)
 	r.Get("/.well-known/openid-configuration", h.OIDCDiscoveryHandler)
+}
+
+// nextMissingUpstream returns the name of the next upstream provider in the
+// authorization chain that does not yet have stored tokens for this session.
+// Returns empty string if all upstreams are satisfied.
+// Returns an error if the storage lookup fails.
+func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (string, error) {
+	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("failed to check upstream token state: %w", err)
+	}
+	for _, name := range h.upstreamOrder {
+		if _, ok := stored[name]; !ok {
+			return name, nil
+		}
+	}
+	return "", nil
 }

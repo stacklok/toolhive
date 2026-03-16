@@ -178,17 +178,16 @@ func (s *server) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return s.storage
 }
 
-// UpstreamTokenRefresher returns a refresher that wraps the upstream provider
-// and storage to transparently refresh expired upstream tokens.
+// UpstreamTokenRefresher returns a refresher that wraps the upstream providers
+// and storage to transparently refresh expired upstream tokens. The refresher
+// dispatches to the correct provider based on each token's ProviderID.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	if len(s.upstreams) == 0 {
 		return nil
 	}
-	// TODO: Step 12 will change refresher to dispatch by provider name.
-	// For now, use the first upstream (preserves single-upstream behavior).
 	return &upstreamTokenRefresher{
-		provider: s.upstreams[s.upstreamOrder[0]],
-		storage:  s.storage,
+		providers: s.upstreams,
+		storage:   s.storage,
 	}
 }
 

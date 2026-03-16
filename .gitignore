@@ -47,3 +47,6 @@ coverage*
 crd-helm-wrapper
 cmd/vmcp/__debug_bin*
 /vmcp
+
+# Embedded VM init binary (built by task build-vm-init)
+pkg/container/gomicrovm/initbin/thv-vm-init

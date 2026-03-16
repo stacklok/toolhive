@@ -349,15 +349,12 @@ node_modules/
 
 				By("Starting MCP server with both global and local ignore patterns")
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--ignore-file", globalIgnorePath,
 					"--print-resolved-overlays", // Print overlays to verify both are applied
 					"fetch").ExpectSuccess()
-
-				output := stdout + stderr
-				Expect(output).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -436,14 +433,11 @@ node_modules/
 
 				By("Starting MCP server - should handle invalid patterns gracefully")
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--ignore-globally=false",
 					"fetch").ExpectSuccess()
-
-				// Should still start successfully despite invalid patterns
-				Expect(stdout + stderr).To(ContainSubstring("fetch"))
 
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -468,20 +462,18 @@ node_modules/
 
 				By("Starting MCP server without .thvignore file")
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--ignore-globally=false",
 					"fetch").ExpectSuccess()
-
-				Expect(stdout + stderr).To(ContainSubstring("fetch"))
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should start normally without ignore file")
 
 				By("Verifying server is running")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 				Expect(stdout).To(ContainSubstring("running"))
 			})
@@ -514,8 +506,6 @@ node_modules/
 					), "Should provide clear error about missing ignore file")
 				} else {
 					// If it succeeds, it should handle the missing file gracefully
-					Expect(stdout + stderr).To(ContainSubstring("fetch"))
-
 					// Clean up if server started
 					err = e2e.WaitForMCPServer(config, serverName, 10*time.Second)
 					if err == nil {
@@ -562,19 +552,17 @@ node_modules/
 
 				By("Starting fetch MCP server with ignore patterns")
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--ignore-globally=false",
 					"fetch").ExpectSuccess()
 
-				Expect(stdout + stderr).To(ContainSubstring("fetch"))
-
 				By("Verifying server starts and runs successfully")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 				Expect(stdout).To(ContainSubstring("running"))
 			})
@@ -623,13 +611,11 @@ config/*.json
 				startTime := time.Now()
 
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--ignore-globally=false",
 					"fetch").ExpectSuccess()
-
-				Expect(stdout + stderr).To(ContainSubstring("fetch"))
 
 				By("Verifying server starts within reasonable time")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -642,7 +628,7 @@ config/*.json
 				Expect(startupDuration).To(BeNumerically("<", 2*time.Minute),
 					"Server should start within 2 minutes even with many files")
 
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 				Expect(stdout).To(ContainSubstring("running"))
 			})

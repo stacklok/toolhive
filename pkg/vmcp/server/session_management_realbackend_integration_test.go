@@ -35,10 +35,10 @@ import (
 
 // startRealMCPBackend is defined in testutil_test.go as a shared test utility.
 
-// newRealTestServer builds a vMCP server with session management and and a
-// real SessionFactory. The BackendRegistry mock returns the backend at backendURL
-// so that CreateSession() opens a real HTTP connection to the MCP server.
-func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
+// newRealTestHandler builds the full vMCP handler backed by the MCP server at
+// backendURL. It is the low-level helper used by newRealTestServer and any test
+// that needs control over the httptest.Server configuration (e.g. WriteTimeout).
+func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -88,8 +88,15 @@ func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
 
 	handler, err := srv.Handler(context.Background())
 	require.NoError(t, err)
+	return handler
+}
 
-	ts := httptest.NewServer(handler)
+// newRealTestServer builds a vMCP server with session management and a real
+// SessionFactory. The BackendRegistry mock returns the backend at backendURL
+// so that CreateSession() opens a real HTTP connection to the MCP server.
+func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(newRealTestHandler(t, backendURL))
 	t.Cleanup(ts.Close)
 	return ts
 }

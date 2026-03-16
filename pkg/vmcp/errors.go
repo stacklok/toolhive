@@ -82,6 +82,29 @@ var (
 // code should prefer errors.Is() checks over these string-based functions.
 // These functions remain for backwards compatibility and as a fallback mechanism.
 
+// authErrorPatterns lists lowercase substrings that identify authentication errors.
+// Patterns cover multiple error formats:
+//   - Standard HTTP: "401 unauthorized", "403 forbidden", "http 401", "status code 401"
+//   - mcp-go SDK: ErrUnauthorized = "unauthorized (401)"
+//   - mcp-go generic: "request failed with status 401/403: ..."
+//   - Explicit messages: "authentication failed", "request unauthenticated", "access denied"
+var authErrorPatterns = []string{
+	"authentication failed",
+	"authentication error",
+	"401 unauthorized",
+	"403 forbidden",
+	"http 401",
+	"http 403",
+	"status code 401",
+	"status code 403",
+	"unauthorized (401)",
+	"request failed with status 401",
+	"request failed with status 403",
+	"request unauthenticated",
+	"request unauthorized",
+	"access denied",
+}
+
 // IsAuthenticationError checks if an error message indicates an authentication failure.
 // Uses case-insensitive pattern matching to detect various auth error formats from
 // HTTP libraries, MCP protocol errors, and authentication middleware.
@@ -89,36 +112,12 @@ func IsAuthenticationError(err error) bool {
 	if err == nil {
 		return false
 	}
-
 	errLower := strings.ToLower(err.Error())
-
-	// Check for explicit authentication failure messages
-	if strings.Contains(errLower, "authentication failed") ||
-		strings.Contains(errLower, "authentication error") {
-		return true
+	for _, pattern := range authErrorPatterns {
+		if strings.Contains(errLower, pattern) {
+			return true
+		}
 	}
-
-	// Check for HTTP 401/403 status codes with context.
-	// Match patterns like "401 Unauthorized", "HTTP 401", "status code 401".
-	// Also match mcp-go's ErrUnauthorized = "unauthorized (401)" which uses
-	// reversed order compared to the "401 unauthorized" pattern above.
-	if strings.Contains(errLower, "401 unauthorized") ||
-		strings.Contains(errLower, "unauthorized (401)") ||
-		strings.Contains(errLower, "403 forbidden") ||
-		strings.Contains(errLower, "http 401") ||
-		strings.Contains(errLower, "http 403") ||
-		strings.Contains(errLower, "status code 401") ||
-		strings.Contains(errLower, "status code 403") {
-		return true
-	}
-
-	// Check for explicit unauthenticated/unauthorized errors
-	if strings.Contains(errLower, "request unauthenticated") ||
-		strings.Contains(errLower, "request unauthorized") ||
-		strings.Contains(errLower, "access denied") {
-		return true
-	}
-
 	return false
 }
 
@@ -136,6 +135,17 @@ func IsTimeoutError(err error) bool {
 		strings.Contains(errLower, "context deadline exceeded")
 }
 
+// connectionErrorPatterns lists lowercase substrings that identify connection failures.
+// Covers network-level errors, broken pipes, and HTTP 5xx server errors.
+var connectionErrorPatterns = []string{
+	"connection refused", "connection reset", "no route to host",
+	"network is unreachable", "broken pipe", "connection closed",
+	"500 internal server error", "502 bad gateway",
+	"503 service unavailable", "504 gateway timeout",
+	"status code 500", "status code 502",
+	"status code 503", "status code 504",
+}
+
 // IsConnectionError checks if an error message indicates a connection failure.
 // Detects network-level errors like connection refused, reset, unreachable, etc.
 // Also detects broken pipes, EOF errors, and HTTP 5xx server errors that indicate
@@ -144,38 +154,16 @@ func IsConnectionError(err error) bool {
 	if err == nil {
 		return false
 	}
-
 	errStr := err.Error()
-	errLower := strings.ToLower(errStr)
-
-	// Check against list of known connection error patterns
-	networkPatterns := []string{
-		"connection refused", "connection reset", "no route to host",
-		"network is unreachable", "broken pipe", "connection closed",
-	}
-	for _, pattern := range networkPatterns {
-		if strings.Contains(errLower, pattern) {
-			return true
-		}
-	}
-
 	// EOF errors (be specific - check exact case to avoid false positives)
 	if strings.Contains(errStr, "EOF") {
 		return true
 	}
-
-	// HTTP 5xx server errors
-	httpErrorPatterns := []string{
-		"500 internal server error", "502 bad gateway",
-		"503 service unavailable", "504 gateway timeout",
-		"status code 500", "status code 502",
-		"status code 503", "status code 504",
-	}
-	for _, pattern := range httpErrorPatterns {
+	errLower := strings.ToLower(errStr)
+	for _, pattern := range connectionErrorPatterns {
 		if strings.Contains(errLower, pattern) {
 			return true
 		}
 	}
-
 	return false
 }

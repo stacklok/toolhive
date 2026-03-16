@@ -363,6 +363,91 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 		GinkgoWriter.Printf("   Circuit breaker state verified above; capability filtering covered by unit tests\n")
 	})
 
+	It("should report consistent health state in /status and /api/backends/health", func() {
+		By("Obtaining the vMCP NodePort")
+		nodePort := GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		// Fetch both endpoints in the same polling iteration so that a backend
+		// transitioning between states mid-comparison does not cause a spurious
+		// mismatch. Both snapshots must agree before the assertion passes.
+		//
+		// Backend IDs in /api/backends/health equal MCPServer names (set in
+		// k8s.go GetWorkloadAsVMCPBackend, ID = mcpServer.Name).
+		By("Polling until both endpoints agree on health state and unstable backend is unhealthy")
+		var (
+			lastStatusResp     *VMCPStatusResponse
+			lastBackendsHealth *VMCPBackendsHealthResponse
+		)
+		Eventually(func() error {
+			bh, err := GetVMCPBackendsHealth(nodePort)
+			if err != nil {
+				return fmt.Errorf("GET /api/backends/health: %w", err)
+			}
+			if !bh.MonitoringEnabled {
+				return fmt.Errorf("/api/backends/health: monitoring not enabled")
+			}
+			if len(bh.Backends) == 0 {
+				return fmt.Errorf("/api/backends/health: no backends listed")
+			}
+
+			sr, err := GetVMCPStatus(nodePort)
+			if err != nil {
+				return fmt.Errorf("GET /status: %w", err)
+			}
+			if len(sr.Backends) == 0 {
+				return fmt.Errorf("/status: no backends listed")
+			}
+
+			// Build name→health map from /status snapshot.
+			statusHealthByName := make(map[string]string, len(sr.Backends))
+			for _, b := range sr.Backends {
+				statusHealthByName[b.Name] = b.Health
+			}
+
+			// Both snapshots must agree on every backend in /api/backends/health.
+			for backendID, healthState := range bh.Backends {
+				statusHealth, found := statusHealthByName[backendID]
+				if !found {
+					return fmt.Errorf("backend %q in /api/backends/health but missing from /status", backendID)
+				}
+				if statusHealth != healthState.Status {
+					return fmt.Errorf("backend %q: /status=%q /api/backends/health=%q (inconsistent)",
+						backendID, statusHealth, healthState.Status)
+				}
+			}
+
+			// The unstable backend must be unhealthy in this consistent snapshot.
+			unstableHealthState, inHealth := bh.Backends[backend2Name]
+			if !inHealth {
+				return fmt.Errorf("unstable backend %q not found in /api/backends/health", backend2Name)
+			}
+			if unstableHealthState.Status == "healthy" {
+				return fmt.Errorf("unstable backend %q still healthy in /api/backends/health", backend2Name)
+			}
+			unstableStatusHealth, inStatus := statusHealthByName[backend2Name]
+			if !inStatus {
+				return fmt.Errorf("unstable backend %q not found in /status", backend2Name)
+			}
+			if unstableStatusHealth == "healthy" {
+				return fmt.Errorf("unstable backend %q still healthy in /status (issue #4103 regression)", backend2Name)
+			}
+
+			lastBackendsHealth = bh
+			lastStatusResp = sr
+			return nil
+		}, timeout, pollingInterval).Should(Succeed(),
+			"endpoints should converge on a consistent unhealthy state for the unstable backend")
+
+		// Log the final consistent snapshot for debugging.
+		for _, b := range lastStatusResp.Backends {
+			healthEntry := lastBackendsHealth.Backends[b.Name]
+			if healthEntry != nil {
+				GinkgoWriter.Printf("✓ backend=%s  /status=%s  /api/backends/health=%s\n",
+					b.Name, b.Health, healthEntry.Status)
+			}
+		}
+	})
+
 	It("should close circuit breaker when backend recovers", func() {
 		By("Restoring unstable backend by fixing the image")
 		backend := &mcpv1alpha1.MCPServer{}

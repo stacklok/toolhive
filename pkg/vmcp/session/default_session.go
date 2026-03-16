@@ -44,7 +44,7 @@ var (
 //
 // # Lifecycle
 //
-//  1. Created by defaultMultiSessionFactory.MakeSession (Phase 1: purely additive).
+//  1. Created by defaultMultiSessionFactory.MakeSessionWithID (Phase 1: purely additive).
 //  2. CallTool / ReadResource / GetPrompt admit via queue, perform I/O, then call done.
 //  3. Close() drains the queue (blocking until all in-flight ops finish), then
 //     closes all backend sessions.

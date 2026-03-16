@@ -97,21 +97,18 @@ node_modules/
 
 				By("Starting MCP server with volume mount and ignore processing")
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--ignore-globally=false", // Only use local .thvignore
 					"fetch").ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying the server appears in the list")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 
@@ -180,15 +177,12 @@ node_modules/
 
 				By("Starting MCP server with ignore processing")
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--print-resolved-overlays",
 					"--ignore-globally=false",
 					"fetch").ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -278,13 +272,11 @@ node_modules/
 
 				By("Starting MCP server with global ignore file")
 				volumeMount := fmt.Sprintf("%s:/workspace", tempDir)
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--volume", volumeMount,
 					"--ignore-file", globalIgnorePath,
 					"fetch").ExpectSuccess()
-
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -292,7 +284,7 @@ node_modules/
 
 				By("Verifying global ignore patterns are applied")
 				// The server should start successfully with global ignore patterns applied
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})

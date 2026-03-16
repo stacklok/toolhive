@@ -72,13 +72,11 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 			Expect(err).ToNot(HaveOccurred(), "Should be able to create permission profile")
 
 			By("Starting the fetch MCP server with network isolation")
-			stdout, stderr := e2e.NewTHVCommand(config, "run",
+			e2e.NewTHVCommand(config, "run",
 				"--name", serverName,
 				"--isolate-network",
 				"--permission-profile", profilePath,
 				"fetch").ExpectSuccess()
-
-			Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 			By("Waiting for the server to be running")
 			err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)

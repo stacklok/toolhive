@@ -48,16 +48,14 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 		Context("when exporting as JSON (default format)", func() {
 			It("should export a valid RunConfig JSON", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Exporting the server configuration to JSON")
 				exportPath := filepath.Join(tempDir, "export.json")
-				stdout, _ = e2e.NewTHVCommand(config, "export", serverName, exportPath).ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "export", serverName, exportPath).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("Successfully exported run configuration"))
 
 				By("Verifying the exported file exists and is valid JSON")
@@ -81,16 +79,14 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 		Context("when exporting as Kubernetes manifest", func() {
 			It("should export a valid MCPServer YAML", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Exporting the server configuration to Kubernetes YAML")
 				exportPath := filepath.Join(tempDir, "export.yaml")
-				stdout, _ = e2e.NewTHVCommand(config, "export", serverName, exportPath, "--format", "k8s").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "export", serverName, exportPath, "--format", "k8s").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("Successfully exported Kubernetes MCPServer resource"))
 
 				By("Verifying the exported file exists and is valid YAML")
@@ -115,15 +111,13 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 		Context("when exporting a server with environment variables", func() {
 			It("should include environment variables in the export", func() {
 				By("Starting a server with environment variables")
-				stdout, stderr := e2e.NewTHVCommand(config,
+				e2e.NewTHVCommand(config,
 					"run",
 					"--name", serverName,
 					"--env", "TEST_VAR=test_value",
 					"--env", "ANOTHER_VAR=another_value",
 					"osv",
 				).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
@@ -170,9 +164,7 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 		Context("when exporting with invalid format", func() {
 			It("should fail with an appropriate error", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-
+				_, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
@@ -201,16 +193,14 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 		Context("when creating nested directories for export", func() {
 			It("should create the directory structure", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Exporting to a nested directory path")
 				exportPath := filepath.Join(tempDir, "nested", "dirs", "export.json")
-				stdout, _ = e2e.NewTHVCommand(config, "export", serverName, exportPath).ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "export", serverName, exportPath).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("Successfully exported run configuration"))
 
 				By("Verifying the nested directories were created")

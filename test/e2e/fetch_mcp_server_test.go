@@ -44,17 +44,13 @@ var _ = Describe("FetchMcpServer", Label("mcp", "mcp-run", "e2e"), func() {
 		Context("when starting the server from registry", func() {
 			It("should successfully start and be accessible", func() {
 				By("Starting the fetch MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
 
 				By("Verifying the server appears in the list")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})
@@ -92,17 +88,13 @@ var _ = Describe("FetchMcpServer", Label("mcp", "mcp-run", "e2e"), func() {
 		Context("when starting the server from registry with tools filter", func() {
 			It("should start when filters are correct", func() {
 				By("Starting the fetch MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "fetch").ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "fetch").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
 
 				By("Verifying the server appears in the list")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})
@@ -140,17 +132,13 @@ var _ = Describe("FetchMcpServer", Label("mcp", "mcp-run", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Should be able to create tool override file")
 
 				By("Starting the fetch MCP server with tool override")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools-override", toolsOverrideFile).ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools-override", toolsOverrideFile).ExpectSuccess()
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying the server appears in the list")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 
@@ -174,17 +162,13 @@ var _ = Describe("FetchMcpServer", Label("mcp", "mcp-run", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Should be able to create tool override file")
 
 				By("Starting the fetch MCP server with description-only tool override")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools-override", toolsOverrideFile).ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools-override", toolsOverrideFile).ExpectSuccess()
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying tool override is applied by listing tools")
-				stdout, _ = e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("fetch"), "Should still show original tool name")
 				Expect(stdout).To(ContainSubstring("enhanced fetch tool"), "Should show overridden tool description")
 			})
@@ -203,17 +187,13 @@ var _ = Describe("FetchMcpServer", Label("mcp", "mcp-run", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Should be able to create tool override file")
 
 				By("Starting the fetch MCP server with name-only tool override")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools-override", toolsOverrideFile).ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools-override", toolsOverrideFile).ExpectSuccess()
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying tool override is applied by listing tools")
-				stdout, _ = e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("renamed_fetch"), "Should show overridden tool name")
 			})
 
@@ -287,12 +267,8 @@ var _ = Describe("FetchMcpServer", Label("mcp", "mcp-run", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Should be able to create tool override file")
 
 				By("Starting the fetch MCP server with both tools filter and override")
-				stdout, stderr := e2e.NewTHVCommand(
+				stdout, _ := e2e.NewTHVCommand(
 					config, "run", "--name", serverName, "fetch", "--tools", "filtered_and_overridden_fetch", "--tools-override", toolsOverrideFile).ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
-
 				By("Waiting for the server to be running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")

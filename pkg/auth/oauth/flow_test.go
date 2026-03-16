@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1221,9 +1222,9 @@ func TestAuthStyleInParams_StrictPublicClientServer(t *testing.T) {
 	// Simulate a strict OAuth 2.1 server that rejects Basic Auth for public clients.
 	// This mirrors Datadog's behavior: public clients (token_endpoint_auth_method=none)
 	// MUST send client_id in the POST body, not via Authorization header.
-	requestCount := 0
+	var requestCount atomic.Int32
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
+		requestCount.Add(1)
 
 		err := r.ParseForm()
 		require.NoError(t, err)
@@ -1314,7 +1315,7 @@ func TestAuthStyleInParams_StrictPublicClientServer(t *testing.T) {
 	}
 
 	// The server should have received exactly one request (no retry needed)
-	assert.Equal(t, 1, requestCount,
+	assert.Equal(t, int32(1), requestCount.Load(),
 		"strict server should receive exactly one request when AuthStyleInParams is used; "+
 			"multiple requests indicate AuthStyleAutoDetect is trying Basic Auth first")
 }

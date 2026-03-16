@@ -117,6 +117,16 @@ func NewFlow(config *Config) (*Flow, error) {
 		redirectURL = fmt.Sprintf("http://localhost:%d/callback", port)
 	}
 
+	// Public clients (no secret) must use AuthStyleInParams: strict OAuth 2.1 servers
+	// (e.g. Datadog) reject Basic Auth for token_endpoint_auth_method=none clients and
+	// consume the single-use auth code in doing so, causing a retry to fail with
+	// invalid_grant. Confidential clients use AutoDetect so servers that mandate
+	// client_secret_basic are not broken.
+	authStyle := oauth2.AuthStyleInParams
+	if config.ClientSecret != "" {
+		authStyle = oauth2.AuthStyleAutoDetect
+	}
+
 	// Create OAuth2 config
 	oauth2Config := &oauth2.Config{
 		ClientID:     config.ClientID,
@@ -126,7 +136,7 @@ func NewFlow(config *Config) (*Flow, error) {
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   config.AuthURL,
 			TokenURL:  config.TokenURL,
-			AuthStyle: oauth2.AuthStyleInParams,
+			AuthStyle: authStyle,
 		},
 	}
 

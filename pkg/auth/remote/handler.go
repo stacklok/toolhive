@@ -250,6 +250,16 @@ func (h *Handler) tryRestoreFromCachedTokens(
 	// Resolve client credentials - prefer cached DCR credentials over config
 	clientID, clientSecret := h.resolveClientCredentials(ctx)
 
+	// Public clients (no secret) must use AuthStyleInParams: strict OAuth 2.1 servers
+	// (e.g. Datadog) reject Basic Auth for token_endpoint_auth_method=none clients and
+	// consume the single-use auth code in doing so. Confidential clients (DCR or
+	// statically configured) use AutoDetect so servers that mandate client_secret_basic
+	// are not broken.
+	authStyle := oauth2.AuthStyleInParams
+	if clientSecret != "" {
+		authStyle = oauth2.AuthStyleAutoDetect
+	}
+
 	// Build OAuth2 config for token refresh
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,
@@ -258,7 +268,7 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   h.config.AuthorizeURL,
 			TokenURL:  h.config.TokenURL,
-			AuthStyle: oauth2.AuthStyleInParams,
+			AuthStyle: authStyle,
 		},
 	}
 

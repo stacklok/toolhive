@@ -765,6 +765,92 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
 		})
 	})
+
+	// Legacy migration tests — verify backwards compatibility with
+	// pre-multi-upstream deployments that stored tokens under the old
+	// key format (upstream:{sessionID}) without a providerName suffix.
+	// TODO: Remove these tests when the legacy fallback is removed.
+
+	t.Run("legacy key format migrated on read", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write directly to the legacy key format (upstream:{sessionID})
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "legacy-session")
+			legacyData := `{"provider_id":"oidc","access_token":"legacy-at","refresh_token":"legacy-rt","expires_at":0,"user_id":"user-1","upstream_subject":"sub-1","client_id":"client-1"}`
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			// Read via new interface — should find legacy key and migrate
+			tokens, err := s.GetUpstreamTokens(ctx, "legacy-session", "default")
+			require.NoError(t, err)
+			require.NotNil(t, tokens)
+			assert.Equal(t, "legacy-at", tokens.AccessToken)
+			assert.Equal(t, "legacy-rt", tokens.RefreshToken)
+			assert.Equal(t, "user-1", tokens.UserID)
+			assert.Equal(t, "sub-1", tokens.UpstreamSubject)
+			assert.Equal(t, "client-1", tokens.ClientID)
+
+			// ProviderID should be patched to the logical name
+			assert.Equal(t, "default", tokens.ProviderID, "ProviderID should be patched from 'oidc' to logical name")
+
+			// Legacy key should be deleted
+			exists, err := s.client.Exists(ctx, legacyKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(0), exists, "legacy key should be deleted after migration")
+
+			// New key should exist
+			newKey := redisUpstreamKey(s.keyPrefix, "legacy-session", "default")
+			exists, err = s.client.Exists(ctx, newKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), exists, "new key should exist after migration")
+
+			// Subsequent reads should use the new key directly (no fallback)
+			tokens2, err := s.GetUpstreamTokens(ctx, "legacy-session", "default")
+			require.NoError(t, err)
+			assert.Equal(t, "legacy-at", tokens2.AccessToken)
+			assert.Equal(t, "default", tokens2.ProviderID)
+		})
+	})
+
+	t.Run("legacy expired tokens migrated with ErrExpired", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write legacy token with expired access token
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "legacy-expired")
+			expiredAt := time.Now().Add(-time.Hour).Unix()
+			legacyData := fmt.Sprintf(`{"provider_id":"oauth2","access_token":"expired-at","refresh_token":"valid-rt","expires_at":%d,"user_id":"user-2"}`, expiredAt)
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			// Should return tokens with ErrExpired (for refresh purposes)
+			tokens, err := s.GetUpstreamTokens(ctx, "legacy-expired", "default")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrExpired)
+			require.NotNil(t, tokens)
+			assert.Equal(t, "expired-at", tokens.AccessToken)
+			assert.Equal(t, "valid-rt", tokens.RefreshToken)
+			assert.Equal(t, "default", tokens.ProviderID, "ProviderID should be patched even for expired tokens")
+		})
+	})
+
+	t.Run("legacy fallback skipped when new key exists", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write both legacy and new format keys
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "both-keys")
+			legacyData := `{"provider_id":"oidc","access_token":"old-token","expires_at":0}`
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			newTokens := &UpstreamTokens{ProviderID: "default", AccessToken: "new-token", ExpiresAt: time.Now().Add(time.Hour)}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "both-keys", "default", newTokens))
+
+			// Should return new-format tokens, not legacy
+			tokens, err := s.GetUpstreamTokens(ctx, "both-keys", "default")
+			require.NoError(t, err)
+			assert.Equal(t, "new-token", tokens.AccessToken)
+			assert.Equal(t, "default", tokens.ProviderID)
+
+			// Legacy key should NOT be deleted (was never read)
+			exists, err := s.client.Exists(ctx, legacyKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), exists, "legacy key should be untouched when new key exists")
+		})
+	})
 }
 
 // --- Pending Authorization Tests ---

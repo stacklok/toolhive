@@ -958,7 +958,7 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID, provide
 		// TODO: Remove this fallback once all deployments have migrated.
 		legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, sessionID)
 		legacyTokens, legacyErr := s.getUpstreamTokensFromKey(ctx, legacyKey)
-		if legacyErr != nil || legacyTokens == nil {
+		if (legacyErr != nil && !errors.Is(legacyErr, ErrExpired)) || legacyTokens == nil {
 			return tokens, err
 		}
 		return s.migrateLegacyUpstreamTokens(ctx, sessionID, providerName, legacyKey, legacyTokens)

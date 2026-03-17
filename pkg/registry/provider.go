@@ -23,4 +23,10 @@ type Provider interface {
 
 	// ListAvailableSkills returns skills discovered from the registry data
 	ListAvailableSkills() ([]types.Skill, error)
+
+	// GetSkill returns a specific skill by namespace and name
+	GetSkill(namespace, name string) (*types.Skill, error)
+
+	// SearchSkills searches for skills matching the query
+	SearchSkills(query string) ([]types.Skill, error)
 }

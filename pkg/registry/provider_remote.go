@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -192,6 +193,38 @@ func (p *RemoteRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
 	}
 
 	return skills, nil
+}
+
+// GetSkill returns a specific skill by namespace and name.
+func (p *RemoteRegistryProvider) GetSkill(namespace, name string) (*types.Skill, error) {
+	skills, err := p.ListAvailableSkills()
+	if err != nil {
+		return nil, err
+	}
+	for i := range skills {
+		if skills[i].Namespace == namespace && skills[i].Name == name {
+			return &skills[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SearchSkills searches for skills matching the query in name or description.
+func (p *RemoteRegistryProvider) SearchSkills(query string) ([]types.Skill, error) {
+	skills, err := p.ListAvailableSkills()
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(query)
+	var results []types.Skill
+	for _, s := range skills {
+		if strings.Contains(strings.ToLower(s.Name), query) ||
+			strings.Contains(strings.ToLower(s.Description), query) ||
+			strings.Contains(strings.ToLower(s.Namespace), query) {
+			results = append(results, s)
+		}
+	}
+	return results, nil
 }
 
 func (p *RemoteRegistryProvider) setSkills(skills []types.Skill) {

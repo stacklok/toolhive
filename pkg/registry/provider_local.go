@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 
 	catalog "github.com/stacklok/toolhive-catalog/pkg/catalog/toolhive"
@@ -122,6 +123,38 @@ func (p *LocalRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
 	}
 
 	return skills, nil
+}
+
+// GetSkill returns a specific skill by namespace and name.
+func (p *LocalRegistryProvider) GetSkill(namespace, name string) (*types.Skill, error) {
+	skills, err := p.ListAvailableSkills()
+	if err != nil {
+		return nil, err
+	}
+	for i := range skills {
+		if skills[i].Namespace == namespace && skills[i].Name == name {
+			return &skills[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SearchSkills searches for skills matching the query in name or description.
+func (p *LocalRegistryProvider) SearchSkills(query string) ([]types.Skill, error) {
+	skills, err := p.ListAvailableSkills()
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(query)
+	var results []types.Skill
+	for _, s := range skills {
+		if strings.Contains(strings.ToLower(s.Name), query) ||
+			strings.Contains(strings.ToLower(s.Description), query) ||
+			strings.Contains(strings.ToLower(s.Namespace), query) {
+			results = append(results, s)
+		}
+	}
+	return results, nil
 }
 
 // parseRegistryData parses JSON data into a Registry struct

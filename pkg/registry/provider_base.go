@@ -126,6 +126,16 @@ func (*BaseProvider) ListAvailableSkills() ([]types.Skill, error) {
 	return nil, nil
 }
 
+// GetSkill returns nil for providers that don't support skills.
+func (*BaseProvider) GetSkill(_, _ string) (*types.Skill, error) {
+	return nil, nil
+}
+
+// SearchSkills returns nil for providers that don't support skills.
+func (*BaseProvider) SearchSkills(_ string) ([]types.Skill, error) {
+	return nil, nil
+}
+
 // matchesQuery checks if a server matches the search query
 func matchesQuery(name, description string, tags []string, query string) bool {
 	// Search in name

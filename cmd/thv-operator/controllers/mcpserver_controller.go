@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -47,7 +47,7 @@ import (
 type MCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
+	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 	ImageValidation  validation.ImageValidation
 }
@@ -641,7 +641,7 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
 		if r.Recorder != nil {
-			r.Recorder.Eventf(mcpServer, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
+			r.Recorder.Eventf(mcpServer, nil, corev1.EventTypeWarning, "InvalidPodTemplateSpec", "InvalidPodTemplateSpec",
 				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
 		}
 

@@ -21,7 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -39,7 +39,7 @@ import (
 type MCPRemoteProxyReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
+	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
@@ -405,7 +405,7 @@ func (r *MCPRemoteProxyReconciler) failValidation(proxy *mcpv1alpha1.MCPRemotePr
 // recordValidationEvent emits a Warning event for a validation failure.
 func (r *MCPRemoteProxyReconciler) recordValidationEvent(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
 	if r.Recorder != nil {
-		r.Recorder.Event(proxy, corev1.EventTypeWarning, reason, message)
+		r.Recorder.Eventf(proxy, nil, corev1.EventTypeWarning, reason, reason, message)
 	}
 }
 

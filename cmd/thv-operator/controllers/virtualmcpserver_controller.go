@@ -22,7 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -87,7 +87,7 @@ type AuthConfigError struct {
 type VirtualMCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
+	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
@@ -483,7 +483,7 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "InvalidPodTemplateSpec", "InvalidPodTemplateSpec",
 				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
 		}
 
@@ -537,7 +537,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Record event for secret validation failure
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "SecretValidationFailed",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "SecretValidationFailed", "SecretValidationFailed",
 				"Secret validation failed: %v", err)
 		}
 		return ctrl.Result{}, err
@@ -691,7 +691,7 @@ func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 		if err != nil {
 			ctxLogger.Error(err, "Failed to generate HMAC secret")
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "HMACSecretGenerationFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "HMACSecretGenerationFailed", "HMACSecretGenerationFailed",
 					"Failed to generate HMAC secret: %v", err)
 			}
 			return fmt.Errorf("failed to generate HMAC secret: %w", err)
@@ -727,7 +727,7 @@ func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 		if err := r.Create(ctx, newSecret); err != nil {
 			ctxLogger.Error(err, "Failed to create HMAC secret")
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "HMACSecretCreationFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "HMACSecretCreationFailed", "HMACSecretCreationFailed",
 					"Failed to create HMAC secret: %v", err)
 			}
 			return fmt.Errorf("failed to create HMAC secret: %w", err)
@@ -735,7 +735,7 @@ func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 
 		// Record success event
 		if r.Recorder != nil {
-			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "HMACSecretCreated",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "HMACSecretCreated", "HMACSecretCreated",
 				"HMAC secret created for session token binding")
 		}
 		return nil
@@ -748,7 +748,7 @@ func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 	if err := r.validateHMACSecret(ctx, vmcp, secret); err != nil {
 		ctxLogger.Error(err, "Existing HMAC secret is invalid", "Secret.Name", secretName)
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "HMACSecretValidationFailed",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "HMACSecretValidationFailed", "HMACSecretValidationFailed",
 				"Existing HMAC secret validation failed: %v", err)
 		}
 		return fmt.Errorf("existing HMAC secret validation failed: %w", err)
@@ -897,14 +897,14 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 			ctxLogger.Error(err, "Failed to create new Deployment")
 			// Record event for deployment creation failure
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "DeploymentCreationFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentCreationFailed", "DeploymentCreationFailed",
 					"Failed to create Deployment: %v", err)
 			}
 			return ctrl.Result{}, err
 		}
 		// Record event for successful deployment creation
 		if r.Recorder != nil {
-			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentCreated",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentCreated", "DeploymentCreated",
 				"Deployment created successfully")
 		}
 		// Return empty result to continue with rest of reconciliation (Service, status update, etc.)
@@ -941,7 +941,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 			ctxLogger.Error(err, "Failed to update Deployment")
 			// Record event for deployment update failure
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "DeploymentUpdateFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentUpdateFailed", "DeploymentUpdateFailed",
 					"Failed to update Deployment: %v", err)
 			}
 			// Return error to trigger reconcile retry (handles transient failures and conflicts)
@@ -949,7 +949,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		}
 		// Record event for successful deployment update (config change triggers rollout)
 		if r.Recorder != nil {
-			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentUpdated",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentUpdated", "DeploymentUpdated",
 				"Deployment updated, rolling out new configuration")
 		}
 		// Return empty result to continue with rest of reconciliation
@@ -983,14 +983,14 @@ func (r *VirtualMCPServerReconciler) ensureService(
 			ctxLogger.Error(err, "Failed to create new Service")
 			// Record event for service creation failure
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "ServiceCreationFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "ServiceCreationFailed", "ServiceCreationFailed",
 					"Failed to create Service: %v", err)
 			}
 			return ctrl.Result{}, err
 		}
 		// Record event for successful service creation
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "ServiceCreated",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "ServiceCreated", "ServiceCreated",
 				"Service %s created successfully", serviceName)
 		}
 		// Return empty result to continue with rest of reconciliation
@@ -1905,7 +1905,7 @@ func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "EmbeddingServerRefNotFound",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServerRefNotFound", "EmbeddingServerRefNotFound",
 				"Referenced EmbeddingServer %s not found", refName)
 		}
 		return err

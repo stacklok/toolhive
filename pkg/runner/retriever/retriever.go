@@ -234,14 +234,13 @@ func handleRegistryLookup(
 			return serverOrImage, nil, server, nil
 		}
 		// It's a container server, get the ImageMetadata
-		imageMetadata, err = provider.GetImageServer(serverOrImage)
-		if err != nil {
-			// This shouldn't happen since we just found it, but handle it anyway
-			slog.Debug("ImageMetadata not found in registry", "server", serverOrImage, "error", err)
-			imageToUse = serverOrImage
+		if imgMeta, ok := server.(*types.ImageMetadata); ok {
+			imageMetadata = imgMeta
+			imageToUse = imgMeta.Image
+			slog.Debug("Found imageMetadata in registry", "server", serverOrImage)
 		} else {
-			slog.Debug("Found imageMetadata in registry", "server", serverOrImage, "metadata", imageMetadata)
-			imageToUse = imageMetadata.Image
+			slog.Debug("ImageMetadata not found in registry: could not cast", "server", serverOrImage)
+			imageToUse = serverOrImage
 		}
 	} else {
 		// Server not found in registry, treat as a direct image reference

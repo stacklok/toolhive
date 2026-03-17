@@ -4,6 +4,8 @@
       "Bash(go test:*)",
       "Bash(task test)",
       "Bash(task lint)",
+      "Bash(task lint-fix)",
+      "Bash(task license-fix)",
       "Bash(golangci-lint run:*)",
       "Bash(go doc:*)",
       "WebFetch(domain:modelcontextprotocol.io)",
@@ -27,10 +29,22 @@
       "Bash(helm template:*)",
       "Bash(git log:*)",
       "Bash(ct lint:*)",
-      "Bash(helm-docs --dry-run)",
-      "Bash(pre-commit run:*)"
+      "Bash(helm-docs --dry-run)"
     ],
     "deny": []
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && changed_file=\"$CLAUDE_TOOL_ARG_file_path\"; if [ -n \"$changed_file\" ] && echo \"$changed_file\" | grep -q '\\.go$'; then task lint-fix 2>/dev/null; task license-fix 2>/dev/null; fi; exit 0"
+          }
+        ]
+      }
+    ]
   },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"

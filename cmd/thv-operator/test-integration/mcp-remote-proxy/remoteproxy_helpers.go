@@ -142,6 +142,74 @@ func (rb *RemoteProxyBuilder) WithInlineOIDCConfig(issuer, audience string, inse
 	return rb
 }
 
+// WithRemoteURL overrides the default remote URL
+func (rb *RemoteProxyBuilder) WithRemoteURL(url string) *RemoteProxyBuilder {
+	rb.proxy.Spec.RemoteURL = url
+	return rb
+}
+
+// WithInlineOIDCConfigAndJWKS sets an inline OIDC config with a custom JWKS URL
+func (rb *RemoteProxyBuilder) WithInlineOIDCConfigAndJWKS(
+	issuer, audience, jwksURL string,
+) *RemoteProxyBuilder {
+	rb.proxy.Spec.OIDCConfig = mcpv1alpha1.OIDCConfigRef{
+		Type: mcpv1alpha1.OIDCConfigTypeInline,
+		Inline: &mcpv1alpha1.InlineOIDCConfig{
+			Issuer:   issuer,
+			Audience: audience,
+			JWKSURL:  jwksURL,
+		},
+	}
+	return rb
+}
+
+// WithInlineAuthzConfig sets an inline authz config with Cedar policies
+func (rb *RemoteProxyBuilder) WithInlineAuthzConfig(policies []string) *RemoteProxyBuilder {
+	rb.proxy.Spec.AuthzConfig = &mcpv1alpha1.AuthzConfigRef{
+		Type: mcpv1alpha1.AuthzConfigTypeInline,
+		Inline: &mcpv1alpha1.InlineAuthzConfig{
+			Policies: policies,
+		},
+	}
+	return rb
+}
+
+// WithAuthzConfigMapRef sets an authz config referencing a ConfigMap
+func (rb *RemoteProxyBuilder) WithAuthzConfigMapRef(name, key string) *RemoteProxyBuilder {
+	rb.proxy.Spec.AuthzConfig = &mcpv1alpha1.AuthzConfigRef{
+		Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
+		ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+			Name: name,
+			Key:  key,
+		},
+	}
+	return rb
+}
+
+// WithHeaderFromSecret sets a header forward config that references a secret
+func (rb *RemoteProxyBuilder) WithHeaderFromSecret(
+	headerName, secretName, secretKey string,
+) *RemoteProxyBuilder {
+	rb.proxy.Spec.HeaderForward = &mcpv1alpha1.HeaderForwardConfig{
+		AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+			{
+				HeaderName: headerName,
+				ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: secretName,
+					Key:  secretKey,
+				},
+			},
+		},
+	}
+	return rb
+}
+
+// Build returns a deep copy of the MCPRemoteProxy without creating it in the cluster.
+// Use this when testing CRD-level validation that rejects the resource at creation time.
+func (rb *RemoteProxyBuilder) Build() *mcpv1alpha1.MCPRemoteProxy {
+	return rb.proxy.DeepCopy()
+}
+
 // Create builds and creates the MCPRemoteProxy in the cluster
 func (rb *RemoteProxyBuilder) Create(h *MCPRemoteProxyTestHelper) *mcpv1alpha1.MCPRemoteProxy {
 	proxy := rb.proxy.DeepCopy()

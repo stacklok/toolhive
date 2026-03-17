@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const testAPIEndpoint = "/v0.1/servers"
@@ -340,6 +342,127 @@ func TestIsValidRegistryJSON(t *testing.T) {
 				assert.Error(t, err, "isValidRegistryJSON should return an error")
 			} else {
 				assert.NoError(t, err, "isValidRegistryJSON should not return an error")
+			}
+		})
+	}
+}
+
+func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		content     string
+		expectError bool
+	}{
+		{
+			name: "valid upstream format with servers",
+			content: `{
+				"$schema": "https://cdn.mcpregistry.io/schema/v0/registry.json",
+				"version": "1.0.0",
+				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+				"data": {
+					"servers": [
+						{
+							"name": "io.example.test",
+							"description": "Test",
+							"packages": [{"registryType": "oci", "identifier": "test:latest", "transport": {"type": "stdio"}}]
+						}
+					]
+				}
+			}`,
+			expectError: false,
+		},
+		{
+			name: "upstream format with empty servers",
+			content: `{
+				"$schema": "https://cdn.mcpregistry.io/schema/v0/registry.json",
+				"version": "1.0.0",
+				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+				"data": {"servers": []}
+			}`,
+			expectError: true,
+		},
+		{
+			name: "legacy format still works",
+			content: `{
+				"version": "1.0.0",
+				"servers": {"test": {"image": "test:latest"}}
+			}`,
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := t.TempDir()
+			path := tmpDir + "/registry.json"
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0644))
+
+			err := validateRegistryFileStructure(path)
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestIsValidRegistryJSON_UpstreamFormat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		body          string
+		expectedError bool
+	}{
+		{
+			name: "valid upstream format",
+			body: `{
+				"$schema": "https://cdn.mcpregistry.io/schema/v0/registry.json",
+				"version": "1.0.0",
+				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+				"data": {
+					"servers": [
+						{
+							"name": "io.example.test",
+							"description": "Test",
+							"packages": [{"registryType": "oci", "identifier": "test:latest", "transport": {"type": "stdio"}}]
+						}
+					]
+				}
+			}`,
+			expectedError: false,
+		},
+		{
+			name: "upstream format with no servers",
+			body: `{
+				"$schema": "https://cdn.mcpregistry.io/schema/v0/registry.json",
+				"version": "1.0.0",
+				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+				"data": {"servers": []}
+			}`,
+			expectedError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := &http.Client{}
+			err := isValidRegistryJSON(client, server.URL)
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

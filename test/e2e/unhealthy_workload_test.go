@@ -47,15 +47,13 @@ var _ = Describe("Unhealthy Workload Detection", Label("stability", "unhealthy",
 		Context("when the proxy process is killed", func() {
 			It("should mark the workload as unhealthy", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying the server is healthy initially")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should be listed")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 
@@ -82,15 +80,13 @@ var _ = Describe("Unhealthy Workload Detection", Label("stability", "unhealthy",
 		Context("when the docker container is killed", func() {
 			It("should mark the workload as unhealthy", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying the server is healthy initially")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should be listed")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 

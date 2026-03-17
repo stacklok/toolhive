@@ -1417,8 +1417,21 @@ spec:
                               type: object
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
-                                "header_injection", "token_exchange"'
+                                "header_injection", "token_exchange", "upstream_inject"'
                               type: string
+                            upstreamInject:
+                              description: |-
+                                UpstreamInject contains configuration for upstream inject auth strategy.
+                                Used when Type = "upstream_inject".
+                              properties:
+                                providerName:
+                                  description: |-
+                                    ProviderName is the name of the upstream provider configured in the
+                                    embedded authorization server. Must match an entry in AuthServer.Upstreams.
+                                  type: string
+                              required:
+                              - providerName
+                              type: object
                           required:
                           - type
                           type: object
@@ -1493,8 +1506,21 @@ spec:
                             type: object
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
-                              "header_injection", "token_exchange"'
+                              "header_injection", "token_exchange", "upstream_inject"'
                             type: string
+                          upstreamInject:
+                            description: |-
+                              UpstreamInject contains configuration for upstream inject auth strategy.
+                              Used when Type = "upstream_inject".
+                            properties:
+                              providerName:
+                                description: |-
+                                  ProviderName is the name of the upstream provider configured in the
+                                  embedded authorization server. Must match an entry in AuthServer.Upstreams.
+                                type: string
+                            required:
+                            - providerName
+                            type: object
                         required:
                         - type
                         type: object

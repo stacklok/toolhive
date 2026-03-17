@@ -11,6 +11,16 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
+// Auth status constants for API responses.
+const (
+	// AuthStatusNone indicates no registry auth is configured.
+	AuthStatusNone = "none"
+	// AuthStatusConfigured indicates auth is configured but no cached tokens exist.
+	AuthStatusConfigured = "configured"
+	// AuthStatusAuthenticated indicates auth is configured with cached tokens from a prior login.
+	AuthStatusAuthenticated = "authenticated"
+)
+
 // AuthManager provides operations for managing registry authentication configuration.
 type AuthManager interface {
 	// SetOAuthAuth configures OAuth/OIDC authentication for the registry.
@@ -22,6 +32,11 @@ type AuthManager interface {
 
 	// GetAuthInfo returns the current auth type and whether tokens are cached.
 	GetAuthInfo() (authType string, hasCachedTokens bool)
+
+	// GetAuthStatus returns the auth status and auth type for API responses.
+	// Status is one of AuthStatusNone, AuthStatusConfigured, or AuthStatusAuthenticated.
+	// AuthType is "oauth" or empty string when no auth is configured.
+	GetAuthStatus() (status, authType string)
 }
 
 // DefaultAuthManager is the default implementation of AuthManager.
@@ -64,4 +79,16 @@ func (c *DefaultAuthManager) GetAuthInfo() (string, bool) {
 		cfg.RegistryAuth.OAuth.CachedRefreshTokenRef != ""
 
 	return cfg.RegistryAuth.Type, hasCachedTokens
+}
+
+// GetAuthStatus returns the auth status and auth type for API responses.
+func (c *DefaultAuthManager) GetAuthStatus() (string, string) {
+	authType, hasCachedTokens := c.GetAuthInfo()
+	if authType == "" {
+		return AuthStatusNone, ""
+	}
+	if hasCachedTokens {
+		return AuthStatusAuthenticated, authType
+	}
+	return AuthStatusConfigured, authType
 }

@@ -668,7 +668,13 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 		})
 
 		// Set up client credentials persister for DCR (Dynamic Client Registration)
-		authHandler.SetClientCredentialsPersister(func(clientID, clientSecret string) error {
+		authHandler.SetClientCredentialsPersister(func(
+			clientID string,
+			clientSecret string,
+			secretExpiry time.Time,
+			registrationAccessToken string,
+			registrationClientURI string,
+		) error {
 			// Store client ID directly (it's public information)
 			r.Config.RemoteAuthConfig.CachedClientID = clientID
 
@@ -689,12 +695,39 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 				r.Config.RemoteAuthConfig.CachedClientSecretRef = clientSecretSecretName
 			}
 
+			// Store secret expiry (zero value = never expires per RFC 7591 §3.2.1)
+			r.Config.RemoteAuthConfig.CachedSecretExpiry = secretExpiry
+
+			// Store registration_access_token securely (needed for RFC 7592 renewal)
+			if registrationAccessToken != "" {
+				regTokenSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
+					r.Config.Name,
+					"OAUTH_REG_TOKEN_",
+					secretManager,
+				)
+				if err != nil {
+					return fmt.Errorf("failed to generate registration token secret name: %w", err)
+				}
+
+				if err := authsecrets.StoreSecretInManagerWithProvider(ctx, regTokenSecretName, registrationAccessToken, secretManager); err != nil {
+					return fmt.Errorf("failed to store registration access token: %w", err)
+				}
+				r.Config.RemoteAuthConfig.CachedRegTokenRef = regTokenSecretName
+				slog.Debug("Stored DCR registration access token for RFC 7592 operations")
+			}
+
+			// Store registration_client_uri as plain text (not sensitive)
+			r.Config.RemoteAuthConfig.CachedRegClientURI = registrationClientURI
+
 			// Save the updated config to persist the credentials
 			if err := r.Config.SaveState(ctx); err != nil {
 				return fmt.Errorf("failed to save config with client credentials: %w", err)
 			}
 
-			slog.Debug("Stored DCR client credentials", "client_id", clientID)
+			slog.Debug("Stored DCR client credentials", "client_id", clientID,
+				"has_expiry", !secretExpiry.IsZero(),
+				"has_reg_token", registrationAccessToken != "",
+				"has_reg_uri", registrationClientURI != "")
 			return nil
 		})
 	}

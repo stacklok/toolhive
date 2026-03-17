@@ -509,6 +509,12 @@ type OAuthFlowConfig struct {
 	SkipBrowser          bool
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
+
+	// DCR renewal metadata — populated by handleDynamicRegistration and threaded
+	// into OAuthFlowResult so callers can persist the data for RFC 7592 operations.
+	SecretExpiry            time.Time // zero means the secret never expires
+	RegistrationAccessToken string    //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -524,6 +530,14 @@ type OAuthFlowResult struct {
 	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
 	ClientID     string
 	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
+
+	// DCR renewal metadata (RFC 7591 §3.2.1 / RFC 7592).
+	// SecretExpiry is zero when the provider did not issue an expiring secret.
+	// RegistrationAccessToken and RegistrationClientURI are empty when the
+	// provider does not support RFC 7592 management operations.
+	SecretExpiry            time.Time
+	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -581,7 +595,10 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 	return newOAuthFlow(ctx, oauthConfig, config)
 }
 
-// handleDynamicRegistration handles the dynamic client registration process
+// handleDynamicRegistration handles the dynamic client registration process.
+// It populates config with the client credentials AND the DCR renewal metadata
+// (SecretExpiry, RegistrationAccessToken, RegistrationClientURI) so that
+// callers can persist the full RFC 7592 context for later secret renewal.
 func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuthFlowConfig) error {
 	discoveredDoc, err := getDiscoveryDocument(ctx, issuer, config)
 	if err != nil {
@@ -600,6 +617,18 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 	if discoveredDoc.RegistrationEndpoint != "" {
 		config.AuthorizeURL = discoveredDoc.AuthorizationEndpoint
 		config.TokenURL = discoveredDoc.TokenEndpoint
+	}
+
+	// Store DCR renewal metadata for RFC 7592 operations.
+	// client_secret_expires_at == 0 means the secret never expires (RFC 7591 §3.2.1).
+	if registrationResponse.ClientSecretExpiresAt > 0 {
+		config.SecretExpiry = time.Unix(registrationResponse.ClientSecretExpiresAt, 0)
+	}
+	config.RegistrationAccessToken = registrationResponse.RegistrationAccessToken
+	config.RegistrationClientURI = registrationResponse.RegistrationClientURI
+
+	if registrationResponse.RegistrationAccessToken != "" {
+		slog.Debug("DCR response includes registration access token for RFC 7592 operations")
 	}
 
 	return nil
@@ -707,6 +736,10 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		Expiry:       tokenResult.Expiry,
 		ClientID:     oauthConfig.ClientID,
 		ClientSecret: oauthConfig.ClientSecret,
+		// DCR renewal metadata — populated only when dynamic registration was performed.
+		SecretExpiry:            config.SecretExpiry,
+		RegistrationAccessToken: config.RegistrationAccessToken,
+		RegistrationClientURI:   config.RegistrationClientURI,
 	}, nil
 }
 

@@ -10,6 +10,9 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1086,5 +1089,99 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Zero(t, cfg.DialTimeout)
 		assert.Zero(t, cfg.ReadTimeout)
 		assert.Zero(t, cfg.WriteTimeout)
+	})
+}
+
+// stubServer is a minimal authserver.Server implementation for testing RegisterHandlers.
+// It returns a fixed http.Handler that writes a 200 response with a marker body,
+// and no-ops on all other interface methods.
+type stubServer struct {
+	handler http.Handler
+}
+
+func (s *stubServer) Handler() http.Handler                                { return s.handler }
+func (*stubServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
+func (*stubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
+func (*stubServer) Close() error                                           { return nil }
+
+func TestRegisterHandlers(t *testing.T) {
+	t.Parallel()
+
+	// Build an EmbeddedAuthServer backed by a stub that echoes the request path.
+	stub := &stubServer{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "handled:%s", r.URL.Path)
+		}),
+	}
+	eas := &EmbeddedAuthServer{server: stub}
+
+	mux := http.NewServeMux()
+	eas.RegisterHandlers(mux)
+
+	registeredPaths := []string{
+		"/.well-known/openid-configuration",
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/jwks.json",
+	}
+
+	for _, path := range registeredPaths {
+		t.Run("registered path "+path, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			mux.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code,
+				"expected 200 for registered path %s", path)
+			assert.Equal(t, "handled:"+path, rec.Body.String(),
+				"expected handler to receive the original path")
+		})
+	}
+
+	// /oauth/ is registered as a prefix — any subpath should be routed.
+	oauthSubPaths := []string{
+		"/oauth/authorize",
+		"/oauth/token",
+		"/oauth/callback",
+		"/oauth/register",
+	}
+
+	for _, path := range oauthSubPaths {
+		t.Run("oauth prefix path "+path, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			mux.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code,
+				"expected 200 for oauth subpath %s", path)
+			assert.Equal(t, "handled:"+path, rec.Body.String(),
+				"expected handler to receive the original path")
+		})
+	}
+
+	t.Run("unregistered well-known path returns 404", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/unknown", nil)
+		mux.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusNotFound, rec.Code,
+			"expected 404 for unregistered well-known path")
+	})
+
+	t.Run("unregistered root path returns 404", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/other", nil)
+		mux.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusNotFound, rec.Code,
+			"expected 404 for unregistered root path")
 	})
 }

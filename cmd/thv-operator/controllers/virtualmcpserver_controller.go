@@ -268,7 +268,7 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 }
 
 // runValidations runs all pre-reconciliation validations (PodTemplateSpec, GroupRef,
-// CompositeToolRefs, EmbeddingServerRef).
+// CompositeToolRefs, EmbeddingServerRef, AuthServerConfig).
 // Returns (true, nil) to continue reconciliation.
 // Returns (false, nil) for spec validation errors that should NOT trigger requeue
 // (user must fix the spec; next reconciliation is triggered by spec changes).
@@ -319,6 +319,16 @@ func (r *VirtualMCPServerReconciler) runValidations(
 			}
 			return false, err
 		}
+	}
+
+	// Validate inline AuthServerConfig (when specified).
+	// Structural validation is handled by CRD Validate() — just set the success condition.
+	if vmcp.Spec.AuthServerConfig != nil {
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigValid,
+			"AuthServerConfig is valid",
+			metav1.ConditionTrue,
+		)
 	}
 
 	return true, nil
@@ -2243,12 +2253,16 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 }
 
 // vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig.
-// It checks both inline references (in outgoingAuth spec) and discovered references (via MCPServers in the group).
+// It checks authServerConfigRef, inline references (in outgoingAuth spec), and discovered references
+// (via MCPServers in the group).
 func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
+	// Note: AuthServerConfig is inline (not a ref), so it doesn't reference
+	// MCPExternalAuthConfig resources. Only outgoing auth refs are checked here.
+
 	if vmcp.Spec.OutgoingAuth == nil {
 		return false
 	}

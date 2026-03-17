@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -156,6 +157,54 @@ type Config struct {
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
+}
+
+// RuntimeConfig extends Config with runtime-only fields that are populated
+// post-deserialization by the converter (Kubernetes) or CLI loader.
+// These fields are never part of the CRD schema.
+type RuntimeConfig struct {
+	Config
+
+	// AuthServer holds the resolved auth server RunConfig for the embedded
+	// authorization server. Populated by the converter from the inline
+	// AuthServerConfig on VirtualMCPServerSpec.
+	AuthServer *AuthServerConfig
+}
+
+// AuthServerConfig wraps the authserver.RunConfig for the vMCP config model.
+// The RunConfig is stored as an unexported field to prevent reflection-based
+// tag validation from traversing into it (authserver.RunConfig uses snake_case
+// tags, while vMCP config enforces camelCase).
+type AuthServerConfig struct {
+	runConfig *authserver.RunConfig
+}
+
+// NewAuthServerConfig creates an AuthServerConfig wrapping the given RunConfig.
+func NewAuthServerConfig(rc *authserver.RunConfig) *AuthServerConfig {
+	return &AuthServerConfig{runConfig: rc}
+}
+
+// RunConfig returns the underlying authserver.RunConfig.
+func (c *AuthServerConfig) RunConfig() *authserver.RunConfig {
+	if c == nil {
+		return nil
+	}
+	return c.runConfig
+}
+
+// DeepCopyInto performs a shallow copy. Safe because RunConfig is read-only after construction.
+func (in *AuthServerConfig) DeepCopyInto(out *AuthServerConfig) {
+	*out = *in
+}
+
+// DeepCopy returns a shallow copy of the AuthServerConfig.
+func (in *AuthServerConfig) DeepCopy() *AuthServerConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(AuthServerConfig)
+	in.DeepCopyInto(out)
+	return out
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

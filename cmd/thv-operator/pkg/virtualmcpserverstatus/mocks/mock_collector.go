@@ -78,6 +78,18 @@ func (mr *MockStatusManagerMockRecorder) SetAuthConfiguredCondition(reason, mess
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAuthConfiguredCondition", reflect.TypeOf((*MockStatusManager)(nil).SetAuthConfiguredCondition), reason, message, status)
 }
 
+// SetAuthServerConfigValidatedCondition mocks base method.
+func (m *MockStatusManager) SetAuthServerConfigValidatedCondition(reason, message string, status v1.ConditionStatus) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetAuthServerConfigValidatedCondition", reason, message, status)
+}
+
+// SetAuthServerConfigValidatedCondition indicates an expected call of SetAuthServerConfigValidatedCondition.
+func (mr *MockStatusManagerMockRecorder) SetAuthServerConfigValidatedCondition(reason, message, status any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAuthServerConfigValidatedCondition", reflect.TypeOf((*MockStatusManager)(nil).SetAuthServerConfigValidatedCondition), reason, message, status)
+}
+
 // SetCompositeToolRefsValidatedCondition mocks base method.
 func (m *MockStatusManager) SetCompositeToolRefsValidatedCondition(reason, message string, status v1.ConditionStatus) {
 	m.ctrl.T.Helper()

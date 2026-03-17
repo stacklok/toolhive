@@ -335,6 +335,8 @@ func setRegistryFile(provider Provider, registryPath string) error {
 // isUpstreamRegistryFormat returns true if the JSON data appears to be in the
 // upstream MCP registry format. The key discriminator is the "data" wrapper
 // object — only the upstream format wraps servers inside it.
+// NOTE: keep in sync with isUpstreamFormat in pkg/registry/upstream_parser.go
+// (duplicated to avoid a circular import).
 func isUpstreamRegistryFormat(data []byte) bool {
 	var probe struct {
 		Data json.RawMessage `json:"data"`

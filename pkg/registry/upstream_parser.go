@@ -67,6 +67,8 @@ type upstreamFormatProbe struct {
 // registry format. The key discriminator is the "data" wrapper object — only
 // the upstream format wraps servers inside a "data" object. The "$schema" key
 // alone is not sufficient because the legacy format also includes one.
+// NOTE: keep in sync with isUpstreamRegistryFormat in pkg/config/registry.go
+// (duplicated to avoid a circular import).
 func isUpstreamFormat(data []byte) bool {
 	var probe upstreamFormatProbe
 	if err := json.Unmarshal(data, &probe); err != nil {

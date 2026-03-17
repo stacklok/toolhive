@@ -149,19 +149,17 @@ func (p *CachedAPIRegistryProvider) ForceRefresh() error {
 }
 
 // GetServer returns a specific server by name (overrides base to use cache).
+// Ensures the cache is loaded, then delegates to BaseProvider.GetServer which
+// handles both exact and short-name resolution.
 func (p *CachedAPIRegistryProvider) GetServer(name string) (types.ServerMetadata, error) {
-	// For individual server lookups, we could query the API directly for freshness,
-	// or use the cached registry. Let's use cached registry for consistency.
-	registry, err := p.GetRegistry()
-	if err != nil {
+	// Ensure cache is loaded
+	if _, err := p.GetRegistry(); err != nil {
 		return nil, err
 	}
 
-	// Try to find in cached registry first
-	if server, ok := registry.Servers[name]; ok {
-		return server, nil
-	}
-	if server, ok := registry.RemoteServers[name]; ok {
+	// Use BaseProvider.GetServer which includes short-name resolution
+	server, err := p.BaseProvider.GetServer(name)
+	if err == nil {
 		return server, nil
 	}
 
@@ -413,28 +411,23 @@ func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	var allSkills []types.Skill
-	var cursor string
-	for {
-		result, err := skillsClient.ListSkills(ctx, &api.SkillsListOptions{Cursor: cursor})
-		if err != nil {
-			// Return cached data if available, otherwise nil (skills are optional)
-			p.skillsMu.RLock()
-			defer p.skillsMu.RUnlock()
-			if p.skillsCacheSet {
-				return p.cachedSkills, nil
-			}
-			return nil, nil
+	// ListSkills auto-paginates internally, returning all skills in one call
+	result, err := skillsClient.ListSkills(ctx, nil)
+	if err != nil {
+		// Return cached data if available, otherwise nil (skills are optional)
+		p.skillsMu.RLock()
+		defer p.skillsMu.RUnlock()
+		if p.skillsCacheSet {
+			return p.cachedSkills, nil
 		}
-		for _, s := range result.Skills {
-			if s != nil {
-				allSkills = append(allSkills, *s)
-			}
+		return nil, nil
+	}
+
+	allSkills := make([]types.Skill, 0, len(result.Skills))
+	for _, s := range result.Skills {
+		if s != nil {
+			allSkills = append(allSkills, *s)
 		}
-		if result.NextCursor == "" {
-			break
-		}
-		cursor = result.NextCursor
 	}
 
 	// Update cache

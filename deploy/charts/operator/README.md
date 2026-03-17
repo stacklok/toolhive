@@ -99,8 +99,8 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.vmcpImage | string | `"ghcr.io/stacklok/toolhive/vmcp:v0.12.1"` | Image to use for Virtual MCP Server (vMCP) deployments |
 | operator.volumeMounts | list | `[]` | Additional volume mounts on the operator container |
 | operator.volumes | list | `[]` | Additional volumes to mount on the operator pod |
-| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:v0.6.3","serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}}` | All values for the registry API deployment and associated resources |
-| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:v0.6.3"` | Container image for the registry API |
+| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:v0.6.4","serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}}` | All values for the registry API deployment and associated resources |
+| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:v0.6.4"` | Container image for the registry API |
 | registryAPI.serviceAccount | object | `{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}` | Service account configuration for the registry API |
 | registryAPI.serviceAccount.annotations | object | `{}` | Annotations to add to the registry API service account |
 | registryAPI.serviceAccount.automountServiceAccountToken | bool | `true` | Automatically mount a ServiceAccount's API credentials |

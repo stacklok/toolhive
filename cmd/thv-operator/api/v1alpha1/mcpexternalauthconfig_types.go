@@ -238,8 +238,10 @@ const (
 type UpstreamProviderConfig struct {
 	// Name uniquely identifies this upstream provider.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
+	// Must be lowercase alphanumeric with hyphens (DNS-label-like).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9-]*$`
 	Name string `json:"name"`
 
 	// Type specifies the provider type: "oidc" or "oauth2"

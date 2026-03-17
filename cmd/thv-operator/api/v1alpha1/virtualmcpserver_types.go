@@ -73,6 +73,15 @@ type VirtualMCPServerSpec struct {
 	// The referenced EmbeddingServer must exist in the same namespace and be ready.
 	// +optional
 	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
+
+	// AuthServerConfig configures an embedded OAuth authorization server.
+	// When set, the vMCP server acts as an OIDC issuer, drives users through
+	// upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
+	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig
+	// so that tokens it issues are accepted by the vMCP's incoming auth middleware.
+	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
+	// +optional
+	AuthServerConfig *EmbeddedAuthServerConfig `json:"authServerConfig,omitempty"`
 }
 
 // EmbeddingServerRef references an existing EmbeddingServer resource by name.
@@ -225,6 +234,9 @@ const (
 
 	// ConditionTypeEmbeddingServerReady indicates whether the EmbeddingServer is ready
 	ConditionTypeEmbeddingServerReady = "EmbeddingServerReady"
+
+	// ConditionTypeAuthServerConfigValidated indicates whether the AuthServerConfig has been validated
+	ConditionTypeAuthServerConfigValidated = "AuthServerConfigValidated"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -282,6 +294,12 @@ const (
 
 	// ConditionReasonEmbeddingServerNotReady indicates the referenced EmbeddingServer is not ready
 	ConditionReasonEmbeddingServerNotReady = "EmbeddingServerNotReady"
+
+	// ConditionReasonAuthServerConfigValid indicates the AuthServerConfig is valid
+	ConditionReasonAuthServerConfigValid = "AuthServerConfigValid"
+
+	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
+	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
 )
 
 // Backend authentication types
@@ -393,8 +411,30 @@ func (r *VirtualMCPServer) Validate() error {
 		}
 	}
 
+	// Validate AuthServerConfig (inline embedded auth server)
+	if err := r.validateAuthServerConfig(); err != nil {
+		return err
+	}
+
 	// Validate EmbeddingServer / EmbeddingServerRef
 	return r.validateEmbeddingServer()
+}
+
+// validateAuthServerConfig validates inline AuthServerConfig.
+// Rules:
+// - issuer must be non-empty when config is provided
+// - at least one upstream provider must be configured
+func (r *VirtualMCPServer) validateAuthServerConfig() error {
+	if r.Spec.AuthServerConfig == nil {
+		return nil
+	}
+	if r.Spec.AuthServerConfig.Issuer == "" {
+		return fmt.Errorf("spec.authServerConfig.issuer is required")
+	}
+	if len(r.Spec.AuthServerConfig.UpstreamProviders) == 0 {
+		return fmt.Errorf("spec.authServerConfig.upstreamProviders is required")
+	}
+	return nil
 }
 
 // validateEmbeddingServer validates EmbeddingServerRef and Optimizer configuration.

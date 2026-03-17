@@ -268,12 +268,14 @@ func addUpstreamSwapMiddleware(
 		upstreamSwapConfig = &upstreamswap.Config{}
 	}
 
-	// Derive ProviderName from the upstream config if not explicitly set
+	// Derive ProviderName from the upstream config if not explicitly set.
+	// Convention: in a multi-upstream sequential chain (front-door → target),
+	// the last upstream is the target whose token should be injected.
 	if upstreamSwapConfig.ProviderName == "" {
 		upstreamSwapConfig.ProviderName = func() string {
 			if cfg := config.EmbeddedAuthServerConfig; cfg != nil &&
-				len(cfg.Upstreams) > 0 && cfg.Upstreams[0].Name != "" {
-				return cfg.Upstreams[0].Name
+				len(cfg.Upstreams) > 0 && cfg.Upstreams[len(cfg.Upstreams)-1].Name != "" {
+				return cfg.Upstreams[len(cfg.Upstreams)-1].Name
 			}
 			return "default"
 		}()

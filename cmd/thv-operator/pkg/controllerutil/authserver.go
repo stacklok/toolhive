@@ -228,13 +228,10 @@ func GenerateAuthServerVolumes(
 }
 
 // GenerateAuthServerEnvVars creates environment variables for embedded auth server.
-// Currently generates TOOLHIVE_UPSTREAM_CLIENT_SECRET from the upstream provider's
-// client secret reference.
+// Generates indexed TOOLHIVE_UPSTREAM_CLIENT_SECRET_<N> env vars for each upstream
+// provider that has a client secret reference configured.
 //
-// The function looks at the first upstream provider (currently only one is supported)
-// and generates an environment variable for its client secret if one is configured.
-//
-// Returns nil slice if authConfig is nil or if no client secret is configured.
+// Returns nil slice if authConfig is nil or if no client secrets are configured.
 func GenerateAuthServerEnvVars(
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
 ) []corev1.EnvVar {
@@ -244,10 +241,8 @@ func GenerateAuthServerEnvVars(
 
 	var envVars []corev1.EnvVar
 
-	// Generate env var for upstream client secret if provided
-	if len(authConfig.UpstreamProviders) > 0 {
-		provider := authConfig.UpstreamProviders[0]
-
+	// Generate env vars for upstream client secrets
+	for i, provider := range authConfig.UpstreamProviders {
 		// Extract client secret reference based on provider type
 		var clientSecretRef *mcpv1alpha1.SecretKeyRef
 
@@ -264,7 +259,7 @@ func GenerateAuthServerEnvVars(
 
 		if clientSecretRef != nil {
 			envVars = append(envVars, corev1.EnvVar{
-				Name: UpstreamClientSecretEnvVar,
+				Name: fmt.Sprintf("%s_%d", UpstreamClientSecretEnvVar, i),
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{
@@ -431,10 +426,10 @@ func buildEmbeddedAuthServerRunnerConfig(
 		}
 	}
 
-	// Build upstream provider config (currently only one supported)
-	if len(authConfig.UpstreamProviders) > 0 {
-		provider := authConfig.UpstreamProviders[0]
-		config.Upstreams = []authserver.UpstreamRunConfig{*buildUpstreamRunConfig(&provider)}
+	// Build upstream provider configs
+	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(authConfig.UpstreamProviders))
+	for i := range authConfig.UpstreamProviders {
+		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(&authConfig.UpstreamProviders[i], i))
 	}
 
 	// Build storage configuration
@@ -561,14 +556,17 @@ func resolveSentinelAddrs(
 }
 
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.
-// Client secrets are passed via environment variable reference (UpstreamClientSecretEnvVar).
+// Client secrets are passed via indexed environment variable reference (UpstreamClientSecretEnvVar_<index>).
 func buildUpstreamRunConfig(
 	provider *mcpv1alpha1.UpstreamProviderConfig,
+	index int,
 ) *authserver.UpstreamRunConfig {
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
 		Type: authserver.UpstreamProviderType(provider.Type),
 	}
+
+	envVarName := fmt.Sprintf("%s_%d", UpstreamClientSecretEnvVar, index)
 
 	switch provider.Type {
 	case mcpv1alpha1.UpstreamProviderTypeOIDC:
@@ -581,7 +579,7 @@ func buildUpstreamRunConfig(
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OIDCConfig.ClientSecretRef != nil {
-				config.OIDCConfig.ClientSecretEnvVar = UpstreamClientSecretEnvVar
+				config.OIDCConfig.ClientSecretEnvVar = envVarName
 			}
 			if provider.OIDCConfig.UserInfoOverride != nil {
 				config.OIDCConfig.UserInfoOverride = buildUserInfoRunConfig(provider.OIDCConfig.UserInfoOverride)
@@ -598,7 +596,7 @@ func buildUpstreamRunConfig(
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OAuth2Config.ClientSecretRef != nil {
-				config.OAuth2Config.ClientSecretEnvVar = UpstreamClientSecretEnvVar
+				config.OAuth2Config.ClientSecretEnvVar = envVarName
 			}
 			if provider.OAuth2Config.UserInfo != nil {
 				config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)

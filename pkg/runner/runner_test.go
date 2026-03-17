@@ -15,7 +15,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
-	"github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -512,51 +511,4 @@ func TestRunner_GetUpstreamTokenService(t *testing.T) {
 		svc := serviceGetter()
 		assert.NotNil(t, svc, "service should not be nil when upstreamTokenService is set")
 	})
-}
-
-func TestRunner_RejectsMultiUpstreamConfig(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
-
-	runConfig := NewRunConfig()
-	runConfig.EmbeddedAuthServerConfig = &authserver.RunConfig{
-		SchemaVersion: authserver.CurrentSchemaVersion,
-		Issuer:        "http://localhost:8080",
-		Upstreams: []authserver.UpstreamRunConfig{
-			{
-				Name: "github",
-				Type: authserver.UpstreamProviderTypeOAuth2,
-				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-					AuthorizationEndpoint: "https://github.com/authorize",
-					TokenEndpoint:         "https://github.com/token",
-					ClientID:              "id1",
-					RedirectURI:           "http://localhost:8080/oauth/callback",
-				},
-			},
-			{
-				Name: "google",
-				Type: authserver.UpstreamProviderTypeOAuth2,
-				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-					AuthorizationEndpoint: "https://accounts.google.com/authorize",
-					TokenEndpoint:         "https://accounts.google.com/token",
-					ClientID:              "id2",
-					RedirectURI:           "http://localhost:8080/oauth/callback",
-				},
-			},
-		},
-		AllowedAudiences: []string{"https://mcp.example.com"},
-	}
-	runConfig.Transport = types.TransportTypeStdio
-	runConfig.Host = "localhost"
-	runConfig.Name = "test"
-
-	runner := NewRunner(runConfig, mockStatusManager)
-	err := runner.Run(context.Background())
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "does not support multiple upstream providers")
 }

@@ -199,7 +199,9 @@ func createMiddlewareFunc(cfg *Config, serviceGetter ServiceGetter) types.Middle
 			cred, err := svc.GetValidTokens(r.Context(), tsid, cfg.ProviderName)
 			if err != nil {
 				slog.Warn("Failed to get upstream tokens",
-					"middleware", "upstreamswap", "error", err)
+					"middleware", "upstreamswap",
+					"provider", cfg.ProviderName,
+					"error", err)
 
 				// Client-attributable errors require re-authentication.
 				if errors.Is(err, upstreamtoken.ErrSessionNotFound) ||
@@ -217,14 +219,16 @@ func createMiddlewareFunc(cfg *Config, serviceGetter ServiceGetter) types.Middle
 			// 5. Inject access token — fail closed if empty to prevent bypassing the swap
 			if cred.AccessToken == "" {
 				slog.Warn("Upstream token service returned empty access token",
-					"middleware", "upstreamswap")
+					"middleware", "upstreamswap",
+					"provider", cfg.ProviderName)
 				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
 
 			injectToken(r, cred.AccessToken)
 			slog.Debug("Injected upstream access token",
-				"middleware", "upstreamswap")
+				"middleware", "upstreamswap",
+				"provider", cfg.ProviderName)
 
 			next.ServeHTTP(w, r)
 		})

@@ -207,7 +207,8 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 				},
 				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
 			},
-			expectError: true,
+			expectError: false,
+			expectHash:  "multi-hash",
 		},
 	}
 

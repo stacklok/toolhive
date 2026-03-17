@@ -260,6 +260,10 @@ const (
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError indicates an error occurred fetching the MCPExternalAuthConfig
 	ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError = "ExternalAuthConfigFetchError"
 
+	// ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream indicates multi-upstream is not supported
+	// for MCPRemoteProxy (use VirtualMCPServer for multi-upstream).
+	ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"
 

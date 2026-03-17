@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	dario.cat/mergo v1.0.2
 	github.com/1password/onepassword-sdk-go v0.3.1
-	github.com/alicebob/miniredis/v2 v2.36.1
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.2
 	github.com/aws/aws-sdk-go-v2/config v1.32.10
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.7

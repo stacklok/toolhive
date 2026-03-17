@@ -188,8 +188,9 @@ func (o *oauthTokenSource) buildOAuth2Config(ctx context.Context) (*oauth2.Confi
 		ClientSecret: oauthCfg.ClientSecret,
 		Scopes:       oauthCfg.Scopes,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  oauthCfg.AuthURL,
-			TokenURL: oauthCfg.TokenURL,
+			AuthURL:   oauthCfg.AuthURL,
+			TokenURL:  oauthCfg.TokenURL,
+			AuthStyle: oauth2.AuthStyleInParams,
 		},
 	}, nil
 }

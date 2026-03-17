@@ -3,7 +3,7 @@ name: doc-review
 description: Reviews documentation for factual accuracy
 ---
 
-# Generating Commit Messages
+# Documentation Review
 
 ## Instructions
 

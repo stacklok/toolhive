@@ -141,6 +141,17 @@ func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefre
 	return e.server.UpstreamTokenRefresher()
 }
 
+// RegisterHandlers registers the authorization server's HTTP routes on the given mux.
+// The AS owns its route paths — adding new endpoints in the future does not require
+// changes to the caller.
+func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
+	handler := e.Handler()
+	mux.Handle("/.well-known/openid-configuration", handler)
+	mux.Handle("/.well-known/oauth-authorization-server", handler)
+	mux.Handle("/.well-known/jwks.json", handler)
+	mux.Handle("/oauth/", handler)
+}
+
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
 // Returns a GeneratingProvider if config is nil or empty (development mode).
 func createKeyProvider(cfg *authserver.SigningKeyRunConfig) (keys.KeyProvider, error) {

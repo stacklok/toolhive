@@ -30,6 +30,8 @@ const (
 // CachedAPIRegistryProvider wraps APIRegistryProvider with caching support.
 // Provides both in-memory and optional persistent file caching.
 // Works for both CLI (with persistent cache) and API server (memory only).
+// Skills methods (GetSkill, ListSkills, SearchSkills) are uncached pass-through
+// to the underlying APIRegistryProvider; skills caching may be added later.
 type CachedAPIRegistryProvider struct {
 	*APIRegistryProvider
 

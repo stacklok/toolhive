@@ -13,6 +13,7 @@ import (
 	reflect "reflect"
 
 	registry "github.com/stacklok/toolhive-core/registry/types"
+	api "github.com/stacklok/toolhive/pkg/registry/api"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -85,6 +86,21 @@ func (mr *MockProviderMockRecorder) GetServer(name any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServer", reflect.TypeOf((*MockProvider)(nil).GetServer), name)
 }
 
+// GetSkill mocks base method.
+func (m *MockProvider) GetSkill(namespace, name string) (*registry.Skill, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetSkill", namespace, name)
+	ret0, _ := ret[0].(*registry.Skill)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetSkill indicates an expected call of GetSkill.
+func (mr *MockProviderMockRecorder) GetSkill(namespace, name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSkill", reflect.TypeOf((*MockProvider)(nil).GetSkill), namespace, name)
+}
+
 // ListImageServers mocks base method.
 func (m *MockProvider) ListImageServers() ([]*registry.ImageMetadata, error) {
 	m.ctrl.T.Helper()
@@ -115,6 +131,21 @@ func (mr *MockProviderMockRecorder) ListServers() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListServers", reflect.TypeOf((*MockProvider)(nil).ListServers))
 }
 
+// ListSkills mocks base method.
+func (m *MockProvider) ListSkills(opts *api.SkillsListOptions) (*api.SkillsListResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListSkills", opts)
+	ret0, _ := ret[0].(*api.SkillsListResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListSkills indicates an expected call of ListSkills.
+func (mr *MockProviderMockRecorder) ListSkills(opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListSkills", reflect.TypeOf((*MockProvider)(nil).ListSkills), opts)
+}
+
 // SearchImageServers mocks base method.
 func (m *MockProvider) SearchImageServers(query string) ([]*registry.ImageMetadata, error) {
 	m.ctrl.T.Helper()
@@ -143,4 +174,19 @@ func (m *MockProvider) SearchServers(query string) ([]registry.ServerMetadata, e
 func (mr *MockProviderMockRecorder) SearchServers(query any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchServers", reflect.TypeOf((*MockProvider)(nil).SearchServers), query)
+}
+
+// SearchSkills mocks base method.
+func (m *MockProvider) SearchSkills(query string) (*api.SkillsListResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SearchSkills", query)
+	ret0, _ := ret[0].(*api.SkillsListResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SearchSkills indicates an expected call of SearchSkills.
+func (mr *MockProviderMockRecorder) SearchSkills(query any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchSkills", reflect.TypeOf((*MockProvider)(nil).SearchSkills), query)
 }

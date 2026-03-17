@@ -23,6 +23,7 @@ type APIRegistryProvider struct {
 	apiURL         string
 	allowPrivateIp bool
 	client         api.Client
+	skillsClient   api.SkillsClient
 }
 
 // NewAPIRegistryProvider creates a new API registry provider.
@@ -34,10 +35,17 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 		return nil, fmt.Errorf("failed to create API client: %w", err)
 	}
 
+	// Create skills client
+	skillsClient, err := api.NewSkillsClient(apiURL, allowPrivateIp, tokenSource)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create skills client: %w", err)
+	}
+
 	p := &APIRegistryProvider{
 		apiURL:         apiURL,
 		allowPrivateIp: allowPrivateIp,
 		client:         client,
+		skillsClient:   skillsClient,
 	}
 
 	// Initialize the base provider with the GetRegistry function
@@ -186,6 +194,27 @@ func (p *APIRegistryProvider) GetImageServer(name string) (*types.ImageMetadata,
 	}
 
 	return nil, fmt.Errorf("server %s is not a container server", name)
+}
+
+// GetSkill returns a specific skill by namespace and name.
+func (p *APIRegistryProvider) GetSkill(namespace, name string) (*types.Skill, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return p.skillsClient.GetSkill(ctx, namespace, name)
+}
+
+// ListSkills returns all available skills.
+func (p *APIRegistryProvider) ListSkills(opts *api.SkillsListOptions) (*api.SkillsListResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return p.skillsClient.ListSkills(ctx, opts)
+}
+
+// SearchSkills searches for skills matching the query.
+func (p *APIRegistryProvider) SearchSkills(query string) (*api.SkillsListResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return p.skillsClient.SearchSkills(ctx, query)
 }
 
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata

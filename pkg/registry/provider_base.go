@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/api"
 )
 
 // BaseProvider provides common implementation for registry providers
@@ -129,6 +130,21 @@ func (p *BaseProvider) ListImageServers() ([]*types.ImageMetadata, error) {
 	}
 
 	return results, nil
+}
+
+// GetSkill returns nil for providers that don't support skills.
+func (*BaseProvider) GetSkill(_, _ string) (*types.Skill, error) {
+	return nil, nil
+}
+
+// ListSkills returns empty results for providers that don't support skills.
+func (*BaseProvider) ListSkills(_ *api.SkillsListOptions) (*api.SkillsListResult, error) {
+	return &api.SkillsListResult{}, nil
+}
+
+// SearchSkills returns empty results for providers that don't support skills.
+func (*BaseProvider) SearchSkills(_ string) (*api.SkillsListResult, error) {
+	return &api.SkillsListResult{}, nil
 }
 
 // matchesQuery checks if a server matches the search query

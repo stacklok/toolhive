@@ -29,10 +29,8 @@ var MCPMethodToFeatureOperation = map[string]struct {
 	Operation authorizers.MCPOperation
 }{
 	// Core protocol methods - always allowed
-	"initialize":      {Feature: "", Operation: ""}, // Protocol initialization
-	"ping":            {Feature: "", Operation: ""}, // Health check
-	"progress/update": {Feature: "", Operation: ""}, // Progress reporting
-
+	"initialize": {Feature: "", Operation: ""}, // Protocol initialization
+	"ping":       {Feature: "", Operation: ""}, // Health check
 	// Tool operations - require authorization
 	"tools/call": {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall},
 	"tools/list": {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationList},
@@ -99,7 +97,7 @@ func shouldSkipInitialAuthorization(r *http.Request) bool {
 // after parsing the JSON-RPC message.
 func shouldSkipSubsequentAuthorization(method string) bool {
 	// Skip authorization for methods that don't require it
-	if method == "ping" || method == "progress/update" || method == "initialize" {
+	if method == "ping" || method == "initialize" {
 		return true
 	}
 

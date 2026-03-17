@@ -288,13 +288,6 @@ func TestExtractResourceAndArguments(t *testing.T) {
 			expectedArguments:  nil,
 		},
 		{
-			name:               "progress/update with token",
-			method:             "progress/update",
-			params:             `{"progressToken":"task-123","progress":50}`,
-			expectedResourceID: "task-123",
-			expectedArguments:  nil,
-		},
-		{
 			name:               "unknown method",
 			method:             "unknown/method",
 			params:             `{"someParam":"value"}`,
@@ -583,13 +576,6 @@ func TestExtractResourceAndArguments(t *testing.T) {
 			name:               "resources/read with missing uri",
 			method:             "resources/read",
 			params:             `{"other":"value"}`,
-			expectedResourceID: "",
-			expectedArguments:  nil,
-		},
-		{
-			name:               "progress/update with missing token",
-			method:             "progress/update",
-			params:             `{"progress":50}`,
 			expectedResourceID: "",
 			expectedArguments:  nil,
 		},

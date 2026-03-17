@@ -15,6 +15,7 @@ import (
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/api"
 	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
@@ -37,6 +38,12 @@ type CachedAPIRegistryProvider struct {
 	cacheMu    sync.RWMutex
 	cachedData *types.Registry
 	cacheTime  time.Time
+
+	// Skills cache
+	skillsMu       sync.RWMutex
+	cachedSkills   []types.Skill
+	skillsCacheSet bool
+	skillsTime     time.Time
 
 	// Cache configuration
 	cacheTTL      time.Duration
@@ -377,6 +384,67 @@ func (p *CachedAPIRegistryProvider) GetRemoteServer(name string) (*types.RemoteS
 	}
 
 	return nil, fmt.Errorf("server %s is not a remote server", name)
+}
+
+// ListAvailableSkills returns skills from the registry API, with caching.
+// Creates a SkillsClient on demand and fetches all skills with auto-pagination.
+func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
+	// Check cache
+	p.skillsMu.RLock()
+	if p.skillsCacheSet && time.Since(p.skillsTime) < p.cacheTTL {
+		skills := p.cachedSkills
+		p.skillsMu.RUnlock()
+		return skills, nil
+	}
+	p.skillsMu.RUnlock()
+
+	// Fetch from API
+	skillsClient, err := api.NewSkillsClient(p.apiURL, p.allowPrivateIp, p.tokenSource)
+	if err != nil {
+		// Return cached data if available
+		p.skillsMu.RLock()
+		defer p.skillsMu.RUnlock()
+		if p.skillsCacheSet {
+			return p.cachedSkills, nil
+		}
+		return nil, fmt.Errorf("failed to create skills client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var allSkills []types.Skill
+	var cursor string
+	for {
+		result, err := skillsClient.ListSkills(ctx, &api.SkillsListOptions{Cursor: cursor})
+		if err != nil {
+			// Return cached data if available, otherwise nil (skills are optional)
+			p.skillsMu.RLock()
+			defer p.skillsMu.RUnlock()
+			if p.skillsCacheSet {
+				return p.cachedSkills, nil
+			}
+			return nil, nil
+		}
+		for _, s := range result.Skills {
+			if s != nil {
+				allSkills = append(allSkills, *s)
+			}
+		}
+		if result.NextCursor == "" {
+			break
+		}
+		cursor = result.NextCursor
+	}
+
+	// Update cache
+	p.skillsMu.Lock()
+	p.cachedSkills = allSkills
+	p.skillsCacheSet = true
+	p.skillsTime = time.Now()
+	p.skillsMu.Unlock()
+
+	return allSkills, nil
 }
 
 // ConvertServerJSON wraps ConvertServerJSON for cached provider

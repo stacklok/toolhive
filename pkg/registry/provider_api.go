@@ -23,6 +23,7 @@ type APIRegistryProvider struct {
 	apiURL         string
 	allowPrivateIp bool
 	client         api.Client
+	tokenSource    auth.TokenSource
 }
 
 // NewAPIRegistryProvider creates a new API registry provider.
@@ -38,6 +39,7 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 		apiURL:         apiURL,
 		allowPrivateIp: allowPrivateIp,
 		client:         client,
+		tokenSource:    tokenSource,
 	}
 
 	// Initialize the base provider with the GetRegistry function

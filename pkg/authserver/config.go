@@ -339,16 +339,6 @@ type Config struct {
 	AllowedAudiences []string
 }
 
-// GetUpstream returns the primary upstream configuration.
-// For current single-upstream deployments, this returns the only configured upstream.
-// Returns nil if no upstreams are configured (call Validate first).
-func (c *Config) GetUpstream() *UpstreamConfig {
-	if len(c.Upstreams) == 0 {
-		return nil
-	}
-	return &c.Upstreams[0]
-}
-
 // Validate checks that the Config is valid.
 func (c *Config) Validate() error {
 	slog.Debug("validating authserver config", "issuer", c.Issuer)
@@ -395,9 +385,19 @@ func (c *Config) validateUpstreams() error {
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
 
-		// Default empty name to "default"
-		if up.Name == "" {
-			up.Name = "default"
+		// For single upstream, default empty name to "default".
+		// For multi-upstream, require explicit non-"default" names.
+		if len(c.Upstreams) == 1 {
+			if up.Name == "" {
+				up.Name = "default"
+			}
+		} else {
+			if up.Name == "" {
+				return fmt.Errorf("upstream[%d]: name must be explicitly set when multiple upstreams are configured", i)
+			}
+			if up.Name == "default" {
+				return fmt.Errorf("upstream[%d]: name %q is reserved for single-upstream configs; use a descriptive name", i, up.Name)
+			}
 		}
 
 		// Check for duplicate names

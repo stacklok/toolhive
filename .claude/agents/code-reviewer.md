@@ -57,7 +57,6 @@ When reviewing changes that touch vMCP code, also run the `/vmcp-review` skill t
 - [ ] Database queries optimized
 - [ ] Container operations batched where possible
 
->>>>>>> 05f039e8 (Consolidate vMCP anti-pattern review into shared skill and rule)
 ### Backwards Compatibility
 - [ ] Changes won't break existing users
 - [ ] API/CLI changes maintain compatibility or include deprecation warnings

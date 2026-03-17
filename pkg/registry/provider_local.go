@@ -105,10 +105,23 @@ func (p *LocalRegistryProvider) setSkills(skills []types.Skill) {
 }
 
 // ListAvailableSkills returns skills discovered from the upstream registry data.
+// Triggers a registry load if skills haven't been populated yet.
 func (p *LocalRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
 	p.skillsMu.RLock()
-	defer p.skillsMu.RUnlock()
-	return p.skills, nil
+	skills := p.skills
+	p.skillsMu.RUnlock()
+
+	if skills == nil {
+		// Skills are populated as a side effect of GetRegistry
+		if _, err := p.GetRegistry(); err != nil {
+			return nil, err
+		}
+		p.skillsMu.RLock()
+		skills = p.skills
+		p.skillsMu.RUnlock()
+	}
+
+	return skills, nil
 }
 
 // parseRegistryData parses JSON data into a Registry struct

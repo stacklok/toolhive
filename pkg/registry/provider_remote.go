@@ -175,10 +175,23 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 }
 
 // ListAvailableSkills returns skills discovered from the remote registry data.
+// Triggers a registry load if skills haven't been populated yet.
 func (p *RemoteRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
 	p.skillsMu.RLock()
-	defer p.skillsMu.RUnlock()
-	return p.skills, nil
+	skills := p.skills
+	p.skillsMu.RUnlock()
+
+	if skills == nil {
+		// Skills are populated as a side effect of GetRegistry
+		if _, err := p.GetRegistry(); err != nil {
+			return nil, err
+		}
+		p.skillsMu.RLock()
+		skills = p.skills
+		p.skillsMu.RUnlock()
+	}
+
+	return skills, nil
 }
 
 func (p *RemoteRegistryProvider) setSkills(skills []types.Skill) {

@@ -13,7 +13,6 @@ import (
 	context "context"
 	reflect "reflect"
 
-	registry "github.com/stacklok/toolhive-core/registry/types"
 	skills "github.com/stacklok/toolhive/pkg/skills"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -100,21 +99,6 @@ func (m *MockSkillService) List(ctx context.Context, opts skills.ListOptions) ([
 func (mr *MockSkillServiceMockRecorder) List(ctx, opts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockSkillService)(nil).List), ctx, opts)
-}
-
-// ListAvailable mocks base method.
-func (m *MockSkillService) ListAvailable(ctx context.Context) ([]registry.Skill, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListAvailable", ctx)
-	ret0, _ := ret[0].([]registry.Skill)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ListAvailable indicates an expected call of ListAvailable.
-func (mr *MockSkillServiceMockRecorder) ListAvailable(ctx any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAvailable", reflect.TypeOf((*MockSkillService)(nil).ListAvailable), ctx)
 }
 
 // Push mocks base method.

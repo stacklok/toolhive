@@ -28,7 +28,6 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 
 	r := chi.NewRouter()
 	r.Get("/", apierrors.ErrorHandler(routes.listSkills))
-	r.Get("/available", apierrors.ErrorHandler(routes.listAvailableSkills))
 	r.Post("/", apierrors.ErrorHandler(routes.installSkill))
 	r.Delete("/{name}", apierrors.ErrorHandler(routes.uninstallSkill))
 	r.Get("/{name}", apierrors.ErrorHandler(routes.getSkillInfo))
@@ -37,25 +36,6 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 	r.Post("/push", apierrors.ErrorHandler(routes.pushSkill))
 
 	return r
-}
-
-// listAvailableSkills returns skills available from the registry.
-//
-//	@Summary		List available skills
-//	@Description	Get a list of skills available from the registry
-//	@Tags			skills
-//	@Produce		json
-//	@Success		200		{object}	availableSkillsResponse
-//	@Failure		500		{string}	string	"Internal Server Error"
-//	@Router			/api/v1beta/skills/available [get]
-func (s *SkillsRoutes) listAvailableSkills(w http.ResponseWriter, r *http.Request) error {
-	result, err := s.skillService.ListAvailable(r.Context())
-	if err != nil {
-		return err
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(availableSkillsResponse{Skills: result})
 }
 
 // listSkills returns a list of installed skills.

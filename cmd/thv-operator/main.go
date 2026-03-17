@@ -234,7 +234,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	rec := &controllers.MCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("mcpserver-controller"),
+		Recorder:         mgr.GetEventRecorder("mcpserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 		ImageValidation:  imageValidation,
 	}
@@ -262,7 +262,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	if err := (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("mcpremoteproxy-controller"),
+		Recorder:         mgr.GetEventRecorder("mcpremoteproxy-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
@@ -272,7 +272,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	if err := (&controllers.EmbeddingServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("embeddingserver-controller"),
+		Recorder:         mgr.GetEventRecorder("embeddingserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 		ImageValidation:  imageValidation,
 	}).SetupWithManager(mgr); err != nil {
@@ -306,7 +306,7 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 	if err := (&controllers.VirtualMCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("virtualmcpserver-controller"),
+		Recorder:         mgr.GetEventRecorder("virtualmcpserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)

@@ -24,20 +24,62 @@ func NewBaseProvider(getRegistry func() (*types.Registry, error)) *BaseProvider 
 	}
 }
 
-// GetServer returns a specific server by name (container or remote)
+// GetServer returns a specific server by name (container or remote).
+// Supports both full reverse-DNS names (io.github.stacklok/osv) and
+// short names (osv) for backward compatibility.
 func (p *BaseProvider) GetServer(name string) (types.ServerMetadata, error) {
 	reg, err := p.GetRegistryFunc()
 	if err != nil {
 		return nil, err
 	}
 
-	// Use the registry's helper method
+	// Try exact match first
 	server, found := reg.GetServerByName(name)
-	if !found {
-		return nil, fmt.Errorf("server not found: %s", name)
+	if found {
+		return server, nil
 	}
 
-	return server, nil
+	// Fall back to short-name matching: check if name matches the last
+	// path component of any server's full reverse-DNS name.
+	// e.g. "osv" matches "io.github.stacklok/osv"
+	if !strings.Contains(name, "/") {
+		matches := findServersByShortName(reg, name)
+		if len(matches) == 1 {
+			return matches[0].server, nil
+		}
+		if len(matches) > 1 {
+			names := make([]string, len(matches))
+			for i, m := range matches {
+				names[i] = m.fullName
+			}
+			return nil, fmt.Errorf("multiple servers match '%s': %s — use the full name",
+				name, strings.Join(names, ", "))
+		}
+	}
+
+	return nil, fmt.Errorf("server not found: %s", name)
+}
+
+type shortNameMatch struct {
+	fullName string
+	server   types.ServerMetadata
+}
+
+// findServersByShortName returns all servers whose name ends with "/<shortName>".
+func findServersByShortName(reg *types.Registry, shortName string) []shortNameMatch {
+	suffix := "/" + shortName
+	var matches []shortNameMatch
+	for fullName, server := range reg.Servers {
+		if strings.HasSuffix(fullName, suffix) {
+			matches = append(matches, shortNameMatch{fullName, server})
+		}
+	}
+	for fullName, server := range reg.RemoteServers {
+		if strings.HasSuffix(fullName, suffix) {
+			matches = append(matches, shortNameMatch{fullName, server})
+		}
+	}
+	return matches
 }
 
 // SearchServers searches for servers matching the query (both container and remote)

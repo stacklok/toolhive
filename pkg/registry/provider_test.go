@@ -460,6 +460,91 @@ func TestRemoteRegistryProvider_UpstreamFormat(t *testing.T) {
 	assert.NotEmpty(t, registry.Servers, "Should have at least one container server")
 }
 
+func TestGetServer_ShortNameResolution(t *testing.T) {
+	t.Parallel()
+
+	// Build a controlled registry with known names
+	reg := &types.Registry{
+		Version:     "1.0.0",
+		LastUpdated: "2025-01-01T00:00:00Z",
+		Servers: map[string]*types.ImageMetadata{
+			"io.github.stacklok/osv":    {BaseServerMetadata: types.BaseServerMetadata{Name: "io.github.stacklok/osv"}, Image: "ghcr.io/osv:latest"},
+			"io.github.stacklok/github": {BaseServerMetadata: types.BaseServerMetadata{Name: "io.github.stacklok/github"}, Image: "ghcr.io/github:latest"},
+			"io.github.acme/github":     {BaseServerMetadata: types.BaseServerMetadata{Name: "io.github.acme/github"}, Image: "ghcr.io/acme-github:latest"},
+		},
+		RemoteServers: map[string]*types.RemoteServerMetadata{
+			"io.github.stacklok/slack-remote": {BaseServerMetadata: types.BaseServerMetadata{Name: "io.github.stacklok/slack-remote"}, URL: "https://slack.example.com"},
+		},
+	}
+
+	provider := &LocalRegistryProvider{}
+	provider.BaseProvider = NewBaseProvider(func() (*types.Registry, error) {
+		return reg, nil
+	})
+
+	tests := []struct {
+		name        string
+		query       string
+		expectName  string
+		expectError string
+	}{
+		{
+			name:       "exact full name match",
+			query:      "io.github.stacklok/osv",
+			expectName: "io.github.stacklok/osv",
+		},
+		{
+			name:       "unique short name match",
+			query:      "osv",
+			expectName: "io.github.stacklok/osv",
+		},
+		{
+			name:        "ambiguous short name errors with full names",
+			query:       "github",
+			expectError: "multiple servers match 'github'",
+		},
+		{
+			name:        "ambiguous error lists both full names",
+			query:       "github",
+			expectError: "io.github.stacklok/github",
+		},
+		{
+			name:        "ambiguous error lists both full names (second)",
+			query:       "github",
+			expectError: "io.github.acme/github",
+		},
+		{
+			name:       "short name for remote server",
+			query:      "slack-remote",
+			expectName: "io.github.stacklok/slack-remote",
+		},
+		{
+			name:        "no match returns not found",
+			query:       "nonexistent",
+			expectError: "server not found: nonexistent",
+		},
+		{
+			name:        "partial name does not match (github-remote suffix check)",
+			query:       "remote",
+			expectError: "server not found: remote",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server, err := provider.GetServer(tt.query)
+			if tt.expectError != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectError)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectName, server.GetName())
+		})
+	}
+}
+
 // getTypeName returns the type name of an interface value
 func getTypeName(v interface{}) string {
 	switch v.(type) {
@@ -538,8 +623,8 @@ func TestGetServer(t *testing.T) {
 	provider, err := NewRegistryProvider(cfg)
 	require.NoError(t, err)
 
-	// Test getting an existing server (using upstream reverse-DNS name)
-	server, err := provider.GetServer("io.github.stacklok/osv")
+	// Test getting an existing server (short name resolves via suffix match)
+	server, err := provider.GetServer("osv")
 	if err != nil {
 		t.Fatalf("Failed to get server: %v", err)
 	}

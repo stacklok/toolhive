@@ -68,6 +68,17 @@ const (
 	ConditionReasonCABundleRefInvalid = "CABundleRefInvalid"
 )
 
+const (
+	// ConditionTypeExternalAuthConfigValidated indicates whether the ExternalAuthConfig is valid
+	ConditionTypeExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+)
+
+const (
+	// ConditionReasonExternalAuthConfigMultiUpstream indicates the ExternalAuthConfig has multiple upstreams,
+	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
+	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+)
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server

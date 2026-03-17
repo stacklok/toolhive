@@ -182,7 +182,7 @@ type EmbeddedAuthServerConfig struct {
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// The embedded auth server delegates authentication to these providers.
-	// Currently only a single upstream provider is supported (validated at runtime).
+	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
@@ -241,7 +241,8 @@ type UpstreamProviderConfig struct {
 	// Must be lowercase alphanumeric with hyphens (DNS-label-like).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9-]*$`
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 	Name string `json:"name"`
 
 	// Type specifies the provider type: "oidc" or "oauth2"
@@ -785,12 +786,17 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	if len(cfg.UpstreamProviders) == 0 {
 		return fmt.Errorf("at least one upstream provider is required")
 	}
-	// Note: we add runtime validation for 'max items = 1' here since multi-provider support is not yet implemented.
-	if len(cfg.UpstreamProviders) > 1 {
-		return fmt.Errorf("currently only one upstream provider is supported (found %d)", len(cfg.UpstreamProviders))
-	}
+	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
+	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
+	// VirtualMCPServer allows multiple upstreams.
 
+	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {
+		if seen[provider.Name] {
+			return fmt.Errorf("upstreamProviders[%d]: duplicate name %q", i, provider.Name)
+		}
+		seen[provider.Name] = true
+
 		if err := r.validateUpstreamProvider(i, &provider); err != nil {
 			return err
 		}

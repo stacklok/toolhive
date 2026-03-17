@@ -446,7 +446,10 @@ spec:
                           description: |-
                             Name uniquely identifies this upstream provider.
                             Used for routing decisions and session binding in multi-upstream scenarios.
+                            Must be lowercase alphanumeric with hyphens (DNS-label-like).
+                          maxLength: 63
                           minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                           type: string
                         oauth2Config:
                           description: |-

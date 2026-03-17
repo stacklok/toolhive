@@ -33,6 +33,7 @@ go.work
 ^thv$
 
 .claude/settings.local.json
+.claude/worktrees/
 kconfig.yaml
 
 .DS_Store

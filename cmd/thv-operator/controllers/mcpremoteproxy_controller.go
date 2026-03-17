@@ -444,6 +444,9 @@ func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRem
 // validateJWKSURL validates the JWKS URL scheme in the OIDC config.
 func (*MCPRemoteProxyReconciler) validateJWKSURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	oidcConfig := proxy.Spec.OIDCConfig
+	if oidcConfig == nil {
+		return nil
+	}
 
 	switch oidcConfig.Type {
 	case mcpv1alpha1.OIDCConfigTypeInline:

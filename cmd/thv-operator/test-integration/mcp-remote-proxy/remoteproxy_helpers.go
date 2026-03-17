@@ -152,7 +152,7 @@ func (rb *RemoteProxyBuilder) WithRemoteURL(url string) *RemoteProxyBuilder {
 func (rb *RemoteProxyBuilder) WithInlineOIDCConfigAndJWKS(
 	issuer, audience, jwksURL string,
 ) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = mcpv1alpha1.OIDCConfigRef{
+	rb.proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
 		Type: mcpv1alpha1.OIDCConfigTypeInline,
 		Inline: &mcpv1alpha1.InlineOIDCConfig{
 			Issuer:   issuer,

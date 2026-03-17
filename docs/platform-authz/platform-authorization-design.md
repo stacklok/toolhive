@@ -31,85 +31,81 @@ administrator does in practice and what the system does in response.
 ### Requirement 1: Built-in IdP Integration (Okta, Entra ID)
 
 Enterprises already manage user identity through a central Identity Provider.
-Platform Authorization must plug into these IdPs without custom integration
-work — the administrator provides connection details and tells ToolHive where
-to find group membership in the token.
+The Stacklok Platform bootstraps the IdP relationship at install time — the
+administrator provides connection details via the Helm chart, and the
+Configuration Server auto-detects the IdP type and claim mappings. Platform
+Authorization consumes this bootstrap configuration to extract group
+membership from JWT tokens at runtime.
 
-**US-1.1 — Connect to Okta**
+**US-1.1 — Bootstrap IdP connection at platform install**
 
-> As a platform administrator, I want to connect ToolHive to my Okta tenant
-> by providing the issuer URL and client ID, so that users authenticate with
-> their existing corporate credentials.
+> As a platform administrator, I want to connect the Stacklok Platform to my
+> organization's IdP (Okta, Entra ID, or any OIDC provider) by providing the
+> issuer URL and client credentials at install time, so that all platform
+> components — including authorization — use a single IdP configuration.
 
-The administrator configures the OIDC connection (issuer URL, client ID) via
-the existing ToolHive OIDC configuration. ToolHive auto-discovers endpoints
-from Okta's `/.well-known/openid-configuration`. For group extraction, the
-administrator sets the claim name:
-
-```yaml
-group_claim: "groups"   # Okta custom claim
-```
-
-**US-1.2 — Connect to Entra ID**
-
-> As a platform administrator, I want to connect ToolHive to Entra ID, so
-> that users authenticate with their Microsoft corporate accounts.
-
-Same OIDC configuration flow. Entra ID offers two claim options:
+The administrator provides the issuer URI, client ID, and client secret as
+Helm values during platform installation. The Configuration Server validates
+the OIDC discovery document on startup and persists the configuration in two
+Kubernetes objects:
 
 ```yaml
-group_claim: "roles"    # App roles (display names — recommended)
-# or
-group_claim: "groups"   # Security groups (GUIDs — harder to work with)
+# ConfigMap — non-sensitive IdP settings
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: toolhive-platform-idp-config
+data:
+  issuer_uri: "https://login.microsoftonline.com/{tenant}/v2.0"
+  idp_type: "entra"            # auto-detected from issuer URI, overridable
+  groups_claim: "groups"        # defaulted from idp_type, overridable
+  roles_claim: "roles"          # defaulted from idp_type, overridable
 ```
 
-Application roles are preferred because they use human-readable names and
-have no group count limits (Entra ID drops the `groups` claim when a user
-exceeds 200 groups).
+The authorization controller reads `groups_claim` and `roles_claim` from this
+ConfigMap and passes them to the Cedar authorizer via the per-server
+authorization ConfigMap.
 
-**US-1.3 — Auto-discover IdP endpoints**
+**US-1.2 — Auto-detect IdP type and claim defaults**
 
-> As a platform administrator, I want ToolHive to auto-discover IdP
-> configuration from the issuer URL, so that I don't manually configure
-> token and authorization endpoints.
+> As a platform administrator, I want the platform to auto-detect whether
+> I'm using Okta, Entra ID, or another provider from the issuer URL alone,
+> so that I don't have to manually configure claim names for common IdPs.
 
-This is already supported by ToolHive's existing OIDC middleware — providing
-the issuer URL is sufficient. No new work required for this story.
+The Configuration Server fetches the OIDC discovery document and fingerprints
+the IdP:
 
-**US-1.4 — Configure which JWT claim contains groups**
+| Signal | IdP detected | Default claims |
+|--------|-------------|----------------|
+| `msgraph_host` in discovery doc | Entra ID | `groups_claim: "groups"`, `roles_claim: "roles"` |
+| `okta_post_message` in `response_types_supported` | Okta | `groups_claim: "groups"` |
+| Neither | Generic OIDC | Administrator must specify claims explicitly |
 
-> As a platform administrator, I want to specify which JWT claim contains
-> group or role information, so that ToolHive extracts membership from my
-> IdP's specific token format.
+The auto-detected defaults can be overridden in the Helm values if the
+organization uses non-standard claim names.
 
-Every IdP uses a different claim name. The administrator sets a single
-`group_claim` field that tells ToolHive where to look:
+**US-1.3 — Override claim names for non-standard configurations**
 
-| IdP | `group_claim` value | Token structure |
-|-----|-------------------|----------------|
-| Okta | `groups` | Flat array at top level |
-| Entra ID | `roles` | Flat array at top level |
-| Keycloak | `realm_access.roles` | Nested 2 levels deep |
-| Auth0 | `https://myapp.example.com/roles` | URL-namespaced key |
+> As a platform administrator, I want to override the auto-detected claim
+> names when my IdP uses a non-standard configuration (e.g., Keycloak nested
+> claims or Auth0 namespaced claims), so that authorization works with any
+> OIDC-compliant provider.
 
-**US-1.5 — Support nested claims (Keycloak)**
+The administrator overrides the claim names in the Helm values or directly
+in the ConfigMap:
 
-> As a platform administrator, I want to use dot-notation for nested JWT
-> claims, so that I can extract roles from Keycloak's nested token
-> structure without flattening claims.
+| IdP | Override needed | `groups_claim` value |
+|-----|----------------|---------------------|
+| Keycloak (realm roles) | Yes — nested claims | `realm_access.roles` |
+| Keycloak (groups) | Yes — requires mapper | `groups` |
+| Auth0 | Yes — URL-namespaced | `https://myapp.example.com/roles` |
+| Entra ID (app roles) | No — auto-detected | `roles` (default) |
+| Okta | No — auto-detected | `groups` (default) |
 
-Keycloak stores roles inside nested objects. Dot-notation lets the
-administrator express the path naturally:
-
-```yaml
-group_claim: "realm_access.roles"
-# Resolves: token["realm_access"]["roles"] → ["platform-admin", "developer"]
-```
-
-The system tries an exact key match first (for Auth0-style URLs that contain
-dots), then falls back to dot-notation traversal. This means both
-`https://myapp.example.com/roles` and `realm_access.roles` work correctly
-without any disambiguation flag.
+The authorization system supports dot-notation for nested claims (e.g.,
+`realm_access.roles` resolves `token["realm_access"]["roles"]`) and
+exact-match-first for URL-style claim names (e.g., Auth0). Both work
+transparently without a disambiguation flag.
 
 ---
 
@@ -244,7 +240,8 @@ metadata:
   name: reader
 spec:
   actions: [list_tools, list_prompts, list_resources, get_prompt, read_resource, call_tool]
-  readOnlyTools: true    # call_tool only works on tools marked readOnlyHint=true
+  toolHintFilter:
+    readOnlyHint: true   # call_tool only works on tools marked readOnlyHint=true
 ```
 
 A user with the `reader` role can browse everything on the server. When they
@@ -400,14 +397,14 @@ spec:
     - list_tools
 ```
 
-Actions are a flat list mapping 1:1 to Cedar actions: `call_tool`, `list_tools`, `get_prompt`, `list_prompts`, `read_resource`, `list_resources`, plus `*` (all). The `readOnlyTools` field gates `call_tool` on the tool's `readOnlyHint` annotation.
+Actions are a flat list mapping 1:1 to Cedar actions: `call_tool`, `list_tools`, `get_prompt`, `list_prompts`, `read_resource`, `list_resources`, plus `*` (all). The optional `toolHintFilter` field gates `call_tool` on MCP tool annotation hints (e.g., `readOnlyHint`, `destructiveHint`). Each non-nil filter field adds a Cedar `when` condition; multiple fields are ANDed.
 
 Two default roles ship as Helm-managed `ToolhivePlatformRole` CRD instances (not hardcoded constants). They're discoverable via `kubectl get tpr` and follow the same code path as custom roles.
 
-| Default Role | Actions | `readOnlyTools` |
-|--------------|---------|-----------------|
-| `reader` | All list/get/read + `call_tool` | `true` — `call_tool` gated on `readOnlyHint=true` |
-| `writer` | All (equivalent to `*`) | `false` |
+| Default Role | Actions | `toolHintFilter` |
+|--------------|---------|-------------------|
+| `reader` | All list/get/read + `call_tool` | `readOnlyHint: true` — `call_tool` gated on `readOnlyHint=true` |
+| `writer` | All (equivalent to `*`) | _(none)_ |
 
 Deletion protection comes from Helm ownership — if accidentally deleted, the next Helm sync re-creates them. A `toolhive.stacklok.dev/built-in: "true"` annotation marks them as system defaults.
 
@@ -553,7 +550,7 @@ permit(
 };
 ```
 
-**Shape 3 — Role with `readOnlyTools: true` (readOnlyHint gate):**
+**Shape 3 — Role with `toolHintFilter` (annotation gate):**
 ```cedar
 // List/browse everything
 permit(
@@ -562,7 +559,7 @@ permit(
   resource in MCP::"github"
 );
 
-// Call only read-only tools (because reader has readOnlyTools: true)
+// Call only read-only tools (because reader has toolHintFilter: {readOnlyHint: true})
 permit(
   principal in Role::"reader",
   action == Action::"call_tool",

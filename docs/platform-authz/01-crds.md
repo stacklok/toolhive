@@ -69,12 +69,39 @@ type ToolhivePlatformRoleSpec struct {
     // +optional
     Description string `json:"description,omitempty"`
 
-    // ReadOnlyTools, when true, restricts the call_tool action to tools with
-    // readOnlyHint=true. The compiler gates call_tool on the tool's readOnlyHint
-    // attribute when this field is set. Only meaningful when actions includes
-    // call_tool. The default reader role sets this to true.
+    // ToolHintFilter, when set, gates call_tool on MCP tool annotation hints.
+    // Each non-nil field adds a condition: the tool must have the annotation
+    // set to the specified value. Multiple fields are ANDed.
+    // Only meaningful when actions includes call_tool.
     // +optional
-    ReadOnlyTools bool `json:"readOnlyTools,omitempty"`
+    ToolHintFilter *ToolHintFilter `json:"toolHintFilter,omitempty"`
+}
+
+// ToolHintFilter gates call_tool on MCP tool annotation hints.
+// Each field corresponds to an MCP tool annotation. When set (non-nil),
+// the compiler emits a Cedar `when` clause requiring the tool's annotation
+// to match the specified value. Nil fields are ignored (no filtering).
+type ToolHintFilter struct {
+    // ReadOnlyHint, when non-nil, gates call_tool on the tool's readOnlyHint
+    // annotation. Set to true to restrict to read-only tools.
+    // +optional
+    ReadOnlyHint *bool `json:"readOnlyHint,omitempty"`
+
+    // DestructiveHint, when non-nil, gates call_tool on the tool's
+    // destructiveHint annotation. Set to false to exclude destructive tools.
+    // Note: MCP defaults destructiveHint to true when absent.
+    // +optional
+    DestructiveHint *bool `json:"destructiveHint,omitempty"`
+
+    // IdempotentHint, when non-nil, gates call_tool on the tool's
+    // idempotentHint annotation. Set to true to restrict to idempotent tools.
+    // +optional
+    IdempotentHint *bool `json:"idempotentHint,omitempty"`
+
+    // OpenWorldHint, when non-nil, gates call_tool on the tool's
+    // openWorldHint annotation. Set to false to restrict to closed-world tools.
+    // +optional
+    OpenWorldHint *bool `json:"openWorldHint,omitempty"`
 }
 
 // ToolhivePlatformRoleStatus defines the observed state of ToolhivePlatformRole
@@ -120,7 +147,7 @@ type ToolhivePlatformRole struct {
 | Action values from enum `[call_tool, list_tools, get_prompt, list_prompts, read_resource, list_resources, *]` | kubebuilder Enum on `PlatformAction` type | Static set, catches typos at admission |
 | `*` must be the only action when present | CEL on spec | `["*", "call_tool"]` is ambiguous |
 | At least 1 action, at most 7 | kubebuilder MinItems/MaxItems | 6 concrete actions + `*` |
-| `readOnlyTools` only with `call_tool` | Controller-time warning | Only meaningful when actions includes `call_tool` |
+| `toolHintFilter` only with `call_tool` | Controller-time warning | Hint filters only meaningful when actions includes `call_tool` |
 
 ### Example
 
@@ -160,7 +187,8 @@ spec:
     - get_prompt
     - read_resource
     - call_tool
-  readOnlyTools: true
+  toolHintFilter:
+    readOnlyHint: true
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhivePlatformRole
@@ -823,15 +851,16 @@ The `targetRef.name` in `ToolhiveAuthorizationPolicy` provides the server name.
 See [02-cedar-compilation.md](02-cedar-compilation.md) for the compilation
 algorithm that must enforce this invariant.
 
-### `readOnlyTools` roles and resource restrictions
+### `toolHintFilter` roles and resource restrictions
 
-When a binding references a role with `readOnlyTools: true` (e.g., the default
-`reader` role) and also specifies `ruleRestrictions`, the compilation algorithm
-must intersect the `readOnlyHint` condition with the resource restrictions.
-Without this intersection, the restrictions would be silently dropped and the
-role would grant access to all read-only tools on the server. The compilation
-algorithm in [02-cedar-compilation.md](02-cedar-compilation.md) must handle
-this case explicitly — see that document for the resolution.
+When a binding references a role with a `toolHintFilter` (e.g., the default
+`reader` role with `readOnlyHint: true`) and also specifies
+`ruleRestrictions`, the compilation algorithm must intersect the hint filter
+conditions with the resource restrictions. Without this intersection, the
+restrictions would be silently dropped and the role would grant access to all
+matching tools on the server. The compilation algorithm in
+[02-cedar-compilation.md](02-cedar-compilation.md) must handle this case
+explicitly — see that document for the resolution.
 
 ### Deny without resource restrictions means server-wide deny
 
@@ -846,12 +875,13 @@ non-empty field) applies only to `ruleRestrictions` in bindings, not to deny
 rules. Deny rules intentionally allow omitting all resource fields to express
 server-wide denials.
 
-### No `readOnlyHint` in deny rules
+### No tool hint filters in deny rules
 
-Deny rules cannot reference `readOnlyHint`. While "forbid `call_tool` on all
-tools where `readOnlyHint=false`" is a valid Cedar pattern, it adds complexity
-to the CRD schema and controller for a niche use case. Administrators who need
-this can use hand-written Cedar policies alongside CRD-generated ones.
+Deny rules cannot reference tool hint annotations. While "forbid `call_tool`
+on all tools where `readOnlyHint=false`" is a valid Cedar pattern, it adds
+complexity to the CRD schema and controller for a niche use case.
+Administrators who need hint-based denials can use hand-written Cedar policies
+alongside CRD-generated ones.
 
 ### Multi-domain extensibility
 
@@ -967,7 +997,8 @@ metadata:
 spec:
   description: "Read-only access; call_tool restricted to readOnlyHint tools"
   actions: [list_tools, list_prompts, list_resources, get_prompt, read_resource, call_tool]
-  readOnlyTools: true
+  toolHintFilter:
+    readOnlyHint: true
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhivePlatformRole

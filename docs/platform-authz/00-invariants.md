@@ -184,9 +184,9 @@ instances, based on MCP tool annotation semantics:
 - `readOnlyHint` (default `false`): tool does not modify its environment
 - `destructiveHint` (default `true`): tool may perform destructive updates
 
-The `readOnlyHint` restriction is driven by the `readOnlyTools: true` field on
-the role's `ToolhivePlatformRole` spec. The compiler gates `call_tool` at the
-**Cedar policy level** using a `when` clause:
+Tool annotation restrictions are driven by the `toolHintFilter` field on the
+role's `ToolhivePlatformRole` spec. Each non-nil field in the filter adds a
+Cedar `when` condition gating `call_tool` on the tool's annotation:
 
 ```cedar
 permit(
@@ -196,12 +196,22 @@ permit(
 ) when { resource has readOnlyHint && resource.readOnlyHint == true };
 ```
 
-The OSS authorizer is responsible for populating `readOnlyHint` as a resource
-entity attribute at request time, using cached tool annotation data from
+Multiple filter fields are ANDed. For example, a role with
+`toolHintFilter: {readOnlyHint: true, destructiveHint: false}` compiles to:
+
+```cedar
+when {
+  resource has readOnlyHint && resource.readOnlyHint == true &&
+  resource has destructiveHint && resource.destructiveHint == false
+}
+```
+
+The OSS authorizer is responsible for populating hint annotations as resource
+entity attributes at request time, using cached tool annotation data from
 `tools/list` responses.
 
-Custom roles can also set `readOnlyTools: true` to get the same `call_tool`
-gating on `readOnlyHint`.
+Custom roles can use any combination of hint filters to create fine-grained
+tool access policies.
 
 ### 2.4 Flat action model with `*` wildcard
 

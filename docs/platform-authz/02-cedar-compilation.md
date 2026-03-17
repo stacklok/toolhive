@@ -82,7 +82,7 @@ Given these CRDs:
 
 ```yaml
 # Default roles (Helm-managed ToolhivePlatformRole instances)
-# reader: actions=[...all list/get/read + call_tool], readOnlyTools=true
+# reader: actions=[...all list/get/read + call_tool], toolHintFilter: {readOnlyHint: true}
 # writer: actions=[*]
 
 # Binding
@@ -386,18 +386,20 @@ restricted type, no policy is emitted for that type. For example, a custom
 role with only `[call_tool, list_tools]` restricted to `prompts: [x]` emits
 nothing — the role has no prompt actions.
 
-### Shape 3: Role with `readOnlyTools` (readOnlyHint)
+### Shape 3: Role with `toolHintFilter` (annotation gates)
 
-When a `ToolhivePlatformRole` has `readOnlyTools: true`, the compiler splits
-`call_tool` into a separate policy gated on the tool's `readOnlyHint`
-attribute. The default `reader` role uses this.
+When a `ToolhivePlatformRole` has a `toolHintFilter`, the compiler splits
+`call_tool` into a separate policy gated on the matching tool annotations.
+Each non-nil filter field adds a `resource has X && resource.X == Y` condition
+to the `when` clause (ANDed together). The default `reader` role uses this
+with `readOnlyHint: true`.
 
 **CRD input:**
 ```yaml
 spec:
   targetRef: {name: github}
   bindings:
-    - platformRole: reader  # reader has readOnlyTools: true
+    - platformRole: reader  # reader has toolHintFilter: {readOnlyHint: true}
 ```
 
 **Compiled Cedar:**
@@ -421,17 +423,26 @@ permit(
 };
 ```
 
-A role with `readOnlyTools: true` compiles to **two** policies: one for
+A role with a `toolHintFilter` compiles to **two** policies: one for
 list/get/read actions (unrestricted within the server), and one for
-`call_tool` gated on `readOnlyHint`. This is because `readOnlyHint` only
-applies to tool calls, not to list/get/read operations.
+`call_tool` gated on the hint filter conditions. This is because tool
+annotations only apply to tool calls, not to list/get/read operations.
 
-### Shape 3a: `readOnlyTools` role with restrictions
+When multiple filter fields are set (e.g., `readOnlyHint: true` AND
+`destructiveHint: false`), the conditions are ANDed in the `when` clause:
+```cedar
+when {
+  resource has readOnlyHint && resource.readOnlyHint == true &&
+  resource has destructiveHint && resource.destructiveHint == false
+}
+```
 
-When a `readOnlyTools` binding has `ruleRestrictions`, the `readOnlyHint`
-condition must be **intersected** with the resource restrictions. Without
+### Shape 3a: `toolHintFilter` role with restrictions
+
+When a `toolHintFilter` binding has `ruleRestrictions`, the hint filter
+conditions must be **intersected** with the resource restrictions. Without
 this, the restrictions would be silently dropped (see
-[01-crds.md](01-crds.md#readonlytools-roles-and-resource-restrictions)).
+[01-crds.md](01-crds.md#toolhintfilter-roles-and-resource-restrictions)).
 
 **CRD input:**
 ```yaml
@@ -683,19 +694,26 @@ for each ToolhiveAuthorizationPolicy targeting S:
         # emit a single policy.
         for each cond_clause in condition_clauses (or [None] if empty):
 
-            if role.spec.readOnlyTools and binding has NO ruleRestrictions:
-                # Shape 3: readOnlyTools without restrictions
+            # Build hint filter clause from toolHintFilter (if set)
+            hint_clause = None
+            if role.spec.toolHintFilter:
+                parts = []
+                for field, value in role.spec.toolHintFilter.non_nil_fields():
+                    parts.append(f"resource has {field} && resource.{field} == {value}")
+                hint_clause = " && ".join(parts)
+
+            if hint_clause and binding has NO ruleRestrictions:
+                # Shape 3: toolHintFilter without restrictions
                 non_call_actions = actions - [call_tool]
                 when = cond_clause or None
                 policies.append(permit(Role, non_call_actions, MCP::S,
                                        when: when))
-                roi_when = combine(cond_clause,
-                    "resource has readOnlyHint && resource.readOnlyHint == true")
+                hint_when = combine(cond_clause, hint_clause)
                 policies.append(permit(Role, [call_tool], MCP::S,
-                                       when: roi_when))
+                                       when: hint_when))
 
-            else if role.spec.readOnlyTools and binding HAS ruleRestrictions:
-                # Shape 3a: readOnlyTools with restrictions
+            else if hint_clause and binding HAS ruleRestrictions:
+                # Shape 3a: toolHintFilter with restrictions
                 for each restriction:
                     for each (type, names) in restriction.typed_fields():
                         compatible = intersect(actions, ACTIONS_FOR_TYPE[type])
@@ -708,8 +726,7 @@ for each ToolhiveAuthorizationPolicy targeting S:
                             policies.append(permit(Role, non_call, resource,
                                                    when: when))
                         if call_tool in compatible:
-                            roi = "resource has readOnlyHint && resource.readOnlyHint == true"
-                            when = combine(cond_clause, res_clause, roi)
+                            when = combine(cond_clause, res_clause, hint_clause)
                             policies.append(permit(Role, [call_tool], resource,
                                                    when: when))
 
@@ -1048,12 +1065,15 @@ spec:
     - get_prompt
     - read_resource
     - call_tool
-  readOnlyTools: true
+  toolHintFilter:
+    readOnlyHint: true
 ```
 
-The `readOnlyTools: true` field tells the compiler to gate `call_tool` on
-`readOnlyHint` (see Shape 3 in section 4). With restrictions, see Shape 3a
-which intersects `readOnlyHint` with resource restrictions.
+The `toolHintFilter` tells the compiler to gate `call_tool` on the specified
+tool annotations (see Shape 3 in section 4). With restrictions, see Shape 3a
+which intersects the hint conditions with resource restrictions. The filter is
+extensible — additional hints (`destructiveHint`, `idempotentHint`,
+`openWorldHint`) can be combined without adding new CRD fields.
 
 ### writer
 

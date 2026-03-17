@@ -1462,6 +1462,32 @@ const docTemplate = `{
                     "RegistryTypeDefault"
                 ]
             },
+            "pkg_api_v1.UpdateRegistryAuthRequest": {
+                "description": "OAuth authentication configuration (optional)",
+                "properties": {
+                    "audience": {
+                        "description": "OAuth audience (optional)",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "OAuth client ID",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "OIDC issuer URL",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "OAuth scopes (optional)",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.UpdateRegistryRequest": {
                 "description": "Request containing registry configuration updates",
                 "properties": {
@@ -1472,6 +1498,9 @@ const docTemplate = `{
                     "api_url": {
                         "description": "MCP Registry API URL",
                         "type": "string"
+                    },
+                    "auth": {
+                        "$ref": "#/components/schemas/pkg_api_v1.UpdateRegistryAuthRequest"
                     },
                     "local_path": {
                         "description": "Local registry file path",
@@ -1773,11 +1802,11 @@ const docTemplate = `{
                 "description": "Response containing registry details",
                 "properties": {
                     "auth_status": {
-                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".",
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty — see registryInfo for rationale.",
                         "type": "string"
                     },
                     "auth_type": {
-                        "description": "AuthType is \"oauth\", \"bearer\" (future), or absent when no auth.",
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty — see registryInfo for rationale.",
                         "type": "string"
                     },
                     "last_updated": {
@@ -2031,11 +2060,11 @@ const docTemplate = `{
                 "description": "Basic information about a registry",
                 "properties": {
                     "auth_status": {
-                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nAbsent from the response when no auth is configured.",
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty so clients always receive the field,\neven when the value is \"none\" (the zero-value equivalent).",
                         "type": "string"
                     },
                     "auth_type": {
-                        "description": "AuthType is \"oauth\", \"bearer\" (future), or absent when no auth.",
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty so clients can distinguish \"no auth\nconfigured\" (empty string) from \"field missing\" without extra logic.",
                         "type": "string"
                     },
                     "last_updated": {

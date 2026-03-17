@@ -333,19 +333,16 @@ func setRegistryFile(provider Provider, registryPath string) error {
 }
 
 // isUpstreamRegistryFormat returns true if the JSON data appears to be in the
-// upstream MCP registry format (has "$schema" or "data" wrapper object).
+// upstream MCP registry format. The key discriminator is the "data" wrapper
+// object — only the upstream format wraps servers inside it.
 func isUpstreamRegistryFormat(data []byte) bool {
 	var probe struct {
-		Schema string          `json:"$schema"`
-		Data   json.RawMessage `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return false
 	}
-	if probe.Schema != "" {
-		return true
-	}
-	// data must be a JSON object (starts with '{'), not a primitive
+	// The "data" wrapper object is unique to the upstream format.
 	return len(probe.Data) > 0 && probe.Data[0] == '{'
 }
 

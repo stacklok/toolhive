@@ -64,18 +64,15 @@ type upstreamFormatProbe struct {
 }
 
 // isUpstreamFormat returns true when the raw JSON appears to be in the upstream
-// registry format. It checks for the presence of a "$schema" key or a "data"
-// wrapper object (must be a JSON object, not a string/number), both of which
-// are unique to the upstream format.
+// registry format. The key discriminator is the "data" wrapper object — only
+// the upstream format wraps servers inside a "data" object. The "$schema" key
+// alone is not sufficient because the legacy format also includes one.
 func isUpstreamFormat(data []byte) bool {
 	var probe upstreamFormatProbe
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return false
 	}
-	if probe.Schema != "" {
-		return true
-	}
-	// data must be a JSON object (starts with '{'), not a primitive
+	// The "data" wrapper object is unique to the upstream format.
 	return len(probe.Data) > 0 && probe.Data[0] == '{'
 }
 

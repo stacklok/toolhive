@@ -2,6 +2,7 @@
 name: site-reliability-engineer
 description: Observability and monitoring guidance — OpenTelemetry instrumentation, metrics, tracing, and monitoring stack configuration
 tools: [Read, Write, Edit, Glob, Grep, Bash]
+permissionMode: acceptEdits
 model: inherit
 ---
 

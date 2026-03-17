@@ -2,6 +2,7 @@
 name: documentation-writer
 description: Maintains consistent documentation, updates CLI docs, and ensures documentation matches code behavior
 tools: [Read, Write, Edit, Glob, Grep, Bash]
+permissionMode: acceptEdits
 model: inherit
 ---
 

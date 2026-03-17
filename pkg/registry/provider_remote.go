@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
@@ -20,6 +22,8 @@ type RemoteRegistryProvider struct {
 	*BaseProvider
 	registryURL    string
 	allowPrivateIp bool
+	skillsMu       sync.RWMutex
+	skills         []types.Skill
 }
 
 // NewRemoteRegistryProvider creates a new remote registry provider.
@@ -76,13 +80,24 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 		return fmt.Errorf("failed to read registry response: %w", err)
 	}
 
+	// Try upstream format first, fall back to legacy
+	if isUpstreamFormat(data) {
+		var upstream types.UpstreamRegistry
+		if err := json.Unmarshal(data, &upstream); err != nil {
+			return fmt.Errorf("registry returned invalid upstream JSON from %s: %w", p.registryURL, err)
+		}
+		if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
+			return fmt.Errorf("registry at %s returned upstream format with no servers or groups", p.registryURL)
+		}
+		return nil
+	}
+
 	registry := &types.Registry{}
 	if err := json.Unmarshal(data, registry); err != nil {
 		return fmt.Errorf("registry returned invalid JSON from %s: %w", p.registryURL, err)
 	}
 
 	// Validate the registry has at least the required structure
-	// (we don't require servers/groups to exist, but the structure must be valid)
 	if registry.Servers == nil && registry.RemoteServers == nil && registry.Groups == nil {
 		return fmt.Errorf("registry at %s returned invalid structure: "+
 			"missing servers, remote_servers, and groups fields", p.registryURL)
@@ -125,9 +140,15 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 		return nil, fmt.Errorf("failed to read registry data from response body: %w", err)
 	}
 
-	registry := &types.Registry{}
-	if err := json.Unmarshal(data, registry); err != nil {
-		return nil, fmt.Errorf("failed to parse registry data: %w", err)
+	registry, skills, isLegacy, err := parseRegistryAutoDetect(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse registry data from %s: %w", p.registryURL, err)
+	}
+	p.setSkills(skills)
+	if isLegacy {
+		slog.Warn("Remote registry uses legacy format; please migrate to the upstream MCP format. "+
+			"Legacy format support will be removed in a future release.",
+			"url", p.registryURL)
 	}
 
 	// Set name field on each server based on map key
@@ -152,4 +173,62 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 	}
 
 	return registry, nil
+}
+
+// ListAvailableSkills returns skills discovered from the remote registry data.
+// Triggers a registry load if skills haven't been populated yet.
+func (p *RemoteRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
+	p.skillsMu.RLock()
+	skills := p.skills
+	p.skillsMu.RUnlock()
+
+	if skills == nil {
+		// Skills are populated as a side effect of GetRegistry
+		if _, err := p.GetRegistry(); err != nil {
+			return nil, err
+		}
+		p.skillsMu.RLock()
+		skills = p.skills
+		p.skillsMu.RUnlock()
+	}
+
+	return skills, nil
+}
+
+// GetSkill returns a specific skill by namespace and name.
+func (p *RemoteRegistryProvider) GetSkill(namespace, name string) (*types.Skill, error) {
+	skills, err := p.ListAvailableSkills()
+	if err != nil {
+		return nil, err
+	}
+	for i := range skills {
+		if skills[i].Namespace == namespace && skills[i].Name == name {
+			return &skills[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SearchSkills searches for skills matching the query in name or description.
+func (p *RemoteRegistryProvider) SearchSkills(query string) ([]types.Skill, error) {
+	skills, err := p.ListAvailableSkills()
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(query)
+	var results []types.Skill
+	for _, s := range skills {
+		if strings.Contains(strings.ToLower(s.Name), query) ||
+			strings.Contains(strings.ToLower(s.Description), query) ||
+			strings.Contains(strings.ToLower(s.Namespace), query) {
+			results = append(results, s)
+		}
+	}
+	return results, nil
+}
+
+func (p *RemoteRegistryProvider) setSkills(skills []types.Skill) {
+	p.skillsMu.Lock()
+	defer p.skillsMu.Unlock()
+	p.skills = skills
 }

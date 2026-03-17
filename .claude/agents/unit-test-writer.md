@@ -2,6 +2,7 @@
 name: unit-test-writer
 description: Write comprehensive unit tests for Go code — functions, methods, or components that need thorough test coverage
 tools: [Read, Write, Edit, Glob, Grep, Bash]
+permissionMode: acceptEdits
 model: inherit
 ---
 

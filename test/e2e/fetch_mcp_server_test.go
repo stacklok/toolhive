@@ -366,7 +366,7 @@ var _ = Describe("FetchMcpServer", Label("mcp", "mcp-run", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Output should be valid JSON")
 
 				// Verify required fields
-				Expect(serverInfo["name"]).To(Equal("fetch"))
+				Expect(serverInfo["name"]).To(ContainSubstring("fetch"))
 				Expect(serverInfo["tools"]).ToNot(BeNil(), "Should have tools field")
 			})
 

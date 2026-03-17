@@ -23,6 +23,8 @@ type APIRegistryProvider struct {
 	apiURL         string
 	allowPrivateIp bool
 	client         api.Client
+	tokenSource    auth.TokenSource
+	skillsClient   api.SkillsClient
 }
 
 // NewAPIRegistryProvider creates a new API registry provider.
@@ -34,10 +36,15 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 		return nil, fmt.Errorf("failed to create API client: %w", err)
 	}
 
+	// Create skills client (best-effort — skills API may not be available)
+	skillsClient, _ := api.NewSkillsClient(apiURL, allowPrivateIp, tokenSource)
+
 	p := &APIRegistryProvider{
 		apiURL:         apiURL,
 		allowPrivateIp: allowPrivateIp,
 		client:         client,
+		tokenSource:    tokenSource,
+		skillsClient:   skillsClient,
 	}
 
 	// Initialize the base provider with the GetRegistry function
@@ -171,21 +178,34 @@ func (p *APIRegistryProvider) ListServers() ([]types.ServerMetadata, error) {
 	return ConvertServersToMetadata(servers)
 }
 
-// GetImageServer returns a specific container server by name (overrides BaseProvider)
-// This override is necessary because BaseProvider.GetImageServer calls p.GetServer,
-// which would call BaseProvider.GetServer instead of APIRegistryProvider.GetServer
-func (p *APIRegistryProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
-	server, err := p.GetServer(name)
+// GetSkill returns a specific skill by namespace and name from the API.
+func (p *APIRegistryProvider) GetSkill(namespace, name string) (*types.Skill, error) {
+	if p.skillsClient == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return p.skillsClient.GetSkill(ctx, namespace, name)
+}
+
+// SearchSkills searches for skills matching the query via the API.
+func (p *APIRegistryProvider) SearchSkills(query string) ([]types.Skill, error) {
+	if p.skillsClient == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := p.skillsClient.SearchSkills(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-
-	// Type assert to ImageMetadata
-	if img, ok := server.(*types.ImageMetadata); ok {
-		return img, nil
+	skills := make([]types.Skill, 0, len(result.Skills))
+	for _, s := range result.Skills {
+		if s != nil {
+			skills = append(skills, *s)
+		}
 	}
-
-	return nil, fmt.Errorf("server %s is not a container server", name)
+	return skills, nil
 }
 
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata

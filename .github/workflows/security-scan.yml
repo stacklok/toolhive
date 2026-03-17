@@ -86,7 +86,11 @@ jobs:
           #   ToolHive only uses sigstore-go as a client to verify signatures, it does not
           #   expose any timestamp-authority server endpoints. Fix requires sigstore-go to
           #   upgrade to timestamp-authority/v2 which hasn't been released yet.
-          IGNORED_VULNS="GO-2025-4192"
+          # GO-2026-4514: buger/jsonparser Delete function DoS via malformed JSON (CVE-2025-54410)
+          #   Indirect dependency via mcp-go, invopop/jsonschema, wk8/go-ordered-map.
+          #   The vulnerability is in the Delete function which is not called by ToolHive
+          #   or any of its dependencies. No fixed version exists yet (all versions affected).
+          IGNORED_VULNS="GO-2025-4192 GO-2026-4514"
 
           # Show the raw output for debugging
           echo "::group::govulncheck raw output"

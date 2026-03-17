@@ -391,7 +391,7 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 			nil,
 			corev1.EventTypeWarning,
 			"ValidationFailed",
-			"ValidationFailed",
+			"ValidatePodTemplateSpec",
 			"Invalid PodTemplateSpec: %v",
 			err,
 		)
@@ -1063,7 +1063,7 @@ func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context,
 	// Cleanup logic here if needed
 	// For now, Kubernetes will handle cascade deletion of owned resources
 
-	r.Recorder.Eventf(embedding, nil, corev1.EventTypeNormal, "Deleted", "Deleted", "EmbeddingServer has been finalized")
+	r.Recorder.Eventf(embedding, nil, corev1.EventTypeNormal, "Deleted", "Finalize", "EmbeddingServer has been finalized")
 }
 
 // SetupWithManager sets up the controller with the Manager.

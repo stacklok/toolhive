@@ -130,7 +130,7 @@ func (r *VirtualMCPServerReconciler) populateOptimizerEmbeddingService(
 			"consider using embeddingServerRef for managed lifecycle",
 			"embeddingService", config.Optimizer.EmbeddingService)
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServiceManual", "EmbeddingServiceManual",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServiceManual", "ValidateEmbeddingService",
 				"config.optimizer.embeddingService is set without embeddingServerRef; "+
 					"specifying an embeddingServerRef is the recommended configuration")
 		}
@@ -157,7 +157,7 @@ func (r *VirtualMCPServerReconciler) populateOptimizerFromRef(
 			"overridden", config.Optimizer.EmbeddingService,
 			"new", esURL)
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServiceOverridden", "EmbeddingServiceOverridden",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServiceOverridden", "ResolveEmbeddingService",
 				"config.optimizer.embeddingService will be replaced by EmbeddingServerRef %q URL",
 				vmcp.Spec.EmbeddingServerRef.Name)
 		}

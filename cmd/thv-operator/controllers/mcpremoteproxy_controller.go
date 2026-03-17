@@ -405,7 +405,7 @@ func (r *MCPRemoteProxyReconciler) failValidation(proxy *mcpv1alpha1.MCPRemotePr
 // recordValidationEvent emits a Warning event for a validation failure.
 func (r *MCPRemoteProxyReconciler) recordValidationEvent(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
 	if r.Recorder != nil {
-		r.Recorder.Eventf(proxy, nil, corev1.EventTypeWarning, reason, reason, message)
+		r.Recorder.Eventf(proxy, nil, corev1.EventTypeWarning, reason, "ValidateSpec", message)
 	}
 }
 

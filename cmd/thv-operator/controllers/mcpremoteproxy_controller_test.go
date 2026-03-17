@@ -700,7 +700,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 		},
 		{
-			name: "embedded auth server with multiple upstreams rejected",
+			name: "embedded auth server with multiple upstreams accepted",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-upstream-proxy",
@@ -730,11 +730,10 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 				},
 				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
 			},
-			expectError:        true,
-			errContains:        "only 1 is supported",
+			expectError:        false,
 			expectCondition:    true,
-			expectedCondStatus: metav1.ConditionFalse,
-			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
 		},
 	}
 

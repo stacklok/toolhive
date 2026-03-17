@@ -182,7 +182,7 @@ type EmbeddedAuthServerConfig struct {
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// The embedded auth server delegates authentication to these providers.
-	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
+	// Multiple upstream providers are supported for sequential authorization chains.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
@@ -786,9 +786,8 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	if len(cfg.UpstreamProviders) == 0 {
 		return fmt.Errorf("at least one upstream provider is required")
 	}
-	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
-	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
-	// VirtualMCPServer allows multiple upstreams.
+	// Note: multi-upstream is accepted at all levels. MCPServer, MCPRemoteProxy,
+	// and VirtualMCPServer all support multiple upstream providers.
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {

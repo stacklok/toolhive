@@ -340,15 +340,15 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		authConfig *mcpv1alpha1.EmbeddedAuthServerConfig
-		wantEnvVar bool
-		wantName   string
+		name            string
+		authConfig      *mcpv1alpha1.EmbeddedAuthServerConfig
+		wantEnvNames    []string
+		wantSecretNames []string // parallel to wantEnvNames; asserts SecretKeyRef.Name
 	}{
 		{
-			name:       "nil config returns empty slice",
-			authConfig: nil,
-			wantEnvVar: false,
+			name:         "nil config returns empty slice",
+			authConfig:   nil,
+			wantEnvNames: nil,
 		},
 		{
 			name: "no upstream providers returns empty slice",
@@ -356,7 +356,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 				Issuer:            "https://auth.example.com",
 				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{},
 			},
-			wantEnvVar: false,
+			wantEnvNames: nil,
 		},
 		{
 			name: "OIDC provider with client secret ref",
@@ -378,8 +378,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 					},
 				},
 			},
-			wantEnvVar: true,
-			wantName:   UpstreamClientSecretEnvVar,
+			wantEnvNames: []string{UpstreamClientSecretEnvVar + "_OKTA"},
 		},
 		{
 			name: "OIDC provider without client secret ref (public client)",
@@ -398,7 +397,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 					},
 				},
 			},
-			wantEnvVar: false,
+			wantEnvNames: nil,
 		},
 		{
 			name: "OAuth2 provider with client secret ref",
@@ -421,8 +420,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 					},
 				},
 			},
-			wantEnvVar: true,
-			wantName:   UpstreamClientSecretEnvVar,
+			wantEnvNames: []string{UpstreamClientSecretEnvVar + "_GITHUB"},
 		},
 		{
 			name: "OAuth2 provider without client secret ref",
@@ -442,7 +440,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 					},
 				},
 			},
-			wantEnvVar: false,
+			wantEnvNames: nil,
 		},
 		{
 			name: "upstream provider with nil OIDCConfig",
@@ -456,7 +454,45 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 					},
 				},
 			},
-			wantEnvVar: false,
+			wantEnvNames: nil,
+		},
+		{
+			name: "multiple upstream providers with client secrets get indexed env vars",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id-0",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "okta-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+					{
+						Name: "github",
+						Type: mcpv1alpha1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1alpha1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "client-id-1",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "github-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+			},
+			wantEnvNames: []string{
+				UpstreamClientSecretEnvVar + "_OKTA",
+				UpstreamClientSecretEnvVar + "_GITHUB",
+			},
+			wantSecretNames: []string{"okta-secret", "github-secret"},
 		},
 	}
 
@@ -466,15 +502,20 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 
 			envVars := GenerateAuthServerEnvVars(tt.authConfig)
 
-			if !tt.wantEnvVar {
+			if len(tt.wantEnvNames) == 0 {
 				assert.Empty(t, envVars)
 				return
 			}
 
-			require.Len(t, envVars, 1)
-			assert.Equal(t, tt.wantName, envVars[0].Name)
-			require.NotNil(t, envVars[0].ValueFrom)
-			require.NotNil(t, envVars[0].ValueFrom.SecretKeyRef)
+			require.Len(t, envVars, len(tt.wantEnvNames))
+			for i, wantName := range tt.wantEnvNames {
+				assert.Equal(t, wantName, envVars[i].Name)
+				require.NotNil(t, envVars[i].ValueFrom)
+				require.NotNil(t, envVars[i].ValueFrom.SecretKeyRef)
+				if len(tt.wantSecretNames) > i {
+					assert.Equal(t, tt.wantSecretNames[i], envVars[i].ValueFrom.SecretKeyRef.Name)
+				}
+			}
 		})
 	}
 }
@@ -875,6 +916,69 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 				assert.Equal(t, []string{"openid", "profile", "email", "custom:scope"}, config.ScopesSupported)
 			},
 		},
+		{
+			name: "with multiple upstream providers all are included",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL:   "https://okta.example.com",
+							ClientID:    "okta-client-id",
+							RedirectURI: "https://auth.example.com/callback",
+							Scopes:      []string{"openid", "profile"},
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "okta-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+					{
+						Name: "github",
+						Type: mcpv1alpha1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1alpha1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "github-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "github-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+			},
+			oidcConfig: defaultOIDCConfig,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 2)
+
+				// First upstream: okta OIDC with indexed env var
+				okta := config.Upstreams[0]
+				assert.Equal(t, "okta", okta.Name)
+				assert.Equal(t, authserver.UpstreamProviderTypeOIDC, okta.Type)
+				require.NotNil(t, okta.OIDCConfig)
+				assert.Equal(t, "https://okta.example.com", okta.OIDCConfig.IssuerURL)
+				assert.Equal(t, UpstreamClientSecretEnvVar+"_OKTA", okta.OIDCConfig.ClientSecretEnvVar)
+
+				// Second upstream: github OAuth2 with indexed env var
+				github := config.Upstreams[1]
+				assert.Equal(t, "github", github.Name)
+				assert.Equal(t, authserver.UpstreamProviderTypeOAuth2, github.Type)
+				require.NotNil(t, github.OAuth2Config)
+				assert.Equal(t, "https://github.com/login/oauth/authorize", github.OAuth2Config.AuthorizationEndpoint)
+				assert.Equal(t, UpstreamClientSecretEnvVar+"_GITHUB", github.OAuth2Config.ClientSecretEnvVar)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1157,7 +1261,7 @@ func TestGenerateAuthServerEnvVars_RedisCredentials(t *testing.T) {
 			}
 
 			if tt.wantUpstreamCS {
-				_, ok := envMap[UpstreamClientSecretEnvVar]
+				_, ok := envMap[UpstreamClientSecretEnvVar+"_OKTA"]
 				assert.True(t, ok, "expected upstream client secret env var")
 			}
 		})

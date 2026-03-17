@@ -235,16 +235,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	// This must happen before middleware creation so that the upstream token
 	// service is available to middleware factories (e.g., upstreamswap).
 	if r.Config.EmbeddedAuthServerConfig != nil {
-		// Proxy runner supports only single-upstream configs; multi-upstream
-		// requires VirtualMCPServer.
-		if len(r.Config.EmbeddedAuthServerConfig.Upstreams) > 1 {
-			return fmt.Errorf(
-				"proxy runner does not support multiple upstream providers (found %d); "+
-					"use VirtualMCPServer for multi-upstream deployments",
-				len(r.Config.EmbeddedAuthServerConfig.Upstreams),
-			)
-		}
-
 		var err error
 		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
 		if err != nil {

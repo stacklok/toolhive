@@ -191,7 +191,6 @@ var methodHandlers = map[string]methodHandler{
 	"resources/list":                     handleListMethod,
 	"tools/list":                         handleListMethod,
 	"prompts/list":                       handleListMethod,
-	"progress/update":                    handleProgressMethod,
 	"notifications/message":              handleNotificationMethod,
 	"logging/setLevel":                   handleLoggingMethod,
 	"completion/complete":                handleCompletionMethod,
@@ -298,14 +297,6 @@ func handleResourceReadMethod(paramsMap map[string]interface{}) (string, map[str
 func handleListMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
 	if cursor, ok := paramsMap["cursor"].(string); ok && cursor != "" {
 		return cursor, nil
-	}
-	return "", nil
-}
-
-// handleProgressMethod extracts resource ID for progress updates
-func handleProgressMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
-	if token, ok := paramsMap["progressToken"].(string); ok {
-		return token, nil
 	}
 	return "", nil
 }

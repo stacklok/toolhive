@@ -57,12 +57,12 @@ func (m *mockSecretProvider) ListSecrets(_ context.Context) ([]secrets.SecretDes
 	return result, nil
 }
 
-func (m *mockSecretProvider) Cleanup() error { return nil }
+func (*mockSecretProvider) Cleanup() error { return nil }
 
-func (m *mockSecretProvider) Capabilities() secrets.ProviderCapabilities {
+func (*mockSecretProvider) Capabilities() secrets.ProviderCapabilities {
 	return secrets.ProviderCapabilities{
-		CanRead:  true,
-		CanWrite: true,
+		CanRead:   true,
+		CanWrite:  true,
 		CanDelete: true,
 		CanList:   true,
 	}
@@ -353,8 +353,8 @@ func TestRenewClientSecret_ZeroExpiryInResponse(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"client_id":               "test-client-id",
-			"client_secret":           "new-secret",
+			"client_id":                "test-client-id",
+			"client_secret":            "new-secret",
 			"client_secret_expires_at": 0, // never expires
 		})
 	}))

@@ -413,8 +413,16 @@ func getRuntimeConfig(provider Provider, transportType string) (*templates.Runti
 	return runtimeConfig, nil
 }
 
-// setRuntimeConfig sets the runtime configuration for a given transport type
+// setRuntimeConfig sets the runtime configuration for a given transport type.
+// It validates the configuration before storing to prevent shell injection
+// when values are interpolated into Dockerfile templates.
 func setRuntimeConfig(provider Provider, transportType string, runtimeConfig *templates.RuntimeConfig) error {
+	if runtimeConfig != nil {
+		if err := runtimeConfig.Validate(); err != nil {
+			return fmt.Errorf("invalid runtime config: %w", err)
+		}
+	}
+
 	return provider.UpdateConfig(func(c *Config) {
 		if c.RuntimeConfigs == nil {
 			c.RuntimeConfigs = make(map[string]*templates.RuntimeConfig)

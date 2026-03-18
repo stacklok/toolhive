@@ -255,8 +255,12 @@
                         "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
                         "type": "string"
                     },
+                    "cached_reg_client_uri": {
+                        "description": "CachedRegClientURI is the registration_client_uri from the DCR response.\nThis is the endpoint used for RFC 7592 client read/update/delete operations.\nStored as plain text since it is not sensitive.",
+                        "type": "string"
+                    },
                     "cached_reg_token_ref": {
-                        "description": "RegistrationAccessToken is used to update/delete the client registration.\nStored as a secret reference since it's sensitive.",
+                        "description": "CachedRegTokenRef is a secret manager reference to the registration_access_token\nreturned in the DCR response. Used for RFC 7592 client update operations.\nStored as a secret reference since it's sensitive.",
                         "type": "string"
                     },
                     "cached_secret_expiry": {
@@ -2234,6 +2238,44 @@
                     }
                 },
                 "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_transport_types.ProxyMode": {
+                "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                "enum": [
+                    "sse",
+                    "streamable-http",
+                    "sse",
+                    "streamable-http"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "ProxyModeSSE",
+                    "ProxyModeStreamableHTTP"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_transport_types.TransportType": {
+                "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
+                "enum": [
+                    "stdio",
+                    "sse",
+                    "streamable-http",
+                    "inspector",
+                    "stdio",
+                    "sse",
+                    "streamable-http",
+                    "inspector",
+                    "stdio",
+                    "sse",
+                    "streamable-http",
+                    "inspector"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "TransportTypeStdio",
+                    "TransportTypeSSE",
+                    "TransportTypeStreamableHTTP",
+                    "TransportTypeInspector"
+                ]
             },
             "permissions.InboundNetworkPermissions": {
                 "description": "Inbound defines inbound network permissions",

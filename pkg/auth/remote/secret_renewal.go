@@ -71,16 +71,8 @@ func (h *Handler) isSecretExpiredOrExpiringSoon() bool {
 // Callers should log a warning and continue if renewal fails — the existing
 // secret may still be valid for some time, or the provider may not support renewal.
 func (h *Handler) renewClientSecret(ctx context.Context) error {
-	if h.config.CachedRegClientURI == "" {
-		return fmt.Errorf("registration_client_uri not available; cannot renew client secret (RFC 7592 not supported by this provider)")
-	}
-
-	if h.config.CachedRegTokenRef == "" {
-		return fmt.Errorf("registration_access_token not available; cannot renew client secret (RFC 7592 not supported by this provider)")
-	}
-
-	if h.secretProvider == nil {
-		return fmt.Errorf("secret provider not configured; cannot retrieve registration access token")
+	if err := h.validateRenewalPrerequisites(); err != nil {
+		return err
 	}
 
 	// Retrieve the registration access token from the secret manager
@@ -167,8 +159,23 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 		return fmt.Errorf("client update response missing client_secret")
 	}
 
-	// Persist the new secret via clientCredentialsPersister so it goes through
-	// the same secure-storage path as the initial registration.
+	return h.persistRenewedSecret(updateResp)
+}
+
+func (h *Handler) validateRenewalPrerequisites() error {
+	if h.config.CachedRegClientURI == "" {
+		return fmt.Errorf("registration_client_uri missing; cannot renew secret (RFC 7592 unsupported)")
+	}
+	if h.config.CachedRegTokenRef == "" {
+		return fmt.Errorf("registration_access_token missing; cannot renew secret (RFC 7592 unsupported)")
+	}
+	if h.secretProvider == nil {
+		return fmt.Errorf("secret provider not configured; cannot retrieve registration access token")
+	}
+	return nil
+}
+
+func (h *Handler) persistRenewedSecret(updateResp clientUpdateResponse) error {
 	if h.clientCredentialsPersister == nil {
 		return fmt.Errorf("client credentials persister not configured; cannot save renewed secret")
 	}

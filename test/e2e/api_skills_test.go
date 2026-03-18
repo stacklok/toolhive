@@ -589,16 +589,16 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 		})
 
-		It("should reject duplicate install", func() {
+		It("should be idempotent for same digest", func() {
 			By("Building and installing a skill")
-			buildAndInstallSkill(apiServer, "dup-test-skill", "A skill for duplicate testing")
+			buildAndInstallSkill(apiServer, "dup-test-skill", "A skill for idempotent testing")
 
-			By("Attempting to install the same skill again")
+			By("Installing the same skill again (same digest)")
 			resp2 := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
 			defer resp2.Body.Close()
 
-			By("Verifying response status is 409 Conflict")
-			Expect(resp2.StatusCode).To(Equal(http.StatusConflict))
+			By("Verifying response status is 201 Created (idempotent no-op)")
+			Expect(resp2.StatusCode).To(Equal(http.StatusCreated))
 		})
 
 		It("should reject malformed JSON", func() {
@@ -849,20 +849,18 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			}
 		})
 
-		It("should reject install over existing skill without force", func() {
+		It("should be idempotent when reinstalling same digest", func() {
 			skillName := "overwrite-noflag"
 
 			By("Building and installing the skill for the first time")
 			buildAndInstallSkill(apiServer, skillName, "A skill for overwrite testing")
 
-			// Installing the same name again should return 409 Conflict
-			// (the DB record still exists).
-			By("Attempting to install the same skill again")
+			By("Installing the same skill again (same local artifact)")
 			resp2 := installSkill(apiServer, installSkillRequest{Name: skillName})
 			defer resp2.Body.Close()
 
-			By("Verifying response status is 409 Conflict")
-			Expect(resp2.StatusCode).To(Equal(http.StatusConflict))
+			By("Verifying response status is 201 Created (idempotent, same digest)")
+			Expect(resp2.StatusCode).To(Equal(http.StatusCreated))
 		})
 
 		It("should allow reinstall after uninstall", func() {
@@ -882,18 +880,18 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			Expect(r3.StatusCode).To(Equal(http.StatusCreated))
 		})
 
-		It("should still reject duplicate DB record even with force flag", func() {
+		It("should be idempotent with force flag and same digest", func() {
 			skillName := "overwrite-force-dup"
 
 			By("Building and installing the skill for the first time")
 			buildAndInstallSkill(apiServer, skillName, "A skill for force-dup testing")
 
-			By("Force-installing the same skill again (force is for filesystem conflicts, not DB duplicates)")
+			By("Force-installing the same skill again (same digest)")
 			r2 := installSkill(apiServer, installSkillRequest{Name: skillName, Force: true})
 			defer r2.Body.Close()
 
-			By("Verifying response is still 409 Conflict (DB record exists)")
-			Expect(r2.StatusCode).To(Equal(http.StatusConflict))
+			By("Verifying response is 201 Created (idempotent, same digest)")
+			Expect(r2.StatusCode).To(Equal(http.StatusCreated))
 		})
 	})
 

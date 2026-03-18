@@ -254,7 +254,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			_ = store.Close()
 			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
 		}
-		ociRegistry, regErr := ociskills.NewRegistry()
+		ociRegistry, regErr := newOCIRegistryClient()
 		if regErr != nil {
 			_ = store.Close()
 			// ociStore is directory-backed with no open handles; no cleanup needed.
@@ -600,6 +600,16 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 	}
 
 	return listener, addrType, nil
+}
+
+// newOCIRegistryClient creates an OCI registry client. In dev mode
+// (TOOLHIVE_DEV=true), plain HTTP is enabled for local test registries.
+func newOCIRegistryClient() (ociskills.RegistryClient, error) {
+	var opts []ociskills.RegistryOption
+	if os.Getenv("TOOLHIVE_DEV") == "true" {
+		opts = append(opts, ociskills.WithPlainHTTP(true))
+	}
+	return ociskills.NewRegistry(opts...)
 }
 
 // lazySkillLookup implements skillsvc.SkillLookup by resolving the registry

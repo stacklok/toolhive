@@ -40,6 +40,10 @@ Do NOT invoke for: Writing new code (golang-code-writer), docs-only changes (doc
 - [ ] Follows conventions in `.claude/rules/testing.md`
 - [ ] Both success and failure paths tested
 
+### vMCP Code (for `pkg/vmcp/` and `cmd/vmcp/`)
+
+When reviewing changes that touch vMCP code, also run the `/vmcp-review` skill to check for vMCP-specific anti-patterns in addition to the standard review checklist above.
+
 ### Backwards Compatibility
 - [ ] Changes won't break existing users
 - [ ] API/CLI changes maintain compatibility or include deprecation warnings

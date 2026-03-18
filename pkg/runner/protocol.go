@@ -142,7 +142,10 @@ func createTemplateData(
 	}
 
 	// Load runtime configuration (base images and packages)
-	runtimeConfig := loadRuntimeConfig(transportType, runtimeOverride)
+	runtimeConfig, err := loadRuntimeConfig(transportType, runtimeOverride)
+	if err != nil {
+		return templateData, err
+	}
 	templateData.RuntimeConfig = runtimeConfig
 
 	return templateData, nil
@@ -150,27 +153,33 @@ func createTemplateData(
 
 // loadRuntimeConfig loads the runtime configuration for a given transport type.
 // Priority order:
-// 1. Override provided as parameter
+// 1. Override provided as parameter (validated before use)
 // 2. User configuration from config file
 // 3. Default configuration for the transport type
 func loadRuntimeConfig(
 	transportType templates.TransportType,
 	override *templates.RuntimeConfig,
-) *templates.RuntimeConfig {
-	// If override is provided, use it
+) (*templates.RuntimeConfig, error) {
+	// If override is provided, validate and use it
 	if override != nil {
-		return override
+		if err := override.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid runtime config override: %w", err)
+		}
+		return override, nil
 	}
 
-	// Try loading from user config
+	// Try loading from user config (validate on read since config.yaml is hand-editable)
 	provider := config.NewProvider()
 	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
-		return userConfig
+		if err := userConfig.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid runtime config in config file for %s: %w", transportType, err)
+		}
+		return userConfig, nil
 	}
 
 	// Fall back to defaults
 	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
-	return &defaultConfig
+	return &defaultConfig, nil
 }
 
 // addBuildEnvToTemplate loads build environment variables from config and adds them to template data.

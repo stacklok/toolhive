@@ -35,10 +35,10 @@ import (
 
 // startRealMCPBackend is defined in testutil_test.go as a shared test utility.
 
-// newRealTestServer builds a vMCP server with session management and and a
-// real SessionFactory. The BackendRegistry mock returns the backend at backendURL
-// so that CreateSession() opens a real HTTP connection to the MCP server.
-func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
+// newRealTestHandler builds the full vMCP handler backed by the MCP server at
+// backendURL. It is the low-level helper used by newRealTestServer and any test
+// that needs control over the httptest.Server configuration (e.g. WriteTimeout).
+func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -88,8 +88,15 @@ func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
 
 	handler, err := srv.Handler(context.Background())
 	require.NoError(t, err)
+	return handler
+}
 
-	ts := httptest.NewServer(handler)
+// newRealTestServer builds a vMCP server with session management and a real
+// SessionFactory. The BackendRegistry mock returns the backend at backendURL
+// so that CreateSession() opens a real HTTP connection to the MCP server.
+func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(newRealTestHandler(t, backendURL))
 	t.Cleanup(ts.Close)
 	return ts
 }
@@ -196,6 +203,30 @@ func TestIntegration_RealBackend_ToolCall(t *testing.T) {
 	assert.False(t, rpc.Result.IsError)
 	assert.Equal(t, "text", rpc.Result.Content[0].Type)
 	assert.Equal(t, "hello from backend", rpc.Result.Content[0].Text)
+}
+
+// TestIntegration_NonSSEGetRejectedWithNotAcceptable verifies that a GET request
+// without Accept: text/event-stream is rejected by the vMCP server with 406.
+// This confirms that headerValidatingMiddleware fires before the SSE stream is
+// opened, and that the write-timeout middleware does not interfere with the
+// rejection path.
+func TestIntegration_RealBackend_NonSSEGetRejectedWithNotAcceptable(t *testing.T) {
+	t.Parallel()
+
+	// The request is rejected by headerValidatingMiddleware with 406 before any
+	// backend interaction, so no real MCP backend is needed.
+	ts := newRealTestServer(t, "http://127.0.0.1:0")
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/mcp", nil)
+	require.NoError(t, err)
+	// No Accept header — not a qualifying SSE request.
+
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotAcceptable, resp.StatusCode,
+		"GET without Accept: text/event-stream must be rejected with 406")
 }
 
 // TestIntegration_RealBackend_Termination verifies the session termination path

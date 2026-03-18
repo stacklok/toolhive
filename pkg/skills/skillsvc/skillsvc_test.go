@@ -1823,13 +1823,15 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 			},
 		},
 		{
-			name: "install without group skips group registration",
+			name: "install without group defaults to default group",
 			opts: skills.InstallOptions{Name: "my-skill"},
 			setupStoreMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 			},
-			setupGroupMock: func(_ *groupmocks.MockManager) {
-				// No group calls expected.
+			setupGroupMock: func(gm *groupmocks.MockManager) {
+				gm.EXPECT().Get(gomock.Any(), groups.DefaultGroup).
+					Return(&groups.Group{Name: groups.DefaultGroup, Skills: []string{}}, nil)
+				gm.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
 			},
 		},
 		{

@@ -100,7 +100,7 @@ var _ = BeforeSuite(func() {
 	err = (&controllers.EmbeddingServerReconciler{
 		Client:           k8sManager.GetClient(),
 		Scheme:           k8sManager.GetScheme(),
-		Recorder:         k8sManager.GetEventRecorderFor("embeddingserver-controller"),
+		Recorder:         k8sManager.GetEventRecorder("embeddingserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}).SetupWithManager(k8sManager)

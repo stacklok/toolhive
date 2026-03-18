@@ -30,8 +30,14 @@ func newTestEngine(t *testing.T) *testEngine {
 	t.Cleanup(ctrl.Finish)
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
+	// ResolveToolName is called by getToolInputSchema on every tool step.
+	// For tests that use NewWorkflowEngine (no tools list), the result is
+	// always nil, so a pass-through AnyTimes expectation is sufficient.
+	mockRouter.EXPECT().ResolveToolName(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, name string) string { return name }).
+		AnyTimes()
 	mockBackend := mocks.NewMockBackendClient(ctrl)
-	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, nil, nil) // nil elicitationHandler, stateStore, and auditor for simple tests
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, nil, nil, nil) // nil elicitationHandler, stateStore, auditor, and tools for simple tests
 
 	return &testEngine{
 		Engine:  engine,

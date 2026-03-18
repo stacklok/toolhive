@@ -390,9 +390,12 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockRouter.EXPECT().ResolveToolName(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, name string) string { return name }).
+		AnyTimes()
 	mockBackend := mocks.NewMockBackendClient(ctrl)
 	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, stateStore, nil)
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, stateStore, nil, nil)
 
 	// Track execution timing to verify parallel execution
 	var executionMu sync.Mutex
@@ -746,12 +749,15 @@ func TestWorkflowEngine_SessionEngine_CoercesTemplateStringToTypedArg(t *testing
 	t.Parallel()
 
 	// Template expansion always produces strings. When the engine is created
-	// with NewSessionWorkflowEngine, getToolInputSchema resolves the target tool's InputSchema
+	// with a bound tool list, getToolInputSchema resolves the target tool's InputSchema
 	// and the schema coercion layer converts "42" → 42 before calling the backend.
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockRouter.EXPECT().ResolveToolName(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, name string) string { return name }).
+		AnyTimes()
 	mockBackend := mocks.NewMockBackendClient(ctrl)
 
 	tools := []vmcp.Tool{
@@ -766,7 +772,7 @@ func TestWorkflowEngine_SessionEngine_CoercesTemplateStringToTypedArg(t *testing
 		},
 	}
 
-	engine := NewSessionWorkflowEngine(mockRouter, mockBackend, nil, nil, nil, tools)
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, nil, nil, tools)
 
 	target := &vmcp.BackendTarget{WorkloadID: "backend1", BaseURL: "http://backend1:8080"}
 	mockRouter.EXPECT().RouteTool(gomock.Any(), "count_items").Return(target, nil)
@@ -804,17 +810,20 @@ func TestWorkflowEngine_SessionEngine_CoercesTemplateStringToTypedArg(t *testing
 func TestWorkflowEngine_SessionEngine_ToolNotInList_ReturnsNilSchema(t *testing.T) {
 	t.Parallel()
 
-	// When NewSessionWorkflowEngine is used but the requested tool is not in the list,
+	// When a bound tool list is provided but the requested tool is not in it,
 	// getToolInputSchema returns nil and coercion is a no-op.
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockRouter.EXPECT().ResolveToolName(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, name string) string { return name }).
+		AnyTimes()
 	mockBackend := mocks.NewMockBackendClient(ctrl)
 
 	// Tools list does not include "other_tool".
 	tools := []vmcp.Tool{{Name: "known_tool", InputSchema: map[string]any{"type": "object"}}}
-	engine := NewSessionWorkflowEngine(mockRouter, mockBackend, nil, nil, nil, tools)
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, nil, nil, tools)
 
 	target := &vmcp.BackendTarget{WorkloadID: "backend1", BaseURL: "http://backend1:8080"}
 	mockRouter.EXPECT().RouteTool(gomock.Any(), "other_tool").Return(target, nil)

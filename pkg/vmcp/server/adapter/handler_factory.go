@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/compositetools"
 )
 
 //go:generate mockgen -destination=mocks/mock_handler_factory.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/server/adapter HandlerFactory
@@ -43,20 +44,13 @@ type HandlerFactory interface {
 }
 
 // WorkflowExecutor executes composite tool workflows.
-// This interface abstracts the composer to enable testing without full composer setup.
-type WorkflowExecutor interface {
-	// ExecuteWorkflow executes the workflow with the given parameters.
-	ExecuteWorkflow(ctx context.Context, params map[string]any) (*WorkflowResult, error)
-}
+// Type alias for compositetools.WorkflowExecutor so that adapter consumers and
+// the session decorator share a single interface definition.
+type WorkflowExecutor = compositetools.WorkflowExecutor
 
 // WorkflowResult represents the result of a workflow execution.
-type WorkflowResult struct {
-	// Output contains the workflow output data (typically from the last step).
-	Output map[string]any
-
-	// Error contains error information if the workflow failed.
-	Error error
-}
+// Type alias for compositetools.WorkflowResult.
+type WorkflowResult = compositetools.WorkflowResult
 
 // DefaultHandlerFactory creates MCP request handlers that route to backend workloads.
 type DefaultHandlerFactory struct {

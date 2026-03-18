@@ -46,7 +46,7 @@ type workflowEngine struct {
 	backendClient vmcp.BackendClient
 
 	// tools is the resolved tool list for the session, used by getToolInputSchema
-	// for argument type coercion. Set via NewSessionWorkflowEngine.
+	// for argument type coercion. Nil means no schema-based coercion (discovery-based routing).
 	tools []vmcp.Tool
 
 	// templateExpander handles template expansion.
@@ -70,36 +70,14 @@ type workflowEngine struct {
 
 // NewWorkflowEngine creates a new workflow execution engine.
 //
-// The elicitationHandler parameter is optional. If nil, elicitation steps will fail.
-// This allows the engine to be used without elicitation support for simple workflows.
+// tools is the resolved tool list for schema-based argument type coercion. Pass nil
+// when the engine is used for validation or discovery-based routing only.
 //
+// The elicitationHandler parameter is optional. If nil, elicitation steps will fail.
 // The stateStore parameter is optional. If nil, workflow status tracking and cancellation
 // will not be available. Use NewInMemoryStateStore() for basic state tracking.
-//
 // The auditor parameter is optional. If nil, workflow execution will not be audited.
 func NewWorkflowEngine(
-	rtr router.Router,
-	backendClient vmcp.BackendClient,
-	elicitationHandler ElicitationProtocolHandler,
-	stateStore WorkflowStateStore,
-	auditor *audit.WorkflowAuditor,
-) Composer {
-	return &workflowEngine{
-		router:             rtr,
-		backendClient:      backendClient,
-		templateExpander:   NewTemplateExpander(),
-		contextManager:     newWorkflowContextManager(),
-		elicitationHandler: elicitationHandler,
-		dagExecutor:        newDAGExecutor(defaultMaxParallelSteps),
-		stateStore:         stateStore,
-		auditor:            auditor,
-	}
-}
-
-// NewSessionWorkflowEngine creates a per-session workflow engine bound to a resolved tool list.
-// tools is required: it enables argument type coercion against the session's tool schemas.
-// Use this when creating per-session engines via router.NewSessionRouter.
-func NewSessionWorkflowEngine(
 	rtr router.Router,
 	backendClient vmcp.BackendClient,
 	elicitationHandler ElicitationProtocolHandler,
@@ -434,7 +412,7 @@ func (e *workflowEngine) executeToolStep(
 	// Coerce expanded arguments to expected types based on backend tool schema.
 	// Template expansion returns strings, but backend tools expect typed values
 	// (integer, boolean, number) as defined in their InputSchema.
-	rawSchema := e.getToolInputSchema(step.Tool)
+	rawSchema := e.getToolInputSchema(ctx, step.Tool)
 	s := schema.MakeSchema(rawSchema)
 	if coerced, ok := s.TryCoerce(expandedArgs).(map[string]any); ok {
 		expandedArgs = coerced
@@ -1250,11 +1228,17 @@ func (e *workflowEngine) auditStepSkipped(
 	}
 }
 
-// getToolInputSchema looks up a tool's InputSchema from the session-bound tools list.
-// Returns nil if the engine has no tools list or the tool is not found.
-func (e *workflowEngine) getToolInputSchema(toolName string) map[string]any {
+// getToolInputSchema looks up a tool's InputSchema from the session-bound tools
+// list. If toolName uses the dot convention "{workloadID}.{originalCapabilityName}",
+// ResolveToolName is called to translate it to the conflict-resolved key before
+// lookup. Returns nil if the engine has no tools list or the tool is not found.
+func (e *workflowEngine) getToolInputSchema(ctx context.Context, toolName string) map[string]any {
+	resolved := toolName
+	if e.router != nil {
+		resolved = e.router.ResolveToolName(ctx, toolName)
+	}
 	for i := range e.tools {
-		if e.tools[i].Name == toolName {
+		if e.tools[i].Name == resolved {
 			return e.tools[i].InputSchema
 		}
 	}

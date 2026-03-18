@@ -9,6 +9,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 // SessionManager extends the SDK's SessionIdManager with Phase 2 session creation
@@ -39,4 +40,12 @@ type SessionManager interface {
 	// Returns (nil, false) if the session does not exist or is still a placeholder.
 	// Used to access session-scoped backend tool metadata (e.g. for conflict validation).
 	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
+
+	// DecorateSession retrieves the MultiSession for sessionID, applies fn to it,
+	// and stores the result back. Used to stack session decorators (composite tools,
+	// optimizer) after the base session is created.
+	DecorateSession(sessionID string, fn func(sessiontypes.MultiSession) sessiontypes.MultiSession) error
+
+	// Terminate terminates the session with the given ID, closing all backend connections.
+	Terminate(sessionID string) (bool, error)
 }

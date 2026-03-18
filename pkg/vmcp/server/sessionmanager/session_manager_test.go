@@ -1379,6 +1379,113 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: DecorateSession
+// ---------------------------------------------------------------------------
+
+func TestSessionManager_DecorateSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("replaces session with decorated result", func(t *testing.T) {
+		t.Parallel()
+
+		tools := []vmcp.Tool{{Name: "hello", Description: "says hello"}}
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				return newMockSession(t, ctrl, id, tools), nil
+			}).Times(1)
+
+		registry := newFakeRegistry()
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		require.NotEmpty(t, sessionID)
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		// Apply a decorator that wraps with an extra tool.
+		extraTool := vmcp.Tool{Name: "extra", Description: "extra tool"}
+		err = sm.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
+			decorated := sessionmocks.NewMockMultiSession(ctrl)
+			// Delegate everything to base session
+			decorated.EXPECT().ID().Return(sess.ID()).AnyTimes()
+			decorated.EXPECT().Tools().Return(append(sess.Tools(), extraTool)).AnyTimes()
+			// other methods delegated via AnyTimes
+			decorated.EXPECT().Type().Return(sess.Type()).AnyTimes()
+			decorated.EXPECT().CreatedAt().Return(sess.CreatedAt()).AnyTimes()
+			decorated.EXPECT().UpdatedAt().Return(sess.UpdatedAt()).AnyTimes()
+			decorated.EXPECT().Touch().AnyTimes()
+			decorated.EXPECT().GetData().Return(nil).AnyTimes()
+			decorated.EXPECT().SetData(gomock.Any()).AnyTimes()
+			decorated.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+			decorated.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+			decorated.EXPECT().BackendSessions().Return(nil).AnyTimes()
+			decorated.EXPECT().GetRoutingTable().Return(nil).AnyTimes()
+			decorated.EXPECT().Prompts().Return(nil).AnyTimes()
+			return decorated
+		})
+		require.NoError(t, err)
+
+		// After decoration, GetMultiSession returns the decorated session with both tools.
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		require.True(t, ok)
+		require.Len(t, multiSess.Tools(), 2)
+		assert.Equal(t, "hello", multiSess.Tools()[0].Name)
+		assert.Equal(t, "extra", multiSess.Tools()[1].Name)
+	})
+
+	t.Run("returns error for unknown session", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		sm, _ := newTestSessionManager(t, newMockFactory(t, ctrl, newMockSession(t, ctrl, "", nil)), newFakeRegistry())
+
+		err := sm.DecorateSession("ghost-session", func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
+			return sess
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("returns error if session terminated during decoration", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate the race: Terminate() is called between GetMultiSession and
+		// UpsertSession. We do this by terminating the session inside the
+		// decorator fn, so the re-check that follows fn() sees it is gone.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				sess := newMockSession(t, ctrl, id, nil)
+				sess.EXPECT().Close().Return(nil).AnyTimes()
+				return sess, nil
+			}).Times(1)
+
+		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+
+		sessionID := sm.Generate()
+		require.NotEmpty(t, sessionID)
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		err = sm.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
+			// Simulate concurrent Terminate() completing during decoration.
+			_, _ = sm.Terminate(sessionID)
+			return sess
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "terminated during decoration")
+
+		// The session must not be resurrected.
+		_, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "terminated session must not be resurrected by DecorateSession")
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 

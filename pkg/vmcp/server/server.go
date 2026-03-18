@@ -38,6 +38,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/compositetools"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
@@ -344,14 +347,14 @@ func New(
 	// The composer orchestrates multi-step workflows across backends
 	// Use in-memory state store with 5-minute cleanup interval and 1-hour max age for completed workflows
 	stateStore := composer.NewInMemoryStateStore(5*time.Minute, 1*time.Hour)
-	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore, workflowAuditor)
+	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore, workflowAuditor, nil)
 
 	// composerFactory builds a per-session workflow engine at session registration
 	// time, binding composite tool routing to the session's own routing table and
 	// tool list. This removes composite tools' dependency on the discovery middleware
 	// injecting DiscoveredCapabilities into the request context.
 	sessionComposerFactory := func(sessionRT *vmcp.RoutingTable, sessionTools []vmcp.Tool) composer.Composer {
-		return composer.NewSessionWorkflowEngine(
+		return composer.NewWorkflowEngine(
 			router.NewSessionRouter(sessionRT), backendClient, elicitationHandler, stateStore, workflowAuditor,
 			sessionTools,
 		)
@@ -1022,6 +1025,26 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		return retErr
 	}
 
+	// Apply composite tools decorator (if workflow defs are configured).
+	// This appends composite tools to the session's tool list and routes their
+	// CallTool invocations through per-session workflow executors.
+	if len(s.workflowDefs) > 0 {
+		if retErr = s.applyCompositeToolsDecorator(sessionID); retErr != nil {
+			return retErr
+		}
+	}
+
+	// Apply optimizer decorator (if configured).
+	// Must come after composite tools so the optimizer indexes composite tools too.
+	// Replaces the full tool list with find_tool + call_tool.
+	if s.config.OptimizerFactory != nil {
+		if retErr = s.applyOptimizerDecorator(ctx, sessionID); retErr != nil {
+			return retErr
+		}
+	}
+
+	// Uniform registration — same code path regardless of which decorators are active.
+	// session.Tools() returns the final decorated tool list.
 	adaptedTools, retErr := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
 	if retErr != nil {
 		slog.Error("failed to get session-scoped tools",
@@ -1038,97 +1061,11 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		return retErr
 	}
 
-	// Collect composite SDK tools (with name-collision check against backend tools).
-	compositeSDKTools, retErr := s.collectCompositeTools(sessionID)
-	if retErr != nil {
-		return retErr
-	}
-
 	if len(adaptedResources) > 0 {
 		if err := setSessionResourcesDirect(session, adaptedResources); err != nil {
 			slog.Error("failed to add session resources", "session_id", sessionID, "error", err)
 			return err
 		}
-	}
-
-	return s.injectTools(ctx, session, adaptedTools, compositeSDKTools)
-}
-
-// collectCompositeTools converts workflow definitions to SDK tools for the given session,
-// validating that no composite tool name collides with a backend tool name.
-// Returns an empty slice (not an error) if no workflow defs are configured or conflicts are found.
-// Composite tools whose underlying backend tools are not routable in this session are excluded,
-// so a session that lacks access to a backend tool also cannot access composite tools that depend on it.
-func (s *Server) collectCompositeTools(sessionID string) ([]server.ServerTool, error) {
-	if len(s.workflowDefs) == 0 {
-		return nil, nil
-	}
-
-	multiSess, hasSess := s.vmcpSessionMgr.GetMultiSession(sessionID)
-	if !hasSess {
-		slog.Error("session not found after creation; skipping composite tools",
-			"session_id", sessionID)
-		return nil, nil
-	}
-
-	sessionDefs := filterWorkflowDefsForSession(s.workflowDefs, multiSess.GetRoutingTable())
-	if len(sessionDefs) == 0 {
-		return nil, nil
-	}
-
-	compositeTools := convertWorkflowDefsToTools(sessionDefs)
-	if err := validateNoToolConflicts(multiSess.Tools(), compositeTools); err != nil {
-		slog.Error("composite tool name conflict detected; skipping composite tools",
-			"session_id", sessionID,
-			"error", err)
-		return nil, nil
-	}
-
-	// Build per-session workflow executors so that composite tool routing uses
-	// the session's own routing table rather than DiscoveredCapabilities from
-	// the request context (which is injected by the discovery middleware).
-	sessionComposer := s.composerFactory(multiSess.GetRoutingTable(), multiSess.Tools())
-	sessionExecutors := make(map[string]adapter.WorkflowExecutor, len(sessionDefs))
-	for name, def := range sessionDefs {
-		ex := newComposerWorkflowExecutor(sessionComposer, def)
-		if s.workflowInstruments != nil {
-			ex = s.workflowInstruments.wrapExecutor(name, ex)
-		}
-		sessionExecutors[name] = ex
-	}
-
-	sdkTools, err := s.capabilityAdapter.ToCompositeToolSDKTools(compositeTools, sessionExecutors)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert composite tools: %w", err)
-	}
-	return sdkTools, nil
-}
-
-// injectTools registers backend and composite tools into the session.
-// When the optimizer is configured, all tools are indexed and only
-// find_tool/call_tool are exposed; otherwise tools are registered directly.
-func (s *Server) injectTools(
-	ctx context.Context,
-	session server.ClientSession,
-	adaptedTools []server.ServerTool,
-	compositeSDKTools []server.ServerTool,
-) error {
-	sessionID := session.SessionID()
-
-	if s.config.OptimizerFactory != nil {
-		allTools := append(adaptedTools, compositeSDKTools...)
-		opt, err := s.config.OptimizerFactory(ctx, allTools)
-		if err != nil {
-			return fmt.Errorf("failed to create optimizer: %w", err)
-		}
-		if err = setSessionToolsDirect(session, adapter.CreateOptimizerTools(opt)); err != nil {
-			slog.Error("failed to add optimizer tools to session", "session_id", sessionID, "error", err)
-			return err
-		}
-		slog.Info("session capabilities injected (optimizer mode)",
-			"session_id", sessionID,
-			"indexed_tool_count", len(allTools))
-		return nil
 	}
 
 	if len(adaptedTools) > 0 {
@@ -1137,18 +1074,83 @@ func (s *Server) injectTools(
 			return err
 		}
 	}
-	if len(compositeSDKTools) > 0 {
-		if err := setSessionToolsDirect(session, compositeSDKTools); err != nil {
-			slog.Error("failed to add composite tools to session", "session_id", sessionID, "error", err)
-			return err
-		}
-		slog.Debug("added composite tools to session", "session_id", sessionID, "count", len(compositeSDKTools))
-	}
 
 	slog.Info("session capabilities injected",
 		"session_id", sessionID,
-		"tool_count", len(adaptedTools),
-		"composite_tool_count", len(compositeSDKTools))
+		"tool_count", len(adaptedTools))
+	return nil
+}
+
+// applyCompositeToolsDecorator wraps the session with a compositeToolsDecorator.
+// It filters workflow definitions for the session, validates name conflicts with
+// backend tools, builds per-session workflow executors, then calls DecorateSession.
+//
+// Non-fatal conditions (no accessible defs, name conflicts) log a warning and
+// leave the session undecorated rather than failing.
+func (s *Server) applyCompositeToolsDecorator(sessionID string) error {
+	multiSess, hasSess := s.vmcpSessionMgr.GetMultiSession(sessionID)
+	if !hasSess {
+		slog.Warn("session not found after creation; skipping composite tools",
+			"session_id", sessionID)
+		return nil
+	}
+
+	sessionDefs := filterWorkflowDefsForSession(s.workflowDefs, multiSess.GetRoutingTable())
+	if len(sessionDefs) == 0 {
+		return nil
+	}
+
+	compositeToolsMeta := convertWorkflowDefsToTools(sessionDefs)
+	if err := validateNoToolConflicts(multiSess.Tools(), compositeToolsMeta); err != nil {
+		slog.Warn("composite tool name conflict detected; skipping composite tools",
+			"session_id", sessionID,
+			"error", err)
+		return nil
+	}
+
+	// Build per-session workflow executors bound to this session's routing table.
+	sessionComposer := s.composerFactory(multiSess.GetRoutingTable(), multiSess.Tools())
+	sessionExecutors := make(map[string]compositetools.WorkflowExecutor, len(sessionDefs))
+	for _, def := range sessionDefs {
+		ex := newComposerWorkflowExecutor(sessionComposer, def)
+		if s.workflowInstruments != nil {
+			ex = s.workflowInstruments.wrapExecutor(def.Name, ex)
+		}
+		sessionExecutors[def.Name] = ex
+	}
+
+	return s.vmcpSessionMgr.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
+		return compositetools.NewDecorator(sess, compositeToolsMeta, sessionExecutors)
+	})
+}
+
+// applyOptimizerDecorator wraps the session with an optimizerDecorator.
+// It reads the current session's tool list (including composite tools if applied),
+// builds SDK tools for the optimizer factory to index, creates the optimizer, and
+// calls DecorateSession. The optimizer replaces the tool list with find_tool + call_tool.
+func (s *Server) applyOptimizerDecorator(ctx context.Context, sessionID string) error {
+	// Snapshot the pre-optimizer SDK tools for the optimizer to index.
+	// This includes composite tools if the composite decorator was already applied.
+	sdkTools, err := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to get tools for optimizer: %w", err)
+	}
+
+	opt, err := s.config.OptimizerFactory(ctx, sdkTools)
+	if err != nil {
+		return fmt.Errorf("failed to create optimizer: %w", err)
+	}
+
+	if err = s.vmcpSessionMgr.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
+		return optimizerdec.NewDecorator(sess, opt)
+	}); err != nil {
+		return err
+	}
+
+	slog.Info("session capabilities injected (optimizer mode)",
+		"session_id", sessionID,
+		"indexed_tool_count", len(sdkTools))
+
 	return nil
 }
 

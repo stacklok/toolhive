@@ -41,6 +41,20 @@ func (m *MockRouter) EXPECT() *MockRouterMockRecorder {
 	return m.recorder
 }
 
+// ResolveToolName mocks base method.
+func (m *MockRouter) ResolveToolName(ctx context.Context, toolName string) string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResolveToolName", ctx, toolName)
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// ResolveToolName indicates an expected call of ResolveToolName.
+func (mr *MockRouterMockRecorder) ResolveToolName(ctx, toolName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveToolName", reflect.TypeOf((*MockRouter)(nil).ResolveToolName), ctx, toolName)
+}
+
 // RoutePrompt mocks base method.
 func (m *MockRouter) RoutePrompt(ctx context.Context, name string) (*vmcp.BackendTarget, error) {
 	m.ctrl.T.Helper()

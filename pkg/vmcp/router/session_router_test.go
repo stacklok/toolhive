@@ -65,6 +65,54 @@ func TestSessionRouter_RouteTool(t *testing.T) {
 			expectError:   true,
 			errorContains: "tool not found",
 		},
+		{
+			// Composite workflow steps use "{workloadID}.{toolName}" where toolName
+			// is the original backend capability name. With prefix conflict resolution
+			// the routing table key is "{workloadID}_toolName", so an exact match
+			// fails. The dot-convention fallback must resolve it correctly.
+			name: "dot convention resolved via workload ID and original capability name",
+			routingTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"my-backend_echo": {
+						WorkloadID:             "my-backend",
+						WorkloadName:           "My Backend",
+						BaseURL:                "http://my-backend:8080",
+						OriginalCapabilityName: "echo",
+					},
+				},
+			},
+			toolName:    "my-backend.echo",
+			expectedID:  "my-backend",
+			expectError: false,
+		},
+		{
+			name: "dot convention: workload not in session",
+			routingTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"other-backend_echo": {
+						WorkloadID:             "other-backend",
+						OriginalCapabilityName: "echo",
+					},
+				},
+			},
+			toolName:      "my-backend.echo",
+			expectError:   true,
+			errorContains: "tool not found",
+		},
+		{
+			name: "dot convention: capability name mismatch",
+			routingTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"my-backend_echo": {
+						WorkloadID:             "my-backend",
+						OriginalCapabilityName: "echo",
+					},
+				},
+			},
+			toolName:      "my-backend.fetch",
+			expectError:   true,
+			errorContains: "tool not found",
+		},
 	}
 
 	for _, tt := range tests {
@@ -83,6 +131,63 @@ func TestSessionRouter_RouteTool(t *testing.T) {
 				require.NotNil(t, target)
 				assert.Equal(t, tt.expectedID, target.WorkloadID)
 			}
+		})
+	}
+}
+
+func TestSessionRouter_ResolveToolName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		routingTable *vmcp.RoutingTable
+		toolName     string
+		expectedName string
+	}{
+		{
+			name: "exact key returned unchanged",
+			routingTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"my-backend_echo": {WorkloadID: "my-backend", OriginalCapabilityName: "echo"},
+				},
+			},
+			toolName:     "my-backend_echo",
+			expectedName: "my-backend_echo",
+		},
+		{
+			name: "dot convention resolves to routing table key",
+			routingTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"my-backend_echo": {WorkloadID: "my-backend", OriginalCapabilityName: "echo"},
+				},
+			},
+			toolName:     "my-backend.echo",
+			expectedName: "my-backend_echo",
+		},
+		{
+			name: "not found returns toolName unchanged (pass-through)",
+			routingTable: &vmcp.RoutingTable{
+				Tools: make(map[string]*vmcp.BackendTarget),
+			},
+			toolName:     "missing_tool",
+			expectedName: "missing_tool",
+		},
+		{
+			name:         "nil routing table returns toolName unchanged (pass-through)",
+			routingTable: nil,
+			toolName:     "any_tool",
+			expectedName: "any_tool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := router.NewSessionRouter(tt.routingTable)
+			resolved := r.ResolveToolName(context.Background(), tt.toolName)
+
+			assert.Equal(t, tt.expectedName, resolved)
 		})
 	}
 }

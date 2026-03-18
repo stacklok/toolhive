@@ -39,7 +39,7 @@ func TestWorkflowEngine_WithAuditor_SuccessfulWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create engine with auditor
-	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor)
+	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor, nil)
 
 	// Setup simple workflow
 	workflow := simpleWorkflow("audit-test",
@@ -86,7 +86,7 @@ func TestWorkflowEngine_WithAuditor_FailedWorkflow(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor)
+	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor, nil)
 
 	workflow := simpleWorkflow("fail-test",
 		toolStep("step1", "tool1", map[string]any{"arg": "value"}),
@@ -119,7 +119,7 @@ func TestWorkflowEngine_WithAuditor_WorkflowTimeout(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor)
+	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor, nil)
 
 	workflow := &WorkflowDefinition{
 		Name:    "timeout-test",
@@ -162,7 +162,7 @@ func TestWorkflowEngine_WithAuditor_StepSkipped(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor)
+	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor, nil)
 
 	workflow := &WorkflowDefinition{
 		Name: "skip-test",
@@ -215,7 +215,7 @@ func TestWorkflowEngine_WithAuditor_RetryStep(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor)
+	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, auditor, nil)
 
 	workflow := &WorkflowDefinition{
 		Name: "retry-test",

@@ -32,7 +32,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
-	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
@@ -75,9 +74,9 @@ func testSetup(t *testing.T) *Handler {
 
 	// Use a dummy upstream for basic handler tests that don't need IDP functionality
 	dummyUpstream := &mockIDPProvider{}
-	handler := NewHandler(provider, oauth2Config, stor,
-		map[string]upstream.OAuth2Provider{"default": dummyUpstream},
-		[]string{"default"})
+	handler, err := NewHandler(provider, oauth2Config, stor,
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
+	require.NoError(t, err)
 
 	return handler
 }
@@ -131,9 +130,9 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 	stor := mocks.NewMockStorage(ctrl)
 	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
 	dummyUpstream := &mockIDPProvider{}
-	handler := NewHandler(provider, cfg, stor,
-		map[string]upstream.OAuth2Provider{"default": dummyUpstream},
-		[]string{"default"})
+	handler, err := NewHandler(provider, cfg, stor,
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
+	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	rec := httptest.NewRecorder()

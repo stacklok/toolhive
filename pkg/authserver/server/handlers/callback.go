@@ -76,7 +76,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Look up the upstream provider that was used for this authorization leg.
 	// Validating against pending.UpstreamProviderName (set during authorize) provides
 	// IDP mix-up defense: we only accept callbacks for the provider we redirected to.
-	upstreamProvider, ok := h.upstreams[pending.UpstreamProviderName]
+	upstreamProvider, ok := h.upstreamByName(pending.UpstreamProviderName)
 	if !ok {
 		slog.Error("upstream provider not found", "provider", pending.UpstreamProviderName)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider not configured"))
@@ -328,7 +328,7 @@ func (h *Handler) continueChainOrComplete(
 		// Defense-in-depth: verify identity consistency across chain legs.
 		// The subject was resolved from the first leg's upstream and carried through
 		// PendingAuthorization. Cross-check it against the stored upstream tokens.
-		if len(h.upstreamOrder) > 1 {
+		if len(h.upstreams) > 1 {
 			allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
 			if err != nil {
 				slog.Error("failed to verify identity consistency", "error", err)
@@ -336,7 +336,7 @@ func (h *Handler) continueChainOrComplete(
 				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to verify identity consistency"))
 				return
 			}
-			firstProvider := h.upstreamOrder[0]
+			firstProvider := h.upstreams[0].Name
 			if firstTokens, ok := allTokens[firstProvider]; ok && firstTokens.UserID != subject {
 				slog.Error("identity mismatch between chain state and stored tokens",
 					"expected", subject,
@@ -397,9 +397,9 @@ func (h *Handler) continueChainOrComplete(
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	nextUpstream, ok := h.upstreams[nextProvider]
+	nextUpstream, ok := h.upstreamByName(nextProvider)
 	if !ok {
-		slog.Error("next upstream provider not found in map", "provider", nextProvider)
+		slog.Error("next upstream provider not found", "provider", nextProvider)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
 		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider configuration error"))

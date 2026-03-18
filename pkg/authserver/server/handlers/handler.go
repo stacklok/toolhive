@@ -27,57 +27,51 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
+// The name is used as the storage key and must be unique within the upstream slice.
+type NamedUpstream struct {
+	Name     string
+	Provider upstream.OAuth2Provider
+}
+
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider      fosite.OAuth2Provider
-	config        *server.AuthorizationServerConfig
-	storage       storage.Storage
-	upstreams     map[string]upstream.OAuth2Provider
-	upstreamOrder []string
-	userResolver  *UserResolver
+	provider     fosite.OAuth2Provider
+	config       *server.AuthorizationServerConfig
+	storage      storage.Storage
+	upstreams    []NamedUpstream
+	userResolver *UserResolver
 }
 
 // NewHandler creates a new Handler with the given dependencies.
-// upstreams maps logical provider names to their OAuth2Provider implementations.
-// upstreamOrder defines the sequence in which upstream providers are consulted
+// upstreams defines the ordered sequence of upstream providers consulted
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 //
-// Panics if upstreamOrder is empty, or if any name in upstreamOrder does not
-// exist in the upstreams map. These are programming errors caught at construction
-// time; configuration validation must happen before calling NewHandler.
+// Returns an error if upstreams is empty or if any entry has an empty name or nil provider.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
-	upstreams map[string]upstream.OAuth2Provider,
-	upstreamOrder []string,
-) *Handler {
-	if len(upstreamOrder) == 0 {
-		panic("handlers: upstreamOrder must not be empty")
+	upstreams []NamedUpstream,
+) (*Handler, error) {
+	if len(upstreams) == 0 {
+		return nil, fmt.Errorf("handlers: upstreams must not be empty")
 	}
-	if len(upstreamOrder) != len(upstreams) {
-		panic(fmt.Sprintf(
-			"handlers: upstreamOrder length (%d) does not match upstreams map length (%d)",
-			len(upstreamOrder), len(upstreams),
-		))
-	}
-	for _, name := range upstreamOrder {
-		p, ok := upstreams[name]
-		if !ok {
-			panic(fmt.Sprintf("handlers: upstream %q in upstreamOrder not found in upstreams map", name))
+	for _, u := range upstreams {
+		if u.Name == "" {
+			return nil, fmt.Errorf("handlers: upstream entry has empty name")
 		}
-		if p == nil {
-			panic(fmt.Sprintf("handlers: upstream %q has nil provider", name))
+		if u.Provider == nil {
+			return nil, fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
 		}
 	}
 	return &Handler{
-		provider:      provider,
-		config:        config,
-		storage:       stor,
-		upstreams:     upstreams,
-		upstreamOrder: upstreamOrder,
-		userResolver:  NewUserResolver(stor),
-	}
+		provider:     provider,
+		config:       config,
+		storage:      stor,
+		upstreams:    upstreams,
+		userResolver: NewUserResolver(stor),
+	}, nil
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.
@@ -116,10 +110,22 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (st
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}
-	for _, name := range h.upstreamOrder {
-		if _, ok := stored[name]; !ok {
-			return name, nil
+	for _, u := range h.upstreams {
+		if _, ok := stored[u.Name]; !ok {
+			return u.Name, nil
 		}
 	}
 	return "", nil
+}
+
+// upstreamByName returns the upstream provider with the given name.
+// It follows the (value, bool) convention: the second return value is false
+// if no upstream with that name exists.
+func (h *Handler) upstreamByName(name string) (upstream.OAuth2Provider, bool) {
+	for i := range h.upstreams {
+		if h.upstreams[i].Name == name {
+			return h.upstreams[i].Provider, true
+		}
+	}
+	return nil, false
 }

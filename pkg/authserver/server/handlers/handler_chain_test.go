@@ -135,13 +135,13 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 	mockUpstream1 := &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}
 	mockUpstream2 := &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}
 
-	handler := NewHandler(provider, oauth2Config, stor,
-		map[string]upstream.OAuth2Provider{
-			"provider-1": mockUpstream1,
-			"provider-2": mockUpstream2,
+	handler, err := NewHandler(provider, oauth2Config, stor,
+		[]NamedUpstream{
+			{Name: "provider-1", Provider: mockUpstream1},
+			{Name: "provider-2", Provider: mockUpstream2},
 		},
-		[]string{"provider-1", "provider-2"},
 	)
+	require.NoError(t, err)
 
 	got, err := handler.nextMissingUpstream(context.Background(), "test-session")
 	require.Error(t, err)

@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
@@ -157,15 +156,14 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
-func TestNewHandler_PanicsOnEmptyUpstreams(t *testing.T) {
+func TestNewHandler_ErrorsOnEmptyUpstreams(t *testing.T) {
 	t.Parallel()
-	require.Panics(t, func() {
-		NewHandler(nil, nil, nil, nil, nil)
-	}, "NewHandler should panic when upstreamOrder is empty")
 
-	require.Panics(t, func() {
-		NewHandler(nil, nil, nil, map[string]upstream.OAuth2Provider{}, []string{})
-	}, "NewHandler should panic when upstreamOrder is empty slice")
+	_, err := NewHandler(nil, nil, nil, nil)
+	require.Error(t, err, "NewHandler should error when upstreams is nil")
+
+	_, err = NewHandler(nil, nil, nil, []NamedUpstream{})
+	require.Error(t, err, "NewHandler should error when upstreams is empty slice")
 }
 
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {

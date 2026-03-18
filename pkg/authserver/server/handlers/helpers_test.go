@@ -387,8 +387,9 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		},
 	}
 
-	upstreams := map[string]upstream.OAuth2Provider{"test-upstream": mockUpstream}
-	handler := NewHandler(provider, oauth2Config, stor, upstreams, []string{"test-upstream"})
+	upstreams := []NamedUpstream{{Name: "test-upstream", Provider: mockUpstream}}
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	require.NoError(t, err)
 
 	return handler, storState, mockUpstream
 }
@@ -432,11 +433,12 @@ func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDP
 		},
 	}
 
-	upstreams := map[string]upstream.OAuth2Provider{
-		"provider-1": mockProvider1,
-		"provider-2": mockProvider2,
+	upstreams := []NamedUpstream{
+		{Name: "provider-1", Provider: mockProvider1},
+		{Name: "provider-2", Provider: mockProvider2},
 	}
-	handler := NewHandler(provider, oauth2Config, stor, upstreams, []string{"provider-1", "provider-2"})
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2
 }

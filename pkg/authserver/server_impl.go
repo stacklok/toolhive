@@ -21,10 +21,9 @@ import (
 
 // server is the internal implementation of the Server interface.
 type server struct {
-	handler       http.Handler
-	storage       storage.Storage
-	upstreams     map[string]upstream.OAuth2Provider
-	upstreamOrder []string
+	handler   http.Handler
+	storage   storage.Storage
+	upstreams []handlers.NamedUpstream
 }
 
 // upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
@@ -125,9 +124,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	slog.Debug("creating fosite OAuth2 provider")
 	fositeProvider := createProvider(authServerConfig, stor)
 
-	// Build upstream provider map and ordering from all configured upstreams.
-	upstreams := make(map[string]upstream.OAuth2Provider, len(cfg.Upstreams))
-	upstreamOrder := make([]string, 0, len(cfg.Upstreams))
+	// Build ordered upstream provider list from all configured upstreams.
+	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
 	for i := range cfg.Upstreams {
 		upCfg := &cfg.Upstreams[i]
 		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
@@ -135,8 +133,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		if upErr != nil {
 			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, upErr)
 		}
-		upstreams[upCfg.Name] = upstreamProvider
-		upstreamOrder = append(upstreamOrder, upCfg.Name)
+		upstreams = append(upstreams, handlers.NamedUpstream{
+			Name:     upCfg.Name,
+			Provider: upstreamProvider,
+		})
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 
@@ -151,7 +151,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		}
 	}
 
-	handlerInstance := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams, upstreamOrder)
+	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create handler: %w", err)
+	}
 
 	// Create HTTP handler serving all endpoints
 	router := handlerInstance.Routes()
@@ -161,10 +164,9 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	return &server{
-		handler:       router,
-		storage:       stor,
-		upstreams:     upstreams,
-		upstreamOrder: upstreamOrder,
+		handler:   router,
+		storage:   stor,
+		upstreams: upstreams,
 	}, nil
 }
 
@@ -185,8 +187,12 @@ func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	if len(s.upstreams) == 0 {
 		return nil
 	}
+	providers := make(map[string]upstream.OAuth2Provider, len(s.upstreams))
+	for _, u := range s.upstreams {
+		providers[u.Name] = u.Provider
+	}
 	return &upstreamTokenRefresher{
-		providers: s.upstreams,
+		providers: providers,
 		storage:   s.storage,
 	}
 }

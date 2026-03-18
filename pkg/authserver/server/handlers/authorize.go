@@ -76,7 +76,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	// Create and store pending authorization.
 	// SessionID is generated here at the start of the chain so it can be
 	// threaded through all legs of a multi-upstream authorization flow.
-	// The first leg always targets upstreamOrder[0].
+	// The first leg always targets upstreams[0].
 	pending := &storage.PendingAuthorization{
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
@@ -87,7 +87,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		InternalState:        secrets.State,
 		UpstreamPKCEVerifier: secrets.PKCEVerifier,
 		UpstreamNonce:        secrets.Nonce,
-		UpstreamProviderName: h.upstreamOrder[0],
+		UpstreamProviderName: h.upstreams[0].Name,
 		SessionID:            rand.Text(),
 		CreatedAt:            time.Now(),
 	}
@@ -106,7 +106,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	upstreamURL, err := h.upstreams[h.upstreamOrder[0]].AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
+	upstreamURL, err := h.upstreams[0].Provider.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
 		slog.Error("failed to build upstream authorization URL",
 			"error", err,

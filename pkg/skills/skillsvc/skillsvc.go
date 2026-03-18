@@ -203,12 +203,6 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// the same lock key and DB record.
 	opts.ProjectRoot = projectRoot
 
-	// Default to the "default" group when none is specified, matching
-	// workload behavior (pkg/api/v1/workload_service.go).
-	if opts.Group == "" {
-		opts.Group = groups.DefaultGroup
-	}
-
 	ref, isOCI, err := parseOCIReference(opts.Name)
 	if err != nil {
 		return nil, httperr.WithCode(
@@ -977,11 +971,14 @@ func defaultScope(s skills.Scope) skills.Scope {
 }
 
 // registerSkillInGroup adds the skill to the requested group when a group
-// manager is configured. It is a no-op when groupName is empty or the manager
-// is nil (group support is optional).
+// manager is configured. When groupName is empty it defaults to the
+// "default" group, matching workload behavior.
 func (s *service) registerSkillInGroup(ctx context.Context, groupName string, skillName string) error {
-	if groupName == "" || s.groupManager == nil {
+	if s.groupManager == nil {
 		return nil
+	}
+	if groupName == "" {
+		groupName = groups.DefaultGroup
 	}
 	return groups.AddSkillToGroup(ctx, s.groupManager, groupName, skillName)
 }

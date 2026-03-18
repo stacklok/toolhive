@@ -995,7 +995,7 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			By("Pushing the skill to the in-process OCI registry")
 			pushResp := pushSkill(apiServer, ociRef)
 			defer pushResp.Body.Close()
-			Expect(pushResp.StatusCode).To(Equal(http.StatusOK))
+			Expect(pushResp.StatusCode).To(Equal(http.StatusNoContent))
 
 			By("Creating an upstream-format registry JSON pointing to the OCI reference")
 			registryFile := createUpstreamRegistryWithSkill(skillName, ociRef)

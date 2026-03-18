@@ -1,5 +1,57 @@
 components:
   schemas:
+    auth.TokenValidatorConfig:
+      description: |-
+        DEPRECATED: Middleware configuration.
+        OIDCConfig contains OIDC configuration
+      properties:
+        allowPrivateIP:
+          description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+          type: boolean
+        audience:
+          description: Audience is the expected audience for the token
+          type: string
+        authTokenFile:
+          description: AuthTokenFile is the path to file containing bearer token for
+            authentication
+          type: string
+        cacertPath:
+          description: CACertPath is the path to the CA certificate bundle for HTTPS
+            requests
+          type: string
+        clientID:
+          description: ClientID is the OIDC client ID
+          type: string
+        clientSecret:
+          description: ClientSecret is the optional OIDC client secret for introspection
+          type: string
+        insecureAllowHTTP:
+          description: |-
+            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+            WARNING: This is insecure and should NEVER be used in production
+          type: boolean
+        introspectionURL:
+          description: IntrospectionURL is the optional introspection endpoint for
+            validating tokens
+          type: string
+        issuer:
+          description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
+          type: string
+        jwksurl:
+          description: JWKSURL is the URL to fetch the JWKS from
+          type: string
+        resourceURL:
+          description: ResourceURL is the explicit resource URL for OAuth discovery
+            (RFC 9728)
+          type: string
+        scopes:
+          description: |-
+            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+            If empty, defaults to ["openid"]
+          items:
+            type: string
+          type: array
+      type: object
     github_com_stacklok_toolhive-core_registry_types.Registry:
       description: Full registry data
       properties:
@@ -120,58 +172,6 @@ components:
             +kubebuilder:default=1024
             +optional
           type: integer
-      type: object
-    github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig:
-      description: |-
-        DEPRECATED: Middleware configuration.
-        OIDCConfig contains OIDC configuration
-      properties:
-        allowPrivateIP:
-          description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
-          type: boolean
-        audience:
-          description: Audience is the expected audience for the token
-          type: string
-        authTokenFile:
-          description: AuthTokenFile is the path to file containing bearer token for
-            authentication
-          type: string
-        cacertPath:
-          description: CACertPath is the path to the CA certificate bundle for HTTPS
-            requests
-          type: string
-        clientID:
-          description: ClientID is the OIDC client ID
-          type: string
-        clientSecret:
-          description: ClientSecret is the optional OIDC client secret for introspection
-          type: string
-        insecureAllowHTTP:
-          description: |-
-            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
-            WARNING: This is insecure and should NEVER be used in production
-          type: boolean
-        introspectionURL:
-          description: IntrospectionURL is the optional introspection endpoint for
-            validating tokens
-          type: string
-        issuer:
-          description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
-          type: string
-        jwksurl:
-          description: JWKSURL is the URL to fetch the JWKS from
-          type: string
-        resourceURL:
-          description: ResourceURL is the explicit resource URL for OAuth discovery
-            (RFC 9728)
-          type: string
-        scopes:
-          description: |-
-            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
-            If empty, defaults to ["openid"]
-          items:
-            type: string
-          type: array
       type: object
     github_com_stacklok_toolhive_pkg_auth_awssts.Config:
       description: AWSStsConfig contains AWS STS token exchange configuration for
@@ -611,7 +611,7 @@ components:
         signing_key_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig'
         storage:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig'
+          $ref: '#/components/schemas/storage.RunConfig'
         token_lifespans:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig'
         upstreams:
@@ -1078,7 +1078,18 @@ components:
             restart)
           type: string
         status:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus'
+          description: Status is the current status of the workload.
+          enum:
+          - running
+          - stopped
+          - error
+          - starting
+          - stopping
+          - unhealthy
+          - removing
+          - unknown
+          - unauthenticated
+          type: string
         status_context:
           description: |-
             StatusContext provides additional context about the workload's status.
@@ -1091,7 +1102,13 @@ components:
           type: array
           uniqueItems: false
         transport_type:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType'
+          description: TransportType is the type of transport used for this workload.
+          enum:
+          - stdio
+          - sse
+          - streamable-http
+          - inspector
+          type: string
         url:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
           type: string
@@ -1299,7 +1316,7 @@ components:
           description: Host is the host for the HTTP proxy
           type: string
         ignore_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ignore.Config'
+          $ref: '#/components/schemas/ignore.Config'
         image:
           description: Image is the Docker image to run
           type: string
@@ -1329,7 +1346,15 @@ components:
             MiddlewareConfigs contains the list of middleware to apply to the transport
             and the configuration for each middleware.
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig'
+            $ref: '#/components/schemas/types.MiddlewareConfig'
+          type: array
+          uniqueItems: false
+        mutating_webhooks:
+          description: |-
+            MutatingWebhooks contains the configuration for mutating webhook middleware.
+            Mutating webhooks run before validating webhooks, per RFC THV-0017 ordering.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config'
           type: array
           uniqueItems: false
         mutating_webhooks:
@@ -1344,7 +1369,7 @@ components:
           description: Name is the name of the MCP server
           type: string
         oidc_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig'
+          $ref: '#/components/schemas/auth.TokenValidatorConfig'
         permission_profile_name_or_path:
           description: PermissionProfileNameOrPath is the name or path of the permission
             profile
@@ -1451,7 +1476,13 @@ components:
             ToolsOverride is a map from an actual tool to its overridden name and/or description
           type: object
         transport:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType'
+          description: Transport is the transport mode (stdio, sse, or streamable-http)
+          enum:
+          - stdio
+          - sse
+          - streamable-http
+          - inspector
+          type: string
         trust_proxy_headers:
           description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
             headers from reverse proxies
@@ -1808,7 +1839,8 @@ components:
             +optional
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig:
+    ignore.Config:
+      description: IgnoreConfig contains configuration for ignore processing
       properties:
         parameters:
           description: |-
@@ -3006,7 +3038,18 @@ components:
       description: Response containing workload status information
       properties:
         status:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus'
+          description: Current status of the workload
+          enum:
+          - running
+          - stopped
+          - error
+          - starting
+          - stopping
+          - unhealthy
+          - removing
+          - unknown
+          - unauthenticated
+          type: string
       type: object
     registry.EnvVar:
       properties:

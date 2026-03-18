@@ -16,9 +16,9 @@ Compare with `MCPExternalAuthConfig` which already has CEL rules (`mcpexternalau
 
 ## Acceptance Criteria
 
-- [ ] `OIDCConfigRef` has a CEL rule enforcing exactly one of `kubernetesServiceAccount`, `configMapRef`, or `inline` is set
-- [ ] `AuthzConfigRef` has a CEL rule enforcing exactly one of `configMapRef` or `inline` is set
-- [ ] Applying a manifest with both `configMapRef` and `inline` set is rejected by the API server
+- [ ] `OIDCConfigRef` has CEL rules enforcing that the populated field matches the `type` discriminator (`kubernetes`, `configMap`, `inline`)
+- [ ] `AuthzConfigRef` has CEL rules enforcing that the populated field matches the `type` discriminator (`configMap`, `inline`)
+- [ ] Applying a manifest with a type/field mismatch (e.g., `type: kubernetes` but `configMap` set) is rejected by the API server
 - [ ] Applying a manifest with neither set is rejected by the API server
 - [ ] Existing valid manifests continue to work unchanged
 - [ ] Unit tests cover all valid/invalid combinations

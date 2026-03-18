@@ -17,21 +17,28 @@ STORY-02 (MCPOIDCConfig CRD)       ─── no dependencies
 STORY-03 (MCPTelemetryConfig CRD)  ─── no dependencies
 STORY-04 (Deprecated field removal) ── no dependencies
 STORY-05 (MCPRegistry status)       ── no dependencies
-STORY-06 (Printer columns)          ── no dependencies
+STORY-06 (Printer columns)          ── depends on STORY-02, STORY-03 (06-A)
 
 STORY-07 (Workload config refs)     ── depends on STORY-02, STORY-03
 ```
 
 ```
-  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-  │ STORY-01 │  │ STORY-04 │  │ STORY-05 │  │ STORY-06 │
-  │ CEL val. │  │ Deprec.  │  │ Registry │  │ Printer  │
-  └──────────┘  └──────────┘  └──────────┘  └──────────┘
+  ┌──────────┐  ┌──────────┐  ┌──────────┐
+  │ STORY-01 │  │ STORY-04 │  │ STORY-05 │
+  │ CEL val. │  │ Deprec.  │  │ Registry │
+  └──────────┘  └──────────┘  └──────────┘
 
   ┌──────────┐  ┌──────────┐
   │ STORY-02 │  │ STORY-03 │
   │ OIDCCfg  │  │ TelCfg   │
   └────┬─────┘  └────┬─────┘
+       │    │    │    │
+       │    └──┬─┘    │
+       │       ▼      │
+       │ ┌──────────┐ │
+       │ │ STORY-06 │ │
+       │ │ Printer  │ │
+       │ └──────────┘ │
        │              │
        └──────┬───────┘
               ▼
@@ -51,7 +58,7 @@ STORY-07 (Workload config refs)     ── depends on STORY-02, STORY-03
 | STORY-03 | MCPTelemetryConfig CRD | L | None | 4 |
 | STORY-04 | Deprecated field removal | M | None | 3 |
 | STORY-05 | MCPRegistry status consolidation | M | None | 2 |
-| STORY-06 | Printer columns | S | None | 2 |
+| STORY-06 | Printer columns | S | 02, 03 | 2 |
 | STORY-07 | Workload CRD config ref updates | XL | 02, 03 | 5 |
 | | **Total** | | | **23** |
 
@@ -63,9 +70,9 @@ STORY-07 (Workload config refs)     ── depends on STORY-02, STORY-03
 - STORY-03: MCPTelemetryConfig CRD
 - STORY-04: Deprecated field removal
 - STORY-05: MCPRegistry status consolidation
-- STORY-06: Printer columns
 
 **Wave 2** (after STORY-02 and STORY-03 land):
+- STORY-06: Printer columns (06-A needs MCPOIDCConfig and MCPTelemetryConfig types; 06-B can run in Wave 1)
 - STORY-07: Workload CRD config ref updates
 
 ## Risks and Open Items

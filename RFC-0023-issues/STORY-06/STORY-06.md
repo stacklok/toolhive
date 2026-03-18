@@ -5,7 +5,7 @@
 **so that** `kubectl get` output is informative without requiring `-o yaml`.
 
 **Size**: S
-**Dependencies**: None (can be done incrementally as CRDs are created)
+**Dependencies**: STORY-02, STORY-03 (06-A adds printer columns to MCPOIDCConfig and MCPTelemetryConfig, which are created in those stories)
 **Labels**: `operator`, `api`, `ux`
 
 ## Context

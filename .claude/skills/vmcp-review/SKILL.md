@@ -21,7 +21,7 @@ Identify the files to review:
 
 ### 2. Anti-Pattern Detection
 
-For each file under review, check against the anti-pattern catalog in `docs/vmcp-anti-patterns.md`. Not every anti-pattern applies to every file — use judgment about which checks are relevant based on what the code does.
+For each file under review, check against the anti-patterns defined in `.claude/rules/vmcp-anti-patterns.md` (which is auto-loaded when vMCP files are read). Not every anti-pattern applies to every file — use judgment about which checks are relevant based on what the code does.
 
 For each finding, classify severity:
 

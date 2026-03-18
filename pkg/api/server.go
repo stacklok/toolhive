@@ -32,6 +32,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
@@ -269,9 +270,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			skillsvc.WithGroupManager(b.groupManager),
 		}
 
-		if opt := buildSkillLookupOption(); opt != nil {
-			skillOpts = append(skillOpts, opt)
-		}
+		skillOpts = append(skillOpts, skillsvc.WithSkillLookup(lazySkillLookup{}))
 
 		b.skillManager = skillsvc.New(store, skillOpts...)
 	}
@@ -603,23 +602,19 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 	return listener, addrType, nil
 }
 
-// buildSkillLookupOption creates a WithSkillLookup option if a registry provider
-// can be initialized. Returns nil on any failure (best-effort).
-func buildSkillLookupOption() skillsvc.Option {
-	cfg, err := config.NewDefaultProvider().LoadOrCreateConfig()
+// lazySkillLookup implements skillsvc.SkillLookup by resolving the registry
+// provider on each call. This ensures that registry config changes (via
+// thv config set-registry or the API) are picked up without restarting
+// the server, because ResetDefaultProvider clears the cached provider and
+// the next GetDefaultProviderWithConfig call creates a fresh one.
+type lazySkillLookup struct{}
+
+func (lazySkillLookup) SearchSkills(query string) ([]regtypes.Skill, error) {
+	provider, err := registry.GetDefaultProviderWithConfig(config.NewDefaultProvider())
 	if err != nil {
-		slog.Debug("skill lookup not available: could not load config", "error", err)
-		return nil
+		return nil, err
 	}
-	if cfg == nil {
-		return nil
-	}
-	rp, err := registry.NewRegistryProvider(cfg, registry.WithInteractive(false))
-	if err != nil {
-		slog.Debug("skill lookup not available: could not create registry provider", "error", err)
-		return nil
-	}
-	return skillsvc.WithSkillLookup(rp)
+	return provider.SearchSkills(query)
 }
 
 // clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.

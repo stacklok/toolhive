@@ -184,6 +184,20 @@ This is a test skill.
 	return skillDir
 }
 
+// buildAndInstallSkill creates a skill directory, builds it, and installs by
+// plain name via the build-then-install flow. Returns the skill name.
+func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
+	skillDir := createTestSkillDir(skillName, description)
+
+	buildResp := buildSkill(server, skillDir, "")
+	defer buildResp.Body.Close()
+	ExpectWithOffset(1, buildResp.StatusCode).To(Equal(http.StatusOK))
+
+	installResp := installSkill(server, installSkillRequest{Name: skillName})
+	defer installResp.Body.Close()
+	ExpectWithOffset(1, installResp.StatusCode).To(Equal(http.StatusCreated))
+}
+
 // Test suite
 
 var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), func() {
@@ -460,10 +474,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		})
 
 		It("should include installed skills", func() {
-			By("Installing a skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: "list-test-skill"})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "list-test-skill", "A skill for list testing")
 
 			By("Listing skills")
 			resp := listSkills(apiServer)
@@ -496,23 +508,13 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			}
 		})
 
-		It("should install a skill with pending status", func() {
-			By("Installing a skill by name")
+		It("should return 404 for plain name not in local store or registry", func() {
+			By("Attempting to install a skill by plain name without building first")
 			resp := installSkill(apiServer, installSkillRequest{Name: "install-test-skill"})
 			defer resp.Body.Close()
 
-			By("Verifying response status is 201 Created")
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-
-			By("Verifying the skill has pending status")
-			var result installSkillResponse
-			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
-			Expect(result.Skill.Status).To(Equal("pending"))
-			Expect(result.Skill.Metadata.Name).To(Equal("install-test-skill"))
-			Expect(result.Skill.InstalledAt).ToNot(BeZero(), "InstalledAt should be a valid timestamp")
-
-			By("Verifying Location header is set")
-			Expect(resp.Header.Get("Location")).To(Equal("/api/v1beta/skills/install-test-skill"))
+			By("Verifying response status is 404 Not Found")
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
 		It("should reject empty name", func() {
@@ -534,10 +536,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		})
 
 		It("should reject duplicate install", func() {
-			By("Installing a skill")
-			resp := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
-			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "dup-test-skill", "A skill for duplicate testing")
 
 			By("Attempting to install the same skill again")
 			resp2 := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
@@ -569,10 +569,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		})
 
 		It("should return info for an installed skill", func() {
-			By("Installing a skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: "info-test-skill"})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "info-test-skill", "A skill for info testing")
 
 			By("Getting skill info")
 			resp := getSkillInfo(apiServer, "info-test-skill")
@@ -608,10 +606,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 
 	Describe("DELETE /api/v1beta/skills/{name} - Uninstall a skill", func() {
 		It("should uninstall an installed skill", func() {
-			By("Installing a skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: "uninstall-test"})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "uninstall-test", "A skill for uninstall testing")
 
 			By("Uninstalling the skill")
 			resp := uninstallSkill(apiServer, "uninstall-test")
@@ -670,7 +666,13 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should register the skill in the group on install", func() {
 			skillName := "group-install-skill"
 
-			By("Installing a skill into the group")
+			By("Creating and building the skill")
+			skillDir := createTestSkillDir(skillName, "A skill for group install testing")
+			buildResp := buildSkill(apiServer, skillDir, "")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing the skill into the group")
 			resp := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
@@ -693,10 +695,22 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			skillInGroup := "group-filter-in"
 			skillOutGroup := "group-filter-out"
 
-			By("Installing a skill into the group")
+			By("Creating and building the in-group skill")
+			inDir := createTestSkillDir(skillInGroup, "A skill for group filter testing (in)")
+			inBuild := buildSkill(apiServer, inDir, "")
+			defer inBuild.Body.Close()
+			Expect(inBuild.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing the skill into the group")
 			r1 := installSkill(apiServer, installSkillRequest{Name: skillInGroup, Group: groupName})
 			defer r1.Body.Close()
 			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Creating and building the out-of-group skill")
+			outDir := createTestSkillDir(skillOutGroup, "A skill for group filter testing (out)")
+			outBuild := buildSkill(apiServer, outDir, "")
+			defer outBuild.Body.Close()
+			Expect(outBuild.StatusCode).To(Equal(http.StatusOK))
 
 			By("Installing a skill without a group")
 			r2 := installSkill(apiServer, installSkillRequest{Name: skillOutGroup})
@@ -722,7 +736,13 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should remove the skill from the group on uninstall", func() {
 			skillName := "group-uninstall-skill"
 
-			By("Installing a skill into the group")
+			By("Creating and building the skill")
+			skillDir := createTestSkillDir(skillName, "A skill for group uninstall testing")
+			buildResp := buildSkill(apiServer, skillDir, "")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing the skill into the group")
 			r1 := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
 			defer r1.Body.Close()
 			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
@@ -747,9 +767,17 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		})
 
 		It("should return error when installing into a non-existent group", func() {
-			By("Attempting to install a skill into a non-existent group")
+			skillName := "group-noexist-skill"
+
+			By("Creating and building the skill")
+			skillDir := createTestSkillDir(skillName, "A skill for non-existent group testing")
+			buildResp := buildSkill(apiServer, skillDir, "")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Attempting to install the skill into a non-existent group")
 			resp := installSkill(apiServer, installSkillRequest{
-				Name:  "group-noexist-skill",
+				Name:  skillName,
 				Group: "no-such-group-xyz",
 			})
 			defer resp.Body.Close()
@@ -760,17 +788,22 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 	})
 
 	Describe("Overwrite protection", func() {
+		AfterEach(func() {
+			for _, name := range []string{"overwrite-noflag", "overwrite-reinstall", "overwrite-force-dup"} {
+				resp := uninstallSkill(apiServer, name)
+				resp.Body.Close()
+			}
+		})
+
 		It("should reject install over existing skill without force", func() {
 			skillName := "overwrite-noflag"
 
-			By("Installing the skill for the first time")
-			resp := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill for the first time")
+			buildAndInstallSkill(apiServer, skillName, "A skill for overwrite testing")
 
-			By("Uninstalling via API so the DB record is gone but leave the concept of a conflict test")
-			// Instead we test duplicate detection: installing the same name again
-			// should return 409 Conflict (the DB record still exists).
+			// Installing the same name again should return 409 Conflict
+			// (the DB record still exists).
+			By("Attempting to install the same skill again")
 			resp2 := installSkill(apiServer, installSkillRequest{Name: skillName})
 			defer resp2.Body.Close()
 
@@ -781,10 +814,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should allow reinstall after uninstall", func() {
 			skillName := "overwrite-reinstall"
 
-			By("Installing the skill")
-			r1 := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer r1.Body.Close()
-			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill")
+			buildAndInstallSkill(apiServer, skillName, "A skill for reinstall testing")
 
 			By("Uninstalling the skill")
 			r2 := uninstallSkill(apiServer, skillName)
@@ -800,10 +831,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should still reject duplicate DB record even with force flag", func() {
 			skillName := "overwrite-force-dup"
 
-			By("Installing the skill for the first time")
-			r1 := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer r1.Body.Close()
-			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill for the first time")
+			buildAndInstallSkill(apiServer, skillName, "A skill for force-dup testing")
 
 			By("Force-installing the same skill again (force is for filesystem conflicts, not DB duplicates)")
 			r2 := installSkill(apiServer, installSkillRequest{Name: skillName, Force: true})
@@ -843,10 +872,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should support install → list → info → uninstall → list → info", func() {
 			skillName := "lifecycle-test"
 
-			By("Installing the skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill")
+			buildAndInstallSkill(apiServer, skillName, "A skill for lifecycle testing")
 
 			By("Listing skills — should contain the skill")
 			listResp := listSkills(apiServer)

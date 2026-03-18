@@ -1398,6 +1398,7 @@ func TestIntegration_UpstreamTokenStorage(t *testing.T) {
 	require.True(t, ok, "sub claim should be a string")
 
 	t.Run("tokens_retrievable_by_provider_name", func(t *testing.T) {
+		t.Parallel()
 		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
 		require.NoError(t, err, "GetUpstreamTokens should not return error")
 		require.NotNil(t, tokens, "tokens should not be nil")
@@ -1405,12 +1406,14 @@ func TestIntegration_UpstreamTokenStorage(t *testing.T) {
 	})
 
 	t.Run("provider_id_is_logical_name", func(t *testing.T) {
+		t.Parallel()
 		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
 		require.NoError(t, err)
 		assert.Equal(t, "default", tokens.ProviderID, "ProviderID should be the logical name 'default', not 'oidc' or 'oauth2'")
 	})
 
 	t.Run("binding_fields_populated", func(t *testing.T) {
+		t.Parallel()
 		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
 		require.NoError(t, err)
 		assert.NotEmpty(t, tokens.UserID, "UserID should not be empty")

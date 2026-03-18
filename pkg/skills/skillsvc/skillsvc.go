@@ -23,6 +23,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/storage"
@@ -73,6 +74,19 @@ func WithGroupManager(mgr groups.Manager) Option {
 	}
 }
 
+// SkillLookup resolves a plain skill name against a registry/index.
+// registry.Provider implicitly satisfies this interface.
+type SkillLookup interface {
+	SearchSkills(query string) ([]regtypes.Skill, error)
+}
+
+// WithSkillLookup sets the registry-based skill lookup for name resolution.
+func WithSkillLookup(sl SkillLookup) Option {
+	return func(s *service) {
+		s.skillLookup = sl
+	}
+}
+
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
@@ -109,6 +123,7 @@ type service struct {
 	ociStore     *ociskills.Store
 	packager     ociskills.SkillPackager
 	registry     ociskills.RegistryClient
+	skillLookup  SkillLookup
 }
 
 // New creates a new SkillService backed by the given store.
@@ -215,13 +230,15 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	}
 
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 
-	// Without layer data, check the local OCI store for a matching tag
-	// before falling back to a pending record. This enables the
-	// build → install workflow where `thv skill build` tags the artifact
-	// with the skill name and a subsequent `thv skill install <name>`
-	// resolves it locally.
+	// Without layer data, check the local OCI store for a matching tag,
+	// then the registry/index, before returning an error.
 	if len(opts.LayerData) == 0 {
 		resolved := false
 		if s.ociStore != nil {
@@ -233,11 +250,33 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			}
 		}
 		if !resolved {
-			result, err := s.installPending(ctx, opts, scope)
-			if err != nil {
-				return nil, err
+			// Release lock before registry lookup -- installFromOCI
+			// acquires its own lock on the artifact's skill name, which
+			// could be the same key, causing deadlock since sync.Mutex
+			// is not re-entrant.
+			unlock()
+			locked = false
+
+			ref, regErr := s.resolveFromRegistry(opts.Name)
+			if regErr != nil {
+				return nil, regErr
 			}
-			return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+			if ref != nil {
+				slog.Info("resolved skill from registry", "name", opts.Name, "oci_reference", ref.String())
+				opts.Name = ref.String()
+				result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
+				if ociErr != nil {
+					return nil, ociErr
+				}
+				return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+			}
+
+			return nil, httperr.WithCode(
+				fmt.Errorf("skill %q not found in local store or registry;"+
+					" install by OCI reference:\n  thv skill install ghcr.io/<namespace>/%s:<version>",
+					opts.Name, opts.Name),
+				http.StatusNotFound,
+			)
 		}
 		// resolved: opts hydrated, fall through to installWithExtraction
 	}
@@ -568,6 +607,76 @@ func (s *service) resolveFromLocalStore(ctx context.Context, opts *skills.Instal
 	return true, nil
 }
 
+// resolveFromRegistry attempts to resolve a plain skill name by querying the
+// configured skill registry/index. Returns (ref, nil) on success, (nil, nil) when
+// no match is found or no lookup is configured, or (nil, err) on ambiguity.
+func (s *service) resolveFromRegistry(name string) (nameref.Reference, error) {
+	if s.skillLookup == nil {
+		return nil, nil
+	}
+
+	results, err := s.skillLookup.SearchSkills(name)
+	if err != nil {
+		slog.Warn("registry skill lookup failed, falling back to not-found", "name", name, "error", err)
+		return nil, nil
+	}
+
+	// Filter for exact name match. Case-insensitive because registry data
+	// may not be normalized to lowercase even though local skill names are.
+	var matches []regtypes.Skill
+	for _, sk := range results {
+		if strings.EqualFold(sk.Name, name) {
+			matches = append(matches, sk)
+		}
+	}
+
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	if len(matches) > 1 {
+		const maxCandidates = 5
+		var candidates []string
+		for _, sk := range matches {
+			candidates = append(candidates, sk.Namespace+"/"+sk.Name)
+		}
+		suffix := ""
+		if len(candidates) > maxCandidates {
+			suffix = fmt.Sprintf(" and %d more", len(candidates)-maxCandidates)
+			candidates = candidates[:maxCandidates]
+		}
+		return nil, httperr.WithCode(
+			fmt.Errorf("ambiguous skill name %q matches multiple registry entries: %s%s; install by full OCI reference instead",
+				name, strings.Join(candidates, ", "), suffix),
+			http.StatusConflict,
+		)
+	}
+
+	// Exactly one match -- find an OCI package.
+	for _, pkg := range matches[0].Packages {
+		if pkg.RegistryType == "oci" && pkg.Identifier != "" {
+			ref, parseErr := nameref.ParseReference(pkg.Identifier)
+			if parseErr != nil {
+				// Truncate to avoid reflecting unbounded attacker-controlled data.
+				id := pkg.Identifier
+				if len(id) > 256 {
+					id = id[:256] + "..."
+				}
+				return nil, httperr.WithCode(
+					fmt.Errorf("registry skill %q has invalid OCI identifier %q: %w", name, id, parseErr),
+					http.StatusUnprocessableEntity,
+				)
+			}
+			return ref, nil
+		}
+	}
+
+	return nil, httperr.WithCode(
+		fmt.Errorf("skill %q found in registry but has no OCI package; install from git or contact the skill author", name),
+		http.StatusUnprocessableEntity,
+	)
+}
+
 // extractOCIContent navigates the OCI content graph from a pulled digest,
 // extracting the skill config and raw layer data.
 func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byte, *ociskills.SkillConfig, error) {
@@ -652,26 +761,6 @@ func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byt
 	}
 
 	return layerData, skillConfig, nil
-}
-
-// installPending creates a pending skill record (no extraction).
-func (s *service) installPending(
-	ctx context.Context, opts skills.InstallOptions, scope skills.Scope,
-) (*skills.InstallResult, error) {
-	sk := skills.InstalledSkill{
-		Metadata: skills.SkillMetadata{
-			Name:    opts.Name,
-			Version: opts.Version,
-		},
-		Scope:       scope,
-		ProjectRoot: opts.ProjectRoot,
-		Status:      skills.InstallStatusPending,
-		InstalledAt: time.Now().UTC(),
-	}
-	if err := s.store.Create(ctx, sk); err != nil {
-		return nil, err
-	}
-	return &skills.InstallResult{Skill: sk}, nil
 }
 
 // installWithExtraction handles the full install flow: managed/unmanaged

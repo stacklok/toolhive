@@ -14,12 +14,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/api/v1"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
+var _ = Describe("Registry API", Label("api", "api-registry", "registry", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server

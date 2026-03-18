@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +22,6 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -29,14 +30,20 @@ const (
 	// StreamableHTTPEndpoint is the endpoint for streamable HTTP.
 	StreamableHTTPEndpoint = "/mcp"
 
-	// Default timeouts and buffer sizes
-	defaultResponseTimeout = 30 * time.Second
+	// defaultRequestTimeout is the maximum time to wait for an MCP request to
+	// complete. Override with TOOLHIVE_PROXY_REQUEST_TIMEOUT (e.g. "30s", "2m").
+	defaultRequestTimeout = 60 * time.Second
+
+	// proxyRequestTimeoutEnv is the environment variable that overrides the
+	// default proxy request timeout.
+	proxyRequestTimeoutEnv = "TOOLHIVE_PROXY_REQUEST_TIMEOUT"
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
 type HTTPProxy struct {
 	host              string
 	port              int
+	requestTimeout    time.Duration
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
@@ -74,6 +81,7 @@ func NewHTTPProxy(
 	proxy := &HTTPProxy{
 		host:              host,
 		port:              port,
+		requestTimeout:    resolveRequestTimeout(),
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
@@ -113,10 +121,12 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	go p.dispatchResponses()
 
 	go func() {
-		logger.Debugf("Streamable HTTP proxy started on port %d", p.port)
-		logger.Debugf("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
+		slog.Debug("streamable HTTP proxy started", "port", p.port)
+		//nolint:gosec // G706: logging configured host and port
+		slog.Debug("streamable HTTP endpoint",
+			"url", fmt.Sprintf("http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint))
 		if err := p.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Errorf("Streamable HTTP server error: %v", err)
+			slog.Error("streamable HTTP server error", "error", err)
 		}
 	}()
 
@@ -133,7 +143,7 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 		// Stop session manager cleanup and disconnect sessions
 		if p.sessionManager != nil {
 			if err := p.sessionManager.Stop(); err != nil {
-				logger.Errorf("Failed to stop session manager: %v", err)
+				slog.Error("failed to stop session manager", "error", err)
 			}
 			p.sessionManager.Range(func(_, value interface{}) bool {
 				if ss, ok := value.(*session.StreamableSession); ok {
@@ -230,7 +240,8 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := p.sessionManager.Delete(sessID); err != nil {
-		logger.Debugf("Failed to delete session %s: %v", sessID, err)
+		//nolint:gosec // G706: session ID is from validated request header
+		slog.Debug("failed to delete session", "session_id", sessID, "error", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -326,7 +337,7 @@ func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte, sessI
 	w.Header().Set("Content-Type", "application/json")
 	// It's valid to return an empty array if requests produced no responses
 	if err := json.NewEncoder(w).Encode(responses); err != nil {
-		logger.Errorf("Failed to encode batch response: %v", err)
+		slog.Error("failed to encode batch response", "error", err)
 	}
 }
 
@@ -338,16 +349,18 @@ func (p *HTTPProxy) handleSingleRequest(
 	req *jsonrpc2.Request,
 	setSessionHeader bool,
 ) {
-	ctx, cancel := context.WithTimeout(ctx, defaultResponseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	msg, err := p.doRequest(ctx, sessID, req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			logger.Warnf("Timeout waiting for response for method=%s", req.Method)
+			//nolint:gosec // G706: method is from parsed JSON-RPC request
+			slog.Warn("timeout waiting for response", "method", req.Method)
 			writeHTTPError(w, http.StatusGatewayTimeout, "Timeout waiting for response from container")
 		} else {
-			logger.Errorf("Failed to process request method=%s: %v", req.Method, err)
+			//nolint:gosec // G706: method is from parsed JSON-RPC request
+			slog.Error("failed to process request", "method", req.Method, "error", err)
 			writeHTTPError(w, http.StatusInternalServerError, "Failed to process request")
 		}
 		return
@@ -357,7 +370,7 @@ func (p *HTTPProxy) handleSingleRequest(
 		w.Header().Set("Mcp-Session-Id", sessID)
 	}
 	if err := writeJSONRPC(w, msg); err != nil {
-		logger.Errorf("Failed to write JSON-RPC response: %v", err)
+		slog.Error("failed to write JSON-RPC response", "error", err)
 	}
 }
 
@@ -368,7 +381,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 	req *jsonrpc2.Request,
 	setSessionHeader bool,
 ) {
-	ctx, cancel := context.WithTimeout(ctx, defaultResponseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Prepare SSE response headers
@@ -404,7 +417,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 		}
 		if data, mErr := json.Marshal(errObj); mErr == nil {
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-				logger.Debugf("Failed to write error message: %v", err)
+				slog.Debug("failed to write error message", "error", err)
 				return
 			}
 			flusher.Flush()
@@ -414,13 +427,13 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
-		logger.Errorf("Failed to encode JSON-RPC response: %v", err)
+		slog.Error("failed to encode JSON-RPC response", "error", err)
 		writeHTTPError(w, http.StatusInternalServerError, "Failed to encode response")
 		return
 	}
 	// Write SSE event with the JSON-RPC response and flush
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
-		logger.Debugf("Failed to write response: %v", err)
+		slog.Debug("failed to write response", "error", err)
 		return
 	}
 	flusher.Flush()
@@ -431,14 +444,15 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 	// Note: batch processing path
 	msg, err := jsonrpc2.DecodeMessage(raw)
 	if err != nil {
-		logger.Warnf("Skipping invalid message in batch: %s", string(raw))
+		//nolint:gosec // G706: logging raw JSON-RPC data from HTTP request body
+		slog.Warn("skipping invalid message in batch", "raw", string(raw))
 		return nil
 	}
 
 	// Notifications: just forward and continue
 	if isNotification(msg) {
 		if err := p.SendMessageToDestination(msg); err != nil {
-			logger.Errorf("Failed to send notification to destination: %v", err)
+			slog.Error("failed to send notification to destination", "error", err)
 		}
 		return nil
 	}
@@ -446,14 +460,15 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 	// Client responses: accept and forward, no HTTP body
 	if _, ok := msg.(*jsonrpc2.Response); ok {
 		if err := p.SendMessageToDestination(msg); err != nil {
-			logger.Errorf("Failed to forward client response to destination: %v", err)
+			slog.Error("failed to forward client response to destination", "error", err)
 		}
 		return nil
 	}
 
 	req, ok := msg.(*jsonrpc2.Request)
 	if !ok || !req.ID.IsValid() {
-		logger.Warnf("Skipping invalid batch item (not a request with ID/response/notification): %T", msg)
+		slog.Warn("skipping invalid batch item (not a request with ID/response/notification)",
+			"type", fmt.Sprintf("%T", msg))
 		return nil
 	}
 
@@ -465,35 +480,36 @@ func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) jso
 	ck := compositeKey(sessID, bkey)
 	proxiedMsg, err := encodeRequestWithID(req, ck)
 	if err != nil {
-		logger.Errorf("Failed to encode batch request: %v", err)
+		slog.Error("failed to encode batch request", "error", err)
 		return nil
 	}
 	if err := p.SendMessageToDestination(proxiedMsg); err != nil {
-		logger.Errorf("Failed to send message to destination: %v", err)
+		slog.Error("failed to send message to destination", "error", err)
 		return nil
 	}
 
-	response := p.waitForResponse(waitCh, defaultResponseTimeout)
+	response := p.waitForResponse(waitCh, p.requestTimeout)
 	if response == nil {
-		logger.Warnf("StreamableHTTP: batch timeout waiting for key=%s", bkey)
+		slog.Warn("streamableHTTP: batch timeout waiting for key", "key", bkey)
 		return nil
 	}
 
 	if r, ok := response.(*jsonrpc2.Response); ok && r.ID.IsValid() {
 		restored, err := p.restoreResponseID(r, ck)
 		if err != nil {
-			logger.Errorf("Failed to restore response ID: %v", err)
+			slog.Error("failed to restore response ID", "error", err)
 			return nil
 		}
 		data, err := jsonrpc2.EncodeMessage(restored)
 		if err != nil {
-			logger.Errorf("Failed to encode JSON-RPC response: %v", err)
+			slog.Error("failed to encode JSON-RPC response", "error", err)
 			return nil
 		}
 		return data
 	}
 
-	logger.Warnf("Received invalid message that is not a valid response: %T", response)
+	slog.Warn("received invalid message that is not a valid response",
+		"type", fmt.Sprintf("%T", response))
 	return nil
 }
 
@@ -655,7 +671,8 @@ func isBatch(body []byte) bool {
 func decodeBatch(w http.ResponseWriter, body []byte) ([]json.RawMessage, bool) {
 	var rawMessages []json.RawMessage
 	if err := json.Unmarshal(bytes.TrimSpace(body), &rawMessages); err != nil {
-		logger.Warnf("Failed to decode batch JSON-RPC: %s", string(body))
+		//nolint:gosec // G706: logging raw JSON-RPC batch data from HTTP request
+		slog.Warn("failed to decode batch JSON-RPC", "body", string(body))
 		writeHTTPError(w, http.StatusBadRequest, "Invalid batch JSON-RPC")
 		return nil, false
 	}
@@ -666,7 +683,8 @@ func decodeBatch(w http.ResponseWriter, body []byte) ([]json.RawMessage, bool) {
 func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
 	msg, err := jsonrpc2.DecodeMessage(body)
 	if err != nil {
-		logger.Warnf("Skipping message that failed to decode: %s", string(body))
+		//nolint:gosec // G706: logging raw JSON-RPC data from HTTP request body
+		slog.Warn("skipping message that failed to decode", "body", string(body))
 		writeHTTPError(w, http.StatusBadRequest, "Invalid JSON-RPC 2.0 message")
 		return nil, false
 	}
@@ -676,12 +694,30 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
 		if err := p.SendMessageToDestination(msg); err != nil {
-			logger.Errorf("Failed to send message to destination: %v", err)
+			slog.Error("failed to send message to destination", "error", err)
 		}
 		w.WriteHeader(http.StatusAccepted)
 		return true
 	}
 	return false
+}
+
+// resolveRequestTimeout returns the proxy request timeout, reading from the
+// TOOLHIVE_PROXY_REQUEST_TIMEOUT environment variable if set, otherwise
+// returning defaultRequestTimeout.
+func resolveRequestTimeout() time.Duration {
+	v := os.Getenv(proxyRequestTimeoutEnv)
+	if v == "" {
+		return defaultRequestTimeout
+	}
+	d, _ := time.ParseDuration(v)
+	if d > 0 {
+		slog.Debug("using custom proxy request timeout", "timeout", d)
+		return d
+	}
+	slog.Warn("invalid proxy request timeout, using default",
+		"env_var", proxyRequestTimeoutEnv, "value", v, "default", defaultRequestTimeout)
+	return defaultRequestTimeout
 }
 
 // createWaiter registers a waiter channel for the given request ID and returns cleanup fn.

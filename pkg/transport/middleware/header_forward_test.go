@@ -13,14 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	typesmocks "github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
-
-func init() {
-	logger.Initialize()
-}
 
 // executeMiddleware is a test helper that creates a request, applies the middleware, and returns the captured request.
 func executeMiddleware(t *testing.T, mw func(http.Handler) http.Handler, existingHeaders map[string]string) *http.Request {

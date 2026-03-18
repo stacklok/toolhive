@@ -12,7 +12,7 @@ tasks:
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
-      - swag init -g pkg/api/server.go --v3.1 -o docs/server
+      - swag init -g pkg/api/server.go --v3.1 -o docs/server --parseDependencyLevel 1
       - task: helm-docs
 
   swagger-install:
@@ -107,8 +107,9 @@ tasks:
     cmds:
       - cmd: mkdir -p coverage
         platforms: [linux, darwin]
-      # Clean build cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries
-      - cmd: go clean -cache
+      # Clean test cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries.
+      # Only the test cache needs clearing (not the full build cache), preserving compiled packages.
+      - cmd: go clean -testcache
         platforms: [linux, darwin]
       # Only install gotestfmt if not already installed
       - cmd: which gotestfmt > /dev/null 2>&1 || go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
@@ -130,8 +131,9 @@ tasks:
     cmds:
       - cmd: cmd.exe /c mkdir coverage
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
-      # Clean build cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries
-      - go clean -cache
+      # Clean test cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries.
+      # Only the test cache needs clearing (not the full build cache), preserving compiled packages.
+      - go clean -testcache
       - go test -race -coverpkg=./... -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"

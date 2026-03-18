@@ -7,10 +7,9 @@ package composer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // inMemoryStateStore implements WorkflowStateStore using in-memory storage.
@@ -93,7 +92,7 @@ func (s *inMemoryStateStore) SaveState(_ context.Context, workflowID string, sta
 
 	s.states[workflowID] = &stateCopy
 
-	logger.Debugf("Saved state for workflow %s (status: %s)", workflowID, state.Status)
+	slog.Debug("saved state for workflow", "workflow", workflowID, "status", state.Status)
 	return nil
 }
 
@@ -141,7 +140,7 @@ func (s *inMemoryStateStore) DeleteState(_ context.Context, workflowID string) e
 	}
 
 	delete(s.states, workflowID)
-	logger.Debugf("Deleted state for workflow %s", workflowID)
+	slog.Debug("deleted state for workflow", "workflow", workflowID)
 	return nil
 }
 
@@ -181,7 +180,7 @@ func (s *inMemoryStateStore) runCleanup() {
 		case <-ticker.C:
 			s.cleanup()
 		case <-s.stopCleanup:
-			logger.Debugf("State store cleanup goroutine stopped")
+			slog.Debug("state store cleanup goroutine stopped")
 			return
 		}
 	}
@@ -210,7 +209,7 @@ func (s *inMemoryStateStore) cleanup() {
 	}
 
 	if removed > 0 {
-		logger.Debugf("Cleaned up %d stale workflow(s)", removed)
+		slog.Debug("cleaned up stale workflows", "count", removed)
 	}
 
 	// Log state store metrics for observability (every cleanup cycle)
@@ -246,9 +245,9 @@ func (s *inMemoryStateStore) logMetrics() {
 		}
 	}
 
-	logger.Infof("Workflow state store metrics: total=%d, running=%d, pending=%d, waiting=%d, "+
-		"completed=%d, failed=%d, cancelled=%d, timed_out=%d",
-		total, running, pending, waiting, completed, failed, cancelled, timedOut)
+	slog.Info("workflow state store metrics",
+		"total", total, "running", running, "pending", pending, "waiting", waiting,
+		"completed", completed, "failed", failed, "cancelled", cancelled, "timed_out", timedOut)
 }
 
 // GetStats returns statistics about the state store.

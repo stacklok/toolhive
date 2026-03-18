@@ -104,7 +104,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 			// Ensure the proxy started
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("starting stdio proxy"))
 
 			// Basic JSON-RPC message to initialize session
 			message := `{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{}}` + "\n"
@@ -155,7 +155,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 			// Ensure the proxy started
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("starting stdio proxy"))
 
 			By("Sending JSON-RPC initialize message through the proxy stdin")
 			message := `{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{}}` + "\n"
@@ -206,7 +206,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 			// Ensure the proxy started
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("starting stdio proxy"))
 
 			// Basic JSON-RPC message to initialize session
 			message := `{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{}}` + "\n"
@@ -257,7 +257,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 			// Ensure the proxy started
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("starting stdio proxy"))
 
 			By("Sending JSON-RPC initialize message through the proxy stdin")
 			message := `{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{}}` + "\n"

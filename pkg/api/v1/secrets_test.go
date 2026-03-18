@@ -20,7 +20,6 @@ import (
 
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -39,7 +38,6 @@ func TestSecretsRouter(t *testing.T) {
 
 func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name         string
@@ -97,7 +95,6 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 
 func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name         string
@@ -160,7 +157,6 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 
 func TestCreateSecret_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name         string
@@ -233,7 +229,6 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 
 func TestUpdateSecret_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name         string
@@ -315,7 +310,6 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 
 func TestDeleteSecret_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	tests := []struct {
 		name         string
@@ -467,7 +461,6 @@ func TestRequestResponseTypes(t *testing.T) {
 
 func TestErrorHandling(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("malformed json request", func(t *testing.T) {
 		t.Parallel()
@@ -547,7 +540,6 @@ func TestErrorHandling(t *testing.T) {
 
 func TestRouterIntegration(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("router setup test", func(t *testing.T) {
 		t.Parallel()

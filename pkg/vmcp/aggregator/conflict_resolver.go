@@ -9,8 +9,8 @@ package aggregator
 
 import (
 	"fmt"
+	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -19,7 +19,7 @@ import (
 func NewConflictResolver(aggregationConfig *config.AggregationConfig) (ConflictResolver, error) {
 	if aggregationConfig == nil {
 		// Default to prefix strategy with default format
-		logger.Infof("No aggregation config provided, using default prefix strategy")
+		slog.Info("no aggregation config provided, using default prefix strategy")
 		return NewPrefixConflictResolver("{workload}_"), nil
 	}
 
@@ -30,7 +30,7 @@ func NewConflictResolver(aggregationConfig *config.AggregationConfig) (ConflictR
 			aggregationConfig.ConflictResolutionConfig.PrefixFormat != "" {
 			prefixFormat = aggregationConfig.ConflictResolutionConfig.PrefixFormat
 		}
-		logger.Infof("Using prefix conflict resolution strategy (format: %s)", prefixFormat)
+		slog.Info("using prefix conflict resolution strategy", "format", prefixFormat)
 		return NewPrefixConflictResolver(prefixFormat), nil
 
 	case vmcp.ConflictStrategyPriority:
@@ -38,12 +38,11 @@ func NewConflictResolver(aggregationConfig *config.AggregationConfig) (ConflictR
 			len(aggregationConfig.ConflictResolutionConfig.PriorityOrder) == 0 {
 			return nil, fmt.Errorf("priority strategy requires priority_order in conflict_resolution_config")
 		}
-		logger.Infof("Using priority conflict resolution strategy (order: %v)",
-			aggregationConfig.ConflictResolutionConfig.PriorityOrder)
+		slog.Info("using priority conflict resolution strategy", "order", aggregationConfig.ConflictResolutionConfig.PriorityOrder)
 		return NewPriorityConflictResolver(aggregationConfig.ConflictResolutionConfig.PriorityOrder)
 
 	case vmcp.ConflictStrategyManual:
-		logger.Infof("Using manual conflict resolution strategy")
+		slog.Info("using manual conflict resolution strategy")
 		return NewManualConflictResolver(aggregationConfig.Tools)
 
 	default:

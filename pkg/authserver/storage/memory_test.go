@@ -133,7 +133,7 @@ func withStorage(t *testing.T, fn func(context.Context, *MemoryStorage)) {
 	t.Parallel()
 	storage := NewMemoryStorage()
 	defer storage.Close()
-	fn(context.Background(), storage)
+	fn(t.Context(), storage)
 }
 
 func requireNotFoundError(t *testing.T, err error) {
@@ -473,17 +473,22 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
-	t.Run("get expired tokens returns ErrExpired", func(t *testing.T) {
+	t.Run("get expired tokens returns ErrExpired with token data", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{
-				AccessToken: "expired-token", ExpiresAt: time.Now().Add(-time.Hour),
+				AccessToken:  "expired-token",
+				RefreshToken: "refresh-token",
+				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
 			assert.Equal(t, 1, s.Stats().UpstreamTokens)
 
 			retrieved, err := s.GetUpstreamTokens(ctx, "expired")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
-			assert.Nil(t, retrieved)
+			// Tokens should be returned alongside ErrExpired for refresh purposes
+			require.NotNil(t, retrieved)
+			assert.Equal(t, "expired-token", retrieved.AccessToken)
+			assert.Equal(t, "refresh-token", retrieved.RefreshToken)
 		})
 	})
 }
@@ -637,7 +642,8 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 		{
 			name: "upstream tokens",
 			setup: func(ctx context.Context, s *MemoryStorage) {
-				_ = s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{AccessToken: "exp", ExpiresAt: time.Now().Add(-time.Hour)})
+				// Entry must be older than DefaultRefreshTokenTTL past access token expiry to be cleaned up
+				_ = s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{AccessToken: "exp", ExpiresAt: time.Now().Add(-DefaultRefreshTokenTTL - time.Hour)})
 				_ = s.StoreUpstreamTokens(ctx, "valid", &UpstreamTokens{AccessToken: "val", ExpiresAt: time.Now().Add(time.Hour)})
 			},
 			getStats: func(st Stats) int { return st.UpstreamTokens },
@@ -709,7 +715,7 @@ func TestMemoryStorage_CleanupLoop(t *testing.T) {
 
 	t.Run("cleanup runs periodically", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
+		ctx := t.Context()
 		storage := NewMemoryStorage(WithCleanupInterval(50 * time.Millisecond))
 		defer storage.Close()
 
@@ -718,8 +724,9 @@ func TestMemoryStorage_CleanupLoop(t *testing.T) {
 		require.NoError(t, storage.CreateAuthorizeCodeSession(ctx, "expired", expiredRequest))
 		assert.Equal(t, 1, storage.Stats().AuthCodes)
 
-		time.Sleep(100 * time.Millisecond)
-		assert.Equal(t, 0, storage.Stats().AuthCodes)
+		require.Eventually(t, func() bool {
+			return storage.Stats().AuthCodes == 0
+		}, 2*time.Second, 25*time.Millisecond, "expired auth code should be cleaned up")
 	})
 
 	t.Run("close stops cleanup goroutine", func(t *testing.T) {

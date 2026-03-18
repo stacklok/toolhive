@@ -9,7 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	types "github.com/stacklok/toolhive-core/registry/types"
 )
 
 // searchRegistryArgs holds the arguments for searching the registry

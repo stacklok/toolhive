@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -35,7 +35,7 @@ import (
 type EmbeddingServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
+	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 	ImageValidation  validation.ImageValidation
 }
@@ -386,7 +386,15 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 			Message:            fmt.Sprintf("Invalid PodTemplateSpec: %v", err),
 			ObservedGeneration: embedding.Generation,
 		})
-		r.Recorder.Event(embedding, corev1.EventTypeWarning, "ValidationFailed", fmt.Sprintf("Invalid PodTemplateSpec: %v", err))
+		r.Recorder.Eventf(
+			embedding,
+			nil,
+			corev1.EventTypeWarning,
+			"ValidationFailed",
+			"ValidatePodTemplateSpec",
+			"Invalid PodTemplateSpec: %v",
+			err,
+		)
 		return false
 	}
 
@@ -1055,7 +1063,7 @@ func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context,
 	// Cleanup logic here if needed
 	// For now, Kubernetes will handle cascade deletion of owned resources
 
-	r.Recorder.Event(embedding, corev1.EventTypeNormal, "Deleted", "EmbeddingServer has been finalized")
+	r.Recorder.Eventf(embedding, nil, corev1.EventTypeNormal, "Deleted", "Finalize", "EmbeddingServer has been finalized")
 }
 
 // SetupWithManager sets up the controller with the Manager.

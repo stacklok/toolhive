@@ -57,7 +57,7 @@ func TestFactory(t *testing.T) {
 			t.Parallel()
 
 			factory := Factory(func(subject, idpSessionID, clientID string) fosite.Session {
-				return New(subject, idpSessionID, clientID)
+				return New(subject, idpSessionID, clientID, UserClaims{})
 			})
 
 			session := factory(tt.subject, tt.idpSessionID, tt.clientID)
@@ -85,16 +85,24 @@ func TestNew(t *testing.T) {
 		subject        string
 		idpSessionID   string
 		clientID       string
+		userName       string
+		userEmail      string
 		expectTsid     bool
 		expectClientID bool
+		expectName     bool
+		expectEmail    bool
 	}{
 		{
-			name:           "with all parameters",
+			name:           "with all parameters including name and email",
 			subject:        "user@example.com",
 			idpSessionID:   "upstream-session-123",
 			clientID:       "test-client-id",
+			userName:       "Joe Smith",
+			userEmail:      "joe@example.com",
 			expectTsid:     true,
 			expectClientID: true,
+			expectName:     true,
+			expectEmail:    true,
 		},
 		{
 			name:           "with subject and IDP session ID only",
@@ -136,13 +144,34 @@ func TestNew(t *testing.T) {
 			expectTsid:     false,
 			expectClientID: true,
 		},
+		{
+			name:         "with name only",
+			subject:      "user-123",
+			idpSessionID: "session-1",
+			clientID:     "",
+			userName:     "Test User",
+			expectTsid:   true,
+			expectName:   true,
+		},
+		{
+			name:         "with email only",
+			subject:      "user-123",
+			idpSessionID: "session-1",
+			clientID:     "",
+			userEmail:    "test@example.com",
+			expectTsid:   true,
+			expectEmail:  true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			session := New(tt.subject, tt.idpSessionID, tt.clientID)
+			session := New(tt.subject, tt.idpSessionID, tt.clientID, UserClaims{
+				Name:  tt.userName,
+				Email: tt.userEmail,
+			})
 
 			require.NotNil(t, session)
 			require.NotNil(t, session.JWTSession)
@@ -166,6 +195,20 @@ func TestNew(t *testing.T) {
 			} else {
 				_, ok := claimsMap[ClientIDClaimKey]
 				assert.False(t, ok, "client_id claim should not be present when clientID is empty")
+			}
+
+			if tt.expectName {
+				assert.Equal(t, tt.userName, claimsMap[NameClaimKey])
+			} else {
+				_, ok := claimsMap[NameClaimKey]
+				assert.False(t, ok, "name claim should not be present when name is empty")
+			}
+
+			if tt.expectEmail {
+				assert.Equal(t, tt.userEmail, claimsMap[EmailClaimKey])
+			} else {
+				_, ok := claimsMap[EmailClaimKey]
+				assert.False(t, ok, "email claim should not be present when email is empty")
 			}
 		})
 	}
@@ -195,7 +238,7 @@ func TestSession_Clone(t *testing.T) {
 		{
 			name: "fully populated session creates deep copy",
 			session: func() *Session {
-				s := New("user@example.com", "upstream-session-789", "client-123")
+				s := New("user@example.com", "upstream-session-789", "client-123", UserClaims{})
 				s.Username = "original-username"
 				s.SetExpiresAt(fosite.AccessToken, time.Now().Add(time.Hour))
 				return s
@@ -247,7 +290,7 @@ func TestSession_UpstreamSessionID(t *testing.T) {
 	}{
 		{
 			name:    "get and set on new session",
-			session: New("subject", "initial-upstream", "client"),
+			session: New("subject", "initial-upstream", "client", UserClaims{}),
 			setID:   "updated-upstream",
 			wantGet: "initial-upstream",
 		},

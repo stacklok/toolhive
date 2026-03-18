@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Version API", Label("api", "version", "e2e"), func() {
+var _ = Describe("Version API", Label("api", "api-misc", "version", "e2e"), func() {
 	var apiServer *e2e.Server
 
 	BeforeEach(func() {

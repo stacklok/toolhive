@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	lb "github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 // fakeDeployOps implements deployOps for testing DeployWorkload without a live daemon.

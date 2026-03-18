@@ -172,7 +172,7 @@ Manages external authentication configurations that can be shared across multipl
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers.
+MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
 
 **Referenced by MCPServer** using `oidcConfig.type: external`.
 
@@ -324,6 +324,7 @@ For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](..
 3. **Service**
    - Exposes proxy deployment
    - Type: ClusterIP, LoadBalancer, or NodePort
+   - SessionAffinity: ClientIP (ensures stateful MCP sessions reach the same pod)
    - Routes traffic to proxy
 
 4. **ConfigMap** (RunConfig)
@@ -340,7 +341,7 @@ For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](..
 graph LR
     subgraph "Namespace: default"
         Deploy["Deployment (proxy)<br/>Replicas: 1<br/>thv-proxyrunner"]
-        SVC["Service<br/>Type: ClusterIP"]
+        SVC["Service<br/>Type: ClusterIP<br/>SessionAffinity: ClientIP"]
         STS["StatefulSet (mcp)<br/>Replicas: 1<br/>MCP Server"]
         CM["ConfigMap<br/>RunConfig"]
     end

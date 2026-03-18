@@ -6,8 +6,8 @@ package aggregator
 
 import (
 	"context"
+	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -80,7 +80,7 @@ func processBackendTools(
 	// Apply the shared filtering/override logic from pkg/mcp
 	processed, err := mcp.ApplyToolFiltering(opts, simpleTools)
 	if err != nil {
-		logger.Warnf("Failed to apply tool filtering for backend %s: %v", backendID, err)
+		slog.Warn("failed to apply tool filtering for backend", "backend", backendID, "error", err)
 		return tools // Return original tools if processing fails
 	}
 
@@ -98,16 +98,18 @@ func processBackendTools(
 		if !exists {
 			// This should not happen unless there's a bug in the filtering logic,
 			// but skip the tool rather than panicking
-			logger.Warnf("Tool %s not found in original tools map for backend %s, skipping", originalName, backendID)
+			slog.Warn("tool not found in original tools map for backend, skipping", "tool", originalName, "backend", backendID)
 			continue
 		}
 
 		// Construct the result tool with processed name/description but original schema
 		result = append(result, vmcp.Tool{
-			Name:        simpleTool.Name,        // Use the processed (potentially overridden) name
-			Description: simpleTool.Description, // Use the processed (potentially overridden) description
-			InputSchema: originalTool.InputSchema,
-			BackendID:   backendID, // Use the backendID parameter (source of truth)
+			Name:         simpleTool.Name,        // Use the processed (potentially overridden) name
+			Description:  simpleTool.Description, // Use the processed (potentially overridden) description
+			InputSchema:  originalTool.InputSchema,
+			OutputSchema: originalTool.OutputSchema,
+			Annotations:  originalTool.Annotations,
+			BackendID:    backendID, // Use the backendID parameter (source of truth)
 		})
 	}
 

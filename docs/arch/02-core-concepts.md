@@ -298,7 +298,7 @@ A **registry** is a catalog of MCP server definitions with metadata, configurati
 **Registry types:**
 
 1. **Built-in Registry**: Curated by Stacklok
-   - Source: https://github.com/stacklok/toolhive-registry
+   - Source: https://github.com/stacklok/toolhive-catalog
    - Embedded in the binary
    - Trusted and verified servers
 

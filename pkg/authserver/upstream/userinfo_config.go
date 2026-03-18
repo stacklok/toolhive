@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -174,9 +176,12 @@ func (c *UserInfoConfig) Validate() error {
 		return errors.New("endpoint_url must use http or https scheme")
 	}
 
-	// HTTP scheme is only allowed for loopback addresses (consistent with validateRedirectURI)
+	// HTTP scheme is only allowed for loopback addresses unless URL validation is disabled.
+	// This is consistent with networking.ValidateEndpointURL which checks the same env var.
 	if parsed.Scheme == networking.HttpScheme && !networking.IsLocalhost(parsed.Host) {
-		return errors.New("endpoint_url with http scheme requires loopback address (127.0.0.1, ::1, or localhost)")
+		if !strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true") {
+			return errors.New("endpoint_url with http scheme requires loopback address (127.0.0.1, ::1, or localhost)")
+		}
 	}
 
 	// Validate HTTP method if specified (OIDC Core Section 5.3.1 allows GET and POST)

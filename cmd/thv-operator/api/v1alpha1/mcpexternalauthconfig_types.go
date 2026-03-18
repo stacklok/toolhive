@@ -331,6 +331,40 @@ type OAuth2UpstreamConfig struct {
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
+
+	// TokenResponseMapping configures custom field extraction from non-standard token responses.
+	// Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths
+	// instead of returning them at the top level. When set, ToolHive performs the token
+	// exchange HTTP call directly and extracts fields using the configured dot-notation paths.
+	// If nil, standard OAuth 2.0 token response parsing is used.
+	// +optional
+	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+}
+
+// TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
+// using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
+// the access token under paths like "authed_user.access_token".
+type TokenResponseMapping struct {
+	// AccessTokenPath is the dot-notation path to the access token in the response.
+	// Example: "authed_user.access_token"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	AccessTokenPath string `json:"accessTokenPath"`
+
+	// ScopePath is the dot-notation path to the scope string in the response.
+	// If not specified, defaults to "scope".
+	// +optional
+	ScopePath string `json:"scopePath,omitempty"`
+
+	// RefreshTokenPath is the dot-notation path to the refresh token in the response.
+	// If not specified, defaults to "refresh_token".
+	// +optional
+	RefreshTokenPath string `json:"refreshTokenPath,omitempty"`
+
+	// ExpiresInPath is the dot-notation path to the expires_in value (in seconds).
+	// If not specified, defaults to "expires_in".
+	// +optional
+	ExpiresInPath string `json:"expiresInPath,omitempty"`
 }
 
 // UserInfoConfig contains configuration for fetching user information from an upstream provider.
@@ -447,6 +481,17 @@ type RedisStorageConfig struct {
 	// +kubebuilder:default="3s"
 	// +optional
 	WriteTimeout string `json:"writeTimeout,omitempty"`
+
+	// TLS configures TLS for connections to the Redis/Valkey master.
+	// Presence of this field enables TLS. Omit to use plaintext.
+	// +optional
+	TLS *RedisTLSConfig `json:"tls,omitempty"`
+
+	// SentinelTLS configures TLS for connections to Sentinel instances.
+	// Presence of this field enables TLS. Omit to use plaintext.
+	// When omitted, sentinel connections use plaintext (no fallback to TLS config).
+	// +optional
+	SentinelTLS *RedisTLSConfig `json:"sentinelTls,omitempty"`
 }
 
 // RedisSentinelConfig configures Redis Sentinel connection.
@@ -485,6 +530,20 @@ type SentinelServiceRef struct {
 	// +kubebuilder:default=26379
 	// +optional
 	Port int32 `json:"port,omitempty"`
+}
+
+// RedisTLSConfig configures TLS for Redis connections.
+// Presence of this struct on a connection type enables TLS for that connection.
+type RedisTLSConfig struct {
+	// InsecureSkipVerify skips TLS certificate verification.
+	// Use when connecting to services with self-signed certificates.
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+
+	// CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+	// for verifying the server. When not specified, system root CAs are used.
+	// +optional
+	CACertSecretRef *SecretKeyRef `json:"caCertSecretRef,omitempty"`
 }
 
 // RedisACLUserConfig configures Redis ACL user authentication.

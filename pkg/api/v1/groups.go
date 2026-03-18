@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -18,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -254,7 +254,8 @@ func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
 			return fmt.Errorf("failed to delete workloads in group %s: %w", groupName, err)
 		}
 
-		logger.Debugf("Deleted %d workload(s) from group '%s'", len(groupWorkloads), groupName)
+		//nolint:gosec // G706: group name from URL parameter for diagnostics
+		slog.Debug("deleted workloads from group", "count", len(groupWorkloads), "group", groupName)
 	} else {
 		// Move workloads to default group
 		if err := s.workloadManager.MoveToGroup(ctx, workloadNames, groupName, groups.DefaultGroup); err != nil {
@@ -266,7 +267,8 @@ func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
 			return fmt.Errorf("failed to update client configurations: %w", err)
 		}
 
-		logger.Debugf("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), groupName)
+		//nolint:gosec // G706: group name from URL parameter for diagnostics
+		slog.Debug("moved workloads to default group", "count", len(groupWorkloads), "group", groupName)
 	}
 
 	return nil

@@ -40,17 +40,19 @@ const (
 // EmbeddingServerSpec defines the desired state of EmbeddingServer
 type EmbeddingServerSpec struct {
 	// Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2")
-	// +kubebuilder:validation:Required
-	Model string `json:"model"`
+	// +kubebuilder:default="BAAI/bge-small-en-v1.5"
+	// +optional
+	Model string `json:"model,omitempty"`
 
 	// HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.
 	// If provided, the secret value will be provided to the embedding server for authentication with huggingface.
 	// +optional
 	HFTokenSecretRef *SecretKeyRef `json:"hfTokenSecretRef,omitempty"`
 
-	// Image is the container image for huggingface-embedding-inference
-	// +kubebuilder:validation:Required
-	// +kubebuilder:default="ghcr.io/huggingface/text-embeddings-inference:latest"
+	// Image is the container image for the embedding inference server.
+	// Images must be from HuggingFace Text Embeddings Inference (https://github.com/huggingface/text-embeddings-inference).
+	// +kubebuilder:default="ghcr.io/huggingface/text-embeddings-inference:cpu-latest"
+	// +optional
 	Image string `json:"image,omitempty"`
 
 	// ImagePullPolicy defines the pull policy for the container image

@@ -23,10 +23,14 @@ type installSkillRequest struct {
 	Version string `json:"version,omitempty"`
 	// Scope for the installation
 	Scope skills.Scope `json:"scope,omitempty"`
+	// ProjectRoot is the project root path for project-scoped installs
+	ProjectRoot string `json:"project_root,omitempty"`
 	// Client is the target client (e.g., "claude-code")
 	Client string `json:"client,omitempty"`
 	// Force allows overwriting unmanaged skill directories
 	Force bool `json:"force,omitempty"`
+	// Group is the group name to add the skill to after installation
+	Group string `json:"group,omitempty"`
 }
 
 // installSkillResponse represents the response after installing a skill.
@@ -40,8 +44,6 @@ type installSkillResponse struct {
 // validateSkillRequest represents the request to validate a skill.
 //
 //	@Description	Request to validate a skill definition
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type validateSkillRequest struct {
 	// Path to the skill definition directory
 	Path string `json:"path"`
@@ -50,8 +52,6 @@ type validateSkillRequest struct {
 // buildSkillRequest represents the request to build a skill.
 //
 //	@Description	Request to build a skill from a local directory
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type buildSkillRequest struct {
 	// Path to the skill definition directory
 	Path string `json:"path"`
@@ -62,8 +62,6 @@ type buildSkillRequest struct {
 // pushSkillRequest represents the request to push a skill.
 //
 //	@Description	Request to push a built skill artifact
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`

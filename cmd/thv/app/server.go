@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"time"
@@ -14,7 +15,6 @@ import (
 
 	s "github.com/stacklok/toolhive/pkg/api"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	mcpserver "github.com/stacklok/toolhive/pkg/mcp/server"
 )
 
@@ -87,7 +87,7 @@ var serveCmd = &cobra.Command{
 
 			go func() {
 				if err := mcpServer.Start(); err != nil {
-					logger.Errorf("MCP server error: %v", err)
+					slog.Error(fmt.Sprintf("MCP server error: %v", err))
 				}
 			}()
 
@@ -100,7 +100,7 @@ var serveCmd = &cobra.Command{
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer shutdownCancel()
 				if err := mcpServer.Shutdown(shutdownCtx); err != nil {
-					logger.Errorf("Failed to shutdown MCP server: %v", err)
+					slog.Error(fmt.Sprintf("Failed to shutdown MCP server: %v", err))
 				}
 			}()
 		}

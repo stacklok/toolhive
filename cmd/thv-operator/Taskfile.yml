@@ -265,6 +265,7 @@ tasks:
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - |
         KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
+          --procs=8 \
           {{.ROOT_DIR}}/test/e2e/thv-operator/...
 
   operator-run:

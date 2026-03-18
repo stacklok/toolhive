@@ -8,6 +8,7 @@ package groups
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -18,7 +19,6 @@ import (
 
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // crdManager implements the Manager interface using Kubernetes CRDs
@@ -64,7 +64,7 @@ func (m *crdManager) Create(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to create MCPGroup: %w", err)
 	}
 
-	logger.Infof("Created MCPGroup '%s' in namespace '%s'", name, m.namespace)
+	slog.Info("created mcpgroup", "name", name, "namespace", m.namespace)
 	return nil
 }
 
@@ -121,7 +121,7 @@ func (m *crdManager) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to delete MCPGroup: %w", err)
 	}
 
-	logger.Infof("Deleted MCPGroup '%s' from namespace '%s'", name, m.namespace)
+	slog.Info("deleted mcpgroup", "name", name, "namespace", m.namespace)
 	return nil
 }
 
@@ -150,6 +150,11 @@ func (*crdManager) RegisterClients(context.Context, []string, []string) error {
 
 func (*crdManager) UnregisterClients(context.Context, []string, []string) error {
 	// In Kubernetes, client configuration management is not applicable, so this is a no-op.
+	return nil
+}
+
+func (*crdManager) Update(context.Context, *Group) error {
+	// In Kubernetes, group state is managed via CRDs; filesystem-level updates are not applicable.
 	return nil
 }
 

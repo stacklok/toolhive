@@ -207,6 +207,14 @@ type MCPServerSpec struct {
 	// Must reference an existing MCPGroup in the same namespace
 	// +optional
 	GroupRef string `json:"groupRef,omitempty"`
+
+	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+	// Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+	// +kubebuilder:validation:Enum=ClientIP;None
+	// +kubebuilder:default=ClientIP
+	// +optional
+	SessionAffinity string `json:"sessionAffinity,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -758,10 +766,14 @@ type MCPServerStatus struct {
 	// Message provides additional information about the current phase
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// ReadyReplicas is the number of ready proxy replicas
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 }
 
 // MCPServerPhase is the phase of the MCPServer
-// +kubebuilder:validation:Enum=Pending;Running;Failed;Terminating
+// +kubebuilder:validation:Enum=Pending;Running;Failed;Terminating;Stopped
 type MCPServerPhase string
 
 const (
@@ -776,12 +788,16 @@ const (
 
 	// MCPServerPhaseTerminating means the MCPServer is being deleted
 	MCPServerPhaseTerminating MCPServerPhase = "Terminating"
+
+	// MCPServerPhaseStopped means the MCPServer is scaled to zero
+	MCPServerPhaseStopped MCPServerPhase = "Stopped"
 )
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mcpserver;mcpservers
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
+//+kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

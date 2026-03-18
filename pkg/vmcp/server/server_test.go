@@ -6,7 +6,6 @@ package server_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	routerMocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -67,7 +67,7 @@ func TestServerStartFailsWhenReporterStartFails(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr},
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -97,7 +97,7 @@ func TestServerStopRunsReporterShutdown(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr},
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -152,7 +152,7 @@ func TestNew(t *testing.T) {
 	}{
 		{
 			name:         "applies all defaults",
-			config:       &server.Config{},
+			config:       &server.Config{SessionFactory: newNoopMockFactory(t)},
 			expectedHost: "127.0.0.1",
 			expectedPort: 4483,
 			expectedPath: "/mcp",
@@ -162,11 +162,12 @@ func TestNew(t *testing.T) {
 		{
 			name: "uses provided configuration",
 			config: &server.Config{
-				Name:         "custom-vmcp",
-				Version:      "1.0.0",
-				Host:         "0.0.0.0",
-				Port:         8080,
-				EndpointPath: "/api/mcp",
+				Name:           "custom-vmcp",
+				Version:        "1.0.0",
+				Host:           "0.0.0.0",
+				Port:           8080,
+				EndpointPath:   "/api/mcp",
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expectedHost: "0.0.0.0",
 			expectedPort: 8080,
@@ -177,8 +178,9 @@ func TestNew(t *testing.T) {
 		{
 			name: "applies partial defaults",
 			config: &server.Config{
-				Host: "192.168.1.1",
-				Port: 9000,
+				Host:           "192.168.1.1",
+				Port:           9000,
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expectedHost: "192.168.1.1",
 			expectedPort: 9000,
@@ -220,30 +222,34 @@ func TestServer_Address(t *testing.T) {
 		{
 			name: "default host with explicit port",
 			config: &server.Config{
-				Port: 4483,
+				Port:           4483,
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "127.0.0.1:4483",
 		},
 		{
 			name: "port 0 for dynamic allocation",
 			config: &server.Config{
-				Port: 0,
+				Port:           0,
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "127.0.0.1:0",
 		},
 		{
 			name: "custom host and port",
 			config: &server.Config{
-				Host: "0.0.0.0",
-				Port: 8080,
+				Host:           "0.0.0.0",
+				Port:           8080,
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "0.0.0.0:8080",
 		},
 		{
 			name: "localhost",
 			config: &server.Config{
-				Host: "localhost",
-				Port: 3000,
+				Host:           "localhost",
+				Port:           3000,
+				SessionFactory: newNoopMockFactory(t),
 			},
 			expected: "localhost:3000",
 		},
@@ -282,11 +288,33 @@ func TestServer_Stop(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-		s, err := server.New(context.Background(), &server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+		s, err := server.New(context.Background(), &server.Config{SessionFactory: newNoopMockFactory(t)}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 		require.NoError(t, err)
 		err = s.Stop(context.Background())
 		require.NoError(t, err)
 	})
+}
+
+func TestNew_NilSessionFactory_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	_, err := server.New(
+		context.Background(),
+		&server.Config{
+			SessionFactory: nil, // deliberately omitted
+		},
+		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SessionFactory")
 }
 
 func TestNew_WithAuditConfig(t *testing.T) {
@@ -361,7 +389,8 @@ func TestNew_WithAuditConfig(t *testing.T) {
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 			config := &server.Config{
-				AuditConfig: tt.auditConfig,
+				AuditConfig:    tt.auditConfig,
+				SessionFactory: newNoopMockFactory(t),
 			}
 
 			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
@@ -380,65 +409,6 @@ func TestNew_WithAuditConfig(t *testing.T) {
 	}
 }
 
-// startTestServer creates and starts a vMCP server for testing, returning
-// the server instance and its base URL. The server is automatically stopped
-// when the test completes.
-func startTestServer(t *testing.T) string {
-	t.Helper()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-
-	mockRouter := routerMocks.NewMockRouter(ctrl)
-	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
-
-	mockDiscoveryMgr.EXPECT().Stop().Times(1)
-	// Allow discovery middleware to call List/Discover for requests that pass Accept validation.
-	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-
-	srv, err := server.New(
-		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0},
-		mockRouter,
-		mockBackendClient,
-		mockDiscoveryMgr,
-		mockBackendRegistry,
-		nil,
-	)
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- srv.Start(ctx)
-	}()
-
-	select {
-	case <-srv.Ready():
-	case err := <-done:
-		cancel()
-		t.Fatalf("server failed to start: %v", err)
-	case <-time.After(3 * time.Second):
-		cancel()
-		t.Fatalf("server did not become ready")
-	}
-
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Log("warning: server did not stop within timeout")
-		}
-	})
-
-	return fmt.Sprintf("http://%s", srv.Address())
-}
-
 func TestServerStopClosesOptimizerStore(t *testing.T) {
 	t.Parallel()
 
@@ -453,7 +423,7 @@ func TestServerStopClosesOptimizerStore(t *testing.T) {
 
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerEnabled: true},
+		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerConfig: &optimizer.Config{}, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -506,7 +476,7 @@ func TestHandler_ReturnsNonNilHandler(t *testing.T) {
 
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{Host: "127.0.0.1", Port: 0},
+		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -548,6 +518,7 @@ func TestHandler_ReturnsErrorOnInvalidAuditConfig(t *testing.T) {
 				Component:   "vmcp-server",
 				MaxDataSize: -1,
 			},
+			SessionFactory: newNoopMockFactory(t),
 		},
 		mockRouter,
 		mockBackendClient,
@@ -583,7 +554,7 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{Host: "127.0.0.1", Port: 0},
+		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,
@@ -611,9 +582,6 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 
 func TestAcceptHeaderValidation(t *testing.T) {
 	t.Parallel()
-
-	baseURL := startTestServer(t)
-	mcpURL := baseURL + "/mcp"
 
 	tests := []struct {
 		name           string
@@ -657,27 +625,80 @@ func TestAcceptHeaderValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req, err := http.NewRequestWithContext(context.Background(), tt.method, mcpURL, nil)
+			// Use httptest recorder + handler directly to avoid shared server lifecycle issues.
+			// Each subtest gets its own mocks and handler, making parallel execution safe.
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+
+			mockRouter := routerMocks.NewMockRouter(ctrl)
+			mockBackendClient := mocks.NewMockBackendClient(ctrl)
+			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+			mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+			mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+			mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+			srv, err := server.New(
+				t.Context(),
+				&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)},
+				mockRouter,
+				mockBackendClient,
+				mockDiscoveryMgr,
+				mockBackendRegistry,
+				nil,
+			)
 			require.NoError(t, err)
 
+			handler, err := srv.Handler(t.Context())
+			require.NoError(t, err)
+
+			reqCtx, reqCancel := context.WithCancel(t.Context())
+			t.Cleanup(reqCancel)
+
+			req := httptest.NewRequest(tt.method, "/mcp", nil).WithContext(reqCtx)
 			if tt.acceptHeader != "" {
 				req.Header.Set("Accept", tt.acceptHeader)
 			}
 
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
+			rec := httptest.NewRecorder()
 
 			if tt.expectRejected {
+				// For rejected cases, ServeHTTP returns quickly with 406.
+				handler.ServeHTTP(rec, req)
+
+				resp := rec.Result()
+				defer resp.Body.Close()
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
 				assert.Equal(t, http.StatusNotAcceptable, resp.StatusCode)
 				assert.Contains(t, string(body), "Not Acceptable")
 				assert.Contains(t, string(body), "text/event-stream")
 				assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 			} else {
-				assert.NotEqual(t, http.StatusNotAcceptable, resp.StatusCode,
+				// Run the handler in a goroutine since it may block on streaming.
+				// The Accept validation middleware runs before any blocking, so a
+				// 406 would be written within the first 50 ms.
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					handler.ServeHTTP(rec, req)
+				}()
+
+				// Give the middleware time to write any immediate response (like 406).
+				time.Sleep(50 * time.Millisecond)
+				reqCancel() // Unblock any long-running handler (e.g. SSE).
+
+				// Require the goroutine to finish — it must exit once the context is
+				// canceled. Only read rec.Code after done to avoid a data race.
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatal("handler goroutine did not return after context cancellation")
+				}
+
+				assert.NotEqual(t, http.StatusNotAcceptable, rec.Code,
 					"expected request to pass Accept validation but got 406")
 			}
 		})

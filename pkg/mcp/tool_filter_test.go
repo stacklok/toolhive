@@ -11,8 +11,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestProcessToolCallRequest(t *testing.T) {
@@ -1140,9 +1138,6 @@ func TestProcessToolsListResponse_JSONEncoding(t *testing.T) {
 func TestToolFilterWriter_Flush(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to avoid panic
-	logger.Initialize()
-
 	tests := []struct {
 		name        string
 		writeData   []byte
@@ -1280,9 +1275,6 @@ func (m *mockResponseWriter) WriteHeader(statusCode int) {
 
 func TestNewToolFilterMiddleware(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger to avoid panic
-	logger.Initialize()
 
 	tests := []struct {
 		name        string

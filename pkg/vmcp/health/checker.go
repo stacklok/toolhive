@@ -11,9 +11,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -78,7 +78,7 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 		defer cancel()
 	}
 
-	logger.Debugf("Performing health check for backend %s (%s)", target.WorkloadName, target.BaseURL)
+	slog.Debug("performing health check for backend", "backend", target.WorkloadName, "url", target.BaseURL)
 
 	// Track response time for degraded detection
 	startTime := time.Now()
@@ -94,19 +94,24 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 	if err != nil {
 		// Categorize the error to determine health status
 		status := categorizeError(err)
-		logger.Debugf("Health check failed for backend %s: %v (status: %s, duration: %v)",
-			target.WorkloadName, err, status, responseDuration)
+		slog.Debug("health check failed for backend",
+			"backend", target.WorkloadName,
+			"error", err,
+			"status", status,
+			"duration", responseDuration)
 		return status, fmt.Errorf("health check failed: %w", err)
 	}
 
 	// Check if response time indicates degraded performance
 	if h.degradedThreshold > 0 && responseDuration > h.degradedThreshold {
-		logger.Warnf("Health check succeeded for backend %s but response was slow: %v (threshold: %v) - marking as degraded",
-			target.WorkloadName, responseDuration, h.degradedThreshold)
+		slog.Warn("health check succeeded but response was slow - marking as degraded",
+			"backend", target.WorkloadName,
+			"duration", responseDuration,
+			"threshold", h.degradedThreshold)
 		return vmcp.BackendDegraded, nil
 	}
 
-	logger.Debugf("Health check succeeded for backend %s (duration: %v)", target.WorkloadName, responseDuration)
+	slog.Debug("health check succeeded for backend", "backend", target.WorkloadName, "duration", responseDuration)
 	return vmcp.BackendHealthy, nil
 }
 

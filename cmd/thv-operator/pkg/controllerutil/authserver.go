@@ -14,6 +14,8 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -24,6 +26,18 @@ const (
 
 	// AuthServerHMACVolumePrefix is the prefix for HMAC secret volume names
 	AuthServerHMACVolumePrefix = "authserver-hmac-secret-"
+
+	// RedisTLSCACertVolumePrefix is the prefix for Redis TLS CA cert volume names
+	RedisTLSCACertVolumePrefix = "redis-tls-ca-"
+
+	// RedisTLSCACertMountPath is the base path where Redis TLS CA certs are mounted
+	RedisTLSCACertMountPath = "/etc/toolhive/authserver/redis-tls"
+
+	// RedisTLSCACertFileName is the filename for the master CA cert
+	RedisTLSCACertFileName = "ca.crt"
+
+	// RedisSentinelTLSCACertFileName is the filename for the sentinel CA cert
+	RedisSentinelTLSCACertFileName = "sentinel-ca.crt"
 
 	// AuthServerKeysMountPath is the base path where signing keys are mounted
 	AuthServerKeysMountPath = "/etc/toolhive/authserver/keys"
@@ -40,6 +54,9 @@ const (
 	// UpstreamClientSecretEnvVar is the environment variable name for the upstream client secret
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	UpstreamClientSecretEnvVar = "TOOLHIVE_UPSTREAM_CLIENT_SECRET"
+
+	// DefaultSentinelPort is the default Redis Sentinel port
+	DefaultSentinelPort = 26379
 )
 
 // GenerateAuthServerConfig generates volumes, volume mounts, and environment variables
@@ -156,6 +173,57 @@ func GenerateAuthServerVolumes(
 		})
 	}
 
+	// Generate volumes for Redis TLS CA certificates
+	if authConfig.Storage != nil && authConfig.Storage.Redis != nil {
+		redis := authConfig.Storage.Redis
+		if redis.TLS != nil && redis.TLS.CACertSecretRef != nil {
+			ref := redis.TLS.CACertSecretRef
+			volumeName := RedisTLSCACertVolumePrefix + "master"
+			volumes = append(volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: ref.Name,
+						Items: []corev1.KeyToPath{{
+							Key:  ref.Key,
+							Path: RedisTLSCACertFileName,
+						}},
+						DefaultMode: k8sptr.To(int32(0400)),
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, RedisTLSCACertFileName),
+				SubPath:   RedisTLSCACertFileName,
+				ReadOnly:  true,
+			})
+		}
+		if redis.SentinelTLS != nil && redis.SentinelTLS.CACertSecretRef != nil {
+			ref := redis.SentinelTLS.CACertSecretRef
+			volumeName := RedisTLSCACertVolumePrefix + "sentinel"
+			volumes = append(volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: ref.Name,
+						Items: []corev1.KeyToPath{{
+							Key:  ref.Key,
+							Path: RedisSentinelTLSCACertFileName,
+						}},
+						DefaultMode: k8sptr.To(int32(0400)),
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, RedisSentinelTLSCACertFileName),
+				SubPath:   RedisSentinelTLSCACertFileName,
+				ReadOnly:  true,
+			})
+		}
+	}
+
 	return volumes, volumeMounts
 }
 
@@ -176,40 +244,73 @@ func GenerateAuthServerEnvVars(
 
 	var envVars []corev1.EnvVar
 
-	// Currently only one upstream provider is supported
-	if len(authConfig.UpstreamProviders) == 0 {
-		return nil
-	}
-
-	provider := authConfig.UpstreamProviders[0]
-
-	// Extract client secret reference based on provider type
-	var clientSecretRef *mcpv1alpha1.SecretKeyRef
-
-	switch provider.Type {
-	case mcpv1alpha1.UpstreamProviderTypeOIDC:
-		if provider.OIDCConfig != nil {
-			clientSecretRef = provider.OIDCConfig.ClientSecretRef
-		}
-	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
-		if provider.OAuth2Config != nil {
-			clientSecretRef = provider.OAuth2Config.ClientSecretRef
-		}
-	}
-
 	// Generate env var for upstream client secret if provided
-	if clientSecretRef != nil {
-		envVars = append(envVars, corev1.EnvVar{
-			Name: UpstreamClientSecretEnvVar,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: clientSecretRef.Name,
+	if len(authConfig.UpstreamProviders) > 0 {
+		provider := authConfig.UpstreamProviders[0]
+
+		// Extract client secret reference based on provider type
+		var clientSecretRef *mcpv1alpha1.SecretKeyRef
+
+		switch provider.Type {
+		case mcpv1alpha1.UpstreamProviderTypeOIDC:
+			if provider.OIDCConfig != nil {
+				clientSecretRef = provider.OIDCConfig.ClientSecretRef
+			}
+		case mcpv1alpha1.UpstreamProviderTypeOAuth2:
+			if provider.OAuth2Config != nil {
+				clientSecretRef = provider.OAuth2Config.ClientSecretRef
+			}
+		}
+
+		if clientSecretRef != nil {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: UpstreamClientSecretEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: clientSecretRef.Name,
+						},
+						Key: clientSecretRef.Key,
 					},
-					Key: clientSecretRef.Key,
 				},
-			},
-		})
+			})
+		}
+	}
+
+	// Generate env vars for Redis ACL credentials if configured
+	if authConfig.Storage != nil &&
+		authConfig.Storage.Type == mcpv1alpha1.AuthServerStorageTypeRedis &&
+		authConfig.Storage.Redis != nil &&
+		authConfig.Storage.Redis.ACLUserConfig != nil {
+		aclConfig := authConfig.Storage.Redis.ACLUserConfig
+
+		if aclConfig.UsernameSecretRef != nil {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: authrunner.RedisUsernameEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: aclConfig.UsernameSecretRef.Name,
+						},
+						Key: aclConfig.UsernameSecretRef.Key,
+					},
+				},
+			})
+		}
+
+		if aclConfig.PasswordSecretRef != nil {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: authrunner.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: aclConfig.PasswordSecretRef.Name,
+						},
+						Key: aclConfig.PasswordSecretRef.Key,
+					},
+				},
+			})
+		}
 	}
 
 	return envVars
@@ -235,6 +336,7 @@ func AddEmbeddedAuthServerConfigOptions(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
+	mcpServerName string,
 	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
@@ -268,7 +370,10 @@ func AddEmbeddedAuthServerConfigOptions(
 	}
 
 	// Build the embedded auth server config for runner
-	embeddedConfig := buildEmbeddedAuthServerRunnerConfig(authServerConfig, oidcConfig)
+	embeddedConfig, err := buildEmbeddedAuthServerRunnerConfig(namespace, mcpServerName, authServerConfig, oidcConfig)
+	if err != nil {
+		return fmt.Errorf("failed to build embedded auth server config: %w", err)
+	}
 
 	// Add the configuration option
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
@@ -283,9 +388,11 @@ func AddEmbeddedAuthServerConfigOptions(
 //   - AllowedAudiences: from oidcConfig.ResourceURL (required, validated in AddEmbeddedAuthServerConfigOptions)
 //   - ScopesSupported: from oidcConfig.Scopes (optional, nil uses auth server defaults)
 func buildEmbeddedAuthServerRunnerConfig(
+	namespace string,
+	mcpServerName string,
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
 	oidcConfig *oidc.OIDCConfig,
-) *authserver.RunConfig {
+) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
 		SchemaVersion:    authserver.CurrentSchemaVersion,
 		Issuer:           authConfig.Issuer,
@@ -330,7 +437,127 @@ func buildEmbeddedAuthServerRunnerConfig(
 		config.Upstreams = []authserver.UpstreamRunConfig{*buildUpstreamRunConfig(&provider)}
 	}
 
-	return config
+	// Build storage configuration
+	storageCfg, err := buildStorageRunConfig(namespace, mcpServerName, authConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build storage config: %w", err)
+	}
+	config.Storage = storageCfg
+
+	return config, nil
+}
+
+// buildStorageRunConfig converts CRD AuthServerStorageConfig to storage.RunConfig.
+// Returns nil (memory storage default) if no storage config is specified.
+func buildStorageRunConfig(
+	namespace string,
+	mcpServerName string,
+	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
+) (*storage.RunConfig, error) {
+	if authConfig.Storage == nil || authConfig.Storage.Type == mcpv1alpha1.AuthServerStorageTypeMemory {
+		return nil, nil
+	}
+
+	if authConfig.Storage.Type != mcpv1alpha1.AuthServerStorageTypeRedis {
+		return nil, fmt.Errorf("unsupported storage type: %s", authConfig.Storage.Type)
+	}
+
+	redisConfig := authConfig.Storage.Redis
+	if redisConfig == nil {
+		return nil, fmt.Errorf("redis config is required when storage type is redis")
+	}
+
+	if redisConfig.SentinelConfig == nil {
+		return nil, fmt.Errorf("sentinel config is required for Redis storage")
+	}
+
+	if redisConfig.ACLUserConfig == nil ||
+		redisConfig.ACLUserConfig.UsernameSecretRef == nil ||
+		redisConfig.ACLUserConfig.PasswordSecretRef == nil {
+		return nil, fmt.Errorf("ACL user config is required for Redis storage")
+	}
+
+	// Resolve Sentinel addresses (static or via Kubernetes Service discovery)
+	sentinelAddrs, err := resolveSentinelAddrs(redisConfig.SentinelConfig, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve sentinel addresses: %w", err)
+	}
+
+	// Build key prefix for multi-tenancy using namespace and MCP server name
+	keyPrefix := storage.DeriveKeyPrefix(namespace, mcpServerName)
+
+	return &storage.RunConfig{
+		Type: string(storage.TypeRedis),
+		RedisConfig: &storage.RedisRunConfig{
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    redisConfig.SentinelConfig.MasterName,
+				SentinelAddrs: sentinelAddrs,
+				DB:            int(redisConfig.SentinelConfig.DB),
+			},
+			AuthType: storage.AuthTypeACLUser,
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: authrunner.RedisUsernameEnvVar,
+				PasswordEnvVar: authrunner.RedisPasswordEnvVar,
+			},
+			KeyPrefix:    keyPrefix,
+			DialTimeout:  redisConfig.DialTimeout,
+			ReadTimeout:  redisConfig.ReadTimeout,
+			WriteTimeout: redisConfig.WriteTimeout,
+			TLS:          convertRedisTLSConfig(redisConfig.TLS, false),
+			SentinelTLS:  convertRedisTLSConfig(redisConfig.SentinelTLS, true),
+		},
+	}, nil
+}
+
+// convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.
+// isSentinel determines which mount path to use for the CA cert file.
+func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig, isSentinel bool) *storage.RedisTLSRunConfig {
+	if cfg == nil {
+		return nil
+	}
+	rc := &storage.RedisTLSRunConfig{
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+	if cfg.CACertSecretRef != nil {
+		fileName := RedisTLSCACertFileName
+		if isSentinel {
+			fileName = RedisSentinelTLSCACertFileName
+		}
+		rc.CACertFile = fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, fileName)
+	}
+	return rc
+}
+
+// resolveSentinelAddrs resolves Sentinel addresses from static config or Kubernetes Service DNS.
+func resolveSentinelAddrs(
+	sentinelConfig *mcpv1alpha1.RedisSentinelConfig,
+	defaultNamespace string,
+) ([]string, error) {
+	// If static addresses are provided, use them directly
+	if len(sentinelConfig.SentinelAddrs) > 0 {
+		return sentinelConfig.SentinelAddrs, nil
+	}
+
+	// Otherwise, construct the Kubernetes Service DNS name.
+	// go-redis tries all sentinel addresses in parallel and auto-discovers
+	// other sentinels via the SENTINEL SENTINELS command after connecting,
+	// so a single DNS name is sufficient.
+	if sentinelConfig.SentinelService == nil {
+		return nil, fmt.Errorf("either sentinelAddrs or sentinelService must be specified")
+	}
+
+	svc := sentinelConfig.SentinelService
+	namespace := svc.Namespace
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
+	port := svc.Port
+	if port == 0 {
+		port = DefaultSentinelPort
+	}
+
+	dnsName := fmt.Sprintf("%s.%s.svc.cluster.local:%d", svc.Name, namespace, port)
+	return []string{dnsName}, nil
 }
 
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.
@@ -375,6 +602,15 @@ func buildUpstreamRunConfig(
 			}
 			if provider.OAuth2Config.UserInfo != nil {
 				config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)
+			}
+			if provider.OAuth2Config.TokenResponseMapping != nil {
+				m := provider.OAuth2Config.TokenResponseMapping
+				config.OAuth2Config.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
+					AccessTokenPath:  m.AccessTokenPath,
+					ScopePath:        m.ScopePath,
+					RefreshTokenPath: m.RefreshTokenPath,
+					ExpiresInPath:    m.ExpiresInPath,
+				}
 			}
 		}
 	}

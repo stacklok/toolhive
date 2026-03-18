@@ -36,7 +36,8 @@ func init() {
 	}
 }
 
-func isPrivateIP(ip net.IP) bool {
+// IsPrivateIP reports whether ip is a private, loopback, or link-local address.
+func IsPrivateIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true
 	}
@@ -56,7 +57,7 @@ func AddressReferencesPrivateIp(address string) error {
 	}
 	// Check for a private IP address or loopback
 	ip := net.ParseIP(host)
-	if isPrivateIP(ip) {
+	if IsPrivateIP(ip) {
 		return errors.New(ErrPrivateIpAddress)
 	}
 

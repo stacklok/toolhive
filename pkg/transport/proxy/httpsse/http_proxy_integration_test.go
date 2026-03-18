@@ -17,13 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	logger.Initialize()
-}
 
 // TestIntegrationSSEProxyStressTest simulates the scenario from issue #1572
 // where multiple clients connect, disconnect, and reconnect frequently

@@ -61,14 +61,14 @@ func newRedisTestRequester(id string, client fosite.Client) fosite.Requester {
 		RequestedAudience: fosite.Arguments{},
 		GrantedAudience:   fosite.Arguments{},
 		Form:              make(url.Values),
-		Session:           session.New("test-subject", "", ""),
+		Session:           session.New("test-subject", "", "", session.UserClaims{}),
 	}
 }
 
 // newRedisTestRequesterWithExpiration creates a fosite.Request with a real session.Session
 // and a specific expiration time for the given token type.
 func newRedisTestRequesterWithExpiration(id string, client fosite.Client, tokenType fosite.TokenType, expiresAt time.Time) fosite.Requester {
-	sess := session.New("test-subject", "", "")
+	sess := session.New("test-subject", "", "", session.UserClaims{})
 	sess.SetExpiresAt(tokenType, expiresAt)
 	return &fosite.Request{
 		ID:                id,
@@ -383,7 +383,7 @@ func TestRedisStorage_SessionRoundTrip(t *testing.T) {
 			require.NoError(t, s.RegisterClient(ctx, client))
 
 			// Create a session with JWT claims and upstream session ID
-			sess := session.New("user-123", "upstream-session-456", "test-client")
+			sess := session.New("user-123", "upstream-session-456", "test-client", session.UserClaims{})
 			request := &fosite.Request{
 				ID:             "req-jwt",
 				RequestedAt:    time.Now(),
@@ -622,19 +622,24 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
-	t.Run("get expired tokens returns ErrExpired", func(t *testing.T) {
+	t.Run("get expired tokens returns ErrExpired with token data", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			// Store with an ExpiresAt that's already in the past.
-			// The TTL will be set to DefaultAccessTokenTTL, but the stored
-			// ExpiresAt will be checked and return ErrExpired.
+			// The TTL includes DefaultRefreshTokenTTL so the key survives
+			// past access token expiry, allowing refresh token retrieval.
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{
-				AccessToken: "expired-token", ExpiresAt: time.Now().Add(-time.Hour),
+				AccessToken:  "expired-token",
+				RefreshToken: "refresh-token",
+				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
 
 			retrieved, err := s.GetUpstreamTokens(ctx, "expired")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
-			assert.Nil(t, retrieved)
+			// Tokens should be returned alongside ErrExpired for refresh purposes
+			require.NotNil(t, retrieved)
+			assert.Equal(t, "expired-token", retrieved.AccessToken)
+			assert.Equal(t, "refresh-token", retrieved.RefreshToken)
 		})
 	})
 

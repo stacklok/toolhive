@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	types "github.com/stacklok/toolhive-core/registry/types"
 )
 
 // BaseProvider provides common implementation for registry providers
@@ -24,20 +24,62 @@ func NewBaseProvider(getRegistry func() (*types.Registry, error)) *BaseProvider 
 	}
 }
 
-// GetServer returns a specific server by name (container or remote)
+// GetServer returns a specific server by name (container or remote).
+// Supports both full reverse-DNS names (io.github.stacklok/osv) and
+// short names (osv) for backward compatibility.
 func (p *BaseProvider) GetServer(name string) (types.ServerMetadata, error) {
 	reg, err := p.GetRegistryFunc()
 	if err != nil {
 		return nil, err
 	}
 
-	// Use the registry's helper method
+	// Try exact match first
 	server, found := reg.GetServerByName(name)
-	if !found {
-		return nil, fmt.Errorf("server not found: %s", name)
+	if found {
+		return server, nil
 	}
 
-	return server, nil
+	// Fall back to short-name matching: check if name matches the last
+	// path component of any server's full reverse-DNS name.
+	// e.g. "osv" matches "io.github.stacklok/osv"
+	if !strings.Contains(name, "/") {
+		matches := findServersByShortName(reg, name)
+		if len(matches) == 1 {
+			return matches[0].server, nil
+		}
+		if len(matches) > 1 {
+			names := make([]string, len(matches))
+			for i, m := range matches {
+				names[i] = m.fullName
+			}
+			return nil, fmt.Errorf("multiple servers match '%s': %s — use the full name",
+				name, strings.Join(names, ", "))
+		}
+	}
+
+	return nil, fmt.Errorf("server not found: %s", name)
+}
+
+type shortNameMatch struct {
+	fullName string
+	server   types.ServerMetadata
+}
+
+// findServersByShortName returns all servers whose name ends with "/<shortName>".
+func findServersByShortName(reg *types.Registry, shortName string) []shortNameMatch {
+	suffix := "/" + shortName
+	var matches []shortNameMatch
+	for fullName, server := range reg.Servers {
+		if strings.HasSuffix(fullName, suffix) {
+			matches = append(matches, shortNameMatch{fullName, server})
+		}
+	}
+	for fullName, server := range reg.RemoteServers {
+		if strings.HasSuffix(fullName, suffix) {
+			matches = append(matches, shortNameMatch{fullName, server})
+		}
+	}
+	return matches
 }
 
 // SearchServers searches for servers matching the query (both container and remote)
@@ -78,57 +120,20 @@ func (p *BaseProvider) ListServers() ([]types.ServerMetadata, error) {
 	return reg.GetAllServers(), nil
 }
 
-// Legacy methods for backward compatibility
-
-// GetImageServer returns a specific container server by name (legacy method)
-func (p *BaseProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
-	server, err := p.GetServer(name)
-	if err != nil {
-		return nil, err
-	}
-
-	// Type assert to ImageMetadata
-	if img, ok := server.(*types.ImageMetadata); ok {
-		return img, nil
-	}
-
-	return nil, fmt.Errorf("server %s is not a container server", name)
+// ListAvailableSkills returns an empty slice by default.
+// Providers that support skills (local, remote) override this.
+func (*BaseProvider) ListAvailableSkills() ([]types.Skill, error) {
+	return nil, nil
 }
 
-// SearchImageServers searches for container servers matching the query (legacy method)
-func (p *BaseProvider) SearchImageServers(query string) ([]*types.ImageMetadata, error) {
-	servers, err := p.SearchServers(query)
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter to only container servers
-	var results []*types.ImageMetadata
-	for _, server := range servers {
-		if img, ok := server.(*types.ImageMetadata); ok {
-			results = append(results, img)
-		}
-	}
-
-	return results, nil
+// GetSkill returns nil for providers that don't support skills.
+func (*BaseProvider) GetSkill(_, _ string) (*types.Skill, error) {
+	return nil, nil
 }
 
-// ListImageServers returns all container servers (legacy method)
-func (p *BaseProvider) ListImageServers() ([]*types.ImageMetadata, error) {
-	servers, err := p.ListServers()
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter to only container servers
-	var results []*types.ImageMetadata
-	for _, server := range servers {
-		if img, ok := server.(*types.ImageMetadata); ok {
-			results = append(results, img)
-		}
-	}
-
-	return results, nil
+// SearchSkills returns nil for providers that don't support skills.
+func (*BaseProvider) SearchSkills(_ string) ([]types.Skill, error) {
+	return nil, nil
 }
 
 // matchesQuery checks if a server matches the search query

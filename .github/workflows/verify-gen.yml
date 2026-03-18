@@ -13,7 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        id: setup-go
         with:
           go-version-file: go.mod
           cache: true  # Cache go modules
@@ -23,9 +24,9 @@ jobs:
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
         with:
           path: ~/go/bin
-          key: ${{ runner.os }}-go-codegen-tools-${{ hashFiles('go.mod') }}-mockgen
+          key: ${{ runner.os }}-go-codegen-tools-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod') }}-mockgen
           restore-keys: |
-            ${{ runner.os }}-go-codegen-tools-
+            ${{ runner.os }}-go-codegen-tools-${{ steps.setup-go.outputs.go-version }}-
 
       - name: Install Task
         uses: arduino/setup-task@v2

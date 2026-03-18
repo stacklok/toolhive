@@ -19,9 +19,8 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/toolhive/pkg/container/docker"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MockHTTPProxy is a mock implementation of types.Proxy
@@ -117,8 +116,6 @@ func TestSanitizeJSONString(t *testing.T) {
 
 func TestParseAndForwardJSONRPC(t *testing.T) {
 	t.Parallel()
-	// Initialize logger for testing
-	logger.Initialize()
 
 	tests := []struct {
 		name          string
@@ -335,9 +332,6 @@ func testRetryConfig() *retryConfig {
 func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger
-	logger.Initialize()
-
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -403,9 +397,6 @@ func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
 
 func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -485,9 +476,6 @@ func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
 func TestProcessStdout_EOFWithContainerNotRunning(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger
-	logger.Initialize()
-
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -538,9 +526,6 @@ func TestProcessStdout_EOFWithContainerNotRunning(t *testing.T) {
 
 func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -616,9 +601,6 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 
 func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -702,9 +684,6 @@ func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 
 func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger
-	logger.Initialize()
 
 	tests := []struct {
 		name           string
@@ -799,9 +778,6 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 
 func TestConcurrentReattachment(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -915,9 +891,6 @@ func TestConcurrentReattachment(t *testing.T) {
 
 func TestStdinRaceCondition(t *testing.T) {
 	t.Parallel()
-
-	// Initialize logger
-	logger.Initialize()
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -1039,7 +1012,7 @@ func TestStdioTransport_ShouldRestart(t *testing.T) {
 		},
 		{
 			name:           "container removed - should not restart",
-			exitError:      docker.NewContainerError(docker.ErrContainerRemoved, "test", "Container removed"),
+			exitError:      rt.NewContainerError(rt.ErrContainerRemoved, "test", "Container removed"),
 			expectedResult: false,
 		},
 		{

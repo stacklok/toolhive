@@ -9,14 +9,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -56,17 +56,15 @@ type mcpRegistryClient struct {
 	userAgent      string
 }
 
-// NewClient creates a new MCP Registry API client
-func NewClient(baseURL string, allowPrivateIp bool) (Client, error) {
+// NewClient creates a new MCP Registry API client.
+// If tokenSource is non-nil, the HTTP client transport will be wrapped to inject
+// Bearer tokens into all requests.
+func NewClient(baseURL string, allowPrivateIp bool, tokenSource auth.TokenSource) (Client, error) {
 	// Build HTTP client with security controls
 	// If private IPs are allowed, also allow HTTP (for localhost testing)
-	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIp)
-	if allowPrivateIp {
-		builder = builder.WithInsecureAllowHTTP(true)
-	}
-	httpClient, err := builder.Build()
+	httpClient, err := buildHTTPClient(allowPrivateIp, tokenSource)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build HTTP client: %w", err)
+		return nil, err
 	}
 
 	// Ensure base URL doesn't have trailing slash
@@ -101,13 +99,12 @@ func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.Ser
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, newRegistryHTTPError(resp)
 	}
 
 	var serverResp v0.ServerResponse
@@ -196,13 +193,12 @@ func (c *mcpRegistryClient) fetchServersPage(
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, "", newRegistryHTTPError(resp)
 	}
 
 	var listResp v0.ServerListResponse
@@ -241,13 +237,12 @@ func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, newRegistryHTTPError(resp)
 	}
 
 	var listResp v0.ServerListResponse
@@ -281,7 +276,7 @@ func (c *mcpRegistryClient) ValidateEndpoint(ctx context.Context) error {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 

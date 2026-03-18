@@ -168,6 +168,47 @@ func TestCallbackHandler_Success(t *testing.T) {
 	assert.GreaterOrEqual(t, storState.idpTokenCount, 1)
 }
 
+func TestCallbackHandler_ScopeFiltering(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+
+	// The test client is registered with scopes ["openid", "profile", "email"].
+	// Create a pending authorization that includes an unregistered scope.
+	internalState := testInternalState
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "sneaky_admin"},
+		InternalState:        internalState,
+		UpstreamPKCEVerifier: "test-upstream-pkce-verifier-12345678901234567890",
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[internalState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	// Should redirect successfully with an authorization code
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "code=")
+	assert.NotContains(t, location, "error=")
+
+	// Inspect the stored auth code session to verify granted scopes.
+	// The mock CreateAuthorizeCodeSession stores the requester in storState.authCodeSessions.
+	require.NotEmpty(t, storState.authCodeSessions, "expected an auth code session to be stored")
+	for _, session := range storState.authCodeSessions {
+		granted := session.GetGrantedScopes()
+		assert.Contains(t, granted, "openid", "openid should be granted (registered on client)")
+		assert.NotContains(t, granted, "sneaky_admin", "sneaky_admin must NOT be granted (not registered on client)")
+	}
+}
+
 func TestCallbackHandler_NoIDPProvider(t *testing.T) {
 	t.Parallel()
 	handler, storState, _ := handlerTestSetup(t)

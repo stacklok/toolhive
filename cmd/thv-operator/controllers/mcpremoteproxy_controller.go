@@ -7,9 +7,11 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -19,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -29,12 +32,14 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
 type MCPRemoteProxyReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
+	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
@@ -43,7 +48,7 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -258,7 +263,7 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 		// Update the deployment spec but preserve replica count for HPA compatibility
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = newDeployment.Annotations
+		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
@@ -304,6 +309,7 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Service object")
 		}
 		service.Spec.Ports = newService.Spec.Ports
+		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
 		service.Labels = newService.Labels
 		service.Annotations = newService.Annotations
 
@@ -330,18 +336,213 @@ func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *
 
 // validateSpec validates the MCPRemoteProxy spec
 func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	if proxy.Spec.RemoteURL == "" {
-		return fmt.Errorf("remoteURL is required")
-	}
-
 	// Validate external auth config if referenced
 	if proxy.Spec.ExternalAuthConfigRef != nil {
 		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 		if err != nil {
-			return fmt.Errorf("failed to validate external auth config: %w", err)
+			return r.failValidation(proxy,
+				mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
+				fmt.Errorf("failed to validate external auth config: %w", err),
+			)
 		}
 		if externalAuthConfig == nil {
-			return fmt.Errorf("referenced MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name)
+			return r.failValidation(proxy,
+				mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
+				fmt.Errorf("referenced MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name),
+			)
+		}
+	}
+
+	// Validate remote URL format (also rejects empty URLs)
+	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL); err != nil {
+		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err)
+	}
+
+	// Validate OIDC issuer URL scheme
+	if err := r.validateOIDCIssuerURL(proxy); err != nil {
+		reason := mcpv1alpha1.ConditionReasonOIDCIssuerInvalid
+		if strings.Contains(err.Error(), "HTTP scheme") {
+			reason = mcpv1alpha1.ConditionReasonOIDCIssuerInsecure
+		}
+		return r.failValidation(proxy, reason, err)
+	}
+
+	// Validate JWKS URL format
+	if err := r.validateJWKSURL(proxy); err != nil {
+		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err)
+	}
+
+	// Validate inline Cedar policy syntax
+	if err := r.validateAuthzPolicySyntax(proxy); err != nil {
+		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err)
+	}
+
+	// Validate Kubernetes resource references (ConfigMaps, Secrets)
+	if err := r.validateK8sRefs(ctx, proxy); err != nil {
+		return err
+	}
+
+	// All validations passed
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeConfigurationValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonConfigurationValid,
+		Message:            "All configuration validations passed",
+		ObservedGeneration: proxy.Generation,
+	})
+
+	return nil
+}
+
+// failValidation records a validation event, sets the ConfigurationValid condition to False,
+// and returns the error. This consolidates the repeated validate → event → condition → return pattern.
+func (r *MCPRemoteProxyReconciler) failValidation(proxy *mcpv1alpha1.MCPRemoteProxy, reason string, err error) error {
+	r.recordValidationEvent(proxy, reason, err.Error())
+	setConfigurationInvalidCondition(proxy, reason, err.Error())
+	return err
+}
+
+// recordValidationEvent emits a Warning event for a validation failure.
+func (r *MCPRemoteProxyReconciler) recordValidationEvent(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(proxy, nil, corev1.EventTypeWarning, reason, "ValidateSpec", message)
+	}
+}
+
+// setConfigurationInvalidCondition sets the ConfigurationValid condition to False.
+func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeConfigurationValid,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: proxy.Generation,
+	})
+}
+
+// validateOIDCIssuerURL validates the OIDC issuer URL scheme.
+func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	oidcConfig := proxy.Spec.OIDCConfig
+
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		if oidcConfig.Inline != nil {
+			return validation.ValidateOIDCIssuerURL(oidcConfig.Inline.Issuer, oidcConfig.Inline.InsecureAllowHTTP)
+		}
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		if oidcConfig.Kubernetes != nil && oidcConfig.Kubernetes.Issuer != "" {
+			// Kubernetes OIDC issuers must always use HTTPS
+			return validation.ValidateOIDCIssuerURL(oidcConfig.Kubernetes.Issuer, false)
+		}
+	}
+	return nil
+}
+
+// validateJWKSURL validates the JWKS URL scheme in the OIDC config.
+func (*MCPRemoteProxyReconciler) validateJWKSURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	oidcConfig := proxy.Spec.OIDCConfig
+
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		if oidcConfig.Inline != nil {
+			return validation.ValidateJWKSURL(oidcConfig.Inline.JWKSURL)
+		}
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		if oidcConfig.Kubernetes != nil {
+			return validation.ValidateJWKSURL(oidcConfig.Kubernetes.JWKSURL)
+		}
+	}
+	return nil
+}
+
+// validateAuthzPolicySyntax validates inline Cedar authorization policy syntax.
+func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) error {
+	if proxy.Spec.AuthzConfig == nil ||
+		proxy.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
+		proxy.Spec.AuthzConfig.Inline == nil {
+		return nil
+	}
+	return validation.ValidateCedarPolicies(proxy.Spec.AuthzConfig.Inline.Policies)
+}
+
+// validateK8sRefs validates that referenced ConfigMaps and Secrets exist.
+func (r *MCPRemoteProxyReconciler) validateK8sRefs(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) error {
+	// Check authz ConfigMap reference
+	if proxy.Spec.AuthzConfig != nil &&
+		proxy.Spec.AuthzConfig.Type == mcpv1alpha1.AuthzConfigTypeConfigMap &&
+		proxy.Spec.AuthzConfig.ConfigMap != nil {
+		cm := &corev1.ConfigMap{}
+		cmName := proxy.Spec.AuthzConfig.ConfigMap.Name
+		err := r.Get(ctx, types.NamespacedName{
+			Name: cmName, Namespace: proxy.Namespace,
+		}, cm)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				msg := fmt.Sprintf(
+					"authorization ConfigMap %q not found in namespace %q",
+					cmName, proxy.Namespace,
+				)
+				r.recordValidationEvent(
+					proxy,
+					mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+					msg,
+				)
+				setConfigurationInvalidCondition(
+					proxy,
+					mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+					msg,
+				)
+				return stderrors.New(msg)
+			}
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to fetch authorization ConfigMap", "name", cmName, "namespace", proxy.Namespace)
+			genericMsg := fmt.Sprintf("failed to fetch authorization ConfigMap %q", cmName)
+			r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
+			setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
+			return stderrors.New(genericMsg)
+		}
+	}
+
+	// Check header Secret references
+	if proxy.Spec.HeaderForward != nil {
+		for _, headerRef := range proxy.Spec.HeaderForward.AddHeadersFromSecret {
+			if headerRef.ValueSecretRef == nil {
+				continue
+			}
+			secret := &corev1.Secret{}
+			secretName := headerRef.ValueSecretRef.Name
+			err := r.Get(ctx, types.NamespacedName{
+				Name: secretName, Namespace: proxy.Namespace,
+			}, secret)
+			if err != nil {
+				if errors.IsNotFound(err) {
+					msg := fmt.Sprintf(
+						"secret %q referenced for header %q not found in namespace %q",
+						secretName, headerRef.HeaderName, proxy.Namespace,
+					)
+					r.recordValidationEvent(
+						proxy,
+						mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+						msg,
+					)
+					setConfigurationInvalidCondition(
+						proxy,
+						mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+						msg,
+					)
+					return stderrors.New(msg)
+				}
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to fetch secret", "name", secretName, "namespace", proxy.Namespace)
+				genericMsg := fmt.Sprintf("failed to fetch secret %q for header %q", secretName, headerRef.HeaderName)
+				r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, genericMsg)
+				setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, genericMsg)
+				return stderrors.New(genericMsg)
+			}
 		}
 	}
 
@@ -768,7 +969,7 @@ func (*MCPRemoteProxyReconciler) deploymentMetadataNeedsUpdate(
 		return true
 	}
 
-	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, deployment.Annotations) {
 		return true
 	}
 
@@ -808,6 +1009,17 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1alpha1.MCPRemoteProxy) bool {
 	// Check if port has changed
 	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != int32(proxy.GetProxyPort()) {
+		return true
+	}
+
+	// Check if session affinity has drifted from spec
+	expectedAffinity := func() corev1.ServiceAffinity {
+		if proxy.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(proxy.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+	if service.Spec.SessionAffinity != expectedAffinity {
 		return true
 	}
 

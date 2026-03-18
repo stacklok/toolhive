@@ -7,17 +7,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -73,13 +73,13 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 
 	// Save the workload state
 	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
+		slog.Error("failed to save workload config", "error", err)
 		return nil, fmt.Errorf("failed to save workload config: %w", err)
 	}
 
 	// Start workload
 	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
-		logger.Errorf("Failed to start workload: %v", err)
+		slog.Error("failed to start workload", "error", err)
 		return nil, fmt.Errorf("failed to start workload: %w", err)
 	}
 
@@ -91,7 +91,7 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 	// If ProxyPort is 0, reuse the existing port
 	if req.ProxyPort == 0 && existingPort > 0 {
 		req.ProxyPort = existingPort
-		logger.Debugf("Reusing existing port %d for workload %s", existingPort, name)
+		slog.Debug("reusing existing port", "port", existingPort, "name", name)
 	}
 
 	// Build the full run config
@@ -162,6 +162,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 	var imageURL string
 	var imageMetadata *regtypes.ImageMetadata
 	var serverMetadata regtypes.ServerMetadata
+	var registryProxyPort int
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
@@ -192,7 +193,12 @@ func (s *WorkloadService) BuildFullRunConfig(
 			return nil, fmt.Errorf("failed to retrieve MCP server image: %w", err)
 		}
 
-		if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok {
+		if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok && remoteServerMetadata != nil {
+			// Use registry proxy port if not set by request
+			if req.ProxyPort == 0 && remoteServerMetadata.ProxyPort > 0 {
+				registryProxyPort = remoteServerMetadata.ProxyPort
+			}
+
 			if remoteServerMetadata.OAuthConfig != nil {
 				// Default resource: user-provided > registry metadata > derived from remote URL
 				resource := req.OAuthConfig.Resource
@@ -228,8 +234,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 				}
 			}
 		}
-		// Handle server metadata - API only supports container servers
-		imageMetadata, _ = serverMetadata.(*regtypes.ImageMetadata)
+		// Handle server metadata - API only supports container servers.
+		// Use type assertion with nil check to guard against typed nil pointers.
+		if md, ok := serverMetadata.(*regtypes.ImageMetadata); ok && md != nil {
+			imageMetadata = md
+		}
 	}
 
 	// Build RunConfig
@@ -282,6 +291,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 	}
 
+	// Use registry proxy port for remote servers if not set by request
+	if registryProxyPort > 0 {
+		options = append(options, runner.WithRegistryProxyPort(registryProxyPort))
+	}
+
 	// Add existing port if provided (for update operations)
 	if existingPort > 0 {
 		options = append(options, runner.WithExistingPort(existingPort))
@@ -291,8 +305,10 @@ func (s *WorkloadService) BuildFullRunConfig(
 	transportType := "streamable-http"
 	if req.Transport != "" {
 		transportType = req.Transport
-	} else if serverMetadata != nil {
-		transportType = serverMetadata.GetTransport()
+	} else if md, ok := serverMetadata.(*regtypes.ImageMetadata); ok && md != nil {
+		if t := md.GetTransport(); t != "" {
+			transportType = t
+		}
 	}
 
 	// Configure middleware from flags
@@ -314,7 +330,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 
 	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{}, options...)
 	if err != nil {
-		logger.Errorf("Failed to build run config: %v", err)
+		slog.Error("failed to build run config", "error", err)
 		return nil, fmt.Errorf("%w: Failed to build run config: %w", retriever.ErrInvalidRunConfig, err)
 	}
 

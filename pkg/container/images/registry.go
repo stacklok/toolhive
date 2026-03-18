@@ -71,7 +71,7 @@ func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) 
 // PullImage pulls an image from a registry and saves it to the local daemon
 func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) error {
 	//nolint:gosec // G706: image name from user/config input
-	slog.Info("Pulling image", "image", imageName)
+	slog.Info("pulling image", "image", imageName)
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageName)
@@ -247,7 +247,7 @@ func createTarFromDir(srcDir string, writer io.Writer) error {
 		// If it's a regular file, write the contents
 		if !info.IsDir() {
 			// #nosec G304 - This is safe because we're only opening files within the specified context directory
-			file, err := os.Open(path)
+			file, err := os.Open(path) //nolint:gosec // G122 - path from filepath.Walk within validated source directory
 			if err != nil {
 				return fmt.Errorf("failed to open file: %w", err)
 			}

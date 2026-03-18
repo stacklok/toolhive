@@ -6,11 +6,11 @@ package middleware
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -22,7 +22,7 @@ func CreateTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.Middle
 			if tokenSource != nil {
 				token, err := tokenSource.Token()
 				if err != nil {
-					logger.Warnf("Unable to retrieve OAuth token: %v", err)
+					slog.Warn("unable to retrieve OAuth token", "error", err)
 					// The token source (AuthenticatedTokenSource) handles marking
 					// the workload as unauthenticated in its Token() method
 					http.Error(w, "Authentication required", http.StatusUnauthorized)

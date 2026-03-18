@@ -16,15 +16,10 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 const testWorkloadName = "test-workload"
-
-func init() {
-	logger.Initialize()
-}
 
 //nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestNewStatusManagerFromRuntime(t *testing.T) {

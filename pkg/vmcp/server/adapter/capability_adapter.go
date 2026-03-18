@@ -6,12 +6,13 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 // CapabilityAdapter converts aggregator domain models to SDK types.
@@ -55,7 +56,7 @@ func (a *CapabilityAdapter) ToSDKTools(tools []vmcp.Tool) ([]server.ServerTool, 
 		// Marshal schema to JSON
 		schemaJSON, err := json.Marshal(tool.InputSchema)
 		if err != nil {
-			logger.Warnw("failed to marshal tool schema",
+			slog.Warn("failed to marshal tool schema",
 				"tool", tool.Name,
 				"error", err)
 			return nil, fmt.Errorf("failed to marshal schema for tool %s: %w", tool.Name, err)
@@ -64,13 +65,25 @@ func (a *CapabilityAdapter) ToSDKTools(tools []vmcp.Tool) ([]server.ServerTool, 
 		// Create handler via factory
 		handler := a.handlerFactory.CreateToolHandler(tool.Name)
 
-		// Create SDK tool
+		// Create SDK tool with annotations and output schema
+		sdkTool := mcp.Tool{
+			Name:           tool.Name,
+			Description:    tool.Description,
+			RawInputSchema: schemaJSON,
+			Annotations:    conversion.ToMCPToolAnnotations(tool.Annotations),
+		}
+		if tool.OutputSchema != nil {
+			outputSchemaJSON, marshalErr := json.Marshal(tool.OutputSchema)
+			if marshalErr != nil {
+				slog.Warn("failed to marshal tool output schema",
+					"tool", tool.Name, "error", marshalErr)
+			} else {
+				sdkTool.RawOutputSchema = outputSchemaJSON
+			}
+		}
+
 		sdkTools = append(sdkTools, server.ServerTool{
-			Tool: mcp.Tool{
-				Name:           tool.Name,
-				Description:    tool.Description,
-				RawInputSchema: schemaJSON,
-			},
+			Tool:    sdkTool,
 			Handler: handler,
 		})
 	}
@@ -178,7 +191,7 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 		// Get workflow executor for this tool
 		executor, exists := workflowExecutors[tool.Name]
 		if !exists {
-			logger.Warnw("workflow executor not found for composite tool",
+			slog.Warn("workflow executor not found for composite tool",
 				"tool", tool.Name)
 			return nil, fmt.Errorf("workflow executor not found for composite tool: %s", tool.Name)
 		}
@@ -186,7 +199,7 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 		// Marshal schema to JSON
 		schemaJSON, err := json.Marshal(tool.InputSchema)
 		if err != nil {
-			logger.Warnw("failed to marshal composite tool schema",
+			slog.Warn("failed to marshal composite tool schema",
 				"tool", tool.Name,
 				"error", err)
 			return nil, fmt.Errorf("failed to marshal schema for composite tool %s: %w", tool.Name, err)
@@ -195,13 +208,25 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 		// Create handler via factory (uses composite tool handler instead of backend router)
 		handler := a.handlerFactory.CreateCompositeToolHandler(tool.Name, executor)
 
-		// Create SDK tool
+		// Create SDK tool with annotations and output schema
+		sdkTool := mcp.Tool{
+			Name:           tool.Name,
+			Description:    tool.Description,
+			RawInputSchema: schemaJSON,
+			Annotations:    conversion.ToMCPToolAnnotations(tool.Annotations),
+		}
+		if tool.OutputSchema != nil {
+			outputSchemaJSON, marshalErr := json.Marshal(tool.OutputSchema)
+			if marshalErr != nil {
+				slog.Warn("failed to marshal composite tool output schema",
+					"tool", tool.Name, "error", marshalErr)
+			} else {
+				sdkTool.RawOutputSchema = outputSchemaJSON
+			}
+		}
+
 		sdkTools = append(sdkTools, server.ServerTool{
-			Tool: mcp.Tool{
-				Name:           tool.Name,
-				Description:    tool.Description,
-				RawInputSchema: schemaJSON,
-			},
+			Tool:    sdkTool,
 			Handler: handler,
 		})
 	}

@@ -7,7 +7,8 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"maps"
 	"reflect"
@@ -21,9 +22,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -45,7 +47,29 @@ const (
 	OutgoingAuthSourceDiscovered = "discovered"
 	// OutgoingAuthSourceInline indicates that auth configs should be explicitly specified
 	OutgoingAuthSourceInline = "inline"
+
+	// Auth config error context constants
+	authContextDefault          = "default"
+	authContextBackendPrefix    = "backend:"
+	authContextDiscoveredPrefix = "discovered:"
 )
+
+// AuthConfigError represents a single auth config conversion failure.
+// It captures context about which auth config failed and why, allowing the controller
+// to continue in degraded mode while exposing the failure via status conditions.
+//
+// Context patterns:
+//   - "default": Default auth config (OutgoingAuth.Default)
+//   - "backend:<name>": Inline backend-specific config (OutgoingAuth.Backends[name])
+//   - "discovered:<name>": Discovered from MCPServer/MCPRemoteProxy ExternalAuthConfigRef
+type AuthConfigError struct {
+	// Context describes where the error occurred: "default", "backend:<name>", or "discovered:<name>"
+	Context string
+	// BackendName is the backend name (empty for default auth config)
+	BackendName string
+	// Error is the underlying error that occurred during conversion
+	Error error
+}
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
 //
@@ -63,7 +87,7 @@ const (
 type VirtualMCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	Recorder         record.EventRecorder
+	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
@@ -75,13 +99,15 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpcompositetooldefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -103,46 +129,29 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
-	// Validate spec configuration early
-	if err := r.validateSpec(ctx, vmcp, statusManager); err != nil {
-		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
-	}
-
-	// Validate PodTemplateSpec early - before other validations
-	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp, statusManager) {
-		// Invalid PodTemplateSpec - apply status updates and return without error to avoid infinite retries
-		// The user must fix the spec and the next reconciliation will retry
-		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
-			ctxLogger.Error(err, "Failed to apply status updates after PodTemplateSpec validation error")
-		}
+	// Run all pre-reconciliation validations.
+	// Returns (true, nil) to continue, (false, nil) when validation failed but
+	// should not requeue (user must fix spec), or (false, err) for transient errors
+	// that should trigger requeue.
+	if cont, err := r.runValidations(ctx, vmcp, statusManager); err != nil {
+		return ctrl.Result{}, err
+	} else if !cont {
 		return ctrl.Result{}, nil
 	}
 
-	// Validate GroupRef
-	if err := r.validateGroupRef(ctx, vmcp, statusManager); err != nil {
-		// Apply status changes before returning error
-		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
-			ctxLogger.Error(err, "Failed to apply status updates after GroupRef validation error")
-		}
-		return ctrl.Result{}, err
-	}
-
-	// Validate CompositeToolRefs
-	if err := r.validateCompositeToolRefs(ctx, vmcp, statusManager); err != nil {
-		// Apply status changes before returning error
-		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
-			ctxLogger.Error(err, "Failed to apply status updates after CompositeToolRefs validation error")
-		}
-		return ctrl.Result{}, err
-	}
-
 	// Ensure all resources
-	if err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
+	if result, err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
 		// Apply status changes before returning error
-		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
-			ctxLogger.Error(err, "Failed to apply status updates after resource reconciliation error")
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates after resource reconciliation error")
 		}
 		return ctrl.Result{}, err
+	} else if result.RequeueAfter > 0 {
+		// Apply status changes before returning requeue (e.g., waiting for EmbeddingServer)
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates before requeue")
+		}
+		return result, nil
 	}
 
 	// Backend discovery and health reporting is now delegated to the vMCP runtime (StatusReporter).
@@ -256,6 +265,63 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 	}
 
 	return nil
+}
+
+// runValidations runs all pre-reconciliation validations (PodTemplateSpec, GroupRef,
+// CompositeToolRefs, EmbeddingServerRef).
+// Returns (true, nil) to continue reconciliation.
+// Returns (false, nil) for spec validation errors that should NOT trigger requeue
+// (user must fix the spec; next reconciliation is triggered by spec changes).
+// Returns (false, error) for transient errors that should trigger requeue.
+func (r *VirtualMCPServerReconciler) runValidations(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) (bool, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate spec configuration early (schema-level validation from types.go).
+	// Don't requeue on validation errors — user must fix spec.
+	if err := r.validateSpec(ctx, vmcp, statusManager); err != nil {
+		return false, nil
+	}
+
+	// Validate PodTemplateSpec early - before other validations.
+	// Don't requeue — user must fix the PodTemplateSpec.
+	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp, statusManager) {
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after PodTemplateSpec validation error")
+		}
+		return false, nil
+	}
+
+	// Validate GroupRef
+	if err := r.validateGroupRef(ctx, vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates after GroupRef validation error")
+		}
+		return false, err
+	}
+
+	// Validate CompositeToolRefs
+	if err := r.validateCompositeToolRefs(ctx, vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates after CompositeToolRefs validation error")
+		}
+		return false, err
+	}
+
+	// Validate EmbeddingServerRef (when using reference mode)
+	if vmcp.Spec.EmbeddingServerRef != nil {
+		if err := r.validateEmbeddingServerRef(ctx, vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				ctxLogger.Error(applyErr, "Failed to apply status updates after EmbeddingServerRef validation error")
+			}
+			return false, err
+		}
+	}
+
+	return true, nil
 }
 
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
@@ -417,7 +483,7 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "InvalidPodTemplateSpec", "ValidatePodTemplateSpec",
 				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
 		}
 
@@ -448,12 +514,14 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 	return true
 }
 
-// ensureAllResources ensures all Kubernetes resources for the VirtualMCPServer
+// ensureAllResources ensures all Kubernetes resources for the VirtualMCPServer.
+// Returns a ctrl.Result with RequeueAfter when the controller should retry later
+// (e.g., waiting for EmbeddingServer readiness), and an error for failures.
 func (r *VirtualMCPServerReconciler) ensureAllResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) error {
+) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	// Validate secret references before creating resources
@@ -469,10 +537,10 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Record event for secret validation failure
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "SecretValidationFailed",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "SecretValidationFailed", "ValidateSecrets",
 				"Secret validation failed: %v", err)
 		}
-		return err
+		return ctrl.Result{}, err
 	}
 
 	// Authentication secrets validated successfully
@@ -483,6 +551,34 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
+	// Check EmbeddingServer readiness before proceeding to Deployment.
+	// RequeueAfter provides a safety net in case the Watches() events
+	// are missed (e.g., EmbeddingServer controller not running).
+	esURL, err := r.isEmbeddingServerReady(ctx, vmcp)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// EmbeddingServer is configured but not yet ready — requeue
+	if esURL == nil && vmcp.Spec.EmbeddingServerRef != nil {
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
+		statusManager.SetMessage("Waiting for EmbeddingServer to become ready")
+		statusManager.SetEmbeddingServerReadyCondition(
+			mcpv1alpha1.ConditionReasonEmbeddingServerNotReady,
+			"EmbeddingServer is not yet ready",
+			metav1.ConditionFalse,
+		)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	// If an embedding server is configured and ready, set the condition
+	if esURL != nil {
+		statusManager.SetEmbeddingServerReadyCondition(
+			mcpv1alpha1.ConditionReasonEmbeddingServerReady,
+			"EmbeddingServer is ready",
+			metav1.ConditionTrue,
+		)
+	}
+
 	// List workloads once and pass to functions that need them
 	// This ensures consistency - all functions use the same workload list
 	// rather than listing at different times which could yield different results
@@ -490,38 +586,44 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.Config.Group)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list workloads in group")
-		return fmt.Errorf("failed to list workloads in group: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to list workloads in group: %w", err)
 	}
 
 	// Ensure RBAC resources
 	if err := r.ensureRBACResources(ctx, vmcp); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
-		return err
+		return ctrl.Result{}, err
+	}
+
+	// Ensure HMAC secret for session token binding (Session Management V2)
+	if err := r.ensureHMACSecret(ctx, vmcp); err != nil {
+		ctxLogger.Error(err, "Failed to ensure HMAC secret")
+		return ctrl.Result{}, err
 	}
 
 	// Ensure vmcp Config ConfigMap
-	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames); err != nil {
+	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
-		return err
+		return ctrl.Result{}, err
 	}
 
 	// Ensure Deployment
 	if result, err := r.ensureDeployment(ctx, vmcp, workloadNames); err != nil {
-		return err
+		return ctrl.Result{}, err
 	} else if result.RequeueAfter > 0 {
-		return nil
+		return result, nil
 	}
 
 	// Ensure Service
 	if result, err := r.ensureService(ctx, vmcp); err != nil {
-		return err
+		return ctrl.Result{}, err
 	} else if result.RequeueAfter > 0 {
-		return nil
+		return result, nil
 	}
 
 	// Update service URL in status
 	r.ensureServiceURL(vmcp, statusManager)
-	return nil
+	return ctrl.Result{}, nil
 }
 
 // ensureRBACResources ensures RBAC resources for VirtualMCPServer.
@@ -565,6 +667,156 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 		Owner:     vmcp,
 	})
 	return err
+}
+
+// ensureHMACSecret ensures the HMAC secret exists for session token binding.
+// This secret is required when Session Management V2 is enabled.
+// The secret is automatically generated with a cryptographically secure random value.
+//
+// The secret follows this naming pattern: {vmcp-name}-hmac-secret
+// and contains a single key: hmac-secret with a 32-byte base64-encoded random value.
+func (r *VirtualMCPServerReconciler) ensureHMACSecret(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	secretName := fmt.Sprintf("%s-hmac-secret", vmcp.Name)
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: vmcp.Namespace}, secret)
+
+	if errors.IsNotFound(err) {
+		// Generate a cryptographically secure 32-byte HMAC secret
+		hmacSecret, err := generateHMACSecret()
+		if err != nil {
+			ctxLogger.Error(err, "Failed to generate HMAC secret")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "HMACSecretGenerationFailed", "GenerateHMACSecret",
+					"Failed to generate HMAC secret: %v", err)
+			}
+			return fmt.Errorf("failed to generate HMAC secret: %w", err)
+		}
+
+		newSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: vmcp.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":       "virtualmcpserver",
+					"app.kubernetes.io/instance":   vmcp.Name,
+					"app.kubernetes.io/component":  "session-security",
+					"app.kubernetes.io/managed-by": "toolhive-operator",
+				},
+				Annotations: map[string]string{
+					"toolhive.stacklok.dev/purpose": "hmac-secret-for-session-token-binding",
+				},
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: map[string][]byte{
+				"hmac-secret": []byte(hmacSecret),
+			},
+		}
+
+		// Set VirtualMCPServer as owner so secret is automatically deleted when VMCP is deleted
+		if err := controllerutil.SetControllerReference(vmcp, newSecret, r.Scheme); err != nil {
+			ctxLogger.Error(err, "Failed to set controller reference for HMAC secret")
+			return fmt.Errorf("failed to set controller reference: %w", err)
+		}
+
+		ctxLogger.Info("Creating HMAC secret for session token binding", "Secret.Name", secretName)
+		if err := r.Create(ctx, newSecret); err != nil {
+			ctxLogger.Error(err, "Failed to create HMAC secret")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "HMACSecretCreationFailed", "CreateHMACSecret",
+					"Failed to create HMAC secret: %v", err)
+			}
+			return fmt.Errorf("failed to create HMAC secret: %w", err)
+		}
+
+		// Record success event
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "HMACSecretCreated", "CreateHMACSecret",
+				"HMAC secret created for session token binding")
+		}
+		return nil
+	} else if err != nil {
+		ctxLogger.Error(err, "Failed to get HMAC secret")
+		return fmt.Errorf("failed to get HMAC secret: %w", err)
+	}
+
+	// Secret exists - validate ownership and structure before accepting it
+	if err := r.validateHMACSecret(ctx, vmcp, secret); err != nil {
+		ctxLogger.Error(err, "Existing HMAC secret is invalid", "Secret.Name", secretName)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "HMACSecretValidationFailed", "ValidateHMACSecret",
+				"Existing HMAC secret validation failed: %v", err)
+		}
+		return fmt.Errorf("existing HMAC secret validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateHMACSecret validates that an existing HMAC secret has the correct ownership,
+// structure, and content. This prevents accepting stale, malformed, or attacker-controlled
+// secrets that could weaken session token signing or cause pod startup failures.
+func (*VirtualMCPServerReconciler) validateHMACSecret(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	secret *corev1.Secret,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Verify the secret is owned by this VirtualMCPServer
+	// This prevents accepting secrets created by other actors
+	isOwned := false
+	for _, ownerRef := range secret.OwnerReferences {
+		if ownerRef.UID == vmcp.UID &&
+			ownerRef.Kind == "VirtualMCPServer" &&
+			ownerRef.Name == vmcp.Name {
+			isOwned = true
+			break
+		}
+	}
+	if !isOwned {
+		return fmt.Errorf("secret is not owned by VirtualMCPServer %s/%s", vmcp.Namespace, vmcp.Name)
+	}
+
+	// Verify the hmac-secret key exists
+	hmacSecretData, exists := secret.Data["hmac-secret"]
+	if !exists {
+		return fmt.Errorf("secret missing required 'hmac-secret' key")
+	}
+
+	// Verify it's valid base64 and decodes to exactly 32 bytes
+	hmacSecretBase64 := string(hmacSecretData)
+	if hmacSecretBase64 == "" {
+		return fmt.Errorf("hmac-secret is empty")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(hmacSecretBase64)
+	if err != nil {
+		return fmt.Errorf("hmac-secret is not valid base64: %w", err)
+	}
+
+	if len(decoded) != 32 {
+		return fmt.Errorf("hmac-secret must be exactly 32 bytes, got %d bytes", len(decoded))
+	}
+
+	// Verify it's not all zeros (would indicate a weak/predictable key)
+	allZeros := true
+	for _, b := range decoded {
+		if b != 0 {
+			allZeros = false
+			break
+		}
+	}
+	if allZeros {
+		return fmt.Errorf("hmac-secret is all zeros (weak key)")
+	}
+
+	ctxLogger.V(1).Info("HMAC secret validation passed", "Secret.Name", secret.Name)
+	return nil
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.
@@ -645,14 +897,14 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 			ctxLogger.Error(err, "Failed to create new Deployment")
 			// Record event for deployment creation failure
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "DeploymentCreationFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentCreationFailed", "CreateDeployment",
 					"Failed to create Deployment: %v", err)
 			}
 			return ctrl.Result{}, err
 		}
 		// Record event for successful deployment creation
 		if r.Recorder != nil {
-			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentCreated",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentCreated", "CreateDeployment",
 				"Deployment created successfully")
 		}
 		// Return empty result to continue with rest of reconciliation (Service, status update, etc.)
@@ -682,14 +934,14 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = newDeployment.Annotations
+		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment")
 			// Record event for deployment update failure
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "DeploymentUpdateFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentUpdateFailed", "UpdateDeployment",
 					"Failed to update Deployment: %v", err)
 			}
 			// Return error to trigger reconcile retry (handles transient failures and conflicts)
@@ -697,7 +949,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		}
 		// Record event for successful deployment update (config change triggers rollout)
 		if r.Recorder != nil {
-			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentUpdated",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentUpdated", "UpdateDeployment",
 				"Deployment updated, rolling out new configuration")
 		}
 		// Return empty result to continue with rest of reconciliation
@@ -731,14 +983,14 @@ func (r *VirtualMCPServerReconciler) ensureService(
 			ctxLogger.Error(err, "Failed to create new Service")
 			// Record event for service creation failure
 			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "ServiceCreationFailed",
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "ServiceCreationFailed", "CreateService",
 					"Failed to create Service: %v", err)
 			}
 			return ctrl.Result{}, err
 		}
 		// Record event for successful service creation
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "ServiceCreated",
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "ServiceCreated", "CreateService",
 				"Service %s created successfully", serviceName)
 		}
 		// Return empty result to continue with rest of reconciliation
@@ -766,6 +1018,7 @@ func (r *VirtualMCPServerReconciler) ensureService(
 		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.Type = newService.Spec.Type
+		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
 		service.Labels = newService.Labels
 		service.Annotations = newService.Annotations
 
@@ -927,51 +1180,37 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
-// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed
-// This method compares the current deployment against a freshly generated deployment
-// that includes the PodTemplateSpec customizations.
-func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed.
+// Instead of comparing full rendered templates (which always differ due to Kubernetes-defaulted
+// fields like terminationGracePeriodSeconds, dnsPolicy, etc.), this compares a SHA256 hash of
+// the raw PodTemplateSpec input stored as a deployment annotation.
+func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	typedWorkloads []workloads.TypedWorkload,
+	_ []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
 	}
 
-	// If no PodTemplateSpec is provided, no update needed
+	// If no PodTemplateSpec is provided, update is only needed if one was previously applied
 	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
-		return false
+		_, hadPrevious := deployment.Annotations[podTemplateSpecHashAnnotation]
+		return hadPrevious
 	}
 
-	// Get the vmcp config checksum
-	vmcpConfigChecksum, err := r.getVmcpConfigChecksum(ctx, vmcp)
+	// Compare hash of the raw PodTemplateSpec input against the stored annotation.
+	// Avoids comparing full rendered templates which always differ due to
+	// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.).
+	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
+	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
 	if err != nil {
-		// If we can't get the checksum, assume update is needed
+		// If we can't hash, assume update is needed
+		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
 		return true
 	}
-
-	// Generate a fresh deployment with PodTemplateSpec applied
-	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
-	if expectedDeployment == nil {
-		// If we can't generate expected deployment, assume update is needed
-		return true
-	}
-
-	// Compare the pod template specs
-	currentJSON, err := json.Marshal(deployment.Spec.Template)
-	if err != nil {
-		return true
-	}
-
-	expectedJSON, err := json.Marshal(expectedDeployment.Spec.Template)
-	if err != nil {
-		return true
-	}
-
-	// If the JSON representations differ, an update is needed
-	return string(currentJSON) != string(expectedJSON)
+	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated
@@ -994,6 +1233,17 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		expectedServiceType = corev1.ServiceType(vmcp.Spec.ServiceType)
 	}
 	if service.Spec.Type != expectedServiceType {
+		return true
+	}
+
+	// Check if session affinity has drifted from spec
+	expectedAffinity := func() corev1.ServiceAffinity {
+		if vmcp.Spec.SessionAffinity != "" {
+			return corev1.ServiceAffinity(vmcp.Spec.SessionAffinity)
+		}
+		return corev1.ServiceAffinityClientIP
+	}()
+	if service.Spec.SessionAffinity != expectedAffinity {
 		return true
 	}
 
@@ -1414,25 +1664,29 @@ func (r *VirtualMCPServerReconciler) listMCPRemoteProxiesAsMap(
 	return mcpRemoteProxyMap, nil
 }
 
-// discovers ExternalAuthConfig from workloads and adds them to the outgoing config
+// discoverExternalAuthConfigs discovers ExternalAuthConfig from workloads and adds them to the outgoing config.
+// Returns a list of non-fatal errors that should be reported via status conditions.
+// The controller should continue in degraded mode even if some auth configs fail.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
 	outgoing *vmcpconfig.OutgoingAuthConfig,
-) {
+) ([]string, []AuthConfigError) {
 	ctxLogger := log.FromContext(ctx)
+	var authErrors []AuthConfigError
+	var backendsWithAuthConfig []string
 
 	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list MCPServers")
-		return
+		return backendsWithAuthConfig, authErrors
 	}
 
 	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list MCPRemoteProxies")
-		return
+		return backendsWithAuthConfig, authErrors
 	}
 
 	for _, workloadInfo := range typedWorkloads {
@@ -1442,24 +1696,37 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			continue
 		}
 
+		// Track that this backend has an auth config (will attempt discovery)
+		backendsWithAuthConfig = append(backendsWithAuthConfig, workloadInfo.Name)
+
 		// Fetch the MCPExternalAuthConfig
 		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
 			ctx, r.Client, vmcp.Namespace, externalAuthConfigName)
 		if err != nil {
-			ctxLogger.V(1).Info("Failed to get MCPExternalAuthConfig for backend, skipping",
+			ctxLogger.V(1).Info("Failed to get MCPExternalAuthConfig for backend",
 				"backend", workloadInfo.Name,
 				"externalAuthConfig", externalAuthConfigName,
 				"error", err)
+			authErrors = append(authErrors, AuthConfigError{
+				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
+				BackendName: workloadInfo.Name,
+				Error:       fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", externalAuthConfigName, err),
+			})
 			continue
 		}
 
 		// Convert MCPExternalAuthConfig to BackendAuthStrategy
 		strategy, err := r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 		if err != nil {
-			ctxLogger.V(1).Info("Failed to convert MCPExternalAuthConfig to strategy, skipping",
+			ctxLogger.V(1).Info("Failed to convert MCPExternalAuthConfig to strategy",
 				"backend", workloadInfo.Name,
 				"externalAuthConfig", externalAuthConfig.Name,
 				"error", err)
+			authErrors = append(authErrors, AuthConfigError{
+				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
+				BackendName: workloadInfo.Name,
+				Error:       fmt.Errorf("failed to convert MCPExternalAuthConfig: %w", err),
+			})
 			continue
 		}
 
@@ -1471,6 +1738,8 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			outgoing.Backends[workloadInfo.Name] = strategy
 		}
 	}
+
+	return backendsWithAuthConfig, authErrors
 }
 
 // getExternalAuthConfigNameFromWorkload extracts the ExternalAuthConfigRef name from a workload.
@@ -1501,11 +1770,20 @@ func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 
 // buildOutgoingAuthConfig builds an OutgoingAuthConfig from the VirtualMCPServer spec,
 // discovering ExternalAuthConfig from MCPServers when source is "discovered".
+// Returns the config with partial auth (if some configs fail), backends with auth config,
+// and all collected auth errors (non-fatal).
+//
+// All three types of auth config errors are collected but don't fail reconciliation:
+// - Default auth config errors
+// - Backend-specific auth config errors (inline overrides)
+// - Discovered auth config errors (from ExternalAuthConfigRef)
+//
+// This allows the system to continue operating in degraded mode with partial auth configuration.
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
-) (*vmcpconfig.OutgoingAuthConfig, error) {
+) (*vmcpconfig.OutgoingAuthConfig, []string, []AuthConfigError) {
 	// Determine source - default to "discovered" if not specified
 	source := outgoingAuthSource(vmcp)
 
@@ -1514,33 +1792,51 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 		Backends: make(map[string]*authtypes.BackendAuthStrategy),
 	}
 
+	// Collect all auth config errors (non-fatal)
+	var allAuthErrors []AuthConfigError
+
 	// Convert Default if specified
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Default != nil {
 		defaultStrategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert default auth config: %w", err)
+			// Collect error but continue (degraded mode)
+			allAuthErrors = append(allAuthErrors, AuthConfigError{
+				Context:     authContextDefault,
+				BackendName: "",
+				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
+			})
+		} else {
+			outgoing.Default = defaultStrategy
 		}
-		outgoing.Default = defaultStrategy
 	}
 
 	// Discover ExternalAuthConfig from MCPServers to populate backend auth configs.
-	// This function is called from ensureVmcpConfigConfigMap only for inline/static mode,
-	// where we need full backend details in the ConfigMap. For discovered/dynamic mode,
-	// this function is not called, keeping the ConfigMap minimal.
-	r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
+	// This function is called from processOutgoingAuth for both inline and discovered modes:
+	// - Inline/static mode: Full backend auth details are embedded in the ConfigMap
+	// - Discovered/dynamic mode: Auth configs are validated and errors reported via conditions
+	//
+	// Discovered errors are collected but don't fail reconciliation (degraded mode).
+	backendsWithAuthConfig, discoveredErrors := r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
+	allAuthErrors = append(allAuthErrors, discoveredErrors...)
 
 	// Apply inline overrides (works for all source modes)
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
 		for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
 			strategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, &backendAuth)
 			if err != nil {
-				return nil, fmt.Errorf("failed to convert backend auth config for %s: %w", backendName, err)
+				// Collect error but continue (degraded mode)
+				allAuthErrors = append(allAuthErrors, AuthConfigError{
+					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
+					BackendName: backendName,
+					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
+				})
+			} else {
+				outgoing.Backends[backendName] = strategy
 			}
-			outgoing.Backends[backendName] = strategy
 		}
 	}
 
-	return outgoing, nil
+	return outgoing, backendsWithAuthConfig, allAuthErrors
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
@@ -1577,6 +1873,85 @@ func convertBackendsToStaticBackends(
 	return static
 }
 
+// validateEmbeddingServerRef validates that the referenced EmbeddingServer exists.
+// Readiness gating is handled by isEmbeddingServerReady (called from ensureAllResources),
+// ensuring consistent retry behavior (fixed-interval requeue instead of exponential backoff).
+func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if vmcp.Spec.EmbeddingServerRef == nil {
+		return nil
+	}
+
+	refName := vmcp.Spec.EmbeddingServerRef.Name
+	es := &mcpv1alpha1.EmbeddingServer{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      refName,
+		Namespace: vmcp.Namespace,
+	}, es)
+
+	if errors.IsNotFound(err) {
+		message := fmt.Sprintf("Referenced EmbeddingServer %s not found", refName)
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetEmbeddingServerReadyCondition(
+			mcpv1alpha1.ConditionReasonEmbeddingServerNotFound,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServerRefNotFound", "ValidateEmbeddingServerRef",
+				"Referenced EmbeddingServer %s not found", refName)
+		}
+		return err
+	} else if err != nil {
+		ctxLogger.Error(err, "Failed to get referenced EmbeddingServer", "name", refName)
+		return err
+	}
+
+	// Existence validated — readiness is checked later by isEmbeddingServerReady
+	return nil
+}
+
+// mapEmbeddingServerToVirtualMCPServer maps EmbeddingServer changes to VirtualMCPServer
+// reconciliation requests. This triggers reconciliation when a referenced EmbeddingServer's
+// status changes (e.g., becomes ready or fails).
+func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	es, ok := obj.(*mcpv1alpha1.EmbeddingServer)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(es.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for EmbeddingServer watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		// Only match VirtualMCPServers that reference this EmbeddingServer by name
+		if vmcp.Spec.EmbeddingServerRef != nil && vmcp.Spec.EmbeddingServerRef.Name == es.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -1592,6 +1967,12 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.mapCompositeToolDefinitionToVirtualMCPServer),
+		).
+		// Watch referenced EmbeddingServers so that readiness/status changes
+		// trigger VirtualMCPServer reconciliation.
+		Watches(
+			&mcpv1alpha1.EmbeddingServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapEmbeddingServerToVirtualMCPServer),
 		).
 		Complete(r)
 }
@@ -2013,4 +2394,151 @@ func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
 	}
 
 	return false
+}
+
+// setAuthConfigConditions sets status conditions for all auth config types.
+// This ensures conditions reflect the current state by setting:
+// - True (ConversionSucceeded) for valid auth configs
+// - False (ConversionFailed) for auth config errors
+//
+// Handles three types of auth config conditions:
+// 1. DefaultAuthConfig - for default auth config in OutgoingAuth.Default
+// 2. BackendAuthConfig-<name> - for inline backend-specific auth configs in OutgoingAuth.Backends
+// 3. DiscoveredAuthConfig-<name> - for discovered auth configs via ExternalAuthConfigRef
+//
+// This allows users to see the current auth config state for each component via kubectl
+// and ensures stale failure conditions are cleared when auth configs are fixed or backends removed.
+//
+// All auth config errors are non-fatal - the system continues operating in degraded mode.
+func setAuthConfigConditions(
+	statusManager virtualmcpserverstatus.StatusManager,
+	backendsWithAuthConfig []string,
+	inlineBackendNames []string,
+	hasValidDefaultAuth bool,
+	validInlineBackends []string,
+	allAuthErrors []AuthConfigError,
+) {
+	// Build error maps by context for quick lookup
+	var defaultAuthError error
+	backendAuthErrors := make(map[string]error)
+	discoveredAuthErrors := make(map[string]error)
+
+	for _, authError := range allAuthErrors {
+		if authError.Context == authContextDefault {
+			defaultAuthError = authError.Error
+		} else if strings.HasPrefix(authError.Context, authContextBackendPrefix) {
+			backendAuthErrors[authError.BackendName] = authError.Error
+		} else if strings.HasPrefix(authError.Context, authContextDiscoveredPrefix) {
+			discoveredAuthErrors[authError.BackendName] = authError.Error
+		}
+	}
+
+	// Handle DefaultAuthConfig condition
+	if defaultAuthError != nil {
+		// Default auth has error - set False condition
+		statusManager.SetAuthConfigCondition(
+			"DefaultAuthConfig",
+			"ConversionFailed",
+			fmt.Sprintf("Failed to convert default auth config: %v", defaultAuthError),
+			metav1.ConditionFalse,
+		)
+	} else if hasValidDefaultAuth {
+		// Default auth is valid - set True condition
+		statusManager.SetAuthConfigCondition(
+			"DefaultAuthConfig",
+			"ConversionSucceeded",
+			"Default auth config is valid",
+			metav1.ConditionTrue,
+		)
+	} else {
+		// No default auth configured - remove the condition if it exists
+		// This handles cases where:
+		// - Auth is completely disabled
+		// - Default auth was removed from the spec
+		statusManager.RemoveConditionsWithPrefix("DefaultAuthConfig", []string{})
+	}
+
+	// Build list of current DiscoveredAuthConfig conditions to preserve
+	currentDiscoveredConditions := make([]string, len(backendsWithAuthConfig))
+	for i, backendName := range backendsWithAuthConfig {
+		currentDiscoveredConditions[i] = fmt.Sprintf("DiscoveredAuthConfig-%s", backendName)
+	}
+
+	// Build list of current BackendAuthConfig conditions to preserve
+	currentBackendConditions := make([]string, len(inlineBackendNames))
+	for i, backendName := range inlineBackendNames {
+		currentBackendConditions[i] = fmt.Sprintf("BackendAuthConfig-%s", backendName)
+	}
+
+	// Remove stale conditions for backends that no longer exist in the spec
+	statusManager.RemoveConditionsWithPrefix("DiscoveredAuthConfig-", currentDiscoveredConditions)
+	statusManager.RemoveConditionsWithPrefix("BackendAuthConfig-", currentBackendConditions)
+
+	// Set DiscoveredAuthConfig conditions for backends with ExternalAuthConfigRef
+	for _, backendName := range backendsWithAuthConfig {
+		conditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", backendName)
+
+		if err, hasError := discoveredAuthErrors[backendName]; hasError {
+			// Backend has discovered auth config error - set False condition
+			statusManager.SetAuthConfigCondition(
+				conditionType,
+				"ConversionFailed",
+				fmt.Sprintf("Failed to convert discovered auth config: %v", err),
+				metav1.ConditionFalse,
+			)
+		} else {
+			// Backend has valid discovered auth config - set True condition
+			statusManager.SetAuthConfigCondition(
+				conditionType,
+				"ConversionSucceeded",
+				"Discovered auth config is valid",
+				metav1.ConditionTrue,
+			)
+		}
+	}
+
+	// Set BackendAuthConfig conditions for inline backend-specific auth configs
+	// First, set error conditions
+	for backendName, err := range backendAuthErrors {
+		conditionType := fmt.Sprintf("BackendAuthConfig-%s", backendName)
+		statusManager.SetAuthConfigCondition(
+			conditionType,
+			"ConversionFailed",
+			fmt.Sprintf("Failed to convert backend auth config: %v", err),
+			metav1.ConditionFalse,
+		)
+	}
+	// Then, set success conditions for valid backends
+	for _, backendName := range validInlineBackends {
+		// Skip if this backend has an error (already set above)
+		if _, hasError := backendAuthErrors[backendName]; hasError {
+			continue
+		}
+		conditionType := fmt.Sprintf("BackendAuthConfig-%s", backendName)
+		statusManager.SetAuthConfigCondition(
+			conditionType,
+			"ConversionSucceeded",
+			"Backend auth config is valid",
+			metav1.ConditionTrue,
+		)
+	}
+
+	// Note: We don't modify the overall AuthConfigured condition here because
+	// auth config errors are non-fatal. The system can continue operating with
+	// the auth configs that are valid.
+}
+
+// generateHMACSecret generates a cryptographically secure 32-byte HMAC secret
+// encoded as base64. This secret is used for session token binding in Session Management V2.
+//
+// Returns a base64-encoded string suitable for use as VMCP_SESSION_HMAC_SECRET.
+func generateHMACSecret() (string, error) {
+	// Generate 32 bytes of cryptographically secure random data
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+
+	// Encode as base64 for safe storage and environment variable use
+	return base64.StdEncoding.EncodeToString(secret), nil
 }

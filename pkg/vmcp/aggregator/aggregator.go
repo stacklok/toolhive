@@ -61,6 +61,23 @@ type Aggregator interface {
 	// 2. Resolve conflicts
 	// 3. Merge into final view
 	AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error)
+
+	// ProcessPreQueriedCapabilities applies the same aggregation pipeline (overrides,
+	// conflict resolution, advertising filter) to tools that have already been fetched
+	// from live backends. Used by the session management path to reuse aggregator
+	// logic without re-querying backends over HTTP.
+	//
+	// toolsByBackend maps backend WorkloadID → raw tools as returned by the backend.
+	// targets maps backend WorkloadID → the pre-built BackendTarget for that backend.
+	//
+	// Returns the advertised tool list (resolved names, filtered) and a routing table
+	// keyed by resolved name. Each routing table entry has OriginalCapabilityName set
+	// so that GetBackendCapabilityName() translates back to the raw backend name.
+	ProcessPreQueriedCapabilities(
+		ctx context.Context,
+		toolsByBackend map[string][]vmcp.Tool,
+		targets map[string]*vmcp.BackendTarget,
+	) (advertisedTools []vmcp.Tool, toolsRouting map[string]*vmcp.BackendTarget, err error)
 }
 
 // BackendCapabilities contains the raw capabilities from a single backend.
@@ -117,6 +134,12 @@ type ResolvedTool struct {
 
 	// InputSchema is the JSON Schema for parameters.
 	InputSchema map[string]any
+
+	// OutputSchema is the JSON Schema for tool output (optional).
+	OutputSchema map[string]any
+
+	// Annotations describes behavioral hints for the tool (optional).
+	Annotations *vmcp.ToolAnnotations
 
 	// BackendID identifies the backend providing this tool.
 	BackendID string

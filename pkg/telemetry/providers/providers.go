@@ -7,6 +7,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -17,8 +18,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Config holds the telemetry configuration for all providers.
@@ -163,9 +162,12 @@ func NewCompositeProvider(
 
 	// Add custom attributes from CLI flags
 	if len(config.CustomAttributes) > 0 {
-		logger.Debugf("Adding %d custom attributes to OTEL resource", len(config.CustomAttributes))
+		slog.Debug("adding custom attributes to OTEL resource",
+			"count", len(config.CustomAttributes))
 		for key, value := range config.CustomAttributes {
-			logger.Debugf("  Adding custom attribute to resource: %s=%s", key, value)
+			//nolint:gosec // G706: custom attribute key-value from config
+			slog.Debug("adding custom attribute to resource",
+				"key", key, "value", value)
 			baseAttrs = append(baseAttrs, attribute.String(key, value))
 		}
 	}
@@ -186,7 +188,7 @@ func NewCompositeProvider(
 
 	// Early return for no-op case
 	if selector.IsFullyNoOp() {
-		logger.Debugf("No telemetry configured, using no-op providers")
+		slog.Debug("no telemetry configured, using no-op providers")
 		return createNoOpProvider(), nil
 	}
 
@@ -222,7 +224,7 @@ func buildProviders(
 		return nil, err
 	}
 
-	logger.Debugf("Telemetry providers created successfully")
+	slog.Debug("telemetry providers created successfully")
 	return composite, nil
 }
 

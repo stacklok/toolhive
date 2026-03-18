@@ -9,12 +9,12 @@ permissions:
 jobs:
   build-binary:
     name: Build ToolHive Binary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -41,7 +41,7 @@ jobs:
 
   e2e-tests-core:
     name: E2E Tests Core (${{ matrix.title }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     needs: build-binary
     strategy:
       fail-fast: false
@@ -50,20 +50,35 @@ jobs:
           - title: core
             label_filter: core
             artifact: e2e-test-results-core
-          - title: mcp
-            label_filter: mcp
-            artifact: e2e-test-results-mcp
-          - title: proxy-mw
-            label_filter: 'proxy || middleware || stability'
-            artifact: e2e-test-results-proxy-mw
-          - title: api
-            label_filter: api
-            artifact: e2e-test-results-api
+          - title: mcp-run
+            label_filter: mcp-run
+            artifact: e2e-test-results-mcp-run
+          - title: mcp-protocol
+            label_filter: mcp-protocol
+            artifact: e2e-test-results-mcp-protocol
+          - title: proxy
+            label_filter: proxy
+            artifact: e2e-test-results-proxy
+          - title: middleware
+            label_filter: 'middleware || stability'
+            artifact: e2e-test-results-middleware
+          - title: api-registry
+            label_filter: api-registry
+            artifact: e2e-test-results-api-registry
+          - title: api-workloads
+            label_filter: api-workloads
+            artifact: e2e-test-results-api-workloads
+          - title: api-clients
+            label_filter: api-clients
+            artifact: e2e-test-results-api-clients
+          - title: api-misc
+            label_filter: api-misc
+            artifact: e2e-test-results-api-misc
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -88,10 +103,21 @@ jobs:
 
       - name: Set up container runtime (Docker)
         run: |
-          # Docker is already installed on ubuntu-latest
+          # Docker is already installed on ubuntu-8cores-32gb
           docker --version
           # Start Docker daemon if not running
           sudo systemctl start docker
+
+      - name: Pre-pull container images
+        run: |
+          # Pre-pull images used by E2E tests so that workload creation
+          # does not pay the image-pull cost inside the 60s API timeout.
+          docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.0 &
+          docker pull ghcr.io/stackloklabs/gofetch/server:1.0.2 &
+          docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
+          wait
+          echo "Pre-pulled images:"
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy'
 
       - name: Run E2E tests (${{ matrix.title }})
         env:

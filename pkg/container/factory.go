@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/stacklok/toolhive/pkg/container/docker"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
@@ -157,7 +156,7 @@ func (f *Factory) CreateWithRuntimeName(ctx context.Context, runtimeName string)
 
 // NewMonitor creates a new container monitor
 func NewMonitor(rt runtime.Runtime, containerName string) runtime.Monitor {
-	return docker.NewMonitor(rt, containerName)
+	return runtime.NewMonitor(rt, containerName)
 }
 
 // CheckRuntimeAvailable checks if any container runtime is available

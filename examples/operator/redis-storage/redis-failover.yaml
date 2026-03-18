@@ -1,0 +1,76 @@
+# Spotahome Redis Operator - RedisFailover resource
+#
+# WARNING: The Spotahome Redis Operator has known issues that make it
+# unsuitable for this use case. Use sentinel-service.yaml instead.
+#
+# Known issues:
+#
+#   1. Helm chart 3.3.0+ fails to install its own CRD:
+#      "failed to install CRD: error converting YAML to JSON: did not find
+#       expected node content"
+#      Workaround: pin to chart 3.2.9 or apply the CRD manually.
+#      See: https://github.com/spotahome/redis-operator/issues/679
+#
+#   2. Sentinel advertises 127.0.0.1 as the Redis master address.
+#      The operator configures Sentinel to initially monitor 127.0.0.1:6379.
+#      Because sentinel.conf is generated internally by the operator, adding
+#      "sentinel resolve-hostnames yes" / "sentinel announce-hostnames yes"
+#      via customConfig does not reliably fix this. Clients in other pods
+#      receive 127.0.0.1 as the master address and cannot connect.
+#
+# This file is retained for reference only. For a working Redis Sentinel
+# deployment, see sentinel-service.yaml.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Original prerequisites (if you still want to try this approach):
+#   1. Install the Spotahome Redis Operator (pin to 3.2.9):
+#      helm repo add redis-operator https://spotahome.github.io/redis-operator
+#      helm install redis-operator redis-operator/redis-operator \
+#        --version 3.2.9 --namespace redis-operator --create-namespace
+#   2. Create the target namespace:
+#      kubectl create namespace redis
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redis
+  namespace: redis
+spec:
+  sentinel:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  redis:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    customConfig:
+      # Enable ACL file for user management.
+      # IMPORTANT: You must provision /data/users.acl on each Redis pod
+      # before authentication will work. See Step 3 ("Configure Redis ACL
+      # Users") in docs/redis-storage.md for the ACL entry format.
+      # Common approaches:
+      #   - Init container that writes the ACL file from a Secret/ConfigMap
+      #   - Spotahome operator's extraVolumes/extraVolumeMounts
+      #   - redis-cli ACL SETUSER command via a Job after deployment
+      - "aclfile /data/users.acl"
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi

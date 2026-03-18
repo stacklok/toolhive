@@ -5,7 +5,6 @@ package registry
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,10 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adrg/xdg"
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/api"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 const (
@@ -25,7 +25,7 @@ const (
 	maxCacheFileSize      = 10 * 1024 * 1024   // 10MB per cache file
 	maxCacheAge           = 7 * 24 * time.Hour // Delete caches older than 7 days
 	maxTotalCacheSize     = 50 * 1024 * 1024   // 50MB total cache directory
-	persistentCacheSubdir = "cache"
+	persistentCacheSubdir = auth.PersistentCacheSubdir
 )
 
 // CachedAPIRegistryProvider wraps APIRegistryProvider with caching support.
@@ -39,6 +39,12 @@ type CachedAPIRegistryProvider struct {
 	cachedData *types.Registry
 	cacheTime  time.Time
 
+	// Skills cache
+	skillsMu       sync.RWMutex
+	cachedSkills   []types.Skill
+	skillsCacheSet bool
+	skillsTime     time.Time
+
 	// Cache configuration
 	cacheTTL      time.Duration
 	usePersistent bool
@@ -48,8 +54,11 @@ type CachedAPIRegistryProvider struct {
 // NewCachedAPIRegistryProvider creates a new cached API registry provider.
 // If usePersistent is true, it will use a file cache in ~/.toolhive/cache/
 // The validation happens in NewAPIRegistryProvider by actually trying to use the API.
-func NewCachedAPIRegistryProvider(apiURL string, allowPrivateIp bool, usePersistent bool) (*CachedAPIRegistryProvider, error) {
-	base, err := NewAPIRegistryProvider(apiURL, allowPrivateIp)
+// If tokenSource is non-nil, all API requests will include authentication.
+func NewCachedAPIRegistryProvider(
+	apiURL string, allowPrivateIp bool, usePersistent bool, tokenSource auth.TokenSource,
+) (*CachedAPIRegistryProvider, error) {
+	base, err := NewAPIRegistryProvider(apiURL, allowPrivateIp, tokenSource)
 	if err != nil {
 		return nil, err
 	}
@@ -67,8 +76,7 @@ func NewCachedAPIRegistryProvider(apiURL string, allowPrivateIp bool, usePersist
 
 	if usePersistent {
 		// Generate cache file path based on API URL hash
-		hash := sha256.Sum256([]byte(apiURL))
-		cacheFile, err := xdg.CacheFile(fmt.Sprintf("toolhive/%s/registry-%x.json", persistentCacheSubdir, hash[:4]))
+		cacheFile, err := auth.RegistryCacheFilePath(apiURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get cache file path: %w", err)
 		}
@@ -141,19 +149,17 @@ func (p *CachedAPIRegistryProvider) ForceRefresh() error {
 }
 
 // GetServer returns a specific server by name (overrides base to use cache).
+// Ensures the cache is loaded, then delegates to BaseProvider.GetServer which
+// handles both exact and short-name resolution.
 func (p *CachedAPIRegistryProvider) GetServer(name string) (types.ServerMetadata, error) {
-	// For individual server lookups, we could query the API directly for freshness,
-	// or use the cached registry. Let's use cached registry for consistency.
-	registry, err := p.GetRegistry()
-	if err != nil {
+	// Ensure cache is loaded
+	if _, err := p.GetRegistry(); err != nil {
 		return nil, err
 	}
 
-	// Try to find in cached registry first
-	if server, ok := registry.Servers[name]; ok {
-		return server, nil
-	}
-	if server, ok := registry.RemoteServers[name]; ok {
+	// Use BaseProvider.GetServer which includes short-name resolution
+	server, err := p.BaseProvider.GetServer(name)
+	if err == nil {
 		return server, nil
 	}
 
@@ -364,22 +370,6 @@ func (p *CachedAPIRegistryProvider) cleanupOldCaches() {
 // Ensure CachedAPIRegistryProvider implements Provider interface
 var _ Provider = (*CachedAPIRegistryProvider)(nil)
 
-// Override methods that query individual servers to ensure they use cache
-
-// GetImageServer returns a specific container server by name (uses cache).
-func (p *CachedAPIRegistryProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
-	server, err := p.GetServer(name)
-	if err != nil {
-		return nil, err
-	}
-
-	if img, ok := server.(*types.ImageMetadata); ok {
-		return img, nil
-	}
-
-	return nil, fmt.Errorf("server %s is not a container server", name)
-}
-
 // GetRemoteServer returns a specific remote server by name (uses cache).
 func (p *CachedAPIRegistryProvider) GetRemoteServer(name string) (*types.RemoteServerMetadata, error) {
 	server, err := p.GetServer(name)
@@ -392,6 +382,62 @@ func (p *CachedAPIRegistryProvider) GetRemoteServer(name string) (*types.RemoteS
 	}
 
 	return nil, fmt.Errorf("server %s is not a remote server", name)
+}
+
+// ListAvailableSkills returns skills from the registry API, with caching.
+// Creates a SkillsClient on demand and fetches all skills with auto-pagination.
+func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
+	// Check cache
+	p.skillsMu.RLock()
+	if p.skillsCacheSet && time.Since(p.skillsTime) < p.cacheTTL {
+		skills := p.cachedSkills
+		p.skillsMu.RUnlock()
+		return skills, nil
+	}
+	p.skillsMu.RUnlock()
+
+	// Fetch from API
+	skillsClient, err := api.NewSkillsClient(p.apiURL, p.allowPrivateIp, p.tokenSource)
+	if err != nil {
+		// Return cached data if available
+		p.skillsMu.RLock()
+		defer p.skillsMu.RUnlock()
+		if p.skillsCacheSet {
+			return p.cachedSkills, nil
+		}
+		return nil, fmt.Errorf("failed to create skills client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// ListSkills auto-paginates internally, returning all skills in one call
+	result, err := skillsClient.ListSkills(ctx, nil)
+	if err != nil {
+		// Return cached data if available, otherwise nil (skills are optional)
+		p.skillsMu.RLock()
+		defer p.skillsMu.RUnlock()
+		if p.skillsCacheSet {
+			return p.cachedSkills, nil
+		}
+		return nil, nil
+	}
+
+	allSkills := make([]types.Skill, 0, len(result.Skills))
+	for _, s := range result.Skills {
+		if s != nil {
+			allSkills = append(allSkills, *s)
+		}
+	}
+
+	// Update cache
+	p.skillsMu.Lock()
+	p.cachedSkills = allSkills
+	p.skillsCacheSet = true
+	p.skillsTime = time.Now()
+	p.skillsMu.Unlock()
+
+	return allSkills, nil
 }
 
 // ConvertServerJSON wraps ConvertServerJSON for cached provider

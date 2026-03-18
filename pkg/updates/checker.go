@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 
+	"github.com/stacklok/toolhive/pkg/desktop"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -210,6 +211,7 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 	}
 	defer lockfile.ReleaseTrackedLock(lockPath, lockFile)
 
+	//nolint:gosec // G703 - path from trusted app config directory
 	if err := os.WriteFile(d.updateFilePath, updatedData, 0600); err != nil {
 		return fmt.Errorf("failed to write updated file: %w", err)
 	}
@@ -223,6 +225,10 @@ func getComponentFromVersionClient(versionClient VersionClient) string {
 }
 
 func notifyIfUpdateAvailable(current, latest string) {
+	// Desktop app manages its own updates, suppress CLI update message
+	if desktop.IsDesktopManagedCLI() {
+		return
+	}
 	// Print a meaningful message for people running local builds.
 	if strings.HasPrefix(current, "build-") {
 		// No need to compare versions, user is already aware they are not on the latest release.

@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/stacklok/toolhive-core/permissions"
+	"github.com/stacklok/toolhive-core/registry/types"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
@@ -30,7 +30,8 @@ type workloadListResponse struct {
 //	@Description	Response containing workload status information
 type workloadStatusResponse struct {
 	// Current status of the workload
-	Status runtime.WorkloadStatus `json:"status"`
+	//nolint:lll // enums tag needed for swagger generation with --parseDependencyLevel
+	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated"`
 }
 
 // updateRequest represents the request to update an existing workload

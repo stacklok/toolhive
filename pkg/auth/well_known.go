@@ -22,7 +22,7 @@ import (
 //
 // Usage:
 //
-//	authInfoHandler := auth.NewAuthInfoHandler(issuer, jwksURL, resourceURL, scopes)
+//	authInfoHandler := auth.NewAuthInfoHandler(issuer, resourceURL, scopes)
 //	wellKnownHandler := auth.NewWellKnownHandler(authInfoHandler)
 //	if wellKnownHandler != nil {
 //	    mux.Handle("/.well-known/", wellKnownHandler)

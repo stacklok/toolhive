@@ -22,7 +22,6 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
 	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
 )
 
@@ -30,11 +29,6 @@ const (
 	// testWorkloadWithSlash is a test workload name containing slashes
 	testWorkloadWithSlash = "test/workload"
 )
-
-func init() {
-	// Initialize logger for all tests
-	logger.Initialize()
-}
 
 // newTestFileStatusManager creates a fileStatusManager for testing with proper initialization
 func newTestFileStatusManager(t *testing.T, ctrl *gomock.Controller) (*fileStatusManager, *rtmocks.MockRuntime, *stateMocks.MockStore) {

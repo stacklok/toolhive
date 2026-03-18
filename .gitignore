@@ -25,6 +25,7 @@ go.work
 
 # Build output
 /bin/
+/build/
 /dist/
 /coverage/
 
@@ -32,6 +33,7 @@ go.work
 ^thv$
 
 .claude/settings.local.json
+.claude/worktrees/
 kconfig.yaml
 
 .DS_Store
@@ -44,3 +46,4 @@ coverage*
 
 crd-helm-wrapper
 cmd/vmcp/__debug_bin*
+/vmcp

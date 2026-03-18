@@ -6,12 +6,12 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/logger"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -50,8 +50,12 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}
 
-	// Build run configuration
-	imageMetadata, _ := serverMetadata.(*types.ImageMetadata)
+	// Build run configuration.
+	// Use type assertion with nil check to guard against typed nil pointers.
+	var imageMetadata *types.ImageMetadata
+	if md, ok := serverMetadata.(*types.ImageMetadata); ok && md != nil {
+		imageMetadata = md
+	}
 
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
 	if err != nil {
@@ -197,7 +201,9 @@ func prepareSecrets(secretMappings []SecretMapping) []string {
 func (h *Handler) saveAndRunServer(ctx context.Context, runConfig *runner.RunConfig, name string) error {
 	// Save the run configuration state before starting
 	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Warnf("Failed to save run configuration for %s: %v", name, err)
+		//nolint:gosec // G706: server name from function parameter
+		slog.Warn("failed to save run configuration",
+			"name", name, "error", err)
 		// Continue anyway, as this is not critical for running
 	}
 

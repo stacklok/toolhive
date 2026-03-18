@@ -6,24 +6,37 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/adrg/xdg"
+	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/cmd/thv/app"
-	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/lockfile"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/migration"
 )
 
 func main() {
+	// Bind TOOLHIVE_DEBUG env var early, before logger initialization.
+	// This must happen before viper.GetBool("debug") so the env var
+	// is available when configuring the log level.
+	if err := viper.BindEnv("debug", "TOOLHIVE_DEBUG"); err != nil {
+		slog.Error("failed to bind TOOLHIVE_DEBUG env var", "error", err)
+	}
+
 	// Initialize the logger
-	logger.Initialize()
+	var opts []logging.Option
+	if viper.GetBool("debug") {
+		opts = append(opts, logging.WithLevel(slog.LevelDebug))
+	}
+	l := logging.New(opts...)
+	slog.SetDefault(l)
 
 	// Setup signal handling for graceful cleanup
 	ctx := setupSignalHandler()
@@ -34,17 +47,13 @@ func main() {
 	// Check if container runtime is available early, but skip for informational commands
 	if !app.IsInformationalCommand(os.Args) {
 		if err := container.CheckRuntimeAvailable(); err != nil {
-			logger.Errorf("%s", err.Error())
+			slog.Error(err.Error())
 			os.Exit(1)
 		}
 	}
 
 	// Skip migrations for informational commands that don't need container runtime
 	if !app.IsInformationalCommand(os.Args) {
-		// Check and perform auto-discovery migration if needed
-		// Handles the auto-discovery flag depreciation, only executes once on old config files
-		client.CheckAndPerformAutoDiscoveryMigration()
-
 		// Check and perform telemetry config migration if needed
 		// Converts telemetry_config.samplingRate from float64 to string in run configs
 		migration.CheckAndPerformTelemetryConfigMigration()
@@ -53,9 +62,8 @@ func main() {
 		// Ensures middleware-based telemetry configs are properly migrated
 		migration.CheckAndPerformMiddlewareTelemetryMigration()
 
-		// Check and perform default group migration if needed
-		// Migrates existing workloads to the default group, only executes once
-		migration.CheckAndPerformDefaultGroupMigration()
+		// Ensure default group exists (creates it for fresh installs, no-op otherwise)
+		migration.EnsureDefaultGroupExists()
 	}
 
 	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args))
@@ -76,10 +84,10 @@ func setupSignalHandler() context.Context {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118 - cancel called in signal handler goroutine
 	go func() {
 		<-sigCh
-		logger.Debugf("Received signal, cleaning up lock files...")
+		slog.Debug("received signal, cleaning up lock files")
 		lockfile.CleanupAllLocks()
 		cancel()
 	}()

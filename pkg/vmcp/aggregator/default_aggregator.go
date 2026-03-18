@@ -6,6 +6,7 @@ package aggregator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -14,7 +15,6 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -85,7 +85,7 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		span.End()
 	}()
 
-	logger.Debugf("Querying capabilities from backend %s", backend.ID)
+	slog.Debug("querying capabilities from backend", "backend", backend.ID)
 
 	// Create a BackendTarget from the Backend
 	// Use BackendToTarget helper to ensure all fields (including auth) are copied
@@ -120,8 +120,8 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		attribute.Int("prompts.count", len(result.Prompts)),
 	)
 
-	logger.Debugf("Backend %s: %d tools (after filtering/overrides), %d resources, %d prompts",
-		backend.ID, len(result.Tools), len(result.Resources), len(result.Prompts))
+	slog.Debug("backend capabilities queried",
+		"backend", backend.ID, "tools", len(result.Tools), "resources", len(result.Resources), "prompts", len(result.Prompts))
 
 	return result, nil
 }
@@ -145,7 +145,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		span.End()
 	}()
 
-	logger.Infof("Querying capabilities from %d backends", len(backends))
+	slog.Info("querying capabilities from backends", "count", len(backends))
 
 	// Use errgroup for parallel queries with context cancellation
 	g, ctx := errgroup.WithContext(ctx)
@@ -162,7 +162,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 			caps, err := a.QueryCapabilities(ctx, backend)
 			if err != nil {
 				// Log the error but continue with other backends
-				logger.Warnf("Failed to query backend %s: %v", backend.ID, err)
+				slog.Warn("failed to query backend", "backend", backend.ID, "error", err)
 				return nil // Don't fail the entire operation
 			}
 
@@ -188,7 +188,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		attribute.Int("successful.backends", len(capabilities)),
 	)
 
-	logger.Infof("Successfully queried %d/%d backends", len(capabilities), len(backends))
+	slog.Info("successfully queried backends", "successful", len(capabilities), "total", len(backends))
 	return capabilities, nil
 }
 
@@ -211,7 +211,7 @@ func (a *defaultAggregator) ResolveConflicts(
 		span.End()
 	}()
 
-	logger.Debugf("Resolving conflicts across %d backends", len(capabilities))
+	slog.Debug("resolving conflicts across backends", "count", len(capabilities))
 
 	// Group tools by backend for conflict resolution
 	toolsByBackend := make(map[string][]vmcp.Tool)
@@ -230,13 +230,13 @@ func (a *defaultAggregator) ResolveConflicts(
 		}
 	} else {
 		// Fallback: no conflict resolution (first wins, log warnings)
-		logger.Warnf("No conflict resolver configured, using fallback (first wins)")
+		slog.Warn("no conflict resolver configured, using fallback (first wins)")
 		resolvedTools = make(map[string]*ResolvedTool)
 		for backendID, tools := range toolsByBackend {
 			for _, tool := range tools {
 				if existing, exists := resolvedTools[tool.Name]; exists {
-					logger.Warnf("Tool name conflict: %s exists in both %s and %s (keeping first)",
-						tool.Name, existing.BackendID, backendID)
+					slog.Warn("tool name conflict, keeping first",
+						"tool", tool.Name, "existing_backend", existing.BackendID, "conflicting_backend", backendID)
 					continue
 				}
 				resolvedTools[tool.Name] = &ResolvedTool{
@@ -244,6 +244,8 @@ func (a *defaultAggregator) ResolveConflicts(
 					OriginalName: tool.Name,
 					Description:  tool.Description,
 					InputSchema:  tool.InputSchema,
+					OutputSchema: tool.OutputSchema,
+					Annotations:  tool.Annotations,
 					BackendID:    backendID,
 				}
 			}
@@ -273,8 +275,8 @@ func (a *defaultAggregator) ResolveConflicts(
 		attribute.Int("resolved.prompts", len(resolved.Prompts)),
 	)
 
-	logger.Debugf("Resolved %d unique tools, %d resources, %d prompts",
-		len(resolved.Tools), len(resolved.Resources), len(resolved.Prompts))
+	slog.Debug("resolved capabilities",
+		"tools", len(resolved.Tools), "resources", len(resolved.Resources), "prompts", len(resolved.Prompts))
 
 	return resolved, nil
 }
@@ -301,7 +303,7 @@ func (a *defaultAggregator) MergeCapabilities(
 		span.End()
 	}()
 
-	logger.Debugf("Merging capabilities into final view")
+	slog.Debug("merging capabilities into final view")
 
 	// Create routing table
 	routingTable := &vmcp.RoutingTable{
@@ -321,10 +323,12 @@ func (a *defaultAggregator) MergeCapabilities(
 
 		if shouldAdvertise {
 			tools = append(tools, vmcp.Tool{
-				Name:        resolvedTool.ResolvedName,
-				Description: resolvedTool.Description,
-				InputSchema: resolvedTool.InputSchema,
-				BackendID:   resolvedTool.BackendID,
+				Name:         resolvedTool.ResolvedName,
+				Description:  resolvedTool.Description,
+				InputSchema:  resolvedTool.InputSchema,
+				OutputSchema: resolvedTool.OutputSchema,
+				Annotations:  resolvedTool.Annotations,
+				BackendID:    resolvedTool.BackendID,
 			})
 		}
 
@@ -332,17 +336,19 @@ func (a *defaultAggregator) MergeCapabilities(
 		// Look up full backend information from registry
 		backend := registry.Get(ctx, resolvedTool.BackendID)
 		if backend == nil {
-			logger.Warnf("Backend %s not found in registry for tool %s, creating minimal target",
-				resolvedTool.BackendID, resolvedTool.ResolvedName)
+			slog.Warn("backend not found in registry for tool, creating minimal target",
+				"backend", resolvedTool.BackendID, "tool", resolvedTool.ResolvedName)
 			routingTable.Tools[resolvedTool.ResolvedName] = &vmcp.BackendTarget{
 				WorkloadID:             resolvedTool.BackendID,
-				OriginalCapabilityName: resolvedTool.OriginalName,
+				OriginalCapabilityName: actualBackendCapabilityName(a.toolConfigMap, resolvedTool.BackendID, resolvedTool.OriginalName),
 			}
 		} else {
 			// Use the backendToTarget helper from registry package
 			target := vmcp.BackendToTarget(backend)
-			// Store the original tool name for forwarding to backend
-			target.OriginalCapabilityName = resolvedTool.OriginalName
+			// Store the actual backend capability name for forwarding to backend.
+			// resolvedTool.OriginalName is the post-override name; reverse the override
+			// to get the name the backend itself uses.
+			target.OriginalCapabilityName = actualBackendCapabilityName(a.toolConfigMap, resolvedTool.BackendID, resolvedTool.OriginalName)
 			routingTable.Tools[resolvedTool.ResolvedName] = target
 		}
 	}
@@ -351,8 +357,8 @@ func (a *defaultAggregator) MergeCapabilities(
 	for _, resource := range resolved.Resources {
 		backend := registry.Get(ctx, resource.BackendID)
 		if backend == nil {
-			logger.Warnf("Backend %s not found in registry for resource %s, creating minimal target",
-				resource.BackendID, resource.URI)
+			slog.Warn("backend not found in registry for resource, creating minimal target",
+				"backend", resource.BackendID, "resource", resource.URI)
 			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
 				WorkloadID:             resource.BackendID,
 				OriginalCapabilityName: resource.URI,
@@ -369,8 +375,8 @@ func (a *defaultAggregator) MergeCapabilities(
 	for _, prompt := range resolved.Prompts {
 		backend := registry.Get(ctx, prompt.BackendID)
 		if backend == nil {
-			logger.Warnf("Backend %s not found in registry for prompt %s, creating minimal target",
-				prompt.BackendID, prompt.Name)
+			slog.Warn("backend not found in registry for prompt, creating minimal target",
+				"backend", prompt.BackendID, "prompt", prompt.Name)
 			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
 				WorkloadID:             prompt.BackendID,
 				OriginalCapabilityName: prompt.Name,
@@ -417,8 +423,10 @@ func (a *defaultAggregator) MergeCapabilities(
 		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
 	)
 
-	logger.Infof("Merged capabilities: %d tools, %d resources, %d prompts",
-		aggregated.Metadata.ToolCount, aggregated.Metadata.ResourceCount, aggregated.Metadata.PromptCount)
+	slog.Info("merged capabilities",
+		"tools", aggregated.Metadata.ToolCount,
+		"resources", aggregated.Metadata.ResourceCount,
+		"prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
 }
@@ -445,11 +453,11 @@ func (a *defaultAggregator) AggregateCapabilities(
 		span.End()
 	}()
 
-	logger.Infof("Starting capability aggregation for %d backends", len(backends))
+	slog.Info("starting capability aggregation", "backends", len(backends))
 
 	// Step 1: Create registry from discovered backends
 	registry := vmcp.NewImmutableRegistry(backends)
-	logger.Debugf("Created backend registry with %d backends", registry.Count())
+	slog.Debug("created backend registry", "count", registry.Count())
 
 	// Step 2: Query all backends
 	capabilities, err := a.QueryAllCapabilities(ctx, backends)
@@ -480,11 +488,90 @@ func (a *defaultAggregator) AggregateCapabilities(
 		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
 	)
 
-	logger.Infof("Capability aggregation complete: %d backends, %d tools, %d resources, %d prompts",
-		aggregated.Metadata.BackendCount, aggregated.Metadata.ToolCount,
-		aggregated.Metadata.ResourceCount, aggregated.Metadata.PromptCount)
+	slog.Info("capability aggregation complete",
+		"backends", aggregated.Metadata.BackendCount, "tools", aggregated.Metadata.ToolCount,
+		"resources", aggregated.Metadata.ResourceCount, "prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
+}
+
+// ProcessPreQueriedCapabilities implements Aggregator.ProcessPreQueriedCapabilities.
+// It reuses processBackendTools, ResolveConflicts, and shouldAdvertiseTool so that
+// the session path applies identical transforms to the aggregation path.
+func (a *defaultAggregator) ProcessPreQueriedCapabilities(
+	ctx context.Context,
+	toolsByBackend map[string][]vmcp.Tool,
+	targets map[string]*vmcp.BackendTarget,
+) ([]vmcp.Tool, map[string]*vmcp.BackendTarget, error) {
+	// Step 1: Apply per-backend overrides (renames, description changes).
+	processed := make(map[string]*BackendCapabilities, len(toolsByBackend))
+	for backendID, rawTools := range toolsByBackend {
+		processed[backendID] = &BackendCapabilities{
+			BackendID: backendID,
+			Tools:     processBackendTools(ctx, backendID, rawTools, a.toolConfigMap[backendID]),
+		}
+	}
+
+	// Step 2: Resolve naming conflicts across backends.
+	resolved, err := a.ResolveConflicts(ctx, processed)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Step 3: Build advertised list and routing table, applying advertising filter.
+	var advertisedTools []vmcp.Tool
+	routingTable := make(map[string]*vmcp.BackendTarget, len(resolved.Tools))
+
+	for _, rt := range resolved.Tools {
+		target, ok := targets[rt.BackendID]
+		if !ok {
+			slog.Warn("ProcessPreQueriedCapabilities: no target for backend, skipping tool",
+				"backend", rt.BackendID, "tool", rt.ResolvedName)
+			continue
+		}
+		// Clone the target and record the actual backend capability name for call routing.
+		// rt.OriginalName is the post-override name; reverse the override map to get the
+		// actual name the backend itself uses.
+		t := *target
+		t.OriginalCapabilityName = actualBackendCapabilityName(a.toolConfigMap, rt.BackendID, rt.OriginalName)
+		routingTable[rt.ResolvedName] = &t
+
+		if a.shouldAdvertiseTool(rt.BackendID, rt.OriginalName) {
+			advertisedTools = append(advertisedTools, vmcp.Tool{
+				Name:         rt.ResolvedName,
+				Description:  rt.Description,
+				InputSchema:  rt.InputSchema,
+				OutputSchema: rt.OutputSchema,
+				Annotations:  rt.Annotations,
+				BackendID:    rt.BackendID,
+			})
+		}
+	}
+
+	return advertisedTools, routingTable, nil
+}
+
+// actualBackendCapabilityName returns the real capability name the backend uses,
+// reversing any per-backend override rename that processBackendTools may have applied.
+//
+// processBackendTools renames tools when WorkloadToolConfig.Overrides maps an original
+// backend name to a user-visible name. The conflict resolvers receive the post-override
+// name and store it as ResolvedTool.OriginalName. Setting OriginalCapabilityName to that
+// value would forward the overridden (user-visible) name to the backend, which only knows
+// the original name.
+//
+// Returns postOverrideName unchanged when no matching override is configured.
+func actualBackendCapabilityName(toolConfigMap map[string]*config.WorkloadToolConfig, backendID, postOverrideName string) string {
+	wlConfig, ok := toolConfigMap[backendID]
+	if !ok || wlConfig == nil {
+		return postOverrideName
+	}
+	for origName, override := range wlConfig.Overrides {
+		if override != nil && override.Name == postOverrideName {
+			return origName
+		}
+	}
+	return postOverrideName
 }
 
 // shouldAdvertiseTool returns true if a tool from the given backend should be

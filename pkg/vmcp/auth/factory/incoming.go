@@ -6,13 +6,13 @@ package factory
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -25,27 +25,33 @@ import (
 //   - "local": Local OS user authentication
 //   - "anonymous": Anonymous user (no authentication required)
 //
-// If Authz is configured, authorization middleware is also created and composed
-// with the authentication middleware (auth runs first, then authz).
+// Authentication and authorization are returned as separate middleware to allow
+// the caller to insert discovery and annotation-enrichment middleware between them.
+// This ensures the authz middleware can access tool annotations populated by
+// the discovery pipeline.
 //
 // All middleware types now directly create and inject Identity into the context,
 // eliminating the need for a separate conversion layer.
 //
 // Returns:
-//   - Composed middleware function (auth + authz if configured)
-//   - AuthInfo handler (for /.well-known/oauth-protected-resource endpoint, may be nil)
-//   - Error if middleware creation fails
+//   - authMw: Composed auth + MCP parser middleware (auth runs first, then parser)
+//   - authzMw: Authorization middleware (nil if authz is not configured)
+//   - authInfoHandler: Handler for /.well-known/oauth-protected-resource endpoint (may be nil)
+//   - err: Error if middleware creation fails
 func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
-) (func(http.Handler) http.Handler, http.Handler, error) {
+) (
+	authMw func(http.Handler) http.Handler,
+	authzMw func(http.Handler) http.Handler,
+	authInfoHandler http.Handler,
+	err error,
+) {
 	if cfg == nil {
-		return nil, nil, fmt.Errorf("incoming auth config is required")
+		return nil, nil, nil, fmt.Errorf("incoming auth config is required")
 	}
 
 	var authMiddleware func(http.Handler) http.Handler
-	var authInfoHandler http.Handler
-	var err error
 
 	switch cfg.Type {
 	case "oidc":
@@ -55,37 +61,35 @@ func NewIncomingAuthMiddleware(
 	case "anonymous":
 		authMiddleware, authInfoHandler, err = newAnonymousAuthMiddleware()
 	default:
-		return nil, nil, fmt.Errorf("unsupported incoming auth type: %s (supported: oidc, local, anonymous)", cfg.Type)
+		return nil, nil, nil, fmt.Errorf("unsupported incoming auth type: %s (supported: oidc, local, anonymous)", cfg.Type)
 	}
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	// If authorization is configured, create authz middleware and compose with auth
+	// If authorization is configured, create authz middleware separately.
+	// Authz is returned as its own middleware so the caller can place it after
+	// discovery and annotation-enrichment in the middleware chain, giving
+	// Cedar policies access to discovered tool annotations.
+	var authzMiddleware func(http.Handler) http.Handler
 	if cfg.Authz != nil && cfg.Authz.Type == "cedar" && len(cfg.Authz.Policies) > 0 {
-		authzMiddleware, err := newCedarAuthzMiddleware(cfg.Authz)
+		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
 		}
-
-		// Compose: auth runs first (outer), then parser, then authz (inner)
-		// Request flow: auth → parser → authz → handler
-		// The parser middleware is required because authz middleware reads parsed MCP data from context
-		composedMiddleware := func(next http.Handler) http.Handler {
-			// authz wraps the handler
-			withAuthz := authzMiddleware(next)
-			// parser wraps authz (authz needs parsed MCP request from context)
-			withParser := mcp.ParsingMiddleware(withAuthz)
-			// auth wraps parser
-			return authMiddleware(withParser)
-		}
-
-		logger.Info("Authorization middleware enabled with Cedar policies")
-		return composedMiddleware, authInfoHandler, nil
+		slog.Info("authorization middleware enabled with Cedar policies")
 	}
 
-	return authMiddleware, authInfoHandler, nil
+	// Auth middleware composes auth + parser.
+	// The parser is included because downstream middleware (audit, authz) reads
+	// parsed MCP data from context.
+	composedAuth := func(next http.Handler) http.Handler {
+		withParser := mcp.ParsingMiddleware(next)
+		return authMiddleware(withParser)
+	}
+
+	return composedAuth, authzMiddleware, authInfoHandler, nil
 }
 
 // newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
@@ -94,7 +98,7 @@ func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) h
 		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
 
-	logger.Infof("Creating Cedar authorization middleware with %d policies", len(authzCfg.Policies))
+	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
 	// Build the Cedar config structure expected by the authorizer factory
 	cedarConfig := cedar.Config{
@@ -132,11 +136,11 @@ func newOIDCAuthMiddleware(
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
 	}
 
-	logger.Info("Creating OIDC incoming authentication middleware")
+	slog.Info("creating OIDC incoming authentication middleware")
 
 	// Use Resource field if specified, otherwise fall back to Audience
 	if oidcCfg.Resource == "" {
-		logger.Warn("No Resource defined in OIDC configuration")
+		slog.Warn("no Resource defined in OIDC configuration")
 	}
 
 	oidcConfig := &auth.TokenValidatorConfig{
@@ -155,8 +159,8 @@ func newOIDCAuthMiddleware(
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
 	}
 
-	logger.Infof("OIDC authentication configured (issuer: %s, client_id: %s, resource: %s)",
-		oidcCfg.Issuer, oidcCfg.ClientID, oidcCfg.Resource)
+	slog.Info("oIDC authentication configured",
+		"issuer", oidcCfg.Issuer, "client_id", oidcCfg.ClientID, "resource", oidcCfg.Resource)
 
 	return authMw, authInfo, nil
 }
@@ -165,7 +169,7 @@ func newOIDCAuthMiddleware(
 // Reuses pkg/auth.GetAuthenticationMiddleware with nil config to trigger local auth mode.
 // The middleware now directly creates Identity in context (no separate conversion needed).
 func newLocalAuthMiddleware(ctx context.Context) (func(http.Handler) http.Handler, http.Handler, error) {
-	logger.Info("Creating local user authentication middleware")
+	slog.Info("creating local user authentication middleware")
 
 	// Passing nil to GetAuthenticationMiddleware triggers local auth mode
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
@@ -180,7 +184,7 @@ func newLocalAuthMiddleware(ctx context.Context) (func(http.Handler) http.Handle
 // newAnonymousAuthMiddleware creates anonymous authentication middleware.
 // Calls pkg/auth.AnonymousMiddleware directly since GetAuthenticationMiddleware doesn't support anonymous.
 func newAnonymousAuthMiddleware() (func(http.Handler) http.Handler, http.Handler, error) {
-	logger.Info("Creating anonymous authentication middleware")
+	slog.Info("creating anonymous authentication middleware")
 
 	return auth.AnonymousMiddleware, nil, nil
 }

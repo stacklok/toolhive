@@ -75,14 +75,12 @@ func (c *Config) EnsureOperationalDefaults() {
 		return
 	}
 
-	defaults := DefaultOperationalConfig()
-
 	if c.Operational == nil {
-		c.Operational = defaults
+		c.Operational = DefaultOperationalConfig()
 		return
 	}
 
 	// Merge defaults into target, only filling zero/nil values.
 	// User-provided values are preserved.
-	_ = mergo.Merge(c.Operational, defaults)
+	_ = mergo.Merge(c.Operational, DefaultOperationalConfig())
 }

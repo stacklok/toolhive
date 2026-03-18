@@ -5,10 +5,11 @@
 package app
 
 import (
+	"fmt"
+	"log/slog"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 var rootCmd = &cobra.Command{
@@ -20,11 +21,8 @@ It is written in Go and has extensive test coverage—including input validation
 	Run: func(cmd *cobra.Command, _ []string) {
 		// If no subcommand is provided, print help
 		if err := cmd.Help(); err != nil {
-			logger.Errorf("Error displaying help: %v", err)
+			slog.Error(fmt.Sprintf("Error displaying help: %v", err))
 		}
-	},
-	PersistentPreRun: func(_ *cobra.Command, _ []string) {
-		logger.Initialize()
 	},
 }
 
@@ -34,14 +32,14 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
 	err := viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 	if err != nil {
-		logger.Errorf("Error binding debug flag: %v", err)
+		slog.Error(fmt.Sprintf("Error binding debug flag: %v", err))
 	}
 
 	// Bind TOOLHIVE_DEBUG environment variable to viper debug config
 	// This allows setting debug mode via environment variable
 	err = viper.BindEnv("debug", "TOOLHIVE_DEBUG")
 	if err != nil {
-		logger.Errorf("Error binding TOOLHIVE_DEBUG env var: %v", err)
+		slog.Error(fmt.Sprintf("Error binding TOOLHIVE_DEBUG env var: %v", err))
 	}
 
 	// Add subcommands

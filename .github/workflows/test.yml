@@ -8,13 +8,17 @@ permissions:
 
 jobs:
   test-go-code:
-    name: Test Go Code
-    runs-on: ubuntu-latest
+    name: Test Go Code (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-8cores-32gb]
+      fail-fast: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true  # This caches go modules based on go.sum
@@ -62,12 +66,15 @@ jobs:
         run: task test-coverage
 
       - name: Upload coverage reports to Codecov with GitHub Action
-        uses: codecov/codecov-action@v5
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: stacklok/toolhive
 
       - name: Upload coverage to Coveralls
-        uses: coverallsapp/github-action@v2
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2
         with:
           file: coverage/coverage.out
+          fail-on-error: false

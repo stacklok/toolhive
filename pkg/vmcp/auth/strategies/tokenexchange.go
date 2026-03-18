@@ -7,9 +7,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
+
+	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -73,13 +76,12 @@ func (*TokenExchangeStrategy) Name() string {
 // Authenticate exchanges the client's token for a backend token and injects it.
 //
 // This method:
-//  1. Skips authentication if this is a health check request
-//  2. Retrieves the client's identity and token from the context
-//  3. Parses and validates the token exchange configuration from strategy
-//  4. Gets or creates a cached ExchangeConfig for this backend configuration
-//  5. Creates a TokenSource with the current identity token
-//  6. Obtains an access token by performing the exchange
-//  7. Injects the token into the backend request's Authorization header
+//  1. Parses and validates the token exchange configuration from strategy
+//  2. For health check requests: uses a client credentials grant if client_id and
+//     client_secret are configured; otherwise skips authentication
+//  3. For regular requests: retrieves the client's identity and token from the context,
+//     gets or creates a cached ExchangeConfig, performs the token exchange, and injects
+//     the token into the backend request's Authorization header
 //
 // Token caching per user is handled by the upper vMCP TokenCache layer.
 // This strategy only caches the ExchangeConfig template per backend.
@@ -90,15 +92,25 @@ func (*TokenExchangeStrategy) Name() string {
 //   - strategy: Backend auth strategy containing token exchange configuration
 //
 // Returns an error if:
-//   - No identity is found in the context
-//   - The identity has no token
 //   - Strategy configuration is invalid or incomplete
-//   - Token exchange fails
+//   - No identity is found in the context (regular requests only)
+//   - The identity has no token (regular requests only)
+//   - Token exchange or client credentials grant fails
 func (s *TokenExchangeStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
-	// Skip authentication for health checks
+	config, err := s.parseTokenExchangeConfig(strategy)
+	if err != nil {
+		return fmt.Errorf("invalid strategy configuration: %w", err)
+	}
+
+	// For health checks there is no user identity to exchange. If client credentials
+	// are configured, use a client credentials grant to authenticate the probe request.
+	// Otherwise skip authentication — the backend will be probed unauthenticated.
 	if health.IsHealthCheck(ctx) {
+		if config.ClientID != "" && config.ClientSecret != "" {
+			return s.authenticateWithClientCredentials(ctx, req, config)
+		}
 		return nil
 	}
 
@@ -109,11 +121,6 @@ func (s *TokenExchangeStrategy) Authenticate(
 
 	if identity.Token == "" {
 		return fmt.Errorf("identity has no token")
-	}
-
-	config, err := s.parseTokenExchangeConfig(strategy)
-	if err != nil {
-		return fmt.Errorf("invalid strategy configuration: %w", err)
 	}
 
 	// Get user-specific exchange config. This creates a fresh config instance
@@ -127,6 +134,31 @@ func (s *TokenExchangeStrategy) Authenticate(
 	}
 
 	// Inject exchanged token into request
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
+	return nil
+}
+
+// authenticateWithClientCredentials performs an OAuth2 client credentials grant and
+// injects the resulting token into the request. Used for health check probes when
+// client_id and client_secret are configured.
+func (*TokenExchangeStrategy) authenticateWithClientCredentials(
+	ctx context.Context, req *http.Request, config *tokenExchangeConfig,
+) error {
+	ccConfig := clientcredentials.Config{
+		ClientID:     config.ClientID,
+		ClientSecret: config.ClientSecret,
+		TokenURL:     config.TokenURL,
+		Scopes:       config.Scopes,
+	}
+	if config.Audience != "" {
+		ccConfig.EndpointParams = url.Values{"audience": {config.Audience}}
+	}
+
+	token, err := ccConfig.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("client credentials grant failed: %w", err)
+	}
+
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
 	return nil
 }

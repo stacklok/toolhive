@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,13 +31,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
@@ -160,10 +161,12 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r.Use(recovery.Middleware)
 
 	// Apply default middleware
+	// NOTE: Timeout is NOT applied globally because workload create/update routes
+	// pull container images, which can take minutes. Instead, timeouts are applied
+	// per-route group in setupDefaultRoutes and within WorkloadRouter.
 	r.Use(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
-		middleware.Timeout(middlewareTimeout),
 		requestBodySizeLimitMiddleware(maxRequestBodySize),
 		headersMiddleware,
 	)
@@ -191,7 +194,7 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	// Setup default routes
 	b.setupDefaultRoutes(r)
 
-	// Add custom routes
+	// Add custom routes (callers of WithRoute are responsible for their own timeout management)
 	for prefix, handler := range b.customRoutes {
 		r.Mount(prefix, handler)
 	}
@@ -239,10 +242,30 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		b.skillStoreCloser = store
 		cm, cmErr := client.NewClientManager()
 		if cmErr != nil {
-			_ = store.Close() // clean up opened store on error
+			_ = store.Close()
 			return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
 		}
-		b.skillManager = skillsvc.New(store, skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}))
+
+		ociStore, ociErr := ociskills.NewStore(ociskills.DefaultStoreRoot())
+		if ociErr != nil {
+			_ = store.Close()
+			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
+		}
+		registry, regErr := ociskills.NewRegistry()
+		if regErr != nil {
+			_ = store.Close()
+			// ociStore is directory-backed with no open handles; no cleanup needed.
+			return fmt.Errorf("failed to create OCI registry client: %w", regErr)
+		}
+		packager := ociskills.NewPackager(ociStore)
+
+		b.skillManager = skillsvc.New(store,
+			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
+			skillsvc.WithOCIStore(ociStore),
+			skillsvc.WithPackager(packager),
+			skillsvc.WithRegistryClient(registry),
+			skillsvc.WithGroupManager(b.groupManager),
+		)
 	}
 
 	return nil
@@ -250,15 +273,20 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 
 // setupDefaultRoutes sets up the default API routes
 func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
-	routers := map[string]http.Handler{
-		"/health":             v1.HealthcheckRouter(b.containerRuntime),
-		"/api/v1beta/version": v1.VersionRouter(),
-		"/api/v1beta/workloads": v1.WorkloadRouter(
-			b.workloadManager,
-			b.containerRuntime,
-			b.groupManager,
-			b.debugMode,
-		),
+	standardTimeout := middleware.Timeout(middlewareTimeout)
+
+	// Workload router manages its own per-route timeouts (image pulls can take minutes)
+	r.Mount("/api/v1beta/workloads", v1.WorkloadRouter(
+		b.workloadManager,
+		b.containerRuntime,
+		b.groupManager,
+		b.debugMode,
+	))
+
+	// All other routes get standard timeout
+	standardRouters := map[string]http.Handler{
+		"/health":               v1.HealthcheckRouter(b.containerRuntime),
+		"/api/v1beta/version":   v1.VersionRouter(),
 		"/api/v1beta/registry":  v1.RegistryRouter(),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
@@ -266,14 +294,13 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
 		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
 	}
+	for prefix, router := range standardRouters {
+		r.Mount(prefix, standardTimeout(router))
+	}
 
 	// Only mount docs router if enabled
 	if b.enableDocs {
-		routers["/api/"] = DocsRouter()
-	}
-
-	for prefix, router := range routers {
-		r.Mount(prefix, router)
+		r.Mount("/api/", standardTimeout(DocsRouter()))
 	}
 }
 
@@ -310,7 +337,7 @@ func setupUnixSocket(address string) (net.Listener, error) {
 
 func cleanupUnixSocket(address string) {
 	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
-		logger.Warnf("failed to remove socket file: %v", err)
+		slog.Warn("failed to remove socket file", "error", err)
 	}
 }
 
@@ -336,13 +363,15 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 
 				updateChecker, err := updates.NewUpdateChecker(versionClient)
 				if err != nil {
-					logger.Warnf("unable to create update client for %s: %s", component, err)
+					//nolint:gosec // G706: component is an internal string constant
+					slog.Warn("unable to create update client", "component", component, "error", err)
 					return
 				}
 
 				err = updateChecker.CheckLatestVersion()
 				if err != nil {
-					logger.Warnf("could not check for updates for %s: %s", component, err)
+					//nolint:gosec // G706: component is an internal string constant
+					slog.Warn("could not check for updates", "component", component, "error", err)
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -408,8 +437,8 @@ func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check Content-Length header first for early rejection
 			if r.ContentLength > maxSize {
-				logger.Warnf("Request body size %d exceeds limit %d for %s %s",
-					r.ContentLength, maxSize, r.Method, r.URL.Path)
+				slog.Warn("request body size exceeds limit", //nolint:gosec // G706: request metadata for diagnostics
+					"content_length", r.ContentLength, "limit", maxSize, "method", r.Method, "path", r.URL.Path)
 				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -497,7 +526,7 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 
 // Start starts the server and blocks until the context is cancelled
 func (s *Server) Start(ctx context.Context) error {
-	logger.Infof("starting %s server at %s", s.addrType, s.address)
+	slog.Info("starting server", "type", s.addrType, "address", s.address)
 
 	// Start server in a goroutine
 	serverErr := make(chan error, 1)
@@ -529,7 +558,7 @@ func (s *Server) shutdown() error {
 	}
 
 	s.cleanup()
-	logger.Debugf("%s server stopped", s.addrType)
+	slog.Debug("server stopped", "type", s.addrType)
 	return nil
 }
 
@@ -537,7 +566,7 @@ func (s *Server) shutdown() error {
 func (s *Server) cleanup() {
 	if s.storeCloser != nil {
 		if err := s.storeCloser.Close(); err != nil {
-			logger.Warnf("failed to close skill store: %v", err)
+			slog.Warn("failed to close skill store", "error", err)
 		}
 	}
 	if s.isUnixSocket {

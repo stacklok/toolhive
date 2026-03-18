@@ -20,6 +20,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
@@ -1102,7 +1103,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 	testCases := []struct {
 		name         string
 		issuer       string
-		jwksURL      string
 		resourceURL  string
 		scopes       []string
 		method       string
@@ -1114,7 +1114,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "successful GET request with all parameters",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{"read", "write"},
 			method:       "GET",
@@ -1126,7 +1125,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "successful GET request without origin",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       nil, // Test default scopes (should default to ["openid"])
 			method:       "GET",
@@ -1138,7 +1136,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "OPTIONS preflight request",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{"openid", "profile"},
 			method:       "OPTIONS",
@@ -1150,7 +1147,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "missing resource URL returns 404",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "",
 			scopes:       []string{"openid"},
 			method:       "GET",
@@ -1160,9 +1156,8 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			expectCORS:   true,
 		},
 		{
-			name:         "empty issuer and jwksURL with resource URL",
+			name:         "empty issuer with resource URL",
 			issuer:       "",
-			jwksURL:      "",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{}, // Test empty scopes (should default to ["openid"])
 			method:       "GET",
@@ -1178,7 +1173,7 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			t.Parallel()
 
 			// Create the handler
-			handler := NewAuthInfoHandler(tc.issuer, tc.jwksURL, tc.resourceURL, tc.scopes)
+			handler := NewAuthInfoHandler(tc.issuer, tc.resourceURL, tc.scopes)
 
 			// Create test request
 			req := httptest.NewRequest(tc.method, "/", nil)
@@ -1223,8 +1218,19 @@ func TestNewAuthInfoHandler(t *testing.T) {
 
 			// Check response body if expected
 			if tc.expectBody {
+				// Regression test: verify jwks_uri is absent from the JSON response.
+				// See https://github.com/stacklok/toolhive/issues/3852
+				bodyBytes := rec.Body.Bytes()
+				var rawMap map[string]any
+				if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
+					t.Fatalf("Failed to decode raw response body: %v", err)
+				}
+				if _, exists := rawMap["jwks_uri"]; exists {
+					t.Errorf("jwks_uri must not appear in the PRM response (RFC 9728 §3.2)")
+				}
+
 				var authInfo RFC9728AuthInfo
-				if err := json.NewDecoder(rec.Body).Decode(&authInfo); err != nil {
+				if err := json.Unmarshal(bodyBytes, &authInfo); err != nil {
 					t.Fatalf("Failed to decode response body: %v", err)
 				}
 
@@ -1241,10 +1247,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 					if len(authInfo.AuthorizationServers) != 1 || authInfo.AuthorizationServers[0] != "" {
 						t.Errorf("Expected authorization servers [''] but got %v", authInfo.AuthorizationServers)
 					}
-				}
-
-				if authInfo.JWKSURI != tc.jwksURL {
-					t.Errorf("Expected JWKS URI %s but got %s", tc.jwksURL, authInfo.JWKSURI)
 				}
 
 				expectedMethods := []string{"header"}
@@ -1399,11 +1401,12 @@ func TestMiddleware_WWWAuthenticate_NoHeader_And_WrongScheme(t *testing.T) {
 			if v, ok := params["resource_metadata"]; ok && v == "" {
 				t.Fatalf("resource_metadata present but empty")
 			}
-			if _, ok := params["error"]; ok {
-				t.Fatalf("unexpected error param for %s", tt.name)
+			// RFC 6750: invalid_request when auth header is missing or wrong scheme
+			if got := params["error"]; got != OAuthErrInvalidRequest {
+				t.Fatalf("expected error=invalid_request for %s, got %q", tt.name, got)
 			}
-			if _, ok := params["error_description"]; ok {
-				t.Fatalf("unexpected error_description for %s", tt.name)
+			if params["error_description"] == "" {
+				t.Fatalf("expected non-empty error_description for %s", tt.name)
 			}
 		})
 	}
@@ -1704,11 +1707,14 @@ func TestBuildWWWAuthenticate_Format(t *testing.T) {
 		issuer:      "https://issuer.example.com",
 		resourceURL: "https://resource.example.com",
 	}
-	got := tv.buildWWWAuthenticate(true, `failed to parse "token", reason`)
+	got := tv.buildWWWAuthenticate(OAuthErrInvalidToken, `failed to parse "token", reason`)
 	want := `Bearer realm="https://issuer.example.com", resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource", error="invalid_token", error_description="failed to parse \"token\", reason"`
 	if got != want {
 		t.Fatalf("format mismatch:\nwant: %s\n got: %s", want, got)
 	}
+	gotInvalidRequest := tv.buildWWWAuthenticate(OAuthErrInvalidRequest, "authorization header required")
+	require.Contains(t, gotInvalidRequest, fmt.Sprintf(`error="%s"`, OAuthErrInvalidRequest), "invalid_request should appear in header")
+	require.Contains(t, gotInvalidRequest, `error_description="authorization header required"`, "error_description should appear")
 }
 
 func TestBuildWWWAuthenticate_Scope(t *testing.T) {
@@ -1753,7 +1759,7 @@ func TestBuildWWWAuthenticate_Scope(t *testing.T) {
 				scopes: tt.scopes,
 			}
 
-			got := tv.buildWWWAuthenticate(false, "")
+			got := tv.buildWWWAuthenticate("", "")
 
 			if tt.expectScope {
 				if !strings.Contains(got, tt.expectValue) {
@@ -1777,7 +1783,7 @@ func TestBuildWWWAuthenticate_ScopeOrdering(t *testing.T) {
 		scopes:      []string{"openid", "offline_access"},
 	}
 
-	got := tv.buildWWWAuthenticate(true, "token expired")
+	got := tv.buildWWWAuthenticate(OAuthErrInvalidToken, "token expired")
 
 	// Verify the order: realm, resource_metadata, scope, error, error_description
 	realmIdx := strings.Index(got, "realm=")
@@ -1800,7 +1806,7 @@ func TestBuildWWWAuthenticate_ResourceMetadata(t *testing.T) {
 		name                     string
 		issuer                   string
 		resourceURL              string
-		includeError             bool
+		errorCode                string
 		errDescription           string
 		expectedResourceMetadata string
 	}{
@@ -1808,56 +1814,56 @@ func TestBuildWWWAuthenticate_ResourceMetadata(t *testing.T) {
 			name:                     "resource URL without path",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "http://localhost:8080",
-			includeError:             false,
+			errorCode:                "",
 			expectedResourceMetadata: `resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource"`,
 		},
 		{
 			name:                     "resource URL with trailing slash",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "http://localhost:8080/",
-			includeError:             false,
+			errorCode:                "",
 			expectedResourceMetadata: `resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource"`,
 		},
 		{
 			name:                     "resource URL with path",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "http://localhost:9090/mcp",
-			includeError:             false,
+			errorCode:                "",
 			expectedResourceMetadata: `resource_metadata="http://localhost:9090/.well-known/oauth-protected-resource/mcp"`,
 		},
 		{
 			name:                     "resource URL with path and trailing slash",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "http://localhost:9090/mcp/",
-			includeError:             false,
+			errorCode:                "",
 			expectedResourceMetadata: `resource_metadata="http://localhost:9090/.well-known/oauth-protected-resource/mcp/"`,
 		},
 		{
 			name:                     "resource URL with nested path",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "https://api.example.com/v1/mcp",
-			includeError:             false,
+			errorCode:                "",
 			expectedResourceMetadata: `resource_metadata="https://api.example.com/.well-known/oauth-protected-resource/v1/mcp"`,
 		},
 		{
 			name:                     "resource URL with HTTPS",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "https://resource.example.com",
-			includeError:             false,
+			errorCode:                "",
 			expectedResourceMetadata: `resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource"`,
 		},
 		{
 			name:                     "empty resource URL",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "",
-			includeError:             false,
+			errorCode:                "",
 			expectedResourceMetadata: "",
 		},
 		{
-			name:                     "with error and description",
+			name:                     "with invalid_token and description",
 			issuer:                   "https://issuer.example.com",
 			resourceURL:              "http://localhost:8080",
-			includeError:             true,
+			errorCode:                OAuthErrInvalidToken,
 			errDescription:           "token expired",
 			expectedResourceMetadata: `resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource"`,
 		},
@@ -1872,7 +1878,7 @@ func TestBuildWWWAuthenticate_ResourceMetadata(t *testing.T) {
 				resourceURL: tt.resourceURL,
 			}
 
-			got := tv.buildWWWAuthenticate(tt.includeError, tt.errDescription)
+			got := tv.buildWWWAuthenticate(tt.errorCode, tt.errDescription)
 
 			// Check that it starts with "Bearer "
 			if !strings.HasPrefix(got, "Bearer ") {
@@ -1897,9 +1903,9 @@ func TestBuildWWWAuthenticate_ResourceMetadata(t *testing.T) {
 			}
 
 			// Check error fields
-			if tt.includeError {
-				if !strings.Contains(got, `error="invalid_token"`) {
-					t.Errorf("Expected error field in: %s", got)
+			if tt.errorCode != "" {
+				if !strings.Contains(got, fmt.Sprintf(`error="%s"`, tt.errorCode)) {
+					t.Errorf("Expected error=%q in: %s", tt.errorCode, got)
 				}
 				if tt.errDescription != "" && !strings.Contains(got, fmt.Sprintf(`error_description="%s"`, tt.errDescription)) {
 					t.Errorf("Expected error_description in: %s", got)
@@ -2138,4 +2144,82 @@ func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
 			t.Errorf("Should not use Google tokeninfo method for non-Google URL, got error: %v", err)
 		}
 	})
+}
+
+func TestMiddleware_RFC6750JSONErrorResponse(t *testing.T) {
+	t.Parallel()
+
+	tv := &TokenValidator{
+		issuer:   issuer,
+		jwksURL:  "https://placeholder/jwks", // prevents lazy OIDC discovery with nil HTTP client
+		registry: NewRegistry(),
+	}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := tv.Middleware(next)
+
+	tests := []struct {
+		name              string
+		setupRequest      func(r *http.Request)
+		wantStatus        int
+		wantErrorCode     string
+		wantDescSubstring string
+	}{
+		{
+			name:              "missing Authorization header returns invalid_request",
+			setupRequest:      func(_ *http.Request) {},
+			wantStatus:        http.StatusUnauthorized,
+			wantErrorCode:     OAuthErrInvalidRequest,
+			wantDescSubstring: "authorization header",
+		},
+		{
+			name: "wrong scheme returns invalid_request",
+			setupRequest: func(r *http.Request) {
+				r.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+			},
+			wantStatus:        http.StatusUnauthorized,
+			wantErrorCode:     OAuthErrInvalidRequest,
+			wantDescSubstring: "authorization header",
+		},
+		{
+			name: "malformed bearer token returns invalid_token",
+			setupRequest: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer not.a.valid.jwt")
+			},
+			wantStatus:        http.StatusUnauthorized,
+			wantErrorCode:     OAuthErrInvalidToken,
+			wantDescSubstring: "Invalid token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			tt.setupRequest(req)
+			rr := httptest.NewRecorder()
+
+			handler.ServeHTTP(rr, req)
+
+			res := rr.Result()
+			defer res.Body.Close()
+
+			require.Equal(t, tt.wantStatus, res.StatusCode)
+			require.True(t, strings.HasPrefix(res.Header.Get("Content-Type"), "application/json"),
+				"expected Content-Type application/json")
+
+			wwwAuth := res.Header.Get("WWW-Authenticate")
+			require.NotEmpty(t, wwwAuth, "WWW-Authenticate header must be set")
+			require.Contains(t, wwwAuth, fmt.Sprintf(`error="%s"`, tt.wantErrorCode),
+				"WWW-Authenticate header must include matching error code")
+
+			var body RFC6750Error
+			require.NoError(t, json.NewDecoder(res.Body).Decode(&body), "response body must be valid JSON")
+			require.Equal(t, tt.wantErrorCode, body.Error)
+			require.Contains(t, body.ErrorDescription, tt.wantDescSubstring)
+		})
+	}
 }

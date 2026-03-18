@@ -30,13 +30,13 @@ import (
 	"github.com/docker/go-connections/nat"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	lb "github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 // DnsImage is the default DNS image used for network permissions
@@ -1400,7 +1400,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		// Check if the DNS image exists locally before failing
 		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
 		if inspectErr == nil {
-			slog.Debug("DNS image exists locally, continuing despite pull failure", "image", DnsImage)
+			slog.Debug("dns image exists locally, continuing despite pull failure", "image", DnsImage)
 		} else {
 			return "", "", fmt.Errorf("failed to pull DNS image: %w", err)
 		}

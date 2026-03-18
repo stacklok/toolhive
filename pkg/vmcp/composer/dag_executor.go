@@ -7,11 +7,10 @@ package composer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -73,12 +72,12 @@ func (d *dagExecutor) executeDAG(
 
 	// Log execution plan statistics for observability
 	stats := d.getExecutionStats(levels)
-	logger.Infof("Workflow execution plan: %d levels, %d total steps, max parallelism: %d",
-		stats["total_levels"], stats["total_steps"], stats["max_parallelism"])
+	slog.Info("workflow execution plan",
+		"levels", stats["total_levels"], "steps", stats["total_steps"], "max_parallelism", stats["max_parallelism"])
 
 	// Execute each level
 	for levelIdx, level := range levels {
-		logger.Debugf("Executing level %d with %d steps", levelIdx, len(level.steps))
+		slog.Debug("executing level", "level", levelIdx, "steps", len(level.steps))
 
 		// Execute all steps in this level in parallel
 		if err := d.executeLevel(ctx, level, execFunc, failureMode); err != nil {
@@ -119,7 +118,7 @@ func (d *dagExecutor) executeLevel(
 			// Execute the step
 			err := execFunc(groupCtx, step)
 			if err != nil {
-				logger.Errorf("Step %s failed: %v", step.ID, err)
+				slog.Error("step failed", "step", step.ID, "error", err)
 
 				// Check if we should continue despite the error
 				shouldContinue := d.shouldContinueOnError(step, failureMode)
@@ -133,7 +132,7 @@ func (d *dagExecutor) executeLevel(
 				return err
 			}
 
-			logger.Debugf("Step %s completed successfully", step.ID)
+			slog.Debug("step completed successfully", "step", step.ID)
 			return nil
 		})
 	}
@@ -145,7 +144,7 @@ func (d *dagExecutor) executeLevel(
 
 	// Log continued errors if any
 	if len(continuedErrors) > 0 {
-		logger.Warnf("Level completed with %d continued errors (mode: %s)", len(continuedErrors), failureMode)
+		slog.Warn("level completed with continued errors", "count", len(continuedErrors), "mode", failureMode)
 	}
 
 	return nil

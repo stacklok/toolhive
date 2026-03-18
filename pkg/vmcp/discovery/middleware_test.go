@@ -20,13 +20,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
-	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	sessionmocks "github.com/stacklok/toolhive/pkg/vmcp/session/types/mocks"
 )
 
-// createTestSessionManager creates a session manager with VMCPSession factory for testing.
+// createTestSessionManager creates a session manager with StreamableSession factory for testing.
 func createTestSessionManager(t *testing.T) *transportsession.Manager {
 	t.Helper()
-	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	sessionMgr := transportsession.NewManager(30*time.Minute, transportsession.NewStreamableSession)
 	t.Cleanup(func() { _ = sessionMgr.Stop() })
 	return sessionMgr
 }
@@ -186,7 +186,7 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 		_, _ = w.Write([]byte("success"))
 	})
 
-	// Create session manager and store routing table in a session
+	// Create session manager and store routing table in a MultiSession
 	sessionMgr := createTestSessionManager(t)
 
 	// Create a routing table for this session
@@ -196,10 +196,20 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 		Prompts:   make(map[string]*vmcp.BackendTarget),
 	}
 
-	// Add session with routing table
-	sess := vmcpsession.NewVMCPSession("test-session-123")
-	sess.SetRoutingTable(routingTable)
-	err := sessionMgr.AddSession(sess)
+	// Add a MockMultiSession with the routing table
+	mockSess := sessionmocks.NewMockMultiSession(ctrl)
+	mockSess.EXPECT().ID().Return("test-session-123").AnyTimes()
+	mockSess.EXPECT().GetRoutingTable().Return(routingTable).AnyTimes()
+	mockSess.EXPECT().Tools().Return(nil).AnyTimes()
+	mockSess.EXPECT().Touch().AnyTimes()
+	mockSess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+	mockSess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+	mockSess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+	mockSess.EXPECT().GetData().Return(nil).AnyTimes()
+	mockSess.EXPECT().SetData(gomock.Any()).AnyTimes()
+	mockSess.EXPECT().GetMetadata().Return(nil).AnyTimes()
+	mockSess.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+	err := sessionMgr.AddSession(mockSess)
 	require.NoError(t, err, "failed to add session")
 
 	// Wrap handler with middleware
@@ -479,6 +489,8 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 	}
 
+	testTimeout := 100 * time.Millisecond
+
 	// Simulate slow discovery that takes longer than timeout
 	mockMgr.EXPECT().
 		Discover(gomock.Any(), backends).
@@ -486,16 +498,13 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 			// Verify timeout context is set
 			deadline, ok := ctx.Deadline()
 			assert.True(t, ok, "context should have a deadline")
-			assert.True(t, time.Until(deadline) <= discoveryTimeout, "timeout should be set correctly")
+			assert.True(t, time.Until(deadline) <= testTimeout, "timeout should be set correctly")
 
 			// Simulate slow operation that exceeds the timeout
-			// The 15-second timeout will expire before this 20-second sleep completes
 			select {
 			case <-ctx.Done():
-				// Context was cancelled (either timeout or cancellation)
 				return nil, ctx.Err()
-			case <-time.After(20 * time.Second):
-				// This should never be reached because context times out first
+			case <-time.After(5 * time.Second):
 				return nil, errors.New("operation completed without timeout")
 			}
 		})
@@ -505,7 +514,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil, WithDiscoveryTimeout(testTimeout))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen

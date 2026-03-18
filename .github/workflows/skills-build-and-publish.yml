@@ -1,0 +1,128 @@
+#
+# Copyright 2025 Stacklok, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This workflow builds distributable Claude Code Agent Skills from
+# skills/ and optionally pushes them as OCI artifacts to GHCR.
+
+name: Build and Publish Skills
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: "Push built skills to the registry"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  skills-build-and-publish:
+    name: Build and Publish Skills
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # packages:write is only exercised when inputs.push is true,
+      # but GitHub Actions does not support conditional permissions.
+      packages: write
+
+    env:
+      BASE_REPO: "ghcr.io/stacklok/toolhive/skills"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Compute version number
+        id: version-string
+        uses: ./.github/actions/compute-version
+
+      - name: Build thv binary
+        run: go build -o ./thv ./cmd/thv
+
+      - name: Login to GitHub Container Registry
+        if: inputs.push
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start thv serve
+        run: |
+          ./thv serve --host 127.0.0.1 --port 8080 > /tmp/thv-serve.log 2>&1 &
+          echo "THV_PID=$!" >> "$GITHUB_ENV"
+
+          # Wait for the server to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; then
+              echo "thv serve is ready (PID: $!)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "thv serve failed to start after 30s; logs:"
+              cat /tmp/thv-serve.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Verify process is still alive after health check
+          kill -0 "$!" 2>/dev/null || { echo "thv serve exited unexpectedly; logs:"; cat /tmp/thv-serve.log; exit 1; }
+
+      - name: Build skills
+        env:
+          TAG: ${{ steps.version-string.outputs.tag }}
+          PUSH: ${{ inputs.push }}
+          GH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          for skill_dir in skills/*/; do
+            # Skip if no skills exist
+            [ -d "$skill_dir" ] || continue
+
+            skill_name=$(basename "$skill_dir")
+            ref="${BASE_REPO}/${skill_name}:${TAG}"
+
+            echo "Building skill: ${skill_name} -> ${ref}"
+            built_ref=$(./thv skill build "$skill_dir" --tag "$ref")
+            echo "Built: ${built_ref}"
+
+            if [ "$PUSH" = "true" ]; then
+              echo "Pushing skill: ${built_ref}"
+              ./thv skill push "$built_ref"
+
+              # Also tag as latest when building from a release tag
+              if [[ "$GH_REF" == refs/tags/* ]]; then
+                latest_ref="${BASE_REPO}/${skill_name}:latest"
+                echo "Tagging as latest: ${latest_ref}"
+                built_latest=$(./thv skill build "$skill_dir" --tag "$latest_ref")
+                ./thv skill push "$built_latest"
+              fi
+
+              echo "Published: ${ref}"
+            else
+              echo "Skipping push (build-only mode)"
+            fi
+          done
+
+      - name: Stop thv serve
+        if: always()
+        run: kill "$THV_PID" 2>/dev/null || true

@@ -19,13 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 // createTestScheme creates a test scheme with required types
 func createTestScheme() *runtime.Scheme {

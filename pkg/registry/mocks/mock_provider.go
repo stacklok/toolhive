@@ -12,7 +12,7 @@ package mocks
 import (
 	reflect "reflect"
 
-	registry "github.com/stacklok/toolhive/pkg/registry/registry"
+	registry "github.com/stacklok/toolhive-core/registry/types"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -38,21 +38,6 @@ func NewMockProvider(ctrl *gomock.Controller) *MockProvider {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
-}
-
-// GetImageServer mocks base method.
-func (m *MockProvider) GetImageServer(name string) (*registry.ImageMetadata, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetImageServer", name)
-	ret0, _ := ret[0].(*registry.ImageMetadata)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetImageServer indicates an expected call of GetImageServer.
-func (mr *MockProviderMockRecorder) GetImageServer(name any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetImageServer", reflect.TypeOf((*MockProvider)(nil).GetImageServer), name)
 }
 
 // GetRegistry mocks base method.
@@ -85,19 +70,34 @@ func (mr *MockProviderMockRecorder) GetServer(name any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServer", reflect.TypeOf((*MockProvider)(nil).GetServer), name)
 }
 
-// ListImageServers mocks base method.
-func (m *MockProvider) ListImageServers() ([]*registry.ImageMetadata, error) {
+// GetSkill mocks base method.
+func (m *MockProvider) GetSkill(namespace, name string) (*registry.Skill, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListImageServers")
-	ret0, _ := ret[0].([]*registry.ImageMetadata)
+	ret := m.ctrl.Call(m, "GetSkill", namespace, name)
+	ret0, _ := ret[0].(*registry.Skill)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// ListImageServers indicates an expected call of ListImageServers.
-func (mr *MockProviderMockRecorder) ListImageServers() *gomock.Call {
+// GetSkill indicates an expected call of GetSkill.
+func (mr *MockProviderMockRecorder) GetSkill(namespace, name any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListImageServers", reflect.TypeOf((*MockProvider)(nil).ListImageServers))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSkill", reflect.TypeOf((*MockProvider)(nil).GetSkill), namespace, name)
+}
+
+// ListAvailableSkills mocks base method.
+func (m *MockProvider) ListAvailableSkills() ([]registry.Skill, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListAvailableSkills")
+	ret0, _ := ret[0].([]registry.Skill)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListAvailableSkills indicates an expected call of ListAvailableSkills.
+func (mr *MockProviderMockRecorder) ListAvailableSkills() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAvailableSkills", reflect.TypeOf((*MockProvider)(nil).ListAvailableSkills))
 }
 
 // ListServers mocks base method.
@@ -115,21 +115,6 @@ func (mr *MockProviderMockRecorder) ListServers() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListServers", reflect.TypeOf((*MockProvider)(nil).ListServers))
 }
 
-// SearchImageServers mocks base method.
-func (m *MockProvider) SearchImageServers(query string) ([]*registry.ImageMetadata, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SearchImageServers", query)
-	ret0, _ := ret[0].([]*registry.ImageMetadata)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// SearchImageServers indicates an expected call of SearchImageServers.
-func (mr *MockProviderMockRecorder) SearchImageServers(query any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchImageServers", reflect.TypeOf((*MockProvider)(nil).SearchImageServers), query)
-}
-
 // SearchServers mocks base method.
 func (m *MockProvider) SearchServers(query string) ([]registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()
@@ -143,4 +128,19 @@ func (m *MockProvider) SearchServers(query string) ([]registry.ServerMetadata, e
 func (mr *MockProviderMockRecorder) SearchServers(query any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchServers", reflect.TypeOf((*MockProvider)(nil).SearchServers), query)
+}
+
+// SearchSkills mocks base method.
+func (m *MockProvider) SearchSkills(query string) ([]registry.Skill, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SearchSkills", query)
+	ret0, _ := ret[0].([]registry.Skill)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SearchSkills indicates an expected call of SearchSkills.
+func (mr *MockProviderMockRecorder) SearchSkills(query any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchSkills", reflect.TypeOf((*MockProvider)(nil).SearchSkills), query)
 }

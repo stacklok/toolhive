@@ -33,12 +33,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
 
       - name: Setup helm-docs
         run: go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+
+      # Remove stale release branch from a previous failed run to avoid
+      # "Reference already exists" when releaseo tries to create the branch.
+      # Only deletes if the branch exists with no open PR (stale from failed run).
+      - name: Clean up stale release branch from previous failed run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          CURRENT=$(cat VERSION | tr -d 'v')
+          IFS='.' read -r x y z <<< "$CURRENT"
+          case "$BUMP_TYPE" in
+            patch) z=$((z+1));;
+            minor) y=$((y+1)); z=0;;
+            major) x=$((x+1)); y=0; z=0;;
+            *) echo "Unknown bump type: $BUMP_TYPE"; exit 1;;
+          esac
+          NEW_VERSION="${x}.${y}.${z}"
+          BRANCH="release/v${NEW_VERSION}"
+          OPEN_PR=$(gh pr list --head "$BRANCH" --state open --json number -q 'length' 2>/dev/null || echo "0")
+          if [ "$OPEN_PR" = "0" ] || [ -z "$OPEN_PR" ]; then
+            echo "Deleting stale branch $BRANCH if it exists (from previous failed run)..."
+            gh api -X DELETE "/repos/${{ github.repository }}/git/refs/heads/${BRANCH}" 2>/dev/null || true
+          else
+            echo "Branch $BRANCH has an open PR - skipping cleanup. Close or merge the existing PR first."
+            exit 1
+          fi
 
       - name: Create Release PR
         id: release

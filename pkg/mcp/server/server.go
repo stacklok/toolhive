@@ -7,13 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -39,6 +39,19 @@ type Server struct {
 
 // New creates a new ToolHive MCP server
 func New(ctx context.Context, config *Config) (*Server, error) {
+	// Create ToolHive handler
+	handler, err := NewHandler(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ToolHive handler: %w", err)
+	}
+
+	return newServerWithHandler(ctx, config, handler), nil
+}
+
+// newServerWithHandler creates a new Server with a pre-built handler. This is
+// package-private and intended for use in tests where handler dependencies can
+// be injected without a real container runtime.
+func newServerWithHandler(ctx context.Context, config *Config, handler *Handler) *Server {
 	// Create the MCP server
 	versionInfo := versions.GetVersionInfo()
 	mcpServer := server.NewMCPServer(
@@ -47,12 +60,6 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 		server.WithToolCapabilities(false),
 		server.WithLogging(),
 	)
-
-	// Create ToolHive handler
-	handler, err := NewHandler(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ToolHive handler: %w", err)
-	}
 
 	// Register tools
 	registerTools(mcpServer, handler)
@@ -79,12 +86,14 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 		mcpServer:  mcpServer,
 		httpServer: httpServer,
 		handler:    handler,
-	}, nil
+	}
 }
 
 // Start starts the MCP server
 func (s *Server) Start() error {
-	logger.Debugf("Starting ToolHive MCP server on http://%s:%s/mcp", s.config.Host, s.config.Port)
+	//nolint:gosec // G706: host/port from server config
+	slog.Debug("starting ToolHive MCP server",
+		"host", s.config.Host, "port", s.config.Port)
 	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("MCP server error: %w", err)
 	}
@@ -93,7 +102,7 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the MCP server
 func (s *Server) Shutdown(ctx context.Context) error {
-	logger.Debug("Shutting down MCP server...")
+	slog.Debug("shutting down MCP server")
 	return s.httpServer.Shutdown(ctx)
 }
 

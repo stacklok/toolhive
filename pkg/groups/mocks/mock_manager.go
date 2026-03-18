@@ -141,3 +141,17 @@ func (mr *MockManagerMockRecorder) UnregisterClients(ctx, groupNames, clientName
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnregisterClients", reflect.TypeOf((*MockManager)(nil).UnregisterClients), ctx, groupNames, clientNames)
 }
+
+// Update mocks base method.
+func (m *MockManager) Update(ctx context.Context, group *groups.Group) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Update", ctx, group)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Update indicates an expected call of Update.
+func (mr *MockManagerMockRecorder) Update(ctx, group any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockManager)(nil).Update), ctx, group)
+}

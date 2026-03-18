@@ -20,7 +20,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
+var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server

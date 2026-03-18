@@ -23,13 +23,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
-
-func init() {
-	logger.Initialize() // ensure logging doesn't panic
-}
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
@@ -75,15 +70,15 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 }
 
 func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.ReverseProxy {
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.Director = func(r *http.Request) {
-		r.URL.Scheme = targetURL.Scheme
-		r.URL.Host = targetURL.Host
-		r.Host = targetURL.Host
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(targetURL)
+			pr.SetXForwarded()
+		},
+		FlushInterval:  -1,
+		Transport:      &tracingTransport{base: http.DefaultTransport, p: p},
+		ModifyResponse: p.modifyResponse,
 	}
-	proxy.FlushInterval = -1
-	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
-	proxy.ModifyResponse = p.modifyResponse
 	return proxy
 }
 
@@ -162,22 +157,18 @@ func TestTracePropagationHeaders(t *testing.T) {
 	targetURL, err := url.Parse(downstream.URL)
 	assert.NoError(t, err)
 
-	// Create reverse proxy with the same director logic as the main code
-	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
-	reverseProxy.FlushInterval = -1
+	// Create reverse proxy with the same rewrite logic as the main code
+	reverseProxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(targetURL)
+			pr.SetXForwarded()
 
-	// Store the original director
-	originalDirector := reverseProxy.Director
-
-	// Override director to inject trace propagation headers (same as main code)
-	reverseProxy.Director = func(req *http.Request) {
-		// Apply original director logic first
-		originalDirector(req)
-
-		// Inject OpenTelemetry trace propagation headers for downstream tracing
-		if req.Context() != nil {
-			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-		}
+			// Inject OpenTelemetry trace propagation headers for downstream tracing
+			if pr.Out.Context() != nil {
+				otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
+			}
+		},
 	}
 
 	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
@@ -808,15 +799,22 @@ func TestGetSSERewriteConfig(t *testing.T) {
 				tt.endpointPrefix, tt.trustProxyHeaders,
 			)
 
-			req := httptest.NewRequest("GET", "/sse", nil)
+			// Build the inbound request with the client's headers
+			inbound := httptest.NewRequest("GET", "/sse", nil)
 			for k, v := range tt.headers {
-				req.Header.Set(k, v)
+				inbound.Header.Set(k, v)
 			}
+
+			// Build the outbound request with the inbound stashed in context,
+			// mirroring what the Rewrite function does in production.
+			outbound := httptest.NewRequest("GET", "/sse", nil)
+			ctx := InboundRequestToContext(outbound.Context(), inbound)
+			outbound = outbound.WithContext(ctx)
 
 			// Access the SSE response processor to test configuration
 			sseProcessor, ok := proxy.responseProcessor.(*SSEResponseProcessor)
 			assert.True(t, ok, "expected SSE response processor")
-			config := sseProcessor.getSSERewriteConfig(req)
+			config := sseProcessor.getSSERewriteConfig(outbound)
 
 			assert.Equal(t, tt.expectedPrefix, config.prefix)
 			assert.Equal(t, tt.expectedScheme, config.scheme)
@@ -1034,7 +1032,7 @@ func setupRemoteProxyTest(t *testing.T, serverURL string, callback types.HealthC
 func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback types.HealthCheckFailedCallback, timeout time.Duration) (*TransparentProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 
-	proxy := newTransparentProxyWithOptions(
+	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1",
 		0,
 		serverURL,
@@ -1764,4 +1762,164 @@ func TestPrefixHandlers_WellKnownNamespaceCoexistence(t *testing.T) {
 			assert.Equal(t, tt.expectedHandler, actualHandler, "%s: expected handler %s, got %s", tt.description, tt.expectedHandler, actualHandler)
 		})
 	}
+}
+
+// TestTransparentProxy_IsRunningDoesNotBlockDuringStop verifies that IsRunning()
+// returns immediately even while Stop() is blocked draining long-lived connections.
+// This is the core regression test for the mutex contention fix.
+func TestTransparentProxy_IsRunningDoesNotBlockDuringStop(t *testing.T) {
+	t.Parallel()
+
+	// Create a backend that holds SSE connections open until we signal
+	releaseConn := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Hold the connection open until released
+		<-releaseConn
+	}))
+	defer backend.Close()
+
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, backend.URL,
+		nil, nil, nil,
+		false, // no health check
+		false, "sse", nil, nil, "", false, nil,
+		// Use a long shutdown timeout so Stop() blocks on the SSE connection
+		withShutdownTimeout(10*time.Second),
+	)
+
+	ctx := t.Context()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	// Establish an SSE connection through the proxy
+	client := &http.Client{Timeout: 0} // no client timeout
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", actualPort))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Call Stop() in a goroutine — it will block on server.Shutdown()
+	// waiting for the SSE connection to close
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- proxy.Stop(ctx)
+	}()
+
+	// Give Stop() a moment to acquire the lock and begin shutdown
+	time.Sleep(100 * time.Millisecond)
+
+	// IsRunning() must return false within 2 seconds — not blocked by mutex
+	isRunningDone := make(chan bool, 1)
+	go func() {
+		running, _ := proxy.IsRunning()
+		isRunningDone <- running
+	}()
+
+	select {
+	case running := <-isRunningDone:
+		assert.False(t, running, "IsRunning() should return false after Stop() signals shutdown")
+	case <-time.After(2 * time.Second):
+		t.Fatal("IsRunning() blocked for >2s — mutex contention not fixed")
+	}
+
+	// Release the backend connection so Stop() can complete
+	close(releaseConn)
+
+	select {
+	case err := <-stopDone:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() did not complete after releasing connection")
+	}
+}
+
+// TestTransparentProxy_StopForcesCloseAfterTimeout verifies that Stop()
+// force-closes connections after the shutdown timeout expires, preventing
+// indefinite blocking on long-lived connections.
+func TestTransparentProxy_StopForcesCloseAfterTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Channel to unblock the backend handler when the test is done,
+	// so httptest.Server.Close() doesn't hang.
+	testDone := make(chan struct{})
+
+	// Create a backend that holds SSE connections open until testDone
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Hold the connection open — simulates a long-lived SSE stream.
+		// Released by testDone so httptest.Server.Close() can complete.
+		<-testDone
+	}))
+	// Release handler BEFORE closing backend (Close waits for handlers to finish)
+	defer func() {
+		close(testDone)
+		backend.Close()
+	}()
+
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, backend.URL,
+		nil, nil, nil,
+		false, // no health check
+		false, "sse", nil, nil, "", false, nil,
+		// Use a very short timeout to test the force-close path
+		withShutdownTimeout(500*time.Millisecond),
+	)
+
+	ctx := t.Context()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	// Establish an SSE connection through the proxy
+	client := &http.Client{Timeout: 0}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", actualPort))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Stop() should complete within shutdownTimeout + margin, not block forever
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- proxy.Stop(ctx)
+	}()
+
+	select {
+	case err := <-stopDone:
+		assert.NoError(t, err, "Stop() should not return an error after force-close")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop() blocked for >3s — shutdown timeout safety net not working")
+	}
+}
+
+// TestTransparentProxy_ServerHasIdleTimeout verifies that the HTTP server
+// is configured with an IdleTimeout to prevent idle keep-alive connections
+// from blocking server.Shutdown() indefinitely.
+func TestTransparentProxy_ServerHasIdleTimeout(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, "http://localhost:9999",
+		nil, nil, nil,
+		false, false, "sse", nil, nil, "", false, nil,
+	)
+
+	ctx := t.Context()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	// Access the server directly (we're in the same package)
+	require.NotNil(t, proxy.server)
+	assert.Equal(t, 120*time.Second, proxy.server.IdleTimeout,
+		"HTTP server should have IdleTimeout set to 120s")
 }

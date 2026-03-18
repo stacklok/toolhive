@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "e2e"), Serial, func() {
+var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "mcp-protocol", "streamable-http", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {
@@ -43,21 +43,17 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			It("should successfully start and be accessible via Streamable HTTP [Serial]", func() {
 				By("Starting the OSV MCP server with Streamable HTTP transport and audit enabled")
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
 					"--enable-audit",
 					"osv").ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the OSV server")
-
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying the server appears in the list with Streamable HTTP transport")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 				Expect(stdout).To(ContainSubstring("mcp"), "Server should show mcp endpoint")

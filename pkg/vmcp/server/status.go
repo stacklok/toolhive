@@ -6,12 +6,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 // StatusResponse represents the vMCP server's operational status.
@@ -52,7 +53,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode status response: %v", err)
+		slog.Error("failed to encode status response", "error", err)
 	}
 }
 
@@ -63,17 +64,36 @@ func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 	backends := s.backendRegistry.List(ctx)
 	backendStatuses := make([]BackendStatus, 0, len(backends))
 
+	// Get live health states from the health monitor (if enabled) so that
+	// /status reflects the same runtime health as /api/backends/health.
+	// Skip the call — and the map allocation — entirely when monitoring is
+	// disabled. Reading from a nil map is safe in Go and returns zero values.
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	var liveHealthStates map[string]*health.State
+	if healthMon != nil {
+		liveHealthStates = healthMon.GetAllBackendStates()
+	}
+
 	hasHealthyBackend := false
 	for _, backend := range backends {
+		// Prefer the live health monitor state over the static registry value.
+		healthStatus := backend.HealthStatus
+		if liveState, ok := liveHealthStates[backend.ID]; ok {
+			healthStatus = liveState.Status
+		}
+
 		status := BackendStatus{
 			Name:      backend.Name,
-			Health:    string(backend.HealthStatus),
+			Health:    string(healthStatus),
 			Transport: backend.TransportType,
 			AuthType:  getAuthType(backend.AuthConfig),
 		}
 		backendStatuses = append(backendStatuses, status)
 
-		if backend.HealthStatus == vmcp.BackendHealthy {
+		if healthStatus == vmcp.BackendHealthy {
 			hasHealthyBackend = true
 		}
 	}

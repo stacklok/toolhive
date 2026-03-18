@@ -8,52 +8,6 @@ const docTemplate = `{
     "schemes": {{ marshal .Schemes }},
     "components": {
         "schemas": {
-            "audit.Config": {
-                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
-                "properties": {
-                    "component": {
-                        "description": "Component is the component name to use in audit events.\n+optional",
-                        "type": "string"
-                    },
-                    "enabled": {
-                        "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "eventTypes": {
-                        "description": "EventTypes specifies which event types to audit. If empty, all events are audited.\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "excludeEventTypes": {
-                        "description": "ExcludeEventTypes specifies which event types to exclude from auditing.\nThis takes precedence over EventTypes.\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "includeRequestData": {
-                        "description": "IncludeRequestData determines whether to include request data in audit logs.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "includeResponseData": {
-                        "description": "IncludeResponseData determines whether to include response data in audit logs.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "logFile": {
-                        "description": "LogFile specifies the file path for audit logs. If empty, logs to stdout.\n+optional",
-                        "type": "string"
-                    },
-                    "maxDataSize": {
-                        "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
-                        "type": "integer"
-                    }
-                },
-                "type": "object"
-            },
             "auth.TokenValidatorConfig": {
                 "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
                 "properties": {
@@ -111,7 +65,289 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "authserver.OAuth2UpstreamRunConfig": {
+            "github_com_stacklok_toolhive-core_registry_types.Registry": {
+                "description": "Full registry data",
+                "properties": {
+                    "groups": {
+                        "description": "Groups is a slice of group definitions containing related MCP servers",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Group"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "last_updated": {
+                        "description": "LastUpdated is the timestamp when the registry was last updated, in RFC3339 format",
+                        "type": "string"
+                    },
+                    "remote_servers": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
+                        },
+                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions\nThese are MCP servers accessed via HTTP/HTTPS using the thv proxy command",
+                        "type": "object"
+                    },
+                    "servers": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/registry.ImageMetadata"
+                        },
+                        "description": "Servers is a map of server names to their corresponding server definitions",
+                        "type": "object"
+                    },
+                    "version": {
+                        "description": "Version is the schema version of the registry",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_audit.Config": {
+                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
+                "properties": {
+                    "component": {
+                        "description": "Component is the component name to use in audit events.\n+optional",
+                        "type": "string"
+                    },
+                    "enabled": {
+                        "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "eventTypes": {
+                        "description": "EventTypes specifies which event types to audit. If empty, all events are audited.\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "excludeEventTypes": {
+                        "description": "ExcludeEventTypes specifies which event types to exclude from auditing.\nThis takes precedence over EventTypes.\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "includeRequestData": {
+                        "description": "IncludeRequestData determines whether to include request data in audit logs.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "includeResponseData": {
+                        "description": "IncludeResponseData determines whether to include response data in audit logs.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "logFile": {
+                        "description": "LogFile specifies the file path for audit logs. If empty, logs to stdout.\n+optional",
+                        "type": "string"
+                    },
+                    "maxDataSize": {
+                        "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_auth_awssts.Config": {
+                "description": "AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services",
+                "properties": {
+                    "fallback_role_arn": {
+                        "description": "FallbackRoleArn is the IAM role ARN to assume when no role mapping matches.",
+                        "type": "string"
+                    },
+                    "region": {
+                        "description": "Region is the AWS region for STS and SigV4 signing.",
+                        "type": "string"
+                    },
+                    "role_claim": {
+                        "description": "RoleClaim is the JWT claim to use for role mapping (default: \"groups\").",
+                        "type": "string"
+                    },
+                    "role_mappings": {
+                        "description": "RoleMappings maps JWT claim values to IAM roles with priority.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "service": {
+                        "description": "Service is the AWS service name for SigV4 signing (default: \"aws-mcp\").",
+                        "type": "string"
+                    },
+                    "session_duration": {
+                        "description": "SessionDuration is the duration in seconds for assumed role credentials (default: 3600).",
+                        "type": "integer"
+                    },
+                    "session_name_claim": {
+                        "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping": {
+                "properties": {
+                    "claim": {
+                        "description": "Claim is the simple claim value to match (e.g., group name).\nInternally compiles to a CEL expression: \"\u003cclaim_value\u003e\" in claims[\"\u003crole_claim\u003e\"]\nMutually exclusive with Matcher.",
+                        "type": "string"
+                    },
+                    "matcher": {
+                        "description": "Matcher is a CEL expression for complex matching against JWT claims.\nThe expression has access to a \"claims\" variable containing all JWT claims.\nExamples:\n  - \"admins\" in claims[\"groups\"]\n  - claims[\"sub\"] == \"user123\" \u0026\u0026 !(\"act\" in claims)\nMutually exclusive with Claim.",
+                        "type": "string"
+                    },
+                    "priority": {
+                        "description": "Priority determines selection order (lower number = higher priority).\nWhen multiple mappings match, the one with the lowest priority is selected.\nWhen nil (omitted), the mapping has the lowest possible priority, and\nconfiguration order acts as tie-breaker via stable sort.",
+                        "type": "integer"
+                    },
+                    "role_arn": {
+                        "description": "RoleArn is the IAM role ARN to assume when this mapping matches.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_auth_remote.Config": {
+                "description": "RemoteAuthConfig contains OAuth configuration for remote MCP servers",
+                "properties": {
+                    "authorize_url": {
+                        "type": "string"
+                    },
+                    "bearer_token": {
+                        "description": "Bearer token configuration (alternative to OAuth)",
+                        "type": "string"
+                    },
+                    "bearer_token_file": {
+                        "type": "string"
+                    },
+                    "cached_client_id": {
+                        "description": "Cached DCR client credentials for persistence across restarts.\nThese are obtained during Dynamic Client Registration and needed to refresh tokens.\nClientID is stored as plain text since it's public information.",
+                        "type": "string"
+                    },
+                    "cached_client_secret_ref": {
+                        "type": "string"
+                    },
+                    "cached_refresh_token_ref": {
+                        "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
+                        "type": "string"
+                    },
+                    "cached_reg_token_ref": {
+                        "description": "RegistrationAccessToken is used to update/delete the client registration.\nStored as a secret reference since it's sensitive.",
+                        "type": "string"
+                    },
+                    "cached_secret_expiry": {
+                        "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
+                        "type": "string"
+                    },
+                    "cached_token_expiry": {
+                        "type": "string"
+                    },
+                    "callback_port": {
+                        "type": "integer"
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "OAuth endpoint configuration (from registry)",
+                        "type": "string"
+                    },
+                    "oauth_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "OAuth parameters for server-specific customization",
+                        "type": "object"
+                    },
+                    "resource": {
+                        "description": "Resource is the OAuth 2.0 resource indicator (RFC 8707).",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "skip_browser": {
+                        "type": "boolean"
+                    },
+                    "timeout": {
+                        "example": "5m",
+                        "type": "string"
+                    },
+                    "token_url": {
+                        "type": "string"
+                    },
+                    "use_pkce": {
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config": {
+                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
+                "properties": {
+                    "audience": {
+                        "description": "Audience is the target audience for the exchanged token",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth 2.0 client identifier",
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "description": "ClientSecret is the OAuth 2.0 client secret",
+                        "type": "string"
+                    },
+                    "external_token_header_name": {
+                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
+                        "type": "string"
+                    },
+                    "header_strategy": {
+                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes is the list of scopes to request for the exchanged token",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject_token_type": {
+                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.\nIf empty, defaults to tokenTypeAccessToken.",
+                        "type": "string"
+                    },
+                    "token_url": {
+                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config": {
+                "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
+                "properties": {
+                    "custom_header_name": {
+                        "description": "CustomHeaderName is the header name when HeaderStrategy is \"custom\".",
+                        "type": "string"
+                    },
+                    "header_strategy": {
+                        "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
                     "authorization_endpoint": {
@@ -146,13 +382,16 @@ const docTemplate = `{
                         "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
                         "type": "string"
                     },
+                    "token_response_mapping": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenResponseMappingRunConfig"
+                    },
                     "userinfo": {
-                        "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig"
                     }
                 },
                 "type": "object"
             },
-            "authserver.OIDCUpstreamRunConfig": {
+            "github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig": {
                 "description": "OIDCConfig contains OIDC-specific configuration.\nRequired when Type is \"oidc\", must be nil when Type is \"oauth2\".",
                 "properties": {
                     "client_id": {
@@ -184,12 +423,12 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "userinfo_override": {
-                        "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig"
                     }
                 },
                 "type": "object"
             },
-            "authserver.RunConfig": {
+            "github_com_stacklok_toolhive_pkg_authserver.RunConfig": {
                 "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
                 "properties": {
                     "allowed_audiences": {
@@ -217,7 +456,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "scopes_supported": {
-                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to [\"openid\", \"profile\", \"email\", \"offline_access\"].",
+                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to registration.DefaultScopes ([\"openid\", \"profile\", \"email\", \"offline_access\"]).",
                         "items": {
                             "type": "string"
                         },
@@ -225,15 +464,18 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "signing_key_config": {
-                        "$ref": "#/components/schemas/authserver.SigningKeyRunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig"
+                    },
+                    "storage": {
+                        "$ref": "#/components/schemas/storage.RunConfig"
                     },
                     "token_lifespans": {
-                        "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "upstreams": {
                         "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nCurrently only a single upstream is supported.",
                         "items": {
-                            "$ref": "#/components/schemas/authserver.UpstreamRunConfig"
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -241,7 +483,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "authserver.SigningKeyRunConfig": {
+            "github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig": {
                 "description": "SigningKeyConfig configures the signing key provider for JWT operations.\nIf nil or empty, an ephemeral signing key will be auto-generated (development only).",
                 "properties": {
                     "fallback_key_files": {
@@ -263,7 +505,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "authserver.TokenLifespanRunConfig": {
+            "github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig": {
                 "description": "TokenLifespans configures the duration that various tokens are valid.\nIf nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).",
                 "properties": {
                     "access_token_lifespan": {
@@ -281,7 +523,29 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "authserver.UpstreamProviderType": {
+            "github_com_stacklok_toolhive_pkg_authserver.TokenResponseMappingRunConfig": {
+                "description": "TokenResponseMapping configures custom field extraction from non-standard token responses.\nWhen set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using\nthe configured dot-notation paths.",
+                "properties": {
+                    "access_token_path": {
+                        "description": "AccessTokenPath is the dot-notation path to the access token (required).",
+                        "type": "string"
+                    },
+                    "expires_in_path": {
+                        "description": "ExpiresInPath is the dot-notation path to the expires_in value. Defaults to \"expires_in\".",
+                        "type": "string"
+                    },
+                    "refresh_token_path": {
+                        "description": "RefreshTokenPath is the dot-notation path to the refresh token. Defaults to \"refresh_token\".",
+                        "type": "string"
+                    },
+                    "scope_path": {
+                        "description": "ScopePath is the dot-notation path to the scope. Defaults to \"scope\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType": {
                 "description": "Type specifies the provider type: \"oidc\" or \"oauth2\".",
                 "enum": [
                     "oidc",
@@ -293,25 +557,25 @@ const docTemplate = `{
                     "UpstreamProviderTypeOAuth2"
                 ]
             },
-            "authserver.UpstreamRunConfig": {
+            "github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig": {
                 "properties": {
                     "name": {
                         "description": "Name uniquely identifies this upstream.\nUsed for routing decisions and session binding in multi-upstream scenarios.\nIf empty when only one upstream is configured, defaults to \"default\".",
                         "type": "string"
                     },
                     "oauth2_config": {
-                        "$ref": "#/components/schemas/authserver.OAuth2UpstreamRunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig"
                     },
                     "oidc_config": {
-                        "$ref": "#/components/schemas/authserver.OIDCUpstreamRunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig"
                     },
                     "type": {
-                        "$ref": "#/components/schemas/authserver.UpstreamProviderType"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType"
                     }
                 },
                 "type": "object"
             },
-            "authserver.UserInfoFieldMappingRunConfig": {
+            "github_com_stacklok_toolhive_pkg_authserver.UserInfoFieldMappingRunConfig": {
                 "description": "FieldMapping contains custom field mapping configuration for non-standard providers.\nIf nil, standard OIDC field names are used (\"sub\", \"name\", \"email\").",
                 "properties": {
                     "email_fields": {
@@ -341,7 +605,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "authserver.UserInfoRunConfig": {
+            "github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig": {
                 "description": "UserInfo contains configuration for fetching user information (required for OAuth2).",
                 "properties": {
                     "additional_headers": {
@@ -356,7 +620,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "field_mapping": {
-                        "$ref": "#/components/schemas/authserver.UserInfoFieldMappingRunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoFieldMappingRunConfig"
                     },
                     "http_method": {
                         "description": "HTTPMethod is the HTTP method to use for the userinfo request.\nIf not specified, defaults to GET.",
@@ -365,7 +629,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "authz.Config": {
+            "github_com_stacklok_toolhive_pkg_authz.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
                     "type": {
@@ -379,66 +643,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "awssts.Config": {
-                "description": "AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services",
-                "properties": {
-                    "fallback_role_arn": {
-                        "description": "FallbackRoleArn is the IAM role ARN to assume when no role mapping matches.",
-                        "type": "string"
-                    },
-                    "region": {
-                        "description": "Region is the AWS region for STS and SigV4 signing.",
-                        "type": "string"
-                    },
-                    "role_claim": {
-                        "description": "RoleClaim is the JWT claim to use for role mapping (default: \"groups\").",
-                        "type": "string"
-                    },
-                    "role_mappings": {
-                        "description": "RoleMappings maps JWT claim values to IAM roles with priority.",
-                        "items": {
-                            "$ref": "#/components/schemas/awssts.RoleMapping"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "service": {
-                        "description": "Service is the AWS service name for SigV4 signing (default: \"aws-mcp\").",
-                        "type": "string"
-                    },
-                    "session_duration": {
-                        "description": "SessionDuration is the duration in seconds for assumed role credentials (default: 3600).",
-                        "type": "integer"
-                    },
-                    "session_name_claim": {
-                        "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "awssts.RoleMapping": {
-                "properties": {
-                    "claim": {
-                        "description": "Claim is the simple claim value to match (e.g., group name).\nInternally compiles to a CEL expression: \"\u003cclaim_value\u003e\" in claims[\"\u003crole_claim\u003e\"]\nMutually exclusive with Matcher.",
-                        "type": "string"
-                    },
-                    "matcher": {
-                        "description": "Matcher is a CEL expression for complex matching against JWT claims.\nThe expression has access to a \"claims\" variable containing all JWT claims.\nExamples:\n  - \"admins\" in claims[\"groups\"]\n  - claims[\"sub\"] == \"user123\" \u0026\u0026 !(\"act\" in claims)\nMutually exclusive with Claim.",
-                        "type": "string"
-                    },
-                    "priority": {
-                        "description": "Priority determines selection order (lower number = higher priority).\nWhen multiple mappings match, the one with the lowest priority is selected.\nWhen nil (omitted), the mapping has the lowest possible priority, and\nconfiguration order acts as tie-breaker via stable sort.",
-                        "type": "integer"
-                    },
-                    "role_arn": {
-                        "description": "RoleArn is the IAM role ARN to assume when this mapping matches.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "client.ClientApp": {
+            "github_com_stacklok_toolhive_pkg_client.ClientApp": {
                 "description": "ClientType is the type of MCP client",
                 "enum": [
                     "roo-code",
@@ -496,10 +701,10 @@ const docTemplate = `{
                     "Codex"
                 ]
             },
-            "client.ClientAppStatus": {
+            "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {
                 "properties": {
                     "client_type": {
-                        "$ref": "#/components/schemas/client.ClientApp"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp"
                     },
                     "installed": {
                         "description": "Installed indicates whether the client is installed on the system",
@@ -512,7 +717,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "client.RegisteredClient": {
+            "github_com_stacklok_toolhive_pkg_client.RegisteredClient": {
                 "properties": {
                     "groups": {
                         "items": {
@@ -522,12 +727,30 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "name": {
-                        "$ref": "#/components/schemas/client.ClientApp"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp"
                     }
                 },
                 "type": "object"
             },
-            "core.Workload": {
+            "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {
+                "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
+                "properties": {
+                    "additional_packages": {
+                        "description": "AdditionalPackages lists extra packages to install in builder stage\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "builder_image": {
+                        "description": "BuilderImage is the full image reference for the builder stage\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_core.Workload": {
                 "properties": {
                     "created_at": {
                         "description": "CreatedAt is the timestamp when the workload was created.",
@@ -569,7 +792,19 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "status": {
-                        "$ref": "#/components/schemas/runtime.WorkloadStatus"
+                        "description": "Status is the current status of the workload.",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
+                        "type": "string"
                     },
                     "status_context": {
                         "description": "StatusContext provides additional context about the workload's status.\nThe exact meaning is determined by the status and the underlying runtime.",
@@ -584,7 +819,14 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "transport_type": {
-                        "$ref": "#/components/schemas/types.TransportType"
+                        "description": "TransportType is the type of transport used for this workload.",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
+                        "type": "string"
                     },
                     "url": {
                         "description": "URL is the URL of the workload exposed by the ToolHive proxy.",
@@ -593,7 +835,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "groups.Group": {
+            "github_com_stacklok_toolhive_pkg_groups.Group": {
                 "properties": {
                     "name": {
                         "type": "string"
@@ -604,6 +846,499 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "skills": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig": {
+                "description": "HeaderForward contains configuration for injecting headers into requests to remote servers.",
+                "properties": {
+                    "add_headers_from_secret": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddHeadersFromSecret is a map of header names to secret names.\nThe key is the header name, the value is the secret name in ToolHive's secrets manager.\nResolved at runtime via WithSecrets() into resolvedHeaders.\nThe actual secret value is only held in memory, never persisted.",
+                        "type": "object"
+                    },
+                    "add_plaintext_headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddPlaintextHeaders is a map of header names to literal values to inject into requests.\nWARNING: These values are stored in plaintext in the configuration.\nFor sensitive values (API keys, tokens), use AddHeadersFromSecret instead.",
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
+                "properties": {
+                    "audit_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
+                    },
+                    "audit_config_path": {
+                        "description": "DEPRECATED: Middleware configuration.\nAuditConfigPath is the path to the audit configuration file",
+                        "type": "string"
+                    },
+                    "authz_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authz.Config"
+                    },
+                    "authz_config_path": {
+                        "description": "DEPRECATED: Middleware configuration.\nAuthzConfigPath is the path to the authorization configuration file",
+                        "type": "string"
+                    },
+                    "aws_sts_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.Config"
+                    },
+                    "base_name": {
+                        "description": "BaseName is the base name used for the container (without prefixes)",
+                        "type": "string"
+                    },
+                    "cmd_args": {
+                        "description": "CmdArgs are the arguments to pass to the container",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "container_labels": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "ContainerLabels are the labels to apply to the container",
+                        "type": "object"
+                    },
+                    "container_name": {
+                        "description": "ContainerName is the name of the container",
+                        "type": "string"
+                    },
+                    "debug": {
+                        "description": "Debug indicates whether debug mode is enabled",
+                        "type": "boolean"
+                    },
+                    "embedded_auth_server_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.RunConfig"
+                    },
+                    "endpoint_prefix": {
+                        "description": "EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.\nThis is used to handle path-based ingress routing scenarios.",
+                        "type": "string"
+                    },
+                    "env_file_dir": {
+                        "description": "DEPRECATED: No longer appears to be used.\nEnvFileDir is the directory path to load environment files from",
+                        "type": "string"
+                    },
+                    "env_vars": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "EnvVars are the parsed environment variables as key-value pairs",
+                        "type": "object"
+                    },
+                    "group": {
+                        "description": "Group is the name of the group this workload belongs to, if any",
+                        "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig"
+                    },
+                    "host": {
+                        "description": "Host is the host for the HTTP proxy",
+                        "type": "string"
+                    },
+                    "ignore_config": {
+                        "$ref": "#/components/schemas/ignore.Config"
+                    },
+                    "image": {
+                        "description": "Image is the Docker image to run",
+                        "type": "string"
+                    },
+                    "isolate_network": {
+                        "description": "IsolateNetwork indicates whether to isolate the network for the container",
+                        "type": "boolean"
+                    },
+                    "jwks_auth_token_file": {
+                        "description": "DEPRECATED: No longer appears to be used.\nJWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
+                        "type": "string"
+                    },
+                    "k8s_pod_template_patch": {
+                        "description": "K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template\nOnly applicable when using Kubernetes runtime",
+                        "type": "string"
+                    },
+                    "middleware_configs": {
+                        "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
+                        "items": {
+                            "$ref": "#/components/schemas/types.MiddlewareConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "name": {
+                        "description": "Name is the name of the MCP server",
+                        "type": "string"
+                    },
+                    "oidc_config": {
+                        "$ref": "#/components/schemas/auth.TokenValidatorConfig"
+                    },
+                    "permission_profile_name_or_path": {
+                        "description": "PermissionProfileNameOrPath is the name or path of the permission profile",
+                        "type": "string"
+                    },
+                    "port": {
+                        "description": "Port is the port for the HTTP proxy to listen on (host port)",
+                        "type": "integer"
+                    },
+                    "proxy_mode": {
+                        "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                        "enum": [
+                            "sse",
+                            "streamable-http"
+                        ],
+                        "type": "string"
+                    },
+                    "remote_auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
+                    },
+                    "remote_url": {
+                        "description": "RemoteURL is the URL of the remote MCP server (if running remotely)",
+                        "type": "string"
+                    },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
+                    },
+                    "schema_version": {
+                        "description": "SchemaVersion is the version of the RunConfig schema",
+                        "type": "string"
+                    },
+                    "secrets": {
+                        "description": "Secrets are the secret parameters to pass to the container\nFormat: \"\u003csecret name\u003e,target=\u003ctarget environment variable\u003e\"",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "target_host": {
+                        "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",
+                        "type": "string"
+                    },
+                    "target_port": {
+                        "description": "TargetPort is the port for the container to expose (only applicable to SSE transport)",
+                        "type": "integer"
+                    },
+                    "telemetry_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_telemetry.Config"
+                    },
+                    "thv_ca_bundle": {
+                        "description": "DEPRECATED: No longer appears to be used.\nThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
+                        "type": "string"
+                    },
+                    "token_exchange_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config"
+                    },
+                    "tools_filter": {
+                        "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "tools_override": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ToolOverride"
+                        },
+                        "description": "DEPRECATED: Middleware configuration.\nToolsOverride is a map from an actual tool to its overridden name and/or description",
+                        "type": "object"
+                    },
+                    "transport": {
+                        "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
+                        "type": "string"
+                    },
+                    "trust_proxy_headers": {
+                        "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
+                        "type": "boolean"
+                    },
+                    "upstream_swap_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config"
+                    },
+                    "volumes": {
+                        "description": "Volumes are the directory mounts to pass to the container\nFormat: \"host-path:container-path[:ro]\"",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.ToolOverride": {
+                "properties": {
+                    "description": {
+                        "description": "Description is the redefined description of the tool",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the redefined name of the tool",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_secrets.SecretParameter": {
+                "description": "Bearer token for authentication (alternative to OAuth)",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "target": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.BuildResult": {
+                "properties": {
+                    "reference": {
+                        "description": "Reference is the OCI reference of the built skill artifact.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.Dependency": {
+                "properties": {
+                    "digest": {
+                        "description": "Digest is the OCI digest for upgrade detection.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the dependency name.",
+                        "type": "string"
+                    },
+                    "reference": {
+                        "description": "Reference is the OCI reference for the dependency.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.InstallStatus": {
+                "description": "Status is the current installation status.",
+                "enum": [
+                    "installed",
+                    "pending",
+                    "failed"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "InstallStatusInstalled",
+                    "InstallStatusPending",
+                    "InstallStatusFailed"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_skills.InstalledSkill": {
+                "description": "InstalledSkill contains the full installation record.",
+                "properties": {
+                    "clients": {
+                        "description": "Clients is the list of client identifiers the skill is installed for.\nTODO: Refactor client.ClientApp to a shared package so it can be used here instead of []string.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "dependencies": {
+                        "description": "Dependencies is the list of external skill dependencies.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Dependency"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest (sha256:...) for upgrade detection.",
+                        "type": "string"
+                    },
+                    "installed_at": {
+                        "description": "InstalledAt is the timestamp when the skill was installed.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path for project-scoped skills. Empty for user-scoped.",
+                        "type": "string"
+                    },
+                    "reference": {
+                        "description": "Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Scope"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstallStatus"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag (e.g. v1.0.0).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.Scope": {
+                "description": "Scope for the installation",
+                "enum": [
+                    "user",
+                    "project"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "ScopeUser",
+                    "ScopeProject"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SkillInfo": {
+                "properties": {
+                    "installed_skill": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill"
+                    },
+                    "metadata": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SkillMetadata": {
+                "description": "Metadata contains the skill's metadata.",
+                "properties": {
+                    "author": {
+                        "description": "Author is the skill author or maintainer.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is a human-readable description of the skill.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the unique name of the skill.",
+                        "type": "string"
+                    },
+                    "tags": {
+                        "description": "Tags is a list of tags for categorization.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "version": {
+                        "description": "Version is the semantic version of the skill.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.ValidationResult": {
+                "properties": {
+                    "errors": {
+                        "description": "Errors is a list of validation errors, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "valid": {
+                        "description": "Valid indicates whether the skill definition is valid.",
+                        "type": "boolean"
+                    },
+                    "warnings": {
+                        "description": "Warnings is a list of non-blocking validation warnings, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_telemetry.Config": {
+                "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
+                "properties": {
+                    "customAttributes": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\n+optional",
+                        "type": "object"
+                    },
+                    "enablePrometheusMetricsPath": {
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "endpoint": {
+                        "description": "Endpoint is the OTLP endpoint URL\n+optional",
+                        "type": "string"
+                    },
+                    "environmentVariables": {
+                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: [\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"]\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Headers contains authentication headers for the OTLP endpoint.\n+optional",
+                        "type": "object"
+                    },
+                    "insecure": {
+                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "metricsEnabled": {
+                        "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "samplingRate": {
+                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
+                        "type": "string"
+                    },
+                    "serviceName": {
+                        "description": "ServiceName is the service name for telemetry.\nWhen omitted, defaults to the server name (e.g., VirtualMCPServer name).\n+optional",
+                        "type": "string"
+                    },
+                    "serviceVersion": {
+                        "description": "ServiceVersion is the service version for telemetry.\nWhen omitted, defaults to the ToolHive version.\n+optional",
+                        "type": "string"
+                    },
+                    "tracingEnabled": {
+                        "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "useLegacyAttributes": {
+                        "description": "UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names\nare emitted alongside the new standard attribute names. When true, spans include both\nold and new attribute names for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -679,7 +1414,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "permissions.Profile": {
-                "description": "PermissionProfile is the permission profile to use",
+                "description": "Permission profile to apply",
                 "properties": {
                     "name": {
                         "description": "Name is the name of the profile",
@@ -707,6 +1442,943 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.RegistryType": {
+                "description": "Type of registry (file, url, or default)",
+                "enum": [
+                    "file",
+                    "url",
+                    "api",
+                    "default"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "RegistryTypeFile",
+                    "RegistryTypeURL",
+                    "RegistryTypeAPI",
+                    "RegistryTypeDefault"
+                ]
+            },
+            "pkg_api_v1.UpdateRegistryRequest": {
+                "description": "Request containing registry configuration updates",
+                "properties": {
+                    "allow_private_ip": {
+                        "description": "Allow private IP addresses for registry URL or API URL",
+                        "type": "boolean"
+                    },
+                    "api_url": {
+                        "description": "MCP Registry API URL",
+                        "type": "string"
+                    },
+                    "local_path": {
+                        "description": "Local registry file path",
+                        "type": "string"
+                    },
+                    "url": {
+                        "description": "Registry URL (for remote registries)",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.UpdateRegistryResponse": {
+                "description": "Response containing update result",
+                "properties": {
+                    "type": {
+                        "description": "Registry type after update",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.buildSkillRequest": {
+                "description": "Request to build a skill from a local directory",
+                "properties": {
+                    "path": {
+                        "description": "Path to the skill definition directory",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "OCI tag for the built artifact",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.bulkClientRequest": {
+                "properties": {
+                    "groups": {
+                        "description": "Groups is the list of groups configured on the client.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "names": {
+                        "description": "Names is the list of client names to operate on.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.bulkOperationRequest": {
+                "properties": {
+                    "group": {
+                        "description": "Group name to operate on (mutually exclusive with names)",
+                        "type": "string"
+                    },
+                    "names": {
+                        "description": "Names of the workloads to operate on",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.clientStatusResponse": {
+                "properties": {
+                    "clients": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientAppStatus"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createClientRequest": {
+                "properties": {
+                    "groups": {
+                        "description": "Groups is the list of groups configured on the client.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "name": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createClientResponse": {
+                "properties": {
+                    "groups": {
+                        "description": "Groups is the list of groups configured on the client.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "name": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_client.ClientApp"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createGroupRequest": {
+                "properties": {
+                    "name": {
+                        "description": "Name of the group to create",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createGroupResponse": {
+                "properties": {
+                    "name": {
+                        "description": "Name of the created group",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createRequest": {
+                "description": "Request to create a new workload",
+                "properties": {
+                    "authz_config": {
+                        "description": "Authorization configuration",
+                        "type": "string"
+                    },
+                    "cmd_arguments": {
+                        "description": "Command arguments to pass to the container",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "env_vars": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Environment variables to set in the container",
+                        "type": "object"
+                    },
+                    "group": {
+                        "description": "Group name this workload belongs to",
+                        "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/pkg_api_v1.headerForwardConfig"
+                    },
+                    "headers": {
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Header"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "host": {
+                        "description": "Host to bind to",
+                        "type": "string"
+                    },
+                    "image": {
+                        "description": "Docker image to use",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name of the workload",
+                        "type": "string"
+                    },
+                    "network_isolation": {
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "type": "boolean"
+                    },
+                    "oauth_config": {
+                        "$ref": "#/components/schemas/pkg_api_v1.remoteOAuthConfig"
+                    },
+                    "oidc": {
+                        "$ref": "#/components/schemas/pkg_api_v1.oidcOptions"
+                    },
+                    "permission_profile": {
+                        "$ref": "#/components/schemas/permissions.Profile"
+                    },
+                    "proxy_mode": {
+                        "description": "Proxy mode to use",
+                        "type": "string"
+                    },
+                    "proxy_port": {
+                        "description": "Port for the HTTP proxy to listen on",
+                        "type": "integer"
+                    },
+                    "secrets": {
+                        "description": "Secret parameters to inject",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "target_port": {
+                        "description": "Port to expose from the container",
+                        "type": "integer"
+                    },
+                    "tools": {
+                        "description": "Tools filter",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "tools_override": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/pkg_api_v1.toolOverride"
+                        },
+                        "description": "Tools override",
+                        "type": "object"
+                    },
+                    "transport": {
+                        "description": "Transport configuration",
+                        "type": "string"
+                    },
+                    "trust_proxy_headers": {
+                        "description": "Whether to trust X-Forwarded-* headers from reverse proxies",
+                        "type": "boolean"
+                    },
+                    "url": {
+                        "description": "Remote server specific fields",
+                        "type": "string"
+                    },
+                    "volumes": {
+                        "description": "Volume mounts",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createSecretRequest": {
+                "description": "Request to create a new secret",
+                "properties": {
+                    "key": {
+                        "description": "Secret key name",
+                        "type": "string"
+                    },
+                    "value": {
+                        "description": "Secret value",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createSecretResponse": {
+                "description": "Response after creating a secret",
+                "properties": {
+                    "key": {
+                        "description": "Secret key that was created",
+                        "type": "string"
+                    },
+                    "message": {
+                        "description": "Success message",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.createWorkloadResponse": {
+                "description": "Response after successfully creating a workload",
+                "properties": {
+                    "name": {
+                        "description": "Name of the created workload",
+                        "type": "string"
+                    },
+                    "port": {
+                        "description": "Port the workload is listening on",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.getRegistryResponse": {
+                "description": "Response containing registry details",
+                "properties": {
+                    "last_updated": {
+                        "description": "Last updated timestamp",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name of the registry",
+                        "type": "string"
+                    },
+                    "registry": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive-core_registry_types.Registry"
+                    },
+                    "server_count": {
+                        "description": "Number of servers in the registry",
+                        "type": "integer"
+                    },
+                    "source": {
+                        "description": "Source of the registry (URL, file path, or empty string for built-in)",
+                        "type": "string"
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/pkg_api_v1.RegistryType"
+                    },
+                    "version": {
+                        "description": "Version of the registry schema",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.getSecretsProviderResponse": {
+                "description": "Response containing secrets provider details",
+                "properties": {
+                    "capabilities": {
+                        "$ref": "#/components/schemas/pkg_api_v1.providerCapabilitiesResponse"
+                    },
+                    "name": {
+                        "description": "Name of the secrets provider",
+                        "type": "string"
+                    },
+                    "provider_type": {
+                        "description": "Type of the secrets provider",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.getServerResponse": {
+                "description": "Response containing server details",
+                "properties": {
+                    "is_remote": {
+                        "description": "Indicates if this is a remote server",
+                        "type": "boolean"
+                    },
+                    "remote_server": {
+                        "$ref": "#/components/schemas/registry.RemoteServerMetadata"
+                    },
+                    "server": {
+                        "$ref": "#/components/schemas/registry.ImageMetadata"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.groupListResponse": {
+                "properties": {
+                    "groups": {
+                        "description": "List of groups",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_groups.Group"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.headerForwardConfig": {
+                "description": "HeaderForward configures headers to inject into requests to remote MCP servers.\nUse this to add custom headers like X-Tenant-ID or correlation IDs.",
+                "properties": {
+                    "add_headers_from_secret": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddHeadersFromSecret maps header names to secret names in ToolHive's secrets manager.\nKey: HTTP header name, Value: secret name in the secrets manager",
+                        "type": "object"
+                    },
+                    "add_plaintext_headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddPlaintextHeaders contains literal header values to inject.\nWARNING: These values are stored and transmitted in plaintext.\nUse AddHeadersFromSecret for sensitive data like API keys.",
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.installSkillRequest": {
+                "description": "Request to install a skill",
+                "properties": {
+                    "client": {
+                        "description": "Client is the target client (e.g., \"claude-code\")",
+                        "type": "string"
+                    },
+                    "force": {
+                        "description": "Force allows overwriting unmanaged skill directories",
+                        "type": "boolean"
+                    },
+                    "group": {
+                        "description": "Group is the group name to add the skill to after installation",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name or OCI reference of the skill to install",
+                        "type": "string"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path for project-scoped installs",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Scope"
+                    },
+                    "version": {
+                        "description": "Version to install (empty means latest)",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.installSkillResponse": {
+                "description": "Response after successfully installing a skill",
+                "properties": {
+                    "skill": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.listSecretsResponse": {
+                "description": "Response containing a list of secret keys",
+                "properties": {
+                    "keys": {
+                        "description": "List of secret keys",
+                        "items": {
+                            "$ref": "#/components/schemas/pkg_api_v1.secretKeyResponse"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.listServersResponse": {
+                "description": "Response containing a list of servers",
+                "properties": {
+                    "remote_servers": {
+                        "description": "List of remote servers in the registry (if any)",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "servers": {
+                        "description": "List of container servers in the registry",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.ImageMetadata"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.oidcOptions": {
+                "description": "OIDC configuration options",
+                "properties": {
+                    "audience": {
+                        "description": "Expected audience",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "OAuth2 client ID",
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "description": "OAuth2 client secret",
+                        "type": "string"
+                    },
+                    "introspection_url": {
+                        "description": "Token introspection URL for OIDC",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "OIDC issuer URL",
+                        "type": "string"
+                    },
+                    "jwks_url": {
+                        "description": "JWKS URL for key verification",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "OAuth scopes to advertise in well-known endpoint (RFC 9728)",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.providerCapabilitiesResponse": {
+                "description": "Capabilities of the secrets provider",
+                "properties": {
+                    "can_cleanup": {
+                        "description": "Whether the provider can cleanup all secrets",
+                        "type": "boolean"
+                    },
+                    "can_delete": {
+                        "description": "Whether the provider can delete secrets",
+                        "type": "boolean"
+                    },
+                    "can_list": {
+                        "description": "Whether the provider can list secrets",
+                        "type": "boolean"
+                    },
+                    "can_read": {
+                        "description": "Whether the provider can read secrets",
+                        "type": "boolean"
+                    },
+                    "can_write": {
+                        "description": "Whether the provider can write secrets",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.pushSkillRequest": {
+                "description": "Request to push a built skill artifact",
+                "properties": {
+                    "reference": {
+                        "description": "OCI reference to push",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.registryInfo": {
+                "description": "Basic information about a registry",
+                "properties": {
+                    "last_updated": {
+                        "description": "Last updated timestamp",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name of the registry",
+                        "type": "string"
+                    },
+                    "server_count": {
+                        "description": "Number of servers in the registry",
+                        "type": "integer"
+                    },
+                    "source": {
+                        "description": "Source of the registry (URL, file path, or empty string for built-in)",
+                        "type": "string"
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/pkg_api_v1.RegistryType"
+                    },
+                    "version": {
+                        "description": "Version of the registry schema",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.registryListResponse": {
+                "description": "Response containing a list of registries",
+                "properties": {
+                    "registries": {
+                        "description": "List of registries",
+                        "items": {
+                            "$ref": "#/components/schemas/pkg_api_v1.registryInfo"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.remoteOAuthConfig": {
+                "description": "OAuth configuration for remote server authentication",
+                "properties": {
+                    "authorize_url": {
+                        "description": "OAuth authorization endpoint URL (alternative to issuer for non-OIDC OAuth)",
+                        "type": "string"
+                    },
+                    "bearer_token": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                    },
+                    "callback_port": {
+                        "description": "Specific port for OAuth callback server",
+                        "type": "integer"
+                    },
+                    "client_id": {
+                        "description": "OAuth client ID for authentication",
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                    },
+                    "issuer": {
+                        "description": "OAuth/OIDC issuer URL (e.g., https://accounts.google.com)",
+                        "type": "string"
+                    },
+                    "oauth_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Additional OAuth parameters for server-specific customization",
+                        "type": "object"
+                    },
+                    "resource": {
+                        "description": "OAuth 2.0 resource indicator (RFC 8707)",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "OAuth scopes to request",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "skip_browser": {
+                        "description": "Whether to skip opening browser for OAuth flow (defaults to false)",
+                        "type": "boolean"
+                    },
+                    "token_url": {
+                        "description": "OAuth token endpoint URL (alternative to issuer for non-OIDC OAuth)",
+                        "type": "string"
+                    },
+                    "use_pkce": {
+                        "description": "Whether to use PKCE for the OAuth flow",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.secretKeyResponse": {
+                "description": "Secret key information",
+                "properties": {
+                    "description": {
+                        "description": "Optional description of the secret",
+                        "type": "string"
+                    },
+                    "key": {
+                        "description": "Secret key name",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.setupSecretsRequest": {
+                "description": "Request to setup a secrets provider",
+                "properties": {
+                    "password": {
+                        "description": "Password for encrypted provider (optional, can be set via environment variable)\nTODO Review environment variable for this",
+                        "type": "string"
+                    },
+                    "provider_type": {
+                        "description": "Type of the secrets provider (encrypted, 1password, environment)",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.setupSecretsResponse": {
+                "description": "Response after initializing a secrets provider",
+                "properties": {
+                    "message": {
+                        "description": "Success message",
+                        "type": "string"
+                    },
+                    "provider_type": {
+                        "description": "Type of the secrets provider that was setup",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.skillListResponse": {
+                "description": "Response containing a list of installed skills",
+                "properties": {
+                    "skills": {
+                        "description": "List of installed skills",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.toolOverride": {
+                "description": "Tool override",
+                "properties": {
+                    "description": {
+                        "description": "Description of the tool",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name of the tool",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.updateRequest": {
+                "description": "Request to update an existing workload (name cannot be changed)",
+                "properties": {
+                    "authz_config": {
+                        "description": "Authorization configuration",
+                        "type": "string"
+                    },
+                    "cmd_arguments": {
+                        "description": "Command arguments to pass to the container",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "env_vars": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Environment variables to set in the container",
+                        "type": "object"
+                    },
+                    "group": {
+                        "description": "Group name this workload belongs to",
+                        "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/pkg_api_v1.headerForwardConfig"
+                    },
+                    "headers": {
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Header"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "host": {
+                        "description": "Host to bind to",
+                        "type": "string"
+                    },
+                    "image": {
+                        "description": "Docker image to use",
+                        "type": "string"
+                    },
+                    "network_isolation": {
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "type": "boolean"
+                    },
+                    "oauth_config": {
+                        "$ref": "#/components/schemas/pkg_api_v1.remoteOAuthConfig"
+                    },
+                    "oidc": {
+                        "$ref": "#/components/schemas/pkg_api_v1.oidcOptions"
+                    },
+                    "permission_profile": {
+                        "$ref": "#/components/schemas/permissions.Profile"
+                    },
+                    "proxy_mode": {
+                        "description": "Proxy mode to use",
+                        "type": "string"
+                    },
+                    "proxy_port": {
+                        "description": "Port for the HTTP proxy to listen on",
+                        "type": "integer"
+                    },
+                    "secrets": {
+                        "description": "Secret parameters to inject",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "target_port": {
+                        "description": "Port to expose from the container",
+                        "type": "integer"
+                    },
+                    "tools": {
+                        "description": "Tools filter",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "tools_override": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/pkg_api_v1.toolOverride"
+                        },
+                        "description": "Tools override",
+                        "type": "object"
+                    },
+                    "transport": {
+                        "description": "Transport configuration",
+                        "type": "string"
+                    },
+                    "trust_proxy_headers": {
+                        "description": "Whether to trust X-Forwarded-* headers from reverse proxies",
+                        "type": "boolean"
+                    },
+                    "url": {
+                        "description": "Remote server specific fields",
+                        "type": "string"
+                    },
+                    "volumes": {
+                        "description": "Volume mounts",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.updateSecretRequest": {
+                "description": "Request to update an existing secret",
+                "properties": {
+                    "value": {
+                        "description": "New secret value",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.updateSecretResponse": {
+                "description": "Response after updating a secret",
+                "properties": {
+                    "key": {
+                        "description": "Secret key that was updated",
+                        "type": "string"
+                    },
+                    "message": {
+                        "description": "Success message",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.validateSkillRequest": {
+                "description": "Request to validate a skill definition",
+                "properties": {
+                    "path": {
+                        "description": "Path to the skill definition directory",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.versionResponse": {
+                "properties": {
+                    "version": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.workloadListResponse": {
+                "description": "Response containing a list of workloads",
+                "properties": {
+                    "workloads": {
+                        "description": "List of container information for each workload",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_core.Workload"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.workloadStatusResponse": {
+                "description": "Response containing workload status information",
+                "properties": {
+                    "status": {
+                        "description": "Current status of the workload",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -843,6 +2515,10 @@ const docTemplate = `{
                         "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
                         "type": "string"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
                     "permissions": {
                         "$ref": "#/components/schemas/permissions.Profile"
                     },
@@ -875,6 +2551,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {
@@ -931,10 +2611,6 @@ const docTemplate = `{
                     "last_updated": {
                         "description": "LastUpdated is the timestamp when the server was last updated, in RFC3339 format",
                         "type": "string"
-                    },
-                    "pulls": {
-                        "description": "Pulls indicates how many times the server image has been downloaded",
-                        "type": "integer"
                     },
                     "stars": {
                         "description": "Stars represents the popularity rating or number of stars for the server",
@@ -1019,42 +2695,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "registry.Registry": {
-                "description": "Full registry data",
-                "properties": {
-                    "groups": {
-                        "description": "Groups is a slice of group definitions containing related MCP servers",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Group"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "last_updated": {
-                        "description": "LastUpdated is the timestamp when the registry was last updated, in RFC3339 format",
-                        "type": "string"
-                    },
-                    "remote_servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                        },
-                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions\nThese are MCP servers accessed via HTTP/HTTPS using the thv proxy command",
-                        "type": "object"
-                    },
-                    "servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.ImageMetadata"
-                        },
-                        "description": "Servers is a map of server names to their corresponding server definitions",
-                        "type": "object"
-                    },
-                    "version": {
-                        "description": "Version is the schema version of the registry",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
             "registry.RemoteServerMetadata": {
                 "description": "Remote server details (if it's a remote server)",
                 "properties": {
@@ -1093,6 +2733,14 @@ const docTemplate = `{
                     "oauth_config": {
                         "$ref": "#/components/schemas/registry.OAuthConfig"
                     },
+                    "overview": {
+                        "description": "Overview is a longer Markdown-formatted description for web display.\nUnlike the Description field (limited to 500 chars), this supports\nfull Markdown and is intended for rich rendering on catalog pages.",
+                        "type": "string"
+                    },
+                    "proxy_port": {
+                        "description": "ProxyPort is the port for the HTTP proxy to listen on (host port)\nIf not specified, a random available port will be assigned",
+                        "type": "integer"
+                    },
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
@@ -1111,6 +2759,10 @@ const docTemplate = `{
                     },
                     "tier": {
                         "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is an optional human-readable display name for the server.\nIf not provided, the Name field is used for display purposes.",
                         "type": "string"
                     },
                     "tools": {
@@ -1141,666 +2793,103 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "remote.Config": {
-                "description": "RemoteAuthConfig contains OAuth configuration for remote MCP servers",
+            "storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
                 "properties": {
-                    "authorize_url": {
+                    "password_env_var": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
                         "type": "string"
                     },
-                    "bearer_token": {
-                        "description": "Bearer token configuration (alternative to OAuth)",
+                    "username_env_var": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "acl_user_config": {
+                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    },
+                    "auth_type": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
                         "type": "string"
                     },
-                    "bearer_token_file": {
+                    "dial_timeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
                         "type": "string"
                     },
-                    "cached_client_id": {
-                        "description": "Cached DCR client credentials for persistence across restarts.\nThese are obtained during Dynamic Client Registration and needed to refresh tokens.\nClientID is stored as plain text since it's public information.",
+                    "key_prefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
                         "type": "string"
                     },
-                    "cached_client_secret_ref": {
+                    "read_timeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
                         "type": "string"
                     },
-                    "cached_refresh_token_ref": {
-                        "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
+                    "sentinel_config": {
+                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
+                    },
+                    "sentinel_tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "write_timeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisTLSRunConfig": {
+                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
+                "properties": {
+                    "ca_cert_file": {
+                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
                         "type": "string"
                     },
-                    "cached_reg_token_ref": {
-                        "description": "RegistrationAccessToken is used to update/delete the client registration.\nStored as a secret reference since it's sensitive.",
-                        "type": "string"
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify skips certificate verification.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redis_config": {
+                        "$ref": "#/components/schemas/storage.RedisRunConfig"
                     },
-                    "cached_secret_expiry": {
-                        "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
                         "type": "string"
-                    },
-                    "cached_token_expiry": {
-                        "type": "string"
-                    },
-                    "callback_port": {
+                    }
+                },
+                "type": "object"
+            },
+            "storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
                         "type": "integer"
                     },
-                    "client_id": {
+                    "master_name": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
                         "type": "string"
                     },
-                    "client_secret": {
-                        "type": "string"
-                    },
-                    "client_secret_file": {
-                        "type": "string"
-                    },
-                    "env_vars": {
-                        "description": "Environment variables for the client",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.EnvVar"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "headers": {
-                        "description": "Headers for HTTP requests",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Header"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "issuer": {
-                        "description": "OAuth endpoint configuration (from registry)",
-                        "type": "string"
-                    },
-                    "oauth_params": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "OAuth parameters for server-specific customization",
-                        "type": "object"
-                    },
-                    "resource": {
-                        "description": "Resource is the OAuth 2.0 resource indicator (RFC 8707).",
-                        "type": "string"
-                    },
-                    "scopes": {
+                    "sentinel_addrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
                         "items": {
                             "type": "string"
                         },
                         "type": "array",
                         "uniqueItems": false
-                    },
-                    "skip_browser": {
-                        "type": "boolean"
-                    },
-                    "timeout": {
-                        "example": "5m",
-                        "type": "string"
-                    },
-                    "token_url": {
-                        "type": "string"
-                    },
-                    "use_pkce": {
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "runner.HeaderForwardConfig": {
-                "description": "HeaderForward contains configuration for injecting headers into requests to remote servers.",
-                "properties": {
-                    "add_headers_from_secret": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "AddHeadersFromSecret is a map of header names to secret names.\nThe key is the header name, the value is the secret name in ToolHive's secrets manager.\nResolved at runtime via WithSecrets() into resolvedHeaders.\nThe actual secret value is only held in memory, never persisted.",
-                        "type": "object"
-                    },
-                    "add_plaintext_headers": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "AddPlaintextHeaders is a map of header names to literal values to inject into requests.\nWARNING: These values are stored in plaintext in the configuration.\nFor sensitive values (API keys, tokens), use AddHeadersFromSecret instead.",
-                        "type": "object"
-                    }
-                },
-                "type": "object"
-            },
-            "runner.RunConfig": {
-                "properties": {
-                    "audit_config": {
-                        "$ref": "#/components/schemas/audit.Config"
-                    },
-                    "audit_config_path": {
-                        "description": "DEPRECATED: Middleware configuration.\nAuditConfigPath is the path to the audit configuration file",
-                        "type": "string"
-                    },
-                    "authz_config": {
-                        "$ref": "#/components/schemas/authz.Config"
-                    },
-                    "authz_config_path": {
-                        "description": "DEPRECATED: Middleware configuration.\nAuthzConfigPath is the path to the authorization configuration file",
-                        "type": "string"
-                    },
-                    "aws_sts_config": {
-                        "$ref": "#/components/schemas/awssts.Config"
-                    },
-                    "base_name": {
-                        "description": "BaseName is the base name used for the container (without prefixes)",
-                        "type": "string"
-                    },
-                    "cmd_args": {
-                        "description": "CmdArgs are the arguments to pass to the container",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "container_labels": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "ContainerLabels are the labels to apply to the container",
-                        "type": "object"
-                    },
-                    "container_name": {
-                        "description": "ContainerName is the name of the container",
-                        "type": "string"
-                    },
-                    "debug": {
-                        "description": "Debug indicates whether debug mode is enabled",
-                        "type": "boolean"
-                    },
-                    "embedded_auth_server_config": {
-                        "$ref": "#/components/schemas/authserver.RunConfig"
-                    },
-                    "endpoint_prefix": {
-                        "description": "EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.\nThis is used to handle path-based ingress routing scenarios.",
-                        "type": "string"
-                    },
-                    "env_file_dir": {
-                        "description": "DEPRECATED: No longer appears to be used.\nEnvFileDir is the directory path to load environment files from",
-                        "type": "string"
-                    },
-                    "env_vars": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "EnvVars are the parsed environment variables as key-value pairs",
-                        "type": "object"
-                    },
-                    "group": {
-                        "description": "Group is the name of the group this workload belongs to, if any",
-                        "type": "string"
-                    },
-                    "header_forward": {
-                        "$ref": "#/components/schemas/runner.HeaderForwardConfig"
-                    },
-                    "host": {
-                        "description": "Host is the host for the HTTP proxy",
-                        "type": "string"
-                    },
-                    "ignore_config": {
-                        "$ref": "#/components/schemas/ignore.Config"
-                    },
-                    "image": {
-                        "description": "Image is the Docker image to run",
-                        "type": "string"
-                    },
-                    "isolate_network": {
-                        "description": "IsolateNetwork indicates whether to isolate the network for the container",
-                        "type": "boolean"
-                    },
-                    "jwks_auth_token_file": {
-                        "description": "DEPRECATED: No longer appears to be used.\nJWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
-                        "type": "string"
-                    },
-                    "k8s_pod_template_patch": {
-                        "description": "K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template\nOnly applicable when using Kubernetes runtime",
-                        "type": "string"
-                    },
-                    "middleware_configs": {
-                        "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
-                        "items": {
-                            "$ref": "#/components/schemas/types.MiddlewareConfig"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "name": {
-                        "description": "Name is the name of the MCP server",
-                        "type": "string"
-                    },
-                    "oidc_config": {
-                        "$ref": "#/components/schemas/auth.TokenValidatorConfig"
-                    },
-                    "permission_profile": {
-                        "$ref": "#/components/schemas/permissions.Profile"
-                    },
-                    "permission_profile_name_or_path": {
-                        "description": "PermissionProfileNameOrPath is the name or path of the permission profile",
-                        "type": "string"
-                    },
-                    "port": {
-                        "description": "Port is the port for the HTTP proxy to listen on (host port)",
-                        "type": "integer"
-                    },
-                    "proxy_mode": {
-                        "$ref": "#/components/schemas/types.ProxyMode"
-                    },
-                    "remote_auth_config": {
-                        "$ref": "#/components/schemas/remote.Config"
-                    },
-                    "remote_url": {
-                        "description": "RemoteURL is the URL of the remote MCP server (if running remotely)",
-                        "type": "string"
-                    },
-                    "runtime_config": {
-                        "$ref": "#/components/schemas/templates.RuntimeConfig"
-                    },
-                    "schema_version": {
-                        "description": "SchemaVersion is the version of the RunConfig schema",
-                        "type": "string"
-                    },
-                    "secrets": {
-                        "description": "Secrets are the secret parameters to pass to the container\nFormat: \"\u003csecret name\u003e,target=\u003ctarget environment variable\u003e\"",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "target_host": {
-                        "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",
-                        "type": "string"
-                    },
-                    "target_port": {
-                        "description": "TargetPort is the port for the container to expose (only applicable to SSE transport)",
-                        "type": "integer"
-                    },
-                    "telemetry_config": {
-                        "$ref": "#/components/schemas/telemetry.Config"
-                    },
-                    "thv_ca_bundle": {
-                        "description": "DEPRECATED: No longer appears to be used.\nThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
-                        "type": "string"
-                    },
-                    "token_exchange_config": {
-                        "$ref": "#/components/schemas/tokenexchange.Config"
-                    },
-                    "tools_filter": {
-                        "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "tools_override": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/runner.ToolOverride"
-                        },
-                        "description": "DEPRECATED: Middleware configuration.\nToolsOverride is a map from an actual tool to its overridden name and/or description",
-                        "type": "object"
-                    },
-                    "transport": {
-                        "$ref": "#/components/schemas/types.TransportType"
-                    },
-                    "trust_proxy_headers": {
-                        "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
-                        "type": "boolean"
-                    },
-                    "upstream_swap_config": {
-                        "$ref": "#/components/schemas/upstreamswap.Config"
-                    },
-                    "volumes": {
-                        "description": "Volumes are the directory mounts to pass to the container\nFormat: \"host-path:container-path[:ro]\"",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "runner.ToolOverride": {
-                "properties": {
-                    "description": {
-                        "description": "Description is the redefined description of the tool",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name is the redefined name of the tool",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "runtime.WorkloadStatus": {
-                "description": "Current status of the workload",
-                "enum": [
-                    "running",
-                    "stopped",
-                    "error",
-                    "starting",
-                    "stopping",
-                    "unhealthy",
-                    "removing",
-                    "unknown",
-                    "unauthenticated"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "WorkloadStatusRunning",
-                    "WorkloadStatusStopped",
-                    "WorkloadStatusError",
-                    "WorkloadStatusStarting",
-                    "WorkloadStatusStopping",
-                    "WorkloadStatusUnhealthy",
-                    "WorkloadStatusRemoving",
-                    "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated"
-                ]
-            },
-            "secrets.SecretParameter": {
-                "description": "Bearer token for authentication (alternative to OAuth)",
-                "properties": {
-                    "name": {
-                        "type": "string"
-                    },
-                    "target": {
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "skills.BuildResult": {
-                "properties": {
-                    "reference": {
-                        "description": "Reference is the OCI reference of the built skill artifact.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "skills.Dependency": {
-                "properties": {
-                    "digest": {
-                        "description": "Digest is the OCI digest for upgrade detection.",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name is the dependency name.",
-                        "type": "string"
-                    },
-                    "reference": {
-                        "description": "Reference is the OCI reference for the dependency.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "skills.InstallStatus": {
-                "description": "Status is the current installation status.",
-                "enum": [
-                    "installed",
-                    "pending",
-                    "failed"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "InstallStatusInstalled",
-                    "InstallStatusPending",
-                    "InstallStatusFailed"
-                ]
-            },
-            "skills.InstalledSkill": {
-                "description": "InstalledSkill contains the full installation record.",
-                "properties": {
-                    "clients": {
-                        "description": "Clients is the list of client identifiers the skill is installed for.\nTODO: Refactor client.ClientApp to a shared package so it can be used here instead of []string.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "dependencies": {
-                        "description": "Dependencies is the list of external skill dependencies.",
-                        "items": {
-                            "$ref": "#/components/schemas/skills.Dependency"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "digest": {
-                        "description": "Digest is the OCI digest (sha256:...) for upgrade detection.",
-                        "type": "string"
-                    },
-                    "installed_at": {
-                        "description": "InstalledAt is the timestamp when the skill was installed.",
-                        "type": "string"
-                    },
-                    "metadata": {
-                        "$ref": "#/components/schemas/skills.SkillMetadata"
-                    },
-                    "project_root": {
-                        "description": "ProjectRoot is the project root path for project-scoped skills. Empty for user-scoped.",
-                        "type": "string"
-                    },
-                    "reference": {
-                        "description": "Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).",
-                        "type": "string"
-                    },
-                    "scope": {
-                        "$ref": "#/components/schemas/skills.Scope"
-                    },
-                    "status": {
-                        "$ref": "#/components/schemas/skills.InstallStatus"
-                    },
-                    "tag": {
-                        "description": "Tag is the OCI tag (e.g. v1.0.0).",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "skills.Scope": {
-                "description": "Scope for the installation",
-                "enum": [
-                    "user",
-                    "project"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "ScopeUser",
-                    "ScopeProject"
-                ]
-            },
-            "skills.SkillInfo": {
-                "properties": {
-                    "installed_skill": {
-                        "$ref": "#/components/schemas/skills.InstalledSkill"
-                    },
-                    "metadata": {
-                        "$ref": "#/components/schemas/skills.SkillMetadata"
-                    }
-                },
-                "type": "object"
-            },
-            "skills.SkillMetadata": {
-                "description": "Metadata contains the skill's metadata.",
-                "properties": {
-                    "author": {
-                        "description": "Author is the skill author or maintainer.",
-                        "type": "string"
-                    },
-                    "description": {
-                        "description": "Description is a human-readable description of the skill.",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name is the unique name of the skill.",
-                        "type": "string"
-                    },
-                    "tags": {
-                        "description": "Tags is a list of tags for categorization.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "version": {
-                        "description": "Version is the semantic version of the skill.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "skills.ValidationResult": {
-                "properties": {
-                    "errors": {
-                        "description": "Errors is a list of validation errors, if any.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "valid": {
-                        "description": "Valid indicates whether the skill definition is valid.",
-                        "type": "boolean"
-                    },
-                    "warnings": {
-                        "description": "Warnings is a list of non-blocking validation warnings, if any.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "telemetry.Config": {
-                "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
-                "properties": {
-                    "customAttributes": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\n+optional",
-                        "type": "object"
-                    },
-                    "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "endpoint": {
-                        "description": "Endpoint is the OTLP endpoint URL\n+optional",
-                        "type": "string"
-                    },
-                    "environmentVariables": {
-                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: [\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"]\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "headers": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "Headers contains authentication headers for the OTLP endpoint.\n+optional",
-                        "type": "object"
-                    },
-                    "insecure": {
-                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "metricsEnabled": {
-                        "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "samplingRate": {
-                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
-                        "type": "string"
-                    },
-                    "serviceName": {
-                        "description": "ServiceName is the service name for telemetry.\nWhen omitted, defaults to the server name (e.g., VirtualMCPServer name).\n+optional",
-                        "type": "string"
-                    },
-                    "serviceVersion": {
-                        "description": "ServiceVersion is the service version for telemetry.\nWhen omitted, defaults to the ToolHive version.\n+optional",
-                        "type": "string"
-                    },
-                    "tracingEnabled": {
-                        "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "useLegacyAttributes": {
-                        "description": "UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names\nare emitted alongside the new standard attribute names. When true, spans include both\nold and new attribute names for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "templates.RuntimeConfig": {
-                "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
-                "properties": {
-                    "additional_packages": {
-                        "description": "AdditionalPackages lists extra packages to install in builder stage\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "tokenexchange.Config": {
-                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
-                "properties": {
-                    "audience": {
-                        "description": "Audience is the target audience for the exchanged token",
-                        "type": "string"
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier",
-                        "type": "string"
-                    },
-                    "client_secret": {
-                        "description": "ClientSecret is the OAuth 2.0 client secret",
-                        "type": "string"
-                    },
-                    "external_token_header_name": {
-                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
-                        "type": "string"
-                    },
-                    "header_strategy": {
-                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes is the list of scopes to request for the exchanged token",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "subject_token_type": {
-                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.\nIf empty, defaults to tokenTypeAccessToken.",
-                        "type": "string"
-                    },
-                    "token_url": {
-                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
-                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -1814,965 +2903,6 @@ const docTemplate = `{
                     "type": {
                         "description": "Type is a string representing the middleware type.",
                         "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "types.ProxyMode": {
-                "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
-                "enum": [
-                    "sse",
-                    "streamable-http"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "ProxyModeSSE",
-                    "ProxyModeStreamableHTTP"
-                ]
-            },
-            "types.TransportType": {
-                "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
-                "enum": [
-                    "stdio",
-                    "sse",
-                    "streamable-http",
-                    "inspector"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "TransportTypeStdio",
-                    "TransportTypeSSE",
-                    "TransportTypeStreamableHTTP",
-                    "TransportTypeInspector"
-                ]
-            },
-            "upstreamswap.Config": {
-                "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
-                "properties": {
-                    "custom_header_name": {
-                        "description": "CustomHeaderName is the header name when HeaderStrategy is \"custom\".",
-                        "type": "string"
-                    },
-                    "header_strategy": {
-                        "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.RegistryType": {
-                "description": "Type of registry (file, url, or default)",
-                "enum": [
-                    "file",
-                    "url",
-                    "api",
-                    "default"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "RegistryTypeFile",
-                    "RegistryTypeURL",
-                    "RegistryTypeAPI",
-                    "RegistryTypeDefault"
-                ]
-            },
-            "v1.UpdateRegistryRequest": {
-                "description": "Request containing registry configuration updates",
-                "properties": {
-                    "allow_private_ip": {
-                        "description": "Allow private IP addresses for registry URL or API URL",
-                        "type": "boolean"
-                    },
-                    "api_url": {
-                        "description": "MCP Registry API URL",
-                        "type": "string"
-                    },
-                    "local_path": {
-                        "description": "Local registry file path",
-                        "type": "string"
-                    },
-                    "url": {
-                        "description": "Registry URL (for remote registries)",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.UpdateRegistryResponse": {
-                "description": "Response containing update result",
-                "properties": {
-                    "type": {
-                        "description": "Registry type after update",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.buildSkillRequest": {
-                "description": "Request to build a skill from a local directory",
-                "properties": {
-                    "path": {
-                        "description": "Path to the skill definition directory",
-                        "type": "string"
-                    },
-                    "tag": {
-                        "description": "OCI tag for the built artifact",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.bulkClientRequest": {
-                "properties": {
-                    "groups": {
-                        "description": "Groups is the list of groups configured on the client.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "names": {
-                        "description": "Names is the list of client names to operate on.",
-                        "items": {
-                            "$ref": "#/components/schemas/client.ClientApp"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.bulkOperationRequest": {
-                "properties": {
-                    "group": {
-                        "description": "Group name to operate on (mutually exclusive with names)",
-                        "type": "string"
-                    },
-                    "names": {
-                        "description": "Names of the workloads to operate on",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.clientStatusResponse": {
-                "properties": {
-                    "clients": {
-                        "items": {
-                            "$ref": "#/components/schemas/client.ClientAppStatus"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createClientRequest": {
-                "properties": {
-                    "groups": {
-                        "description": "Groups is the list of groups configured on the client.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "name": {
-                        "$ref": "#/components/schemas/client.ClientApp"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createClientResponse": {
-                "properties": {
-                    "groups": {
-                        "description": "Groups is the list of groups configured on the client.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "name": {
-                        "$ref": "#/components/schemas/client.ClientApp"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createGroupRequest": {
-                "properties": {
-                    "name": {
-                        "description": "Name of the group to create",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createGroupResponse": {
-                "properties": {
-                    "name": {
-                        "description": "Name of the created group",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createRequest": {
-                "description": "Request to create a new workload",
-                "properties": {
-                    "authz_config": {
-                        "description": "Authorization configuration",
-                        "type": "string"
-                    },
-                    "cmd_arguments": {
-                        "description": "Command arguments to pass to the container",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "env_vars": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "Environment variables to set in the container",
-                        "type": "object"
-                    },
-                    "group": {
-                        "description": "Group name this workload belongs to",
-                        "type": "string"
-                    },
-                    "header_forward": {
-                        "$ref": "#/components/schemas/v1.headerForwardConfig"
-                    },
-                    "headers": {
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Header"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "host": {
-                        "description": "Host to bind to",
-                        "type": "string"
-                    },
-                    "image": {
-                        "description": "Docker image to use",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name of the workload",
-                        "type": "string"
-                    },
-                    "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
-                        "type": "boolean"
-                    },
-                    "oauth_config": {
-                        "$ref": "#/components/schemas/v1.remoteOAuthConfig"
-                    },
-                    "oidc": {
-                        "$ref": "#/components/schemas/v1.oidcOptions"
-                    },
-                    "permission_profile": {
-                        "$ref": "#/components/schemas/permissions.Profile"
-                    },
-                    "proxy_mode": {
-                        "description": "Proxy mode to use",
-                        "type": "string"
-                    },
-                    "proxy_port": {
-                        "description": "Port for the HTTP proxy to listen on",
-                        "type": "integer"
-                    },
-                    "secrets": {
-                        "description": "Secret parameters to inject",
-                        "items": {
-                            "$ref": "#/components/schemas/secrets.SecretParameter"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "target_port": {
-                        "description": "Port to expose from the container",
-                        "type": "integer"
-                    },
-                    "tools": {
-                        "description": "Tools filter",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "tools_override": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/v1.toolOverride"
-                        },
-                        "description": "Tools override",
-                        "type": "object"
-                    },
-                    "transport": {
-                        "description": "Transport configuration",
-                        "type": "string"
-                    },
-                    "trust_proxy_headers": {
-                        "description": "Whether to trust X-Forwarded-* headers from reverse proxies",
-                        "type": "boolean"
-                    },
-                    "url": {
-                        "description": "Remote server specific fields",
-                        "type": "string"
-                    },
-                    "volumes": {
-                        "description": "Volume mounts",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createSecretRequest": {
-                "description": "Request to create a new secret",
-                "properties": {
-                    "key": {
-                        "description": "Secret key name",
-                        "type": "string"
-                    },
-                    "value": {
-                        "description": "Secret value",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createSecretResponse": {
-                "description": "Response after creating a secret",
-                "properties": {
-                    "key": {
-                        "description": "Secret key that was created",
-                        "type": "string"
-                    },
-                    "message": {
-                        "description": "Success message",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.createWorkloadResponse": {
-                "description": "Response after successfully creating a workload",
-                "properties": {
-                    "name": {
-                        "description": "Name of the created workload",
-                        "type": "string"
-                    },
-                    "port": {
-                        "description": "Port the workload is listening on",
-                        "type": "integer"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.getRegistryResponse": {
-                "description": "Response containing registry details",
-                "properties": {
-                    "last_updated": {
-                        "description": "Last updated timestamp",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name of the registry",
-                        "type": "string"
-                    },
-                    "registry": {
-                        "$ref": "#/components/schemas/registry.Registry"
-                    },
-                    "server_count": {
-                        "description": "Number of servers in the registry",
-                        "type": "integer"
-                    },
-                    "source": {
-                        "description": "Source of the registry (URL, file path, or empty string for built-in)",
-                        "type": "string"
-                    },
-                    "type": {
-                        "$ref": "#/components/schemas/v1.RegistryType"
-                    },
-                    "version": {
-                        "description": "Version of the registry schema",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.getSecretsProviderResponse": {
-                "description": "Response containing secrets provider details",
-                "properties": {
-                    "capabilities": {
-                        "$ref": "#/components/schemas/v1.providerCapabilitiesResponse"
-                    },
-                    "name": {
-                        "description": "Name of the secrets provider",
-                        "type": "string"
-                    },
-                    "provider_type": {
-                        "description": "Type of the secrets provider",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.getServerResponse": {
-                "description": "Response containing server details",
-                "properties": {
-                    "is_remote": {
-                        "description": "Indicates if this is a remote server",
-                        "type": "boolean"
-                    },
-                    "remote_server": {
-                        "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                    },
-                    "server": {
-                        "$ref": "#/components/schemas/registry.ImageMetadata"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.groupListResponse": {
-                "properties": {
-                    "groups": {
-                        "description": "List of groups",
-                        "items": {
-                            "$ref": "#/components/schemas/groups.Group"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.headerForwardConfig": {
-                "description": "HeaderForward configures headers to inject into requests to remote MCP servers.\nUse this to add custom headers like X-Tenant-ID or correlation IDs.",
-                "properties": {
-                    "add_headers_from_secret": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "AddHeadersFromSecret maps header names to secret names in ToolHive's secrets manager.\nKey: HTTP header name, Value: secret name in the secrets manager",
-                        "type": "object"
-                    },
-                    "add_plaintext_headers": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "AddPlaintextHeaders contains literal header values to inject.\nWARNING: These values are stored and transmitted in plaintext.\nUse AddHeadersFromSecret for sensitive data like API keys.",
-                        "type": "object"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.installSkillRequest": {
-                "description": "Request to install a skill",
-                "properties": {
-                    "client": {
-                        "description": "Client is the target client (e.g., \"claude-code\")",
-                        "type": "string"
-                    },
-                    "force": {
-                        "description": "Force allows overwriting unmanaged skill directories",
-                        "type": "boolean"
-                    },
-                    "name": {
-                        "description": "Name or OCI reference of the skill to install",
-                        "type": "string"
-                    },
-                    "scope": {
-                        "$ref": "#/components/schemas/skills.Scope"
-                    },
-                    "version": {
-                        "description": "Version to install (empty means latest)",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.installSkillResponse": {
-                "description": "Response after successfully installing a skill",
-                "properties": {
-                    "skill": {
-                        "$ref": "#/components/schemas/skills.InstalledSkill"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.listSecretsResponse": {
-                "description": "Response containing a list of secret keys",
-                "properties": {
-                    "keys": {
-                        "description": "List of secret keys",
-                        "items": {
-                            "$ref": "#/components/schemas/v1.secretKeyResponse"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.listServersResponse": {
-                "description": "Response containing a list of servers",
-                "properties": {
-                    "remote_servers": {
-                        "description": "List of remote servers in the registry (if any)",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "servers": {
-                        "description": "List of container servers in the registry",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.ImageMetadata"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.oidcOptions": {
-                "description": "OIDC configuration options",
-                "properties": {
-                    "audience": {
-                        "description": "Expected audience",
-                        "type": "string"
-                    },
-                    "client_id": {
-                        "description": "OAuth2 client ID",
-                        "type": "string"
-                    },
-                    "client_secret": {
-                        "description": "OAuth2 client secret",
-                        "type": "string"
-                    },
-                    "introspection_url": {
-                        "description": "Token introspection URL for OIDC",
-                        "type": "string"
-                    },
-                    "issuer": {
-                        "description": "OIDC issuer URL",
-                        "type": "string"
-                    },
-                    "jwks_url": {
-                        "description": "JWKS URL for key verification",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "OAuth scopes to advertise in well-known endpoint (RFC 9728)",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.providerCapabilitiesResponse": {
-                "description": "Capabilities of the secrets provider",
-                "properties": {
-                    "can_cleanup": {
-                        "description": "Whether the provider can cleanup all secrets",
-                        "type": "boolean"
-                    },
-                    "can_delete": {
-                        "description": "Whether the provider can delete secrets",
-                        "type": "boolean"
-                    },
-                    "can_list": {
-                        "description": "Whether the provider can list secrets",
-                        "type": "boolean"
-                    },
-                    "can_read": {
-                        "description": "Whether the provider can read secrets",
-                        "type": "boolean"
-                    },
-                    "can_write": {
-                        "description": "Whether the provider can write secrets",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.pushSkillRequest": {
-                "description": "Request to push a built skill artifact",
-                "properties": {
-                    "reference": {
-                        "description": "OCI reference to push",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.registryInfo": {
-                "description": "Basic information about a registry",
-                "properties": {
-                    "last_updated": {
-                        "description": "Last updated timestamp",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name of the registry",
-                        "type": "string"
-                    },
-                    "server_count": {
-                        "description": "Number of servers in the registry",
-                        "type": "integer"
-                    },
-                    "source": {
-                        "description": "Source of the registry (URL, file path, or empty string for built-in)",
-                        "type": "string"
-                    },
-                    "type": {
-                        "$ref": "#/components/schemas/v1.RegistryType"
-                    },
-                    "version": {
-                        "description": "Version of the registry schema",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.registryListResponse": {
-                "description": "Response containing a list of registries",
-                "properties": {
-                    "registries": {
-                        "description": "List of registries",
-                        "items": {
-                            "$ref": "#/components/schemas/v1.registryInfo"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.remoteOAuthConfig": {
-                "description": "OAuth configuration for remote server authentication",
-                "properties": {
-                    "authorize_url": {
-                        "description": "OAuth authorization endpoint URL (alternative to issuer for non-OIDC OAuth)",
-                        "type": "string"
-                    },
-                    "bearer_token": {
-                        "$ref": "#/components/schemas/secrets.SecretParameter"
-                    },
-                    "callback_port": {
-                        "description": "Specific port for OAuth callback server",
-                        "type": "integer"
-                    },
-                    "client_id": {
-                        "description": "OAuth client ID for authentication",
-                        "type": "string"
-                    },
-                    "client_secret": {
-                        "$ref": "#/components/schemas/secrets.SecretParameter"
-                    },
-                    "issuer": {
-                        "description": "OAuth/OIDC issuer URL (e.g., https://accounts.google.com)",
-                        "type": "string"
-                    },
-                    "oauth_params": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "Additional OAuth parameters for server-specific customization",
-                        "type": "object"
-                    },
-                    "resource": {
-                        "description": "OAuth 2.0 resource indicator (RFC 8707)",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "OAuth scopes to request",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "skip_browser": {
-                        "description": "Whether to skip opening browser for OAuth flow (defaults to false)",
-                        "type": "boolean"
-                    },
-                    "token_url": {
-                        "description": "OAuth token endpoint URL (alternative to issuer for non-OIDC OAuth)",
-                        "type": "string"
-                    },
-                    "use_pkce": {
-                        "description": "Whether to use PKCE for the OAuth flow",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.secretKeyResponse": {
-                "description": "Secret key information",
-                "properties": {
-                    "description": {
-                        "description": "Optional description of the secret",
-                        "type": "string"
-                    },
-                    "key": {
-                        "description": "Secret key name",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.setupSecretsRequest": {
-                "description": "Request to setup a secrets provider",
-                "properties": {
-                    "password": {
-                        "description": "Password for encrypted provider (optional, can be set via environment variable)\nTODO Review environment variable for this",
-                        "type": "string"
-                    },
-                    "provider_type": {
-                        "description": "Type of the secrets provider (encrypted, 1password, environment)",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.setupSecretsResponse": {
-                "description": "Response after initializing a secrets provider",
-                "properties": {
-                    "message": {
-                        "description": "Success message",
-                        "type": "string"
-                    },
-                    "provider_type": {
-                        "description": "Type of the secrets provider that was setup",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.skillListResponse": {
-                "description": "Response containing a list of installed skills",
-                "properties": {
-                    "skills": {
-                        "description": "List of installed skills",
-                        "items": {
-                            "$ref": "#/components/schemas/skills.InstalledSkill"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.toolOverride": {
-                "description": "Tool override",
-                "properties": {
-                    "description": {
-                        "description": "Description of the tool",
-                        "type": "string"
-                    },
-                    "name": {
-                        "description": "Name of the tool",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.updateRequest": {
-                "description": "Request to update an existing workload (name cannot be changed)",
-                "properties": {
-                    "authz_config": {
-                        "description": "Authorization configuration",
-                        "type": "string"
-                    },
-                    "cmd_arguments": {
-                        "description": "Command arguments to pass to the container",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "env_vars": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "Environment variables to set in the container",
-                        "type": "object"
-                    },
-                    "group": {
-                        "description": "Group name this workload belongs to",
-                        "type": "string"
-                    },
-                    "header_forward": {
-                        "$ref": "#/components/schemas/v1.headerForwardConfig"
-                    },
-                    "headers": {
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Header"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "host": {
-                        "description": "Host to bind to",
-                        "type": "string"
-                    },
-                    "image": {
-                        "description": "Docker image to use",
-                        "type": "string"
-                    },
-                    "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
-                        "type": "boolean"
-                    },
-                    "oauth_config": {
-                        "$ref": "#/components/schemas/v1.remoteOAuthConfig"
-                    },
-                    "oidc": {
-                        "$ref": "#/components/schemas/v1.oidcOptions"
-                    },
-                    "permission_profile": {
-                        "$ref": "#/components/schemas/permissions.Profile"
-                    },
-                    "proxy_mode": {
-                        "description": "Proxy mode to use",
-                        "type": "string"
-                    },
-                    "proxy_port": {
-                        "description": "Port for the HTTP proxy to listen on",
-                        "type": "integer"
-                    },
-                    "secrets": {
-                        "description": "Secret parameters to inject",
-                        "items": {
-                            "$ref": "#/components/schemas/secrets.SecretParameter"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "target_port": {
-                        "description": "Port to expose from the container",
-                        "type": "integer"
-                    },
-                    "tools": {
-                        "description": "Tools filter",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "tools_override": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/v1.toolOverride"
-                        },
-                        "description": "Tools override",
-                        "type": "object"
-                    },
-                    "transport": {
-                        "description": "Transport configuration",
-                        "type": "string"
-                    },
-                    "trust_proxy_headers": {
-                        "description": "Whether to trust X-Forwarded-* headers from reverse proxies",
-                        "type": "boolean"
-                    },
-                    "url": {
-                        "description": "Remote server specific fields",
-                        "type": "string"
-                    },
-                    "volumes": {
-                        "description": "Volume mounts",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.updateSecretRequest": {
-                "description": "Request to update an existing secret",
-                "properties": {
-                    "value": {
-                        "description": "New secret value",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.updateSecretResponse": {
-                "description": "Response after updating a secret",
-                "properties": {
-                    "key": {
-                        "description": "Secret key that was updated",
-                        "type": "string"
-                    },
-                    "message": {
-                        "description": "Success message",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.validateSkillRequest": {
-                "description": "Request to validate a skill definition",
-                "properties": {
-                    "path": {
-                        "description": "Path to the skill definition directory",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.versionResponse": {
-                "properties": {
-                    "version": {
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.workloadListResponse": {
-                "description": "Response containing a list of workloads",
-                "properties": {
-                    "workloads": {
-                        "description": "List of container information for each workload",
-                        "items": {
-                            "$ref": "#/components/schemas/core.Workload"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "v1.workloadStatusResponse": {
-                "description": "Response containing workload status information",
-                "properties": {
-                    "status": {
-                        "$ref": "#/components/schemas/runtime.WorkloadStatus"
                     }
                 },
                 "type": "object"
@@ -2819,7 +2949,7 @@ const docTemplate = `{
                             "application/json": {
                                 "schema": {
                                     "items": {
-                                        "$ref": "#/components/schemas/client.RegisteredClient"
+                                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_client.RegisteredClient"
                                     },
                                     "type": "array"
                                 }
@@ -2844,7 +2974,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.createClientRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.createClientRequest",
                                         "summary": "client",
                                         "description": "Client to register"
                                     }
@@ -2860,7 +2990,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.createClientResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.createClientResponse"
                                 }
                             }
                         },
@@ -2895,7 +3025,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.bulkClientRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.bulkClientRequest",
                                         "summary": "clients",
                                         "description": "Clients to register"
                                     }
@@ -2912,7 +3042,7 @@ const docTemplate = `{
                             "application/json": {
                                 "schema": {
                                     "items": {
-                                        "$ref": "#/components/schemas/v1.createClientResponse"
+                                        "$ref": "#/components/schemas/pkg_api_v1.createClientResponse"
                                     },
                                     "type": "array"
                                 }
@@ -2949,7 +3079,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.bulkClientRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.bulkClientRequest",
                                         "summary": "clients",
                                         "description": "Clients to unregister"
                                     }
@@ -3078,7 +3208,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.clientStatusResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.clientStatusResponse"
                                 }
                             }
                         },
@@ -3099,7 +3229,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.groupListResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.groupListResponse"
                                 }
                             }
                         },
@@ -3132,7 +3262,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.createGroupRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.createGroupRequest",
                                         "summary": "group",
                                         "description": "Group creation request"
                                     }
@@ -3148,7 +3278,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.createGroupResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.createGroupResponse"
                                 }
                             }
                         },
@@ -3268,7 +3398,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/groups.Group"
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_groups.Group"
                                 }
                             }
                         },
@@ -3309,7 +3439,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.registryListResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryListResponse"
                                 }
                             }
                         },
@@ -3409,7 +3539,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.getRegistryResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.getRegistryResponse"
                                 }
                             }
                         },
@@ -3453,7 +3583,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.UpdateRegistryRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.UpdateRegistryRequest",
                                         "summary": "body",
                                         "description": "Registry configuration"
                                     }
@@ -3469,7 +3599,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.UpdateRegistryResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.UpdateRegistryResponse"
                                 }
                             }
                         },
@@ -3541,7 +3671,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.listServersResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.listServersResponse"
                                 }
                             }
                         },
@@ -3592,7 +3722,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.getServerResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.getServerResponse"
                                 }
                             }
                         },
@@ -3627,7 +3757,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.setupSecretsRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.setupSecretsRequest",
                                         "summary": "request",
                                         "description": "Setup secrets provider request"
                                     }
@@ -3643,7 +3773,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.setupSecretsResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.setupSecretsResponse"
                                 }
                             }
                         },
@@ -3684,7 +3814,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.getSecretsProviderResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.getSecretsProviderResponse"
                                 }
                             }
                         },
@@ -3725,7 +3855,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.listSecretsResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.listSecretsResponse"
                                 }
                             }
                         },
@@ -3778,7 +3908,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.createSecretRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.createSecretRequest",
                                         "summary": "request",
                                         "description": "Create secret request"
                                     }
@@ -3794,7 +3924,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.createSecretResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.createSecretResponse"
                                 }
                             }
                         },
@@ -3940,7 +4070,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.updateSecretRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.updateSecretRequest",
                                         "summary": "request",
                                         "description": "Update secret request"
                                     }
@@ -3956,7 +4086,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.updateSecretResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.updateSecretResponse"
                                 }
                             }
                         },
@@ -4024,6 +4154,30 @@ const docTemplate = `{
                             ],
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "Filter by client app",
+                        "in": "query",
+                        "name": "client",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by project root path",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by group name",
+                        "in": "query",
+                        "name": "group",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -4031,7 +4185,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.skillListResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.skillListResponse"
                                 }
                             }
                         },
@@ -4064,7 +4218,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.installSkillRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.installSkillRequest",
                                         "summary": "request",
                                         "description": "Install request"
                                     }
@@ -4080,7 +4234,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.installSkillResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.installSkillResponse"
                                 }
                             }
                         },
@@ -4143,7 +4297,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.buildSkillRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.buildSkillRequest",
                                         "summary": "request",
                                         "description": "Build request"
                                     }
@@ -4159,13 +4313,13 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/skills.BuildResult"
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.BuildResult"
                                 }
                             }
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4173,7 +4327,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Build a skill",
@@ -4194,7 +4358,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.pushSkillRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.pushSkillRequest",
                                         "summary": "request",
                                         "description": "Push request"
                                     }
@@ -4216,7 +4380,7 @@ const docTemplate = `{
                         },
                         "description": "No Content"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4224,7 +4388,27 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Push a skill",
@@ -4245,7 +4429,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.validateSkillRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.validateSkillRequest",
                                         "summary": "request",
                                         "description": "Validate request"
                                     }
@@ -4261,13 +4445,13 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/skills.ValidationResult"
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.ValidationResult"
                                 }
                             }
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "400": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4275,7 +4459,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Validate a skill",
@@ -4306,6 +4500,14 @@ const docTemplate = `{
                                 "user",
                                 "project"
                             ],
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Project root path for project-scoped skills",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
                             "type": "string"
                         }
                     }
@@ -4380,6 +4582,14 @@ const docTemplate = `{
                             ],
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "Project root path for project-scoped skills",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -4387,7 +4597,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/skills.SkillInfo"
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillInfo"
                                 }
                             }
                         },
@@ -4438,7 +4648,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.versionResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.versionResponse"
                                 }
                             }
                         },
@@ -4477,7 +4687,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.workloadListResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.workloadListResponse"
                                 }
                             }
                         },
@@ -4510,7 +4720,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.createRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.createRequest",
                                         "summary": "request",
                                         "description": "Create workload request"
                                     }
@@ -4526,7 +4736,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.createWorkloadResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.createWorkloadResponse"
                                 }
                             }
                         },
@@ -4571,7 +4781,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.bulkOperationRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.bulkOperationRequest",
                                         "summary": "request",
                                         "description": "Bulk delete request (names or group)"
                                     }
@@ -4622,7 +4832,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.bulkOperationRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.bulkOperationRequest",
                                         "summary": "request",
                                         "description": "Bulk restart request (names or group)"
                                     }
@@ -4673,7 +4883,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.bulkOperationRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.bulkOperationRequest",
                                         "summary": "request",
                                         "description": "Bulk stop request (names or group)"
                                     }
@@ -4781,7 +4991,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.createRequest"
+                                    "$ref": "#/components/schemas/pkg_api_v1.createRequest"
                                 }
                             }
                         },
@@ -4827,7 +5037,7 @@ const docTemplate = `{
                                         "type": "object"
                                     },
                                     {
-                                        "$ref": "#/components/schemas/v1.updateRequest",
+                                        "$ref": "#/components/schemas/pkg_api_v1.updateRequest",
                                         "summary": "request",
                                         "description": "Update workload request"
                                     }
@@ -4843,7 +5053,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.createWorkloadResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.createWorkloadResponse"
                                 }
                             }
                         },
@@ -4895,7 +5105,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/runner.RunConfig"
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.RunConfig"
                                 }
                             }
                         },
@@ -5093,7 +5303,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/v1.workloadStatusResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.workloadStatusResponse"
                                 }
                             }
                         },

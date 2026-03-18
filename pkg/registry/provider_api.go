@@ -10,9 +10,10 @@ import (
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
+	"github.com/stacklok/toolhive-core/registry/converters"
+	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry/api"
-	"github.com/stacklok/toolhive/pkg/registry/converters"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 // APIRegistryProvider provides registry data from an MCP Registry API endpoint
@@ -22,33 +23,45 @@ type APIRegistryProvider struct {
 	apiURL         string
 	allowPrivateIp bool
 	client         api.Client
+	tokenSource    auth.TokenSource
+	skillsClient   api.SkillsClient
 }
 
-// NewAPIRegistryProvider creates a new API registry provider
-func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool) (*APIRegistryProvider, error) {
+// NewAPIRegistryProvider creates a new API registry provider.
+// If tokenSource is non-nil, all API requests will include authentication.
+func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth.TokenSource) (*APIRegistryProvider, error) {
 	// Create API client
-	client, err := api.NewClient(apiURL, allowPrivateIp)
+	client, err := api.NewClient(apiURL, allowPrivateIp, tokenSource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create API client: %w", err)
 	}
+
+	// Create skills client (best-effort — skills API may not be available)
+	skillsClient, _ := api.NewSkillsClient(apiURL, allowPrivateIp, tokenSource)
 
 	p := &APIRegistryProvider{
 		apiURL:         apiURL,
 		allowPrivateIp: allowPrivateIp,
 		client:         client,
+		tokenSource:    tokenSource,
+		skillsClient:   skillsClient,
 	}
 
 	// Initialize the base provider with the GetRegistry function
 	p.BaseProvider = NewBaseProvider(p.GetRegistry)
 
-	// Validate the endpoint by actually trying to use it (not checking openapi.yaml)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Skip validation probe when auth is configured. The OAuth browser flow
+	// requires user interaction which cannot complete within the validation timeout.
+	// The endpoint will be validated on first real use instead.
+	if tokenSource == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	// Try to list servers with a small limit to verify API functionality
-	_, err = client.ListServers(ctx, &api.ListOptions{Limit: 1})
-	if err != nil {
-		return nil, fmt.Errorf("API endpoint not functional: %w", err)
+		// Try to list servers with a small limit to verify API functionality
+		_, err = client.ListServers(ctx, &api.ListOptions{Limit: 1})
+		if err != nil {
+			return nil, fmt.Errorf("API endpoint not functional: %w", err)
+		}
 	}
 
 	return p, nil
@@ -165,21 +178,34 @@ func (p *APIRegistryProvider) ListServers() ([]types.ServerMetadata, error) {
 	return ConvertServersToMetadata(servers)
 }
 
-// GetImageServer returns a specific container server by name (overrides BaseProvider)
-// This override is necessary because BaseProvider.GetImageServer calls p.GetServer,
-// which would call BaseProvider.GetServer instead of APIRegistryProvider.GetServer
-func (p *APIRegistryProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
-	server, err := p.GetServer(name)
+// GetSkill returns a specific skill by namespace and name from the API.
+func (p *APIRegistryProvider) GetSkill(namespace, name string) (*types.Skill, error) {
+	if p.skillsClient == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return p.skillsClient.GetSkill(ctx, namespace, name)
+}
+
+// SearchSkills searches for skills matching the query via the API.
+func (p *APIRegistryProvider) SearchSkills(query string) ([]types.Skill, error) {
+	if p.skillsClient == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := p.skillsClient.SearchSkills(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-
-	// Type assert to ImageMetadata
-	if img, ok := server.(*types.ImageMetadata); ok {
-		return img, nil
+	skills := make([]types.Skill, 0, len(result.Skills))
+	for _, s := range result.Skills {
+		if s != nil {
+			skills = append(skills, *s)
+		}
 	}
-
-	return nil, fmt.Errorf("server %s is not a container server", name)
+	return skills, nil
 }
 
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata
@@ -215,7 +241,7 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (types.ServerMetadata, error) 
 
 // ConvertServersToMetadata converts a slice of ServerJSON to a slice of ServerMetadata
 // Skips servers that cannot be converted (e.g., incomplete entries)
-// Uses official converters from toolhive-registry package
+// Uses official converters from toolhive-catalog package
 func ConvertServersToMetadata(servers []*v0.ServerJSON) ([]types.ServerMetadata, error) {
 	result := make([]types.ServerMetadata, 0, len(servers))
 

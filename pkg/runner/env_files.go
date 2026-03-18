@@ -5,12 +5,12 @@ package runner
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/environment"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // processEnvFilesDirectory detects and processes environment files from a directory
@@ -20,13 +20,13 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Debugf("Env files directory %s does not exist", dirPath)
+			slog.Debug("Env files directory does not exist", "dir", dirPath)
 			return make(map[string]string), nil // Return empty map, not an error
 		}
 		return nil, fmt.Errorf("failed to read env files directory %s: %w", dirPath, err)
 	}
 
-	logger.Debugf("Env files directory %s detected, processing environment files", dirPath)
+	slog.Debug("Env files directory detected, processing environment files", "dir", dirPath)
 
 	allEnvVars := make(map[string]string)
 	processedCount := 0
@@ -45,7 +45,7 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 		filePath := filepath.Join(dirPath, entry.Name())
 		fileEnvVars, err := processEnvFile(filePath)
 		if err != nil {
-			logger.Warnf("Failed to process env file %s: %v", entry.Name(), err)
+			slog.Warn("Failed to process env file", "name", entry.Name(), "error", err)
 			continue
 		}
 
@@ -56,7 +56,7 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 		processedCount++
 	}
 
-	logger.Debugf("Processed %d env files, %d environment variables extracted", processedCount, len(allEnvVars))
+	slog.Debug("Processed env files", "files_processed", processedCount, "vars_extracted", len(allEnvVars))
 	return allEnvVars, nil
 }
 
@@ -90,7 +90,7 @@ func processEnvFile(path string) (map[string]string, error) {
 	}
 
 	if len(envLines) == 0 {
-		logger.Debugf("No environment variables found in %s", filepath.Base(path))
+		slog.Debug("No environment variables found", "file", filepath.Base(path))
 		return make(map[string]string), nil
 	}
 
@@ -100,6 +100,6 @@ func processEnvFile(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("failed to parse environment variables in %s: %w", filepath.Base(path), err)
 	}
 
-	logger.Debugf("Extracted %d environment variables from %s", len(envVars), filepath.Base(path))
+	slog.Debug("Extracted environment variables", "count", len(envVars), "file", filepath.Base(path))
 	return envVars, nil
 }

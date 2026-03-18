@@ -69,17 +69,18 @@ func TestWorkflowEngine_ExecuteElicitationStep_Accept(t *testing.T) {
 	}
 
 	// Setup expectation for deploy tool call
-	te.Router.EXPECT().RouteTool(gomock.Any(), "deploy_tool").Return(&vmcp.BackendTarget{
+	deployTarget := &vmcp.BackendTarget{
 		WorkloadID: "deploy-backend",
 		BaseURL:    "http://deploy:8080",
-	}, nil)
+	}
+	te.Router.EXPECT().RouteTool(gomock.Any(), "deploy_tool").Return(deployTarget, nil)
 	deployResult := &vmcp.ToolCallResult{
 		StructuredContent: map[string]any{"status": "deployed"},
 		Content:           []vmcp.Content{},
 		IsError:           false,
 		Meta:              nil,
 	}
-	te.Backend.EXPECT().CallTool(gomock.Any(), gomock.Any(), "deploy_tool", map[string]any{
+	te.Backend.EXPECT().CallTool(gomock.Any(), deployTarget, "deploy_tool", map[string]any{
 		"env": "production",
 	}, gomock.Any()).Return(deployResult, nil)
 

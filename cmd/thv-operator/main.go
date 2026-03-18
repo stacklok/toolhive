@@ -9,12 +9,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
+	// to ensure that exec-entrypoint and run can make use of them.
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -31,7 +33,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -69,11 +70,10 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.Parse()
 
-	// Initialize the structured logger
-	logger.Initialize()
-
-	// Set the controller-runtime logger to use our structured logger
-	ctrl.SetLogger(logger.NewLogr())
+	// Initialize the controller-runtime logger. Without this call, controller-runtime
+	// uses a no-op logger by default and ALL operator log output is silently discarded.
+	// Bridge to slog for consistency with the rest of the ToolHive codebase.
+	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
 	options := ctrl.Options{
 		Scheme:                 scheme,
@@ -234,7 +234,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	rec := &controllers.MCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("mcpserver-controller"),
+		Recorder:         mgr.GetEventRecorder("mcpserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 		ImageValidation:  imageValidation,
 	}
@@ -262,6 +262,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	if err := (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorder("mcpremoteproxy-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
@@ -271,7 +272,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	if err := (&controllers.EmbeddingServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("embeddingserver-controller"),
+		Recorder:         mgr.GetEventRecorder("embeddingserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 		ImageValidation:  imageValidation,
 	}).SetupWithManager(mgr); err != nil {
@@ -305,7 +306,7 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 	if err := (&controllers.VirtualMCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("virtualmcpserver-controller"),
+		Recorder:         mgr.GetEventRecorder("virtualmcpserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)

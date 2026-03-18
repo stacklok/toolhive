@@ -19,13 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 func TestNewAuditor(t *testing.T) {
 	t.Parallel()

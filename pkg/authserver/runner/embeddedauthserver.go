@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -18,7 +19,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/logger"
+)
+
+// Redis ACL credential environment variable names.
+// These are set by the operator when Redis storage is configured.
+const (
+	// RedisUsernameEnvVar is the environment variable for the Redis ACL username.
+	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+	RedisUsernameEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_USERNAME"
+
+	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
+	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
 )
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
@@ -79,8 +91,11 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		AllowedAudiences:     cfg.AllowedAudiences,
 	}
 
-	// 6. Create storage (in-memory for single-instance deployments)
-	stor := storage.NewMemoryStorage()
+	// 6. Create storage backend based on configuration
+	stor, err := createStorage(ctx, cfg.Storage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage: %w", err)
+	}
 
 	// 7. Create the auth server
 	server, err := authserver.New(ctx, resolvedCfg, stor)
@@ -118,6 +133,12 @@ func (e *EmbeddedAuthServer) Close() error {
 // for upstream IDP tokens.
 func (e *EmbeddedAuthServer) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return e.server.IDPTokenStorage()
+}
+
+// UpstreamTokenRefresher returns a refresher that can refresh expired upstream
+// tokens using the upstream provider's refresh token grant.
+func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
+	return e.server.UpstreamTokenRefresher()
 }
 
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
@@ -271,7 +292,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 
 	// Warn if UserInfoOverride is configured but won't be used
 	if oidc.UserInfoOverride != nil {
-		logger.Warnw("userinfo_override is configured for OIDC provider but will not be used; "+
+		slog.Warn("userinfo_override is configured for OIDC provider but will not be used; "+
 			"OIDC providers resolve identity from the ID token, not the UserInfo endpoint",
 			"upstream", rc.Name,
 		)
@@ -311,7 +332,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)
 	}
 
-	return &upstream.OAuth2Config{
+	cfg := &upstream.OAuth2Config{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
 			ClientID:     oauth2.ClientID,
 			ClientSecret: clientSecret,
@@ -321,7 +342,18 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
-	}, nil
+	}
+
+	if oauth2.TokenResponseMapping != nil {
+		cfg.TokenResponseMapping = &upstream.TokenResponseMapping{
+			AccessTokenPath:  oauth2.TokenResponseMapping.AccessTokenPath,
+			ScopePath:        oauth2.TokenResponseMapping.ScopePath,
+			RefreshTokenPath: oauth2.TokenResponseMapping.RefreshTokenPath,
+			ExpiresInPath:    oauth2.TokenResponseMapping.ExpiresInPath,
+		}
+	}
+
+	return cfg, nil
 }
 
 // resolveSecret reads a secret from file or environment variable.
@@ -344,7 +376,7 @@ func resolveSecret(file, envVar string) (string, error) {
 		}
 		return value, nil
 	}
-	logger.Debugf("No client secret configured (neither file nor env var specified)")
+	slog.Debug("no client secret configured (neither file nor env var specified)")
 	return "", nil
 }
 
@@ -371,4 +403,129 @@ func convertFieldMapping(rc *authserver.UserInfoFieldMappingRunConfig) *upstream
 		NameFields:    rc.NameFields,
 		EmailFields:   rc.EmailFields,
 	}
+}
+
+// createStorage creates the appropriate storage backend based on configuration.
+func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage, error) {
+	if cfg == nil || cfg.Type == "" || cfg.Type == string(storage.TypeMemory) {
+		return storage.NewMemoryStorage(), nil
+	}
+	if cfg.Type == string(storage.TypeRedis) {
+		redisCfg, err := convertRedisRunConfig(cfg.RedisConfig)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Redis config: %w", err)
+		}
+		return storage.NewRedisStorage(ctx, *redisCfg)
+	}
+	return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
+}
+
+// convertRedisRunConfig converts a serializable RedisRunConfig to the runtime RedisConfig.
+// It resolves credentials from environment variables and parses duration strings.
+func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, error) {
+	if rc == nil {
+		return nil, fmt.Errorf("redis config is required when storage type is redis")
+	}
+
+	cfg := &storage.RedisConfig{
+		KeyPrefix: rc.KeyPrefix,
+	}
+
+	// Convert Sentinel config
+	if rc.SentinelConfig == nil {
+		return nil, fmt.Errorf("sentinel config is required")
+	}
+	cfg.SentinelConfig = &storage.SentinelConfig{
+		MasterName:    rc.SentinelConfig.MasterName,
+		SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
+		DB:            rc.SentinelConfig.DB,
+	}
+
+	// Resolve ACL credentials from environment variables
+	if rc.ACLUserConfig == nil {
+		return nil, fmt.Errorf("ACL user config is required")
+	}
+	username, err := resolveEnvVar(rc.ACLUserConfig.UsernameEnvVar)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+	}
+	password, err := resolveEnvVar(rc.ACLUserConfig.PasswordEnvVar)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve Redis password: %w", err)
+	}
+	cfg.ACLUserConfig = &storage.ACLUserConfig{
+		Username: username,
+		Password: password,
+	}
+
+	// Parse optional timeouts
+	if rc.DialTimeout != "" {
+		d, err := time.ParseDuration(rc.DialTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid dial timeout: %w", err)
+		}
+		cfg.DialTimeout = d
+	}
+	if rc.ReadTimeout != "" {
+		d, err := time.ParseDuration(rc.ReadTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid read timeout: %w", err)
+		}
+		cfg.ReadTimeout = d
+	}
+	if rc.WriteTimeout != "" {
+		d, err := time.ParseDuration(rc.WriteTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid write timeout: %w", err)
+		}
+		cfg.WriteTimeout = d
+	}
+
+	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
+	if err != nil {
+		return nil, fmt.Errorf("master TLS config: %w", err)
+	}
+	cfg.TLS = tlsCfg
+
+	sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
+	if err != nil {
+		return nil, fmt.Errorf("sentinel TLS config: %w", err)
+	}
+	cfg.SentinelTLS = sentinelTLSCfg
+
+	return cfg, nil
+}
+
+// convertRedisTLSRunConfig converts a RedisTLSRunConfig to runtime RedisTLSConfig.
+// Returns an error if a CA cert file is configured but cannot be read — this is
+// treated as a hard error because silently falling back to system CAs could mask
+// a misconfiguration and cause confusing TLS failures downstream.
+func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*storage.RedisTLSConfig, error) {
+	if rc == nil {
+		return nil, nil
+	}
+	cfg := &storage.RedisTLSConfig{
+		InsecureSkipVerify: rc.InsecureSkipVerify,
+	}
+	if rc.CACertFile != "" {
+		// #nosec G304 - file path is from configuration, not user input
+		data, err := os.ReadFile(rc.CACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read Redis CA cert file %q: %w", rc.CACertFile, err)
+		}
+		cfg.CACert = data
+	}
+	return cfg, nil
+}
+
+// resolveEnvVar reads a value from the named environment variable.
+func resolveEnvVar(envVar string) (string, error) {
+	if envVar == "" {
+		return "", fmt.Errorf("environment variable name is empty")
+	}
+	value := os.Getenv(envVar)
+	if value == "" {
+		return "", fmt.Errorf("environment variable %q is not set", envVar)
+	}
+	return value, nil
 }

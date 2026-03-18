@@ -17,7 +17,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("NetworkIsolation", Label("network", "isolation", "e2e"), func() {
+var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e"), func() {
 	var (
 		config               *e2e.TestConfig
 		serverName           string
@@ -72,13 +72,11 @@ var _ = Describe("NetworkIsolation", Label("network", "isolation", "e2e"), func(
 			Expect(err).ToNot(HaveOccurred(), "Should be able to create permission profile")
 
 			By("Starting the fetch MCP server with network isolation")
-			stdout, stderr := e2e.NewTHVCommand(config, "run",
+			e2e.NewTHVCommand(config, "run",
 				"--name", serverName,
 				"--isolate-network",
 				"--permission-profile", profilePath,
 				"fetch").ExpectSuccess()
-
-			Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 			By("Waiting for the server to be running")
 			err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)

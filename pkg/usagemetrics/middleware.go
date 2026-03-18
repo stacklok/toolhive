@@ -5,10 +5,10 @@ package usagemetrics
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -66,7 +66,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Create a new collector instance for this middleware
 	collector, err := NewCollector()
 	if err != nil {
-		logger.Warnf("Failed to initialize usage metrics: %v", err)
+		slog.Warn("failed to initialize usage metrics", "error", err)
 		// Continue - metrics are non-critical, register no-op middleware
 		mw := &Middleware{}
 		runner.AddMiddleware(config.Type, mw)

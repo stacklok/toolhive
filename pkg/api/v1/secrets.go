@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -132,10 +132,11 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		// TODO Handle provider reconfiguration in a better way
 		if currentProviderType == providerType {
 			isReconfiguration = true
-			logger.Debugf("Reconfiguring existing %s secrets provider", providerType)
+			slog.Debug("reconfiguring existing secrets provider", "provider", providerType)
 		} else {
 			isReconfiguration = true // Changing provider type is also considered reconfiguration
-			logger.Warnf("Changing secrets provider from %s to %s", currentProviderType, providerType)
+			//nolint:gosec // G706: provider types are from config, not user input
+			slog.Warn("changing secrets provider", "from", currentProviderType, "to", providerType)
 		}
 	}
 
@@ -146,7 +147,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		if req.Password != "" {
 			// Use provided password
 			passwordToUse = req.Password
-			logger.Debugf("Using provided password for encrypted provider setup")
+			slog.Debug("using provided password for encrypted provider setup")
 		} else {
 			// Generate a secure random password
 			generatedPassword, err := secrets.GenerateSecurePassword()
@@ -154,7 +155,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 				return fmt.Errorf("failed to generate secure password: %w", err)
 			}
 			passwordToUse = generatedPassword
-			logger.Debugf("Generated secure random password for encrypted provider setup")
+			slog.Debug("generated secure random password for encrypted provider setup")
 		}
 	}
 
@@ -177,7 +178,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return fmt.Errorf("failed to initialize encrypted provider: %w", err)
 		}
-		logger.Debugf("Encrypted provider initialized and password saved to keyring")
+		slog.Debug("encrypted provider initialized and password saved to keyring")
 	}
 
 	// Update the secrets provider type and mark setup as completed

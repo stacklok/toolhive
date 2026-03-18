@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // CallbackHandler handles GET /oauth/callback requests.
@@ -37,13 +37,13 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Validate required parameters - use http.Error for early errors without valid pending
 	if internalState == "" {
-		logger.Warn("callback missing state parameter")
+		slog.Warn("callback missing state parameter")
 		http.Error(w, "missing state parameter", http.StatusBadRequest)
 		return
 	}
 
 	if code == "" {
-		logger.Warn("callback missing code parameter")
+		slog.Warn("callback missing code parameter")
 		http.Error(w, "missing code parameter", http.StatusBadRequest)
 		return
 	}
@@ -51,7 +51,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Load and delete pending authorization (single-use)
 	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
 	if err != nil {
-		logger.Warnw("pending authorization not found",
+		slog.Warn("pending authorization not found",
 			"error", err,
 		)
 		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
@@ -60,7 +60,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Delete pending authorization immediately (single-use)
 	if err := h.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
-		logger.Warnw("failed to delete pending authorization",
+		slog.Warn("failed to delete pending authorization",
 			"error", err,
 		)
 	}
@@ -75,7 +75,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Check if upstream provider is configured
 	if h.upstream == nil {
-		logger.Error("upstream provider not configured")
+		slog.Error("upstream provider not configured")
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("authorization server not configured"))
 		return
 	}
@@ -84,7 +84,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This ensures OIDC nonce validation cannot be accidentally skipped.
 	result, err := h.upstream.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
 	if err != nil {
-		logger.Errorw("failed to exchange code or resolve identity",
+		slog.Error("failed to exchange code or resolve identity",
 			"error", err,
 		)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to exchange authorization code"))
@@ -100,7 +100,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Resolve or create internal user
 	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
 	if err != nil {
-		logger.Errorw("failed to resolve user", "error", err)
+		slog.Error("failed to resolve user", "error", err)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
 		return
 	}
@@ -125,7 +125,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, storageTokens); err != nil {
-		logger.Errorw("failed to store upstream tokens",
+		slog.Error("failed to store upstream tokens",
 			"error", err,
 		)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store session"))
@@ -133,8 +133,8 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Generate authorization code and redirect to client using fosite's RFC 6749 compliant handler
-	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject); err != nil {
-		logger.Errorw("failed to create authorization response",
+	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, result.Name, result.Email); err != nil {
+		slog.Error("failed to create authorization response",
 			"error", err,
 		)
 		// Clean up stored upstream tokens
@@ -143,7 +143,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	logger.Info("authorization successful, redirecting to client")
+	slog.Info("authorization successful, redirecting to client")
 }
 
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.
@@ -155,6 +155,8 @@ func (h *Handler) writeAuthorizationResponse(
 	pending *storage.PendingAuthorization,
 	sessionID string,
 	subject string,
+	name string,
+	email string,
 ) error {
 	// Get the client from storage
 	fositeClient, err := h.storage.GetClient(ctx, pending.ClientID)
@@ -162,8 +164,11 @@ func (h *Handler) writeAuthorizationResponse(
 		return err
 	}
 
-	// Create the session with IDP session reference and client ID for binding
-	sess := session.New(subject, sessionID, pending.ClientID)
+	// Create the session with IDP session reference, client ID, and user profile claims
+	sess := session.New(subject, sessionID, pending.ClientID, session.UserClaims{
+		Name:  name,
+		Email: email,
+	})
 
 	// Set expiration times
 	now := time.Now()
@@ -195,10 +200,20 @@ func (h *Handler) writeAuthorizationResponse(
 	}
 	authorizeRequest.RedirectURI = redirectURI
 
-	// Set requested scopes
+	// Grant only scopes that the client is registered for.
+	// This prevents elevation if a tampered authorize request smuggled extra scopes
+	// into the pending authorization.
+	clientScopes := fositeClient.GetScopes()
 	for _, scope := range pending.Scopes {
-		authorizeRequest.RequestedScope = append(authorizeRequest.RequestedScope, scope)
-		authorizeRequest.GrantedScope = append(authorizeRequest.GrantedScope, scope)
+		if fosite.ExactScopeStrategy(clientScopes, scope) {
+			authorizeRequest.RequestedScope = append(authorizeRequest.RequestedScope, scope)
+			authorizeRequest.GrantedScope = append(authorizeRequest.GrantedScope, scope)
+		} else {
+			slog.Warn("filtered unregistered scope from authorization", //nolint:gosec // G706 - scope from server-side storage
+				"scope", scope,
+				"client_id", pending.ClientID,
+			)
+		}
 	}
 
 	// Generate the authorization response using fosite
@@ -227,7 +242,7 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	// so failure indicates storage corruption
 	redirectURI, err := url.Parse(pending.RedirectURI)
 	if err != nil {
-		logger.Errorw("stored redirect URI is invalid",
+		slog.Error("stored redirect URI is invalid", //nolint:gosec // G706 - redirect URI from server-side storage
 			"redirect_uri", pending.RedirectURI,
 			"error", err,
 		)
@@ -250,7 +265,7 @@ func (h *Handler) handleUpstreamError(
 	errorParam string,
 	errorDescription string,
 ) {
-	logger.Warnw("upstream IDP returned error",
+	slog.Warn("upstream IDP returned error", //nolint:gosec // G706: error params from upstream IDP response
 		"error", errorParam,
 		"error_description", errorDescription,
 	)

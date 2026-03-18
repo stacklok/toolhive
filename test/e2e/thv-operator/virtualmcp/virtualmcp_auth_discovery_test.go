@@ -62,6 +62,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		timeout              = 3 * time.Minute
 		pollingInterval      = 1 * time.Second
 		mockServer           *httptest.Server
+		oidcNodePort         int32
 	)
 
 	BeforeAll(func() {
@@ -597,7 +598,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 		Expect(k8sClient.Create(ctx, oidcServerPod)).To(Succeed())
 
-		// Create a service for the OIDC server with NodePort for test client access
+		// Create a service for the OIDC server with auto-assigned NodePort
 		oidcServerService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      oidcServerServiceName,
@@ -613,12 +614,18 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 						Port:       80,
 						TargetPort: intstr.FromInt(8080),
 						Protocol:   corev1.ProtocolTCP,
-						NodePort:   30010, // Fixed NodePort for test client access
 					},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, oidcServerService)).To(Succeed())
+
+		// Read back the auto-assigned NodePort
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: oidcServerServiceName, Namespace: testNamespace,
+		}, oidcServerService)).To(Succeed())
+		oidcNodePort = oidcServerService.Spec.Ports[0].NodePort
+		Expect(oidcNodePort).NotTo(BeZero(), "Kubernetes should auto-assign a NodePort")
 
 		// Wait for the OIDC server pod to be ready (both Running and ContainersReady)
 		Eventually(func() bool {
@@ -1134,7 +1141,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 
 		// Helper function to get OIDC token from mock server via client credentials flow
 		getOIDCToken := func() string {
-			tokenURL := "http://localhost:30010/token"
+			tokenURL := fmt.Sprintf("http://localhost:%d/token", oidcNodePort)
 			resp, err := http.PostForm(tokenURL, nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer resp.Body.Close()
@@ -1195,39 +1202,27 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			By("Getting OIDC token from mock OIDC server")
 			oidcToken := getOIDCToken()
 
-			By("Starting transport and initializing connection with retries")
-			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
-			// auth middleware (OIDC validation and auth discovery) may not be fully ready
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			By("Starting transport and initializing connection with retries, waiting for expected tools")
+			// Retry MCP initialization AND tool discovery to handle timing issues where
+			// the VirtualMCPServer's auth middleware or backends may not be fully ready.
+			// Each retry creates a new session to trigger fresh backend discovery.
 			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
 
-			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute, WithHttpLoggerOption(), transport.WithHTTPBasicClient(authenticatedHTTPClient))
+			toolsToTest := []string{"backend-with-token-exchange_fetch", "backend-no-auth_fetch"}
+			tools, mcpClient := WaitForExpectedToolsWithAuth(
+				vmcpNodePort, 2*time.Minute,
+				func(tools []mcp.Tool) error {
+					return ToolsContainAll(tools, toolsToTest...)
+				},
+				WithHttpLoggerOption(), transport.WithHTTPBasicClient(authenticatedHTTPClient),
+			)
 			defer mcpClient.Close()
 
-			By("Listing tools from VirtualMCPServer")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty())
 			Expect(len(tools.Tools)).To(BeNumerically(">=", 2), "Should aggregate tools from multiple backends")
-
 			GinkgoWriter.Printf("VirtualMCPServer aggregates %d tools with discovered auth\n", len(tools.Tools))
 
 			By("Calling fetch tools from backends with different auth configurations")
-			toolsToTest := []string{"backend-with-token-exchange_fetch", "backend-no-auth_fetch"}
-
 			for _, targetToolName := range toolsToTest {
-				var toolFound bool
-				for _, tool := range tools.Tools {
-					if tool.Name == targetToolName {
-						toolFound = true
-						break
-					}
-				}
-				Expect(toolFound).To(BeTrue(), "Expected tool %s should be available", targetToolName)
-
 				toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer toolCallCancel()
 
@@ -1238,7 +1233,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
 				Expect(err).ToNot(HaveOccurred(), "Tool call should succeed: %s", targetToolName)
 				Expect(result).ToNot(BeNil())
-				GinkgoWriter.Printf("✓ Successfully called tool: %s\n", targetToolName)
+				GinkgoWriter.Printf("Successfully called tool: %s\n", targetToolName)
 			}
 		})
 
@@ -1403,5 +1398,342 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			GinkgoWriter.Printf("  - Tool calls succeeded proving end-to-end auth flow works\n")
 		})
 
+	})
+
+}) // End of VirtualMCPServer Auth Discovery describe block
+
+// Test that VirtualMCPServer reports discovered auth config errors via conditions.
+// VirtualMCPServer should continue in degraded mode when auth config discovery fails,
+// while exposing failures via Kubernetes status conditions for better observability.
+var _ = Describe("Auth Config Error Handling", Ordered, func() {
+	var (
+		testNamespace   = "default"
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
+	)
+
+	const (
+		mcpGroupName           = "test-auth-error-group"
+		vmcpServerName         = "test-vmcp-auth-errors"
+		backendValidAuthName   = "backend-valid-auth"
+		backendMissingAuthName = "backend-missing-auth"
+		workingAuthConfigName  = "working-auth-config"
+		missingAuthConfigName  = "missing-auth-config"
+	)
+
+	BeforeAll(func() {
+		By("Creating a valid MCPExternalAuthConfig")
+		workingAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      workingAuthConfigName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+			},
+		}
+		Expect(k8sClient.Create(ctx, workingAuthConfig)).To(Succeed())
+
+		By("Creating MCPGroup")
+		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
+			"Test MCP Group for auth error conditions", timeout, pollingInterval)
+
+		By("Creating two backend MCPServers - one valid, one missing auth config")
+		// Create valid backend
+		validBackend := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backendValidAuthName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				GroupRef:  mcpGroupName,
+				Image:     images.GofetchServerImage,
+				Transport: "streamable-http",
+				ProxyPort: 8080,
+				McpPort:   8080,
+				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					Name: workingAuthConfigName,
+				},
+				Env: []mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: "streamable-http"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, validBackend)).To(Succeed())
+
+		// Create backend with missing auth config (expected to fail)
+		invalidBackend := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backendMissingAuthName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				GroupRef:  mcpGroupName,
+				Image:     images.GofetchServerImage,
+				Transport: "streamable-http",
+				ProxyPort: 8080,
+				McpPort:   8080,
+				// Reference a non-existent auth config to trigger error
+				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					Name: missingAuthConfigName,
+				},
+				Env: []mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: "streamable-http"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, invalidBackend)).To(Succeed())
+
+		// Only wait for the valid backend to become Running.
+		// The backend with missing auth config may still reach Running phase at the
+		// MCPServer level, but its auth config discovery will fail at the
+		// VirtualMCPServer level. We only wait for the valid backend to ensure at
+		// least one backend is ready before testing degraded mode behavior.
+		By("Waiting for valid backend to become Running")
+		Eventually(func() error {
+			server := &mcpv1alpha1.MCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backendValidAuthName,
+				Namespace: testNamespace,
+			}, server)
+			if err != nil {
+				return fmt.Errorf("failed to get server %s: %w", backendValidAuthName, err)
+			}
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+				return fmt.Errorf("%s not ready yet, phase: %s", backendValidAuthName, server.Status.Phase)
+			}
+			return nil
+		}, timeout, pollingInterval).Should(Succeed(), "Valid backend should become Running")
+
+		By("Creating VirtualMCPServer with discovered auth mode")
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				Config: vmcpconfig.Config{Group: mcpGroupName},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
+				},
+				// Use discovered mode to trigger auth discovery
+				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+					Source: "discovered",
+				},
+				ServiceType: "NodePort",
+			},
+		}
+		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
+
+		// Wait briefly for controller to reconcile
+		time.Sleep(5 * time.Second)
+	})
+
+	AfterAll(func() {
+		By("Cleaning up VirtualMCPServer")
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
+		})
+
+		By("Cleaning up MCPServers")
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: backendValidAuthName, Namespace: testNamespace},
+		})
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: backendMissingAuthName, Namespace: testNamespace},
+		})
+
+		By("Cleaning up MCPGroup")
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
+		})
+
+		By("Cleaning up MCPExternalAuthConfig")
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: workingAuthConfigName, Namespace: testNamespace},
+		})
+	})
+
+	It("should continue running despite auth config error", func() {
+		By("Verifying Service was created")
+		service := &corev1.Service{}
+		Eventually(func() error {
+			serviceName := VMCPServiceName(vmcpServerName)
+			return k8sClient.Get(ctx, types.NamespacedName{
+				Name:      serviceName,
+				Namespace: testNamespace,
+			}, service)
+		}, timeout, pollingInterval).Should(Succeed(), "Service should be created despite auth config error")
+
+		By("Verifying ConfigMap was created")
+		configMap := &corev1.ConfigMap{}
+		Eventually(func() error {
+			configMapName := vmcpServerName + "-vmcp-config"
+			return k8sClient.Get(ctx, types.NamespacedName{
+				Name:      configMapName,
+				Namespace: testNamespace,
+			}, configMap)
+		}, timeout, pollingInterval).Should(Succeed(), "ConfigMap should be created despite auth config error")
+	})
+
+	It("should report auth config errors via status conditions", func() {
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+
+		By("Waiting for controller to set per-backend auth config conditions")
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer); err != nil {
+				return err
+			}
+
+			// Check for backend-specific conditions
+			hasValidCondition := false
+			hasMissingCondition := false
+
+			for _, cond := range vmcpServer.Status.Conditions {
+				// Check for valid backend condition
+				validConditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", backendValidAuthName)
+				if cond.Type == validConditionType {
+					hasValidCondition = true
+					if cond.Status != metav1.ConditionTrue {
+						return fmt.Errorf("valid backend condition should be True, got %s: %s", cond.Status, cond.Message)
+					}
+					if cond.Reason != "ConversionSucceeded" {
+						return fmt.Errorf("valid backend should have ConversionSucceeded reason, got %s", cond.Reason)
+					}
+				}
+
+				// Check for missing auth backend condition
+				missingConditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", backendMissingAuthName)
+				if cond.Type == missingConditionType {
+					hasMissingCondition = true
+					if cond.Status != metav1.ConditionFalse {
+						return fmt.Errorf("missing auth backend condition should be False, got %s: %s", cond.Status, cond.Message)
+					}
+					if cond.Reason != "ConversionFailed" {
+						return fmt.Errorf("missing auth backend should have ConversionFailed reason, got %s", cond.Reason)
+					}
+					// Verify error message mentions the missing config
+					if !strings.Contains(cond.Message, missingAuthConfigName) {
+						return fmt.Errorf("error message should mention the missing auth config name")
+					}
+				}
+			}
+
+			if !hasValidCondition {
+				return fmt.Errorf("valid backend condition not found")
+			}
+			if !hasMissingCondition {
+				return fmt.Errorf("missing auth backend condition not found")
+			}
+
+			return nil
+		}, timeout, pollingInterval).Should(Succeed(), "Status conditions should be set correctly")
+	})
+
+	It("should include only valid backend in discoveredBackends list", func() {
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+
+		By("Checking discoveredBackends status field")
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer); err != nil {
+				return err
+			}
+
+			if len(vmcpServer.Status.DiscoveredBackends) < 1 {
+				return fmt.Errorf("expected at least 1 discovered backend, got %d", len(vmcpServer.Status.DiscoveredBackends))
+			}
+
+			// Verify valid backend is present
+			foundValid := false
+
+			for _, backend := range vmcpServer.Status.DiscoveredBackends {
+				if backend.Name == backendValidAuthName {
+					foundValid = true
+				}
+				// Backend with missing auth should NOT be in discoveredBackends
+				// (it's documented via the DiscoveredAuthConfig-* condition instead)
+				if backend.Name == backendMissingAuthName {
+					return fmt.Errorf("backend with auth error should not be in discoveredBackends (only in conditions)")
+				}
+			}
+
+			if !foundValid {
+				return fmt.Errorf("valid auth backend not found in discoveredBackends")
+			}
+
+			return nil
+		}, timeout, pollingInterval).Should(Succeed(), "Only valid backend should be in discoveredBackends; auth errors are reported via conditions")
+	})
+
+	It("should document MCPServer phases for both backends", func() {
+		By("Checking MCPServer status for backend with valid auth config")
+		validServer := &mcpv1alpha1.MCPServer{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backendValidAuthName,
+				Namespace: testNamespace,
+			}, validServer)
+		}, timeout, pollingInterval).Should(Succeed())
+		GinkgoWriter.Printf("Backend with valid auth config phase: %s\n", validServer.Status.Phase)
+		Expect(validServer.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning),
+			"Backend with valid auth config should reach Running phase")
+
+		By("Checking MCPServer status for backend with missing auth config")
+		invalidServer := &mcpv1alpha1.MCPServer{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backendMissingAuthName,
+				Namespace: testNamespace,
+			}, invalidServer)
+		}, timeout, pollingInterval).Should(Succeed())
+		GinkgoWriter.Printf("Backend with missing auth config phase: %s\n", invalidServer.Status.Phase)
+
+		// The MCPServer controller may not validate auth config references during
+		// reconciliation, allowing the backend to reach Running phase even though
+		// the referenced auth config doesn't exist. The auth config error is only
+		// detected when the VirtualMCPServer tries to discover and convert the auth
+		// configuration during its own reconciliation.
+		//
+		// This test documents the actual behavior: we verify that the backend is
+		// discovered (exists in the cluster) but don't assert its phase, since that
+		// depends on whether the MCPServer controller validates auth config refs.
+		// The important behavior is that the VirtualMCPServer detects and reports
+		// the auth config error via status conditions (tested in other test cases).
+		Expect(invalidServer.Status.Phase).NotTo(BeEmpty(),
+			"Backend with missing auth config should have a status phase set")
+	})
+
+	It("should not set phase to Failed", func() {
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+
+		By("Checking VirtualMCPServer phase")
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer); err != nil {
+				return err
+			}
+
+			// Phase should be Pending or Running, not Failed
+			if vmcpServer.Status.Phase == mcpv1alpha1.VirtualMCPServerPhaseFailed {
+				return fmt.Errorf("VirtualMCPServer phase should not be Failed when continuing in degraded mode")
+			}
+
+			// Accept Pending, Ready, or Degraded
+			if vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhasePending &&
+				vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseReady &&
+				vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseDegraded {
+				return fmt.Errorf("expected phase Pending, Ready, or Degraded, got %s", vmcpServer.Status.Phase)
+			}
+
+			return nil
+		}, timeout, pollingInterval).Should(Succeed(), "VirtualMCPServer should not be in Failed phase")
 	})
 })

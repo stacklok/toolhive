@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -23,24 +24,28 @@ var errBug = errors.New("there's a bug")
 // ResponseFilteringWriter wraps an http.ResponseWriter to intercept and filter responses
 type ResponseFilteringWriter struct {
 	http.ResponseWriter
-	authorizer authorizers.Authorizer
-	request    *http.Request
-	method     string
-	buffer     *bytes.Buffer
-	statusCode int
+	authorizer      authorizers.Authorizer
+	request         *http.Request
+	method          string
+	buffer          *bytes.Buffer
+	statusCode      int
+	annotationCache *AnnotationCache
 }
 
-// NewResponseFilteringWriter creates a new response filtering writer
+// NewResponseFilteringWriter creates a new response filtering writer.
+// The annotationCache parameter is optional; pass nil to disable annotation caching.
 func NewResponseFilteringWriter(
 	w http.ResponseWriter, authorizer authorizers.Authorizer, r *http.Request, method string,
+	annotationCache *AnnotationCache,
 ) *ResponseFilteringWriter {
 	return &ResponseFilteringWriter{
-		ResponseWriter: w,
-		authorizer:     authorizer,
-		request:        r,
-		method:         method,
-		buffer:         &bytes.Buffer{},
-		statusCode:     http.StatusOK,
+		ResponseWriter:  w,
+		authorizer:      authorizer,
+		request:         r,
+		method:          method,
+		buffer:          &bytes.Buffer{},
+		statusCode:      http.StatusOK,
+		annotationCache: annotationCache,
 	}
 }
 
@@ -60,14 +65,14 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	// If it's not a successful response, just pass it through
 	if rfw.statusCode != http.StatusOK && rfw.statusCode != http.StatusAccepted {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
+		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes()) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
 	}
 
 	// Check if this is a list operation that needs filtering
 	if !isListOperation(rfw.method) {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
+		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes()) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
 	}
 
@@ -76,7 +81,7 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	// Skip filtering for empty responses (common in SSE scenarios where actual data comes via SSE stream)
 	if len(rawResponse) == 0 {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rawResponse)
+		_, err := rfw.ResponseWriter.Write(rawResponse) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
 	}
 
@@ -84,8 +89,15 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 	switch mimeType {
 	case "application/json":
+		// Remove the upstream Content-Length header. The reverse proxy copies it
+		// from the backend response via Header() (which we don't override), but
+		// filtering changes the body size. Without this, Go's HTTP server detects
+		// the mismatch and tears down the connection.
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processJSONResponse(rawResponse)
 	case "text/event-stream":
+		// Same issue: filtering changes the SSE payload size.
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processSSEResponse(rawResponse)
 	default:
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -96,8 +108,16 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.
 // This method is required for streaming support (SSE, streamable-http).
+//
+// We must delete the Content-Length header before flushing because
+// httputil.ReverseProxy (with FlushInterval: -1) calls Flush() after copying
+// the backend response. The first Flush() on the underlying writer triggers an
+// implicit WriteHeader(200), sending headers to the wire. If the stale
+// Content-Length is still present at that point, it's too late to remove it in
+// FlushAndFilter().
 func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		flusher.Flush()
 	}
 }
@@ -259,20 +279,35 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 		return response, nil
 	}
 
+	// Populate annotation cache from tools/list response so that
+	// subsequent tools/call requests can look up annotations.
+	rfw.annotationCache.SetFromToolsList(listResult.Tools)
+
 	// Note: instantiating the list ensures that no null value is sent over the wire.
 	// This is basically defensive programming, but for clients.
 	filteredTools := []mcp.Tool{}
-	for _, tool := range listResult.Tools {
+	for i, tool := range listResult.Tools {
+		// Inject this tool's annotations into the context so Cedar policies
+		// that use when clauses on resource attributes (e.g. resource.readOnlyHint)
+		// can evaluate correctly. Without this, the authorization check runs
+		// against a context with no annotations and all when clauses fail.
+		ctx := rfw.request.Context()
+		ann := &listResult.Tools[i].Annotations
+		if hasAnyHint(ann) {
+			ctx = authorizers.WithToolAnnotations(ctx, convertMCPAnnotation(ann))
+		}
+
 		// Check if the user is authorized to call this tool
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
-			rfw.request.Context(),
+			ctx,
 			authorizers.MCPFeatureTool,
 			authorizers.MCPOperationCall,
 			tool.Name,
 			nil, // No arguments for the authorization check
 		)
 		if err != nil {
-			// If there's an error checking authorization, skip this tool
+			slog.Warn("Authorization check failed for tool, skipping",
+				"tool", tool.Name, "error", err)
 			continue
 		}
 
@@ -324,7 +359,8 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 			nil, // No arguments for the authorization check
 		)
 		if err != nil {
-			// If there's an error checking authorization, skip this prompt
+			slog.Warn("Authorization check failed for prompt, skipping",
+				"prompt", prompt.Name, "error", err)
 			continue
 		}
 
@@ -376,7 +412,8 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 			nil, // No arguments for the authorization check
 		)
 		if err != nil {
-			// If there's an error checking authorization, skip this resource
+			slog.Warn("Authorization check failed for resource, skipping",
+				"resource", resource.URI, "error", err)
 			continue
 		}
 

@@ -36,6 +36,14 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	ServiceType string `json:"serviceType,omitempty"`
 
+	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+	// Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+	// +kubebuilder:validation:Enum=ClientIP;None
+	// +kubebuilder:default=ClientIP
+	// +optional
+	SessionAffinity string `json:"sessionAffinity,omitempty"`
+
 	// ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.
 	// If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server.
 	// +optional
@@ -58,6 +66,21 @@ type VirtualMCPServerSpec struct {
 	// The telemetry and audit config from here are also supported, but not required.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
+
+	// EmbeddingServerRef references an existing EmbeddingServer resource by name.
+	// When the optimizer is enabled, this field is required to point to a ready EmbeddingServer
+	// that provides embedding capabilities.
+	// The referenced EmbeddingServer must exist in the same namespace and be ready.
+	// +optional
+	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
+}
+
+// EmbeddingServerRef references an existing EmbeddingServer resource by name.
+// This follows the same pattern as ExternalAuthConfigRef and ToolConfigRef.
+type EmbeddingServerRef struct {
+	// Name is the name of the EmbeddingServer resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
 }
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
@@ -199,6 +222,9 @@ const (
 
 	// ConditionTypeVirtualMCPServerBackendsDiscovered indicates whether backends have been discovered
 	ConditionTypeVirtualMCPServerBackendsDiscovered = "BackendsDiscovered"
+
+	// ConditionTypeEmbeddingServerReady indicates whether the EmbeddingServer is ready
+	ConditionTypeEmbeddingServerReady = "EmbeddingServerReady"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -247,6 +273,15 @@ const (
 
 	// ConditionReasonVirtualMCPServerDeploymentNotReady indicates the deployment is not ready
 	ConditionReasonVirtualMCPServerDeploymentNotReady = "DeploymentNotReady"
+
+	// ConditionReasonEmbeddingServerReady indicates the EmbeddingServer is ready
+	ConditionReasonEmbeddingServerReady = "EmbeddingServerReady"
+
+	// ConditionReasonEmbeddingServerNotFound indicates the referenced EmbeddingServer was not found
+	ConditionReasonEmbeddingServerNotFound = "EmbeddingServerNotFound"
+
+	// ConditionReasonEmbeddingServerNotReady indicates the referenced EmbeddingServer is not ready
+	ConditionReasonEmbeddingServerNotReady = "EmbeddingServerNotReady"
 )
 
 // Backend authentication types
@@ -356,6 +391,42 @@ func (r *VirtualMCPServer) Validate() error {
 		if err := r.validateCompositeTools(); err != nil {
 			return err
 		}
+	}
+
+	// Validate EmbeddingServer / EmbeddingServerRef
+	return r.validateEmbeddingServer()
+}
+
+// validateEmbeddingServer validates EmbeddingServerRef and Optimizer configuration.
+// Rules:
+// - embeddingServerRef.name must be non-empty when ref is provided
+// - optimizer requires either embeddingServerRef or a manually set embeddingService
+// - if embeddingServerRef is set without optimizer, auto-populate optimizer with defaults
+//
+// The controller handles the remaining cases at runtime (event emission, URL population).
+func (r *VirtualMCPServer) validateEmbeddingServer() error {
+	// Validate ref name is non-empty
+	if r.Spec.EmbeddingServerRef != nil && r.Spec.EmbeddingServerRef.Name == "" {
+		return fmt.Errorf("spec.embeddingServerRef.name is required")
+	}
+
+	hasOptimizer := r.Spec.Config.Optimizer != nil
+	hasRef := r.Spec.EmbeddingServerRef != nil
+	hasManualService := hasOptimizer && r.Spec.Config.Optimizer.EmbeddingService != ""
+
+	// Optimizer configured without any embedding source is an error.
+	// The user must either set embeddingServerRef or manually set optimizer.embeddingService.
+	if hasOptimizer && !hasRef && !hasManualService {
+		return fmt.Errorf(
+			"spec.config.optimizer requires an embedding service: " +
+				"set spec.embeddingServerRef (recommended) or spec.config.optimizer.embeddingService")
+	}
+
+	// EmbeddingServerRef is set but optimizer is not configured: auto-populate
+	// optimizer with default values so the embedding server is actually used.
+	// The controller emits a Kubernetes event for this case.
+	if hasRef && !hasOptimizer {
+		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
 	}
 
 	return nil

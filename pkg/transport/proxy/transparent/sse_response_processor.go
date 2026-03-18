@@ -7,16 +7,35 @@ package transparent
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
+
+// inboundRequestKey is the context key for storing the original inbound request.
+// This is needed because httputil.ReverseProxy's ModifyResponse receives resp.Request
+// as the *outbound* request, which has auto-injected X-Forwarded-* headers from
+// SetXForwarded(). To read the client's original headers, we stash the inbound
+// request in the outbound request's context during Rewrite.
+type inboundRequestKey struct{}
+
+// InboundRequestToContext returns a new context that carries the inbound request.
+func InboundRequestToContext(ctx context.Context, req *http.Request) context.Context {
+	return context.WithValue(ctx, inboundRequestKey{}, req)
+}
+
+// inboundRequestFromContext retrieves the inbound request from the context.
+// Returns nil if not present.
+func inboundRequestFromContext(ctx context.Context) *http.Request {
+	req, _ := ctx.Value(inboundRequestKey{}).(*http.Request)
+	return req
+}
 
 // sseRewriteConfig holds the configuration for rewriting SSE endpoint URLs.
 // This is used to handle path-based ingress routing scenarios where the ingress
@@ -96,7 +115,7 @@ func (s *SSEResponseProcessor) ProcessResponse(resp *http.Response) error {
 	go func() {
 		defer func() {
 			if err := pw.Close(); err != nil {
-				logger.Debugf("Failed to close pipe writer: %v", err)
+				slog.Debug("failed to close pipe writer", "error", err)
 			}
 		}()
 		s.processSSEStream(originalBody, pw, rewriteConfig)
@@ -109,25 +128,39 @@ func (s *SSEResponseProcessor) ProcessResponse(resp *http.Response) error {
 // 1. Explicit endpointPrefix configuration (highest priority)
 // 2. X-Forwarded-Prefix header (only when trustProxyHeaders is true)
 // 3. No rewriting (default)
+//
+// IMPORTANT: req is the outbound request from httputil.ReverseProxy, which has
+// auto-injected X-Forwarded-* headers via SetXForwarded(). To read the client's
+// original headers we use the inbound request stashed in the context during Rewrite.
 func (s *SSEResponseProcessor) getSSERewriteConfig(req *http.Request) sseRewriteConfig {
 	config := sseRewriteConfig{}
+
+	// Use the inbound (client-facing) request for reading forwarded headers,
+	// because the outbound request has auto-injected X-Forwarded-* values
+	// from httputil.ReverseProxy.SetXForwarded().
+	inbound := inboundRequestFromContext(req.Context())
+	if inbound == nil {
+		// Fallback: if no inbound request in context (e.g. in tests), use
+		// the outbound request directly.
+		inbound = req
+	}
 
 	// Priority 1: Explicit endpointPrefix configuration
 	if s.endpointPrefix != "" {
 		config.prefix = s.endpointPrefix
 	} else if s.trustProxyHeaders {
-		// Priority 2: X-Forwarded-Prefix header
-		if prefix := req.Header.Get("X-Forwarded-Prefix"); prefix != "" {
+		// Priority 2: X-Forwarded-Prefix header from the original client request
+		if prefix := inbound.Header.Get("X-Forwarded-Prefix"); prefix != "" {
 			config.prefix = prefix
 		}
 	}
 
 	// Also check for X-Forwarded-Proto and X-Forwarded-Host if trustProxyHeaders is enabled
 	if s.trustProxyHeaders {
-		if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
+		if scheme := inbound.Header.Get("X-Forwarded-Proto"); scheme != "" {
 			config.scheme = scheme
 		}
-		if host := req.Header.Get("X-Forwarded-Host"); host != "" {
+		if host := inbound.Header.Get("X-Forwarded-Host"); host != "" {
 			config.host = host
 		}
 	}
@@ -230,7 +263,7 @@ func (s *sseLineProcessor) extractSessionID(line string) {
 		}
 		s.proxy.setServerInitialized()
 		if err := s.proxy.sessionManager.AddWithID(sid); err != nil {
-			logger.Errorf("Failed to create session from SSE line: %v", err)
+			slog.Error("failed to create session from SSE line", "error", err)
 		}
 		s.sessionFound = true
 	}
@@ -240,11 +273,15 @@ func (s *sseLineProcessor) extractSessionID(line string) {
 func (s *sseLineProcessor) rewriteDataLine(line, dataContent string) string {
 	rewrittenURL, err := rewriteEndpointURL(dataContent, s.rewriteConfig)
 	if err != nil {
-		logger.Warnf("Failed to rewrite endpoint URL %q: %v", dataContent, err)
+		//nolint:gosec // G706: logging endpoint URL from SSE stream
+		slog.Warn("failed to rewrite endpoint URL",
+			"url", dataContent, "error", err)
 		return line
 	}
 	if rewrittenURL != dataContent {
-		logger.Debugf("Rewrote SSE endpoint URL from %q to %q", dataContent, rewrittenURL)
+		//nolint:gosec // G706: logging endpoint URLs from SSE stream
+		slog.Debug("rewrote SSE endpoint URL",
+			"from", dataContent, "to", rewrittenURL)
 		return "data: " + rewrittenURL
 	}
 	return line
@@ -272,12 +309,12 @@ func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.P
 	}
 
 	if err := scanner.Err(); err != nil {
-		logger.Errorf("Failed to scan response body: %v", err)
+		slog.Error("failed to scan response body", "error", err)
 	}
 
 	if readCloser, ok := originalBody.(io.ReadCloser); ok {
 		if _, err := io.Copy(pw, readCloser); err != nil && err != io.EOF {
-			logger.Errorf("Failed to copy response body: %v", err)
+			slog.Error("failed to copy response body", "error", err)
 		}
 	}
 }

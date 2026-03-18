@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"crypto/rand"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // upstreamAuthSecrets holds cryptographic values needed for upstream IDP authorization.
@@ -61,12 +61,12 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Check if upstream provider is configured
 	if h.upstream == nil {
-		logger.Error("upstream provider not configured")
+		slog.Error("upstream provider not configured")
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("authorization server not configured"))
 		return
 	}
 
-	logger.Debugw("parsed client-requested scopes",
+	slog.Debug("parsed client-requested scopes", //nolint:gosec // G706: scope count is an integer
 		"scope_count", len(scopes),
 	)
 
@@ -88,7 +88,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := h.storage.StorePendingAuthorization(ctx, secrets.State, pending); err != nil {
-		logger.Errorw("failed to store pending authorization",
+		slog.Error("failed to store pending authorization",
 			"error", err,
 		)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store authorization request"))
@@ -103,7 +103,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	upstreamURL, err := h.upstream.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
-		logger.Errorw("failed to build upstream authorization URL",
+		slog.Error("failed to build upstream authorization URL",
 			"error", err,
 		)
 		// Clean up pending authorization

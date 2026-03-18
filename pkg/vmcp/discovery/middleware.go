@@ -7,6 +7,11 @@
 // its lifetime. This ensures deterministic behavior and prevents notification spam from
 // redundant capability updates when backends haven't changed.
 //
+// For MultiSession requests, the middleware injects routing context from the session's
+// routing table so that composite tool workflow steps can route backend tool calls correctly.
+// Tool routing for non-composite tools is handled by session-scoped handlers registered
+// with AddSessionTools.
+//
 // Future enhancement: Add manager-level capability cache to share discoveries across
 // sessions, plus separate background refresh worker (not in middleware request path)
 // that periodically rediscovers capabilities, detects changes via hash comparison, and
@@ -18,11 +23,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -35,11 +40,38 @@ const (
 	discoveryTimeout = 15 * time.Second
 )
 
-// Middleware performs capability discovery on session initialization and retrieves
-// cached capabilities for subsequent requests. Must be placed after auth middleware.
+// middlewareConfig holds optional configuration for Middleware.
+type middlewareConfig struct {
+	sessionScopedRouting bool
+	timeout              time.Duration
+}
+
+// MiddlewareOption configures Middleware behaviour.
+type MiddlewareOption func(*middlewareConfig)
+
+// WithSessionScopedRouting disables backend capability discovery for any request
+// that arrives without an Mcp-Session-Id header (i.e. initialize requests).
+// Use this when tools are registered per-session via AddSessionTools rather
+// than through the discovery pipeline.
+func WithSessionScopedRouting() MiddlewareOption {
+	return func(c *middlewareConfig) {
+		c.sessionScopedRouting = true
+	}
+}
+
+// WithDiscoveryTimeout overrides the default discovery timeout.
+func WithDiscoveryTimeout(timeout time.Duration) MiddlewareOption {
+	return func(c *middlewareConfig) {
+		c.timeout = timeout
+	}
+}
+
+// Middleware performs capability discovery on session initialization and injects
+// routing context for subsequent requests. Must be placed after auth middleware.
 //
 // Initialize requests (no session ID): discovers capabilities and stores in context.
-// Subsequent requests: retrieves routing table from VMCPSession and reconstructs context.
+// Subsequent requests (MultiSession): injects routing table from session into context
+// so composite tool workflow steps can route backend tool calls correctly.
 //
 // Returns HTTP 504 for timeouts, HTTP 503 for discovery errors.
 //
@@ -57,7 +89,14 @@ func Middleware(
 	registry vmcp.BackendRegistry,
 	sessionManager *transportsession.Manager,
 	healthStatusProvider health.StatusProvider,
+	opts ...MiddlewareOption,
 ) func(http.Handler) http.Handler {
+	cfg := middlewareConfig{
+		timeout: discoveryTimeout,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -65,8 +104,14 @@ func Middleware(
 
 			var err error
 			if sessionID == "" {
+				if cfg.sessionScopedRouting {
+					// Session-scoped routing registers capabilities via the OnRegisterSession
+					// hook rather than through discovery. Skip discovery on initialize.
+					next.ServeHTTP(w, r)
+					return
+				}
 				// Initialize request: discover and cache capabilities in session.
-				ctx, err = handleInitializeRequest(ctx, r, manager, registry, healthStatusProvider)
+				ctx, err = handleInitializeRequest(ctx, r, manager, registry, healthStatusProvider, cfg.timeout)
 			} else {
 				// Subsequent request: retrieve cached capabilities from session.
 				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
@@ -131,7 +176,8 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 			healthy = append(healthy, *backend)
 		} else {
 			excluded++
-			logger.Debugw("excluding backend from capability aggregation due to health status",
+			//nolint:gosec // G706: backend fields are internal, not user-controlled
+			slog.Debug("excluding backend from capability aggregation due to health status",
 				"backend_name", backend.Name,
 				"backend_id", backend.ID,
 				"health_status", healthStatus,
@@ -145,7 +191,8 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 	}
 
 	if excluded > 0 {
-		logger.Debugw("filtered backends for capability aggregation",
+		//nolint:gosec // G706: values are internal counts, not user-controlled
+		slog.Debug("filtered backends for capability aggregation",
 			"total_backends", len(backends),
 			"healthy_backends", len(healthy),
 			"excluded_backends", excluded)
@@ -169,8 +216,9 @@ func handleInitializeRequest(
 	manager Manager,
 	registry vmcp.BackendRegistry,
 	healthStatusProvider health.StatusProvider,
+	timeout time.Duration,
 ) (context.Context, error) {
-	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	discoveryCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Get current backend list from registry (supports dynamic backend changes)
@@ -180,7 +228,8 @@ func handleInitializeRequest(
 	// Uses current health status from health monitor when available
 	backends := filterHealthyBackends(allBackends, healthStatusProvider)
 
-	logger.Debugw("starting capability discovery for initialize request",
+	//nolint:gosec // G706: request method/path are standard HTTP fields, not injection vectors
+	slog.Debug("starting capability discovery for initialize request",
 		"method", r.Method,
 		"path", r.URL.Path,
 		"total_backend_count", len(allBackends),
@@ -188,14 +237,16 @@ func handleInitializeRequest(
 
 	capabilities, err := manager.Discover(discoveryCtx, backends)
 	if err != nil {
-		logger.Errorw("capability discovery failed",
+		//nolint:gosec // G706: request method/path are standard HTTP fields, not injection vectors
+		slog.Error("capability discovery failed",
 			"error", err,
 			"method", r.Method,
 			"path", r.URL.Path)
 		return ctx, fmt.Errorf("discovery failed: %w", err)
 	}
 
-	logger.Debugw("capability discovery completed",
+	//nolint:gosec // G706: request method/path are standard HTTP fields, not injection vectors
+	slog.Debug("capability discovery completed",
 		"method", r.Method,
 		"path", r.URL.Path,
 		"tool_count", len(capabilities.Tools),
@@ -213,47 +264,59 @@ func handleSubsequentRequest(
 	sessionID string,
 	sessionManager *transportsession.Manager,
 ) (context.Context, error) {
-	logger.Debugw("retrieving capabilities from session for subsequent request",
+	//nolint:gosec // G706: session ID and request fields are not injection vectors
+	slog.Debug("retrieving capabilities from session for subsequent request",
 		"session_id", sessionID,
 		"method", r.Method,
 		"path", r.URL.Path)
 
-	// Retrieve and validate session
-	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
-	if err != nil {
-		logger.Errorw("failed to get VMCPSession",
-			"error", err,
+	// First, validate the session exists at all.
+	rawSess, exists := sessionManager.Get(sessionID)
+	if !exists {
+		//nolint:gosec // G706: session ID is not an injection vector
+		slog.Error("session not found",
 			"session_id", sessionID,
 			"method", r.Method,
 			"path", r.URL.Path)
-		return ctx, err
+		return ctx, fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// Get routing table from session
-	routingTable := vmcpSess.GetRoutingTable()
+	// Backend tool calls are routed by session-scoped handlers registered with the SDK.
+	// However, composite tool workflow steps go through the shared router which requires
+	// DiscoveredCapabilities in the context. Inject capabilities built from the session's
+	// routing table so composite workflows can route backend tool calls correctly.
+	multiSess, isMulti := rawSess.(vmcpsession.MultiSession)
+	if !isMulti {
+		// The session is still a StreamableSession placeholder — Phase 2
+		// (OnRegisterSession / CreateSession) has not yet replaced it with a
+		// MultiSession. This can happen if the client sends a request in the
+		// brief window between receiving the session ID and the hook completing.
+		// Skip capability injection and let the SDK respond (tools list will be
+		// temporarily empty, but no 500 is returned to the client).
+		//nolint:gosec // G706: session ID is not an injection vector
+		slog.Debug("session initialisation in progress, skipping capability injection",
+			"session_id", sessionID)
+		return ctx, nil
+	}
+
+	routingTable := multiSess.GetRoutingTable()
 	if routingTable == nil {
-		logger.Errorw("routing table not initialized in VMCPSession",
-			"session_id", sessionID,
-			"method", r.Method,
-			"path", r.URL.Path)
-		return ctx, fmt.Errorf("routing table not initialized")
+		// Session initialisation not yet complete; no capabilities to inject.
+		// Composite tool calls will fail routing, but backend tool calls are
+		// already registered with the SDK and will succeed.
+		//nolint:gosec // G706: session ID is not an injection vector
+		slog.Debug("multi-session routing table not yet initialised; skipping capability injection",
+			"session_id", sessionID)
+		return ctx, nil
 	}
-
-	// Get tools from session (needed for type coercion in composite tool workflows)
-	tools := vmcpSess.GetTools()
-
-	// Reconstruct AggregatedCapabilities for routing and type coercion
+	//nolint:gosec // G706: session ID is not an injection vector
+	slog.Debug("injecting capabilities from multi-session routing table for composite tool routing",
+		"session_id", sessionID,
+		"tool_count", len(routingTable.Tools))
 	capabilities := &aggregator.AggregatedCapabilities{
 		RoutingTable: routingTable,
-		Tools:        tools,
+		Tools:        multiSess.Tools(),
 	}
-
-	logger.Debugw("capabilities retrieved from session",
-		"session_id", sessionID,
-		"tool_count", len(routingTable.Tools),
-		"resource_count", len(routingTable.Resources),
-		"prompt_count", len(routingTable.Prompts))
-
 	return WithDiscoveredCapabilities(ctx, capabilities), nil
 }
 
@@ -268,12 +331,6 @@ func handleDiscoveryError(w http.ResponseWriter, _ *http.Request, err error) {
 	errMsg := err.Error()
 	if strings.Contains(errMsg, "session not found") {
 		http.Error(w, "Session not found", http.StatusUnauthorized)
-		return
-	}
-
-	if strings.Contains(errMsg, "invalid session type") ||
-		strings.Contains(errMsg, "routing table not initialized") {
-		http.Error(w, errMsg, http.StatusInternalServerError)
 		return
 	}
 

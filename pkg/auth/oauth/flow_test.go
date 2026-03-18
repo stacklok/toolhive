@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1203,4 +1204,118 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "access-token", gotToken.AccessToken)
 	})
+}
+
+// TestAuthStyleInParams_StrictPublicClientServer verifies that the OAuth flow
+// uses AuthStyleInParams (sending client_id in the POST body) rather than
+// AuthStyleAutoDetect. This is critical for public PKCE clients because:
+//
+//  1. AutoDetect tries HTTP Basic Auth first (Authorization: Basic base64(client_id:))
+//  2. Strict OAuth 2.1 servers (e.g., Datadog) reject Basic Auth for public clients
+//     registered with token_endpoint_auth_method=none
+//  3. The authorization code is single-use — consumed by the rejected first attempt
+//  4. The retry with client_id in POST body gets "invalid_grant" because the code
+//     was already burned
+func TestAuthStyleInParams_StrictPublicClientServer(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a strict OAuth 2.1 server that rejects Basic Auth for public clients.
+	// This mirrors Datadog's behavior: public clients (token_endpoint_auth_method=none)
+	// MUST send client_id in the POST body, not via Authorization header.
+	var requestCount atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+
+		err := r.ParseForm()
+		require.NoError(t, err)
+
+		// Reject requests that use Basic Auth header — strict public client enforcement
+		if _, _, ok := r.BasicAuth(); ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":             "invalid_client",
+				"error_description": "Basic auth not allowed for public clients",
+			})
+			return
+		}
+
+		// Require client_id in POST body (AuthStyleInParams)
+		clientID := r.Form.Get("client_id")
+		if clientID == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":             "invalid_request",
+				"error_description": "client_id required in request body",
+			})
+			return
+		}
+
+		assert.Equal(t, "test-public-client", clientID)
+		assert.Equal(t, "authorization_code", r.Form.Get("grant_type"))
+		assert.Equal(t, "test-auth-code", r.Form.Get("code"))
+
+		// Verify PKCE verifier is present
+		assert.NotEmpty(t, r.Form.Get("code_verifier"), "PKCE code_verifier should be present")
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "dd-access-token",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "dd-refresh-token",
+		})
+	}))
+	defer tokenServer.Close()
+
+	config := &Config{
+		ClientID:     "test-public-client",
+		ClientSecret: "", // Public client — no secret
+		AuthURL:      "https://example.com/auth",
+		TokenURL:     tokenServer.URL,
+		UsePKCE:      true,
+	}
+
+	flow, err := NewFlow(config)
+	require.NoError(t, err)
+
+	// Verify the endpoint is configured with AuthStyleInParams
+	assert.Equal(t, oauth2.AuthStyleInParams, flow.oauth2Config.Endpoint.AuthStyle,
+		"Endpoint must use AuthStyleInParams to avoid burning auth codes with Basic Auth probes")
+
+	tokenChan := make(chan *oauth2.Token, 1)
+	errorChan := make(chan error, 1)
+
+	handler := flow.handleCallback(tokenChan, errorChan)
+
+	// Simulate the OAuth callback with a valid auth code
+	values := url.Values{}
+	values.Set("code", "test-auth-code")
+	values.Set("state", flow.state)
+
+	req := httptest.NewRequest("GET", "/callback?"+values.Encode(), nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	// The exchange should succeed on the first attempt
+	select {
+	case token := <-tokenChan:
+		require.NotNil(t, token)
+		assert.Equal(t, "dd-access-token", token.AccessToken)
+		assert.Equal(t, "dd-refresh-token", token.RefreshToken)
+	case err := <-errorChan:
+		t.Fatalf("token exchange failed: %v\n"+
+			"This likely means AuthStyleInParams is not set — the oauth2 library "+
+			"tried Basic Auth first, the strict server rejected it, and the auth "+
+			"code was consumed by the failed attempt", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for token exchange")
+	}
+
+	// The server should have received exactly one request (no retry needed)
+	assert.Equal(t, int32(1), requestCount.Load(),
+		"strict server should receive exactly one request when AuthStyleInParams is used; "+
+			"multiple requests indicate AuthStyleAutoDetect is trying Basic Auth first")
 }

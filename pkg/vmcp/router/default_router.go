@@ -6,8 +6,8 @@ package router
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
@@ -67,11 +67,11 @@ func routeCapability(
 
 	target, exists := capabilityMap[key]
 	if !exists {
-		logger.Debugf("%s not found in routing table: %s", entityType, key)
+		slog.Debug("not found in routing table", "type", entityType, "key", key)
 		return nil, fmt.Errorf("%w: %s", notFoundErr, key)
 	}
 
-	logger.Debugf("Routed %s %s to backend %s", entityType, key, target.WorkloadID)
+	slog.Debug("routed capability to backend", "type", entityType, "key", key, "backend", target.WorkloadID)
 	return target, nil
 }
 

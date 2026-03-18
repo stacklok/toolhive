@@ -8,10 +8,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -71,7 +71,7 @@ func (c *DefaultClient) Get(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug(fmt.Sprintf("Failed to close response body: %v", err))
 		}
 	}()
 

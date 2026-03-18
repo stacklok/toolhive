@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -78,7 +77,8 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		w, err := config.GetLogWriter()
 		if err != nil {
 			// Log error and fall back to stdout
-			logger.Errorf("Failed to open audit log file, falling back to stdout: %v", err)
+			slog.Error("failed to open audit log file, falling back to stdout",
+				"error", err)
 			return nil, err
 		}
 		logWriter = w

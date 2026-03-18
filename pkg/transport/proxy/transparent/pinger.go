@@ -7,11 +7,11 @@ package transparent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MCPPinger implements healthcheck.MCPPinger for transparent proxies
@@ -56,7 +56,8 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 		return 0, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
-	logger.Debugf("Checking SSE server health at %s", p.targetURL)
+	//nolint:gosec // G706: logging target URL from config
+	slog.Debug("checking SSE server health", "target", p.targetURL)
 
 	// Send the request
 	resp, err := p.client.Do(req) // #nosec G704 -- targetURL is the local MCP server health endpoint
@@ -65,7 +66,7 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Debugf("Failed to close response body: %v", err)
+			slog.Debug("failed to close response body", "error", err)
 		}
 	}()
 
@@ -78,7 +79,9 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	// - Other 4xx/5xx may indicate server issues
 	// For now, we accept any non 50x response for both local and remote.
 	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-		logger.Debugf("SSE server health check successful in %v (status: %d)", duration, resp.StatusCode)
+		//nolint:gosec // G706: logging HTTP status code from health check response
+		slog.Debug("sse server health check successful",
+			"duration", duration, "status", resp.StatusCode)
 		return duration, nil
 	}
 

@@ -17,13 +17,12 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/ory/fosite"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // timedEntry wraps a value with its creation time for TTL tracking.
@@ -333,7 +332,7 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 
 	client, ok := s.clients[id]
 	if !ok {
-		logger.Debugw("client not found", "client_id", id)
+		slog.Debug("client not found", "client_id", id)
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Client not found"))
 	}
 	return client, nil
@@ -407,7 +406,7 @@ func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, 
 
 	entry, ok := s.authCodes[code]
 	if !ok {
-		logger.Debugw("authorization code not found")
+		slog.Debug("authorization code not found")
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
 	}
 
@@ -427,7 +426,7 @@ func (s *MemoryStorage) InvalidateAuthorizeCodeSession(_ context.Context, code s
 	defer s.mu.Unlock()
 
 	if _, ok := s.authCodes[code]; !ok {
-		logger.Debugw("authorization code not found for invalidation")
+		slog.Debug("authorization code not found for invalidation")
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
 	}
 
@@ -478,7 +477,7 @@ func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature strin
 
 	entry, ok := s.accessTokens[signature]
 	if !ok {
-		logger.Debugw("access token not found")
+		slog.Debug("access token not found")
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
 	}
 	return entry.value, nil
@@ -533,7 +532,7 @@ func (s *MemoryStorage) GetRefreshTokenSession(_ context.Context, signature stri
 
 	entry, ok := s.refreshTokens[signature]
 	if !ok {
-		logger.Debugw("refresh token not found")
+		slog.Debug("refresh token not found")
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
 	}
 	return entry.value, nil
@@ -661,7 +660,7 @@ func (s *MemoryStorage) GetPKCERequestSession(_ context.Context, signature strin
 
 	entry, ok := s.pkceRequests[signature]
 	if !ok {
-		logger.Debugw("PKCE request not found")
+		slog.Debug("pkce request not found")
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
 	}
 	return entry.value, nil
@@ -694,11 +693,13 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID string,
 	defer s.mu.Unlock()
 
 	now := time.Now()
+	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
+	// survives in storage for transparent token refresh by the middleware.
 	var expiresAt time.Time
 	if tokens != nil && !tokens.ExpiresAt.IsZero() {
-		expiresAt = tokens.ExpiresAt
+		expiresAt = tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
 	} else {
-		expiresAt = now.Add(DefaultAccessTokenTTL)
+		expiresAt = now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
 	}
 
 	// Make a defensive copy to prevent aliasing issues
@@ -732,14 +733,8 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID string) (
 
 	entry, ok := s.upstreamTokens[sessionID]
 	if !ok {
-		logger.Debugw("upstream tokens not found", "session_id", sessionID)
+		slog.Debug("upstream tokens not found", "session_id", sessionID)
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
-	}
-
-	// Check if expired
-	if time.Now().After(entry.expiresAt) {
-		logger.Debugw("upstream tokens expired", "session_id", sessionID)
-		return nil, ErrExpired
 	}
 
 	// Return a defensive copy to prevent aliasing issues
@@ -747,7 +742,7 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID string) (
 	if tokens == nil {
 		return nil, nil
 	}
-	return &UpstreamTokens{
+	result := &UpstreamTokens{
 		ProviderID:      tokens.ProviderID,
 		AccessToken:     tokens.AccessToken,
 		RefreshToken:    tokens.RefreshToken,
@@ -756,7 +751,17 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID string) (
 		UserID:          tokens.UserID,
 		UpstreamSubject: tokens.UpstreamSubject,
 		ClientID:        tokens.ClientID,
-	}, nil
+	}
+
+	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
+	// (storage TTL which includes DefaultRefreshTokenTTL buffer for refresh token survival).
+	// Return tokens along with ErrExpired so callers can use the refresh token.
+	if !result.ExpiresAt.IsZero() && time.Now().After(result.ExpiresAt) {
+		slog.Debug("upstream tokens expired", "session_id", sessionID)
+		return result, ErrExpired
+	}
+
+	return result, nil
 }
 
 // DeleteUpstreamTokens removes the upstream IDP tokens for a session.
@@ -822,13 +827,13 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 
 	entry, ok := s.pendingAuthorizations[state]
 	if !ok {
-		logger.Debugw("pending authorization not found")
+		slog.Debug("pending authorization not found")
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
 	}
 
 	// Check if expired
 	if time.Now().After(entry.expiresAt) {
-		logger.Debugw("pending authorization expired")
+		slog.Debug("pending authorization expired")
 		return nil, ErrExpired
 	}
 

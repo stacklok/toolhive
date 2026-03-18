@@ -16,14 +16,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state/mocks"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 const testGroupName = "testgroup"
 
@@ -625,6 +619,72 @@ func TestManager_UnregisterClients(t *testing.T) {
 			err := manager.UnregisterClients(context.Background(), []string{tt.groupName}, []string{tt.clientName})
 
 			// Verify results
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestManager_Update tests persisting changes to an existing group.
+func TestManager_Update(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		group       *Group
+		setupMock   func(*mocks.MockStore)
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:  "persists updated group with skills",
+			group: &Group{Name: testGroupName, RegisteredClients: []string{"c1"}, Skills: []string{"my-skill"}},
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{}, nil)
+			},
+		},
+		{
+			name:  "persists group with no skills",
+			group: &Group{Name: testGroupName, RegisteredClients: []string{}},
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{}, nil)
+			},
+		},
+		{
+			name:  "returns error when writer fails",
+			group: &Group{Name: testGroupName},
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(nil, errors.New("disk error"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get writer for group",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &cliManager{groupStore: mockStore}
+
+			tt.setupMock(mockStore)
+
+			err := manager.Update(context.Background(), tt.group)
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)

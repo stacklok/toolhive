@@ -7,14 +7,13 @@ package ngrok
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"golang.ngrok.com/ngrok/v2"
 	"gopkg.in/yaml.v3"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // TunnelProvider implements the TunnelProvider interface for ngrok.
@@ -95,12 +94,17 @@ func (p *TunnelProvider) StartTunnel(ctx context.Context, name, targetURI string
 		<-ctx.Done()
 		return nil
 	}
-	logger.Infof("[ngrok] Starting tunnel %q → %s", name, targetURI)
+	//nolint:gosec // G706: logging tunnel name and target URI from config
+	slog.Info("starting ngrok tunnel", "name", name, "target", targetURI)
 
 	agent, err := ngrok.NewAgent(
 		ngrok.WithAuthtoken(p.config.AuthToken),
 		ngrok.WithEventHandler(func(e ngrok.Event) {
-			logger.Infof("ngrok event: %s at %s", e.EventType(), e.Timestamp())
+			//nolint:gosec // G706: logging ngrok event details
+			slog.Info("ngrok event",
+				"type", e.EventType(),
+				"timestamp", e.Timestamp(),
+			)
 		}),
 	)
 
@@ -130,12 +134,14 @@ func (p *TunnelProvider) StartTunnel(ctx context.Context, name, targetURI string
 		return fmt.Errorf("ngrok.Forward error: %w", err)
 	}
 
-	logger.Infof("ngrok forwarding live at %s", forwarder.URL())
+	//nolint:gosec // G706: logging ngrok forwarder URL from runtime
+	slog.Info("ngrok forwarding live", "url", forwarder.URL())
 
 	// Run in background, non-blocking on `.Done()`
 	go func() {
 		<-forwarder.Done()
-		logger.Infof("ngrok forwarding stopped: %s", forwarder.URL())
+		//nolint:gosec // G706: logging ngrok forwarder URL from runtime
+		slog.Info("ngrok forwarding stopped", "url", forwarder.URL())
 	}()
 
 	// Return immediately

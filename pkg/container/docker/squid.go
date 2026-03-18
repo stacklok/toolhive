@@ -14,9 +14,9 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 
+	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	lb "github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 const defaultSquidImage = "ghcr.io/stacklok/toolhive/egress-proxy:latest"

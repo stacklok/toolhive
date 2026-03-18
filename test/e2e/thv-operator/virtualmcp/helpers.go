@@ -7,6 +7,7 @@ package virtualmcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -637,6 +639,22 @@ func GetInstrumentedBackendStats(ctx context.Context, c client.Client, namespace
 	return stats, nil
 }
 
+// GetMockOAuth2Stats queries the /stats endpoint of the mock OAuth2 server (port 8080)
+// and returns the number of client_credentials grant requests recorded so far.
+func GetMockOAuth2Stats(ctx context.Context, c client.Client, namespace, serviceName string) (int, error) {
+	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 8080)
+	if err != nil {
+		return 0, err
+	}
+	var stats struct {
+		ClientCredentialsRequests int `json:"client_credentials_requests"`
+	}
+	if err := json.Unmarshal([]byte(logs), &stats); err != nil {
+		return 0, fmt.Errorf("failed to parse OAuth2 stats JSON %q: %w", logs, err)
+	}
+	return stats.ClientCredentialsRequests, nil
+}
+
 // MockOIDCServerHTTPScript is a mock OIDC server script with HTTP (for testing with private IPs)
 const MockOIDCServerHTTPScript = `
 pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
@@ -753,6 +771,7 @@ func CreateMCPServerAndWait(
 			Transport: "streamable-http",
 			ProxyPort: 8080,
 			McpPort:   8080,
+			Resources: defaultMCPServerResources(),
 			Env: []mcpv1alpha1.EnvVar{
 				{Name: "TRANSPORT", Value: "streamable-http"},
 			},
@@ -778,13 +797,36 @@ func CreateMCPServerAndWait(
 	return backend
 }
 
-// BackendConfig holds configuration for creating an MCPServer
+// BackendConfig holds configuration for creating a backend MCPServer in tests.
 type BackendConfig struct {
 	Name                  string
 	Namespace             string
 	GroupRef              string
 	Image                 string
+	Transport             string // defaults to "streamable-http" if empty
 	ExternalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
+	Secrets               []mcpv1alpha1.SecretRef
+	Env                   []mcpv1alpha1.EnvVar // additional env vars beyond TRANSPORT
+	// Resources overrides the default resource requests/limits. When nil,
+	// defaultMCPServerResources() is used to ensure containers are scheduled
+	// with reasonable resource guarantees and do not compete excessively.
+	Resources *mcpv1alpha1.ResourceRequirements
+}
+
+// defaultMCPServerResources returns conservative resource requests/limits that
+// mirror the quickstart example (vmcp_optimizer_quickstart.yaml) and are
+// sufficient for functional E2E testing without starving other pods.
+func defaultMCPServerResources() mcpv1alpha1.ResourceRequirements {
+	return mcpv1alpha1.ResourceRequirements{
+		Limits: mcpv1alpha1.ResourceList{
+			CPU:    "200m",
+			Memory: "256Mi",
+		},
+		Requests: mcpv1alpha1.ResourceList{
+			CPU:    "100m",
+			Memory: "128Mi",
+		},
+	}
 }
 
 // CreateMultipleMCPServersInParallel creates multiple MCPServers concurrently and waits for all to be running.
@@ -798,6 +840,16 @@ func CreateMultipleMCPServersInParallel(
 	// Create all backends concurrently
 	for i := range backends {
 		idx := i // Capture loop variable
+		backendTransport := backends[idx].Transport
+		if backendTransport == "" {
+			backendTransport = "streamable-http"
+		}
+
+		resources := defaultMCPServerResources()
+		if backends[idx].Resources != nil {
+			resources = *backends[idx].Resources
+		}
+
 		backend := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backends[idx].Name,
@@ -806,13 +858,15 @@ func CreateMultipleMCPServersInParallel(
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:              backends[idx].GroupRef,
 				Image:                 backends[idx].Image,
-				Transport:             "streamable-http",
+				Transport:             backendTransport,
 				ProxyPort:             8080,
 				McpPort:               8080,
 				ExternalAuthConfigRef: backends[idx].ExternalAuthConfigRef,
-				Env: []mcpv1alpha1.EnvVar{
-					{Name: "TRANSPORT", Value: "streamable-http"},
-				},
+				Secrets:               backends[idx].Secrets,
+				Resources:             resources,
+				Env: append([]mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: backendTransport},
+				}, backends[idx].Env...),
 			},
 		}
 		gomega.Expect(c.Create(ctx, backend)).To(gomega.Succeed())
@@ -1240,6 +1294,190 @@ with socketserver.TCPServer(("", 8080), Handler) as httpd:
 	}
 }
 
+// ParameterizedOIDCServerScript is a minimal Python OIDC server that issues
+// RSA-signed RS256 JWTs with a caller-controlled subject.
+//
+// Usage: POST /token?subject=alice  → returns {"access_token": "<jwt>", ...}
+// The subject defaults to "test-user" when the query parameter is omitted.
+//
+// The issuer is derived from the service name: the server reads the HOST
+// environment variable set by the caller via the ISSUER constant below. Tests
+// that deploy this script must set the correct issuer URL in the VirtualMCPServer
+// InlineOIDCConfig.Issuer field.
+const ParameterizedOIDCServerScript = `
+import base64, json, time, http.server, socketserver
+from urllib.parse import urlparse, parse_qs
+from cryptography.hazmat.primitives.asymmetric import rsa, padding as asym_padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+
+private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+public_key = private_key.public_key()
+pub_numbers = public_key.public_numbers()
+
+def to_b64url(num):
+    b = num.to_bytes((num.bit_length() + 7) // 8, byteorder="big")
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+n_b64 = to_b64url(pub_numbers.n)
+e_b64 = to_b64url(pub_numbers.e)
+ISSUER = "http://OIDC_SERVICE_NAME.OIDC_NAMESPACE.svc.cluster.local"
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/.well-known/openid-configuration":
+            self._json({"issuer": ISSUER, "authorization_endpoint": ISSUER+"/auth",
+                "token_endpoint": ISSUER+"/token", "jwks_uri": ISSUER+"/jwks",
+                "response_types_supported": ["code"], "subject_types_supported": ["public"],
+                "id_token_signing_alg_values_supported": ["RS256"]})
+        elif self.path == "/jwks":
+            self._json({"keys": [{"kty": "RSA", "use": "sig", "kid": "k1", "alg": "RS256", "n": n_b64, "e": e_b64}]})
+        else:
+            self.send_response(404); self.end_headers()
+    def do_POST(self):
+        if self.path.startswith("/token"):
+            params = parse_qs(urlparse(self.path).query)
+            sub = params.get("subject", ["test-user"])[0]
+            hdr = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
+            pay = {"sub": sub, "iss": ISSUER, "aud": "vmcp-audience", "exp": int(time.time())+3600, "iat": int(time.time())}
+            def enc(d): return base64.urlsafe_b64encode(json.dumps(d, separators=(",",":")).encode()).decode().rstrip("=")
+            h64, p64 = enc(hdr), enc(pay)
+            sig = private_key.sign((h64+"."+p64).encode(), asym_padding.PKCS1v15(), hashes.SHA256())
+            jwt = h64 + "." + p64 + "." + base64.urlsafe_b64encode(sig).decode().rstrip("=")
+            print(f"Issued JWT for sub={sub}", flush=True)
+            self._json({"access_token": jwt, "token_type": "Bearer", "expires_in": 3600})
+        else:
+            self.send_response(404); self.end_headers()
+    def _json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers(); self.wfile.write(body)
+    def log_message(self, f, *a): pass
+
+with socketserver.TCPServer(("", 8080), H) as s:
+    print("OIDC server ready on 8080", flush=True)
+    s.serve_forever()
+`
+
+// DeployParameterizedOIDCServer deploys an in-cluster mock OIDC server that
+// issues RSA-signed JWTs with a caller-controlled subject claim (via
+// POST /token?subject=<name>). The server is exposed via a fixed NodePort so
+// the test process (running outside the cluster) can reach it.
+//
+// Returns the in-cluster issuer URL (http://<name>.<namespace>.svc.cluster.local)
+// and a cleanup function that removes all created resources.
+func DeployParameterizedOIDCServer(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) (issuerURL string, allocatedNodePort int32, cleanup func()) {
+	configMapName := name + "-code"
+
+	// Patch the placeholder issuer into the script so the JWT iss claim and
+	// the OIDC discovery document match the in-cluster service URL.
+	issuerURL = fmt.Sprintf("http://%s.%s.svc.cluster.local", name, namespace)
+	script := strings.ReplaceAll(ParameterizedOIDCServerScript,
+		"http://OIDC_SERVICE_NAME.OIDC_NAMESPACE.svc.cluster.local", issuerURL)
+
+	ginkgo.By("Creating ConfigMap with parameterized OIDC server code")
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
+		Data:       map[string]string{"server.py": script},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating parameterized OIDC server pod")
+	mode := int32Ptr(0755)
+	gomega.Expect(c.Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app": name},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:    "oidc",
+				Image:   "python:3.11-slim",
+				Command: []string{"sh", "-c", "pip install --no-cache-dir cryptography && python3 /app/server.py"},
+				Ports:   []corev1.ContainerPort{{ContainerPort: 8080}},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/.well-known/openid-configuration",
+							Port: intstr.FromInt(8080),
+						},
+					},
+					InitialDelaySeconds: 5,
+					PeriodSeconds:       2,
+					FailureThreshold:    30,
+				},
+				VolumeMounts: []corev1.VolumeMount{{Name: "code", MountPath: "/app"}},
+			}},
+			Volumes: []corev1.Volume{{
+				Name: "code",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+						DefaultMode:          mode,
+					},
+				},
+			}},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating parameterized OIDC server service with auto-assigned NodePort")
+	oidcSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeNodePort,
+			Selector: map[string]string{"app": name},
+			Ports: []corev1.ServicePort{{
+				Port:       80,
+				TargetPort: intstr.FromInt(8080),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+	gomega.Expect(c.Create(ctx, oidcSvc)).To(gomega.Succeed())
+
+	// Read back the auto-assigned NodePort
+	gomega.Expect(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, oidcSvc)).To(gomega.Succeed())
+	allocatedNodePort = oidcSvc.Spec.Ports[0].NodePort
+	gomega.Expect(allocatedNodePort).NotTo(gomega.BeZero(), "Kubernetes should auto-assign a NodePort")
+
+	ginkgo.By("Waiting for parameterized OIDC server to be ready")
+	gomega.Eventually(func() bool {
+		pod := &corev1.Pod{}
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod); err != nil {
+			return false
+		}
+		if pod.Status.Phase != corev1.PodRunning {
+			return false
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+		return false
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "parameterized OIDC server should be ready")
+
+	cleanup = func() {
+		_ = c.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace}})
+		// Wait for the Pod and Service to be fully removed so their fixed NodePort
+		// and name can be reused immediately in a subsequent test run.
+		gomega.Eventually(func() bool {
+			pod := &corev1.Pod{}
+			svc := &corev1.Service{}
+			podGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod))
+			svcGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, svc))
+			return podGone && svcGone
+		}, timeout, pollingInterval).Should(gomega.BeTrue(), "OIDC server pod and service should be fully deleted")
+	}
+	return issuerURL, allocatedNodePort, cleanup
+}
+
 // CleanupMockHTTPServer removes the mock HTTP server resources
 func CleanupMockHTTPServer(ctx context.Context, c client.Client, name, namespace string) {
 	configMapName := name + "-code"
@@ -1253,4 +1491,381 @@ func CleanupMockHTTPServer(ctx context.Context, c client.Client, name, namespace
 	_ = c.Delete(ctx, &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
 	})
+}
+
+// fakeEmbeddingServerScript is a minimal Python HTTP server that mimics the
+// text-embeddings-inference (TEI) API. It provides:
+//   - GET /info  → {"max_client_batch_size": 32}
+//   - POST /embed → 384-dim constant vectors (one per input)
+//
+// This is sufficient for the optimizer because FTS5 keyword search works
+// without real embeddings, and the SQLite store stores the dummy embeddings
+// without errors.
+const fakeEmbeddingServerScript = `
+python3 -c '
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/info":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"max_client_batch_size": 32}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/embed":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            inputs = body.get("inputs", [])
+            n = len(inputs) if isinstance(inputs, list) else 1
+            embeddings = [[0.1] * 384 for _ in range(n)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(embeddings).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # suppress request logs
+
+HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+'
+`
+
+// DeployFakeEmbeddingServer deploys a lightweight fake embedding server that
+// mimics the TEI API. This avoids pulling the heavyweight TEI container image
+// while satisfying the optimizer's embedding service requirement.
+// Returns the in-cluster service URL (http://<name>.<namespace>.svc.cluster.local:8080).
+func DeployFakeEmbeddingServer(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) string {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app": name},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": name},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": name},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:    "fake-embedding",
+							Image:   images.PythonImage,
+							Command: []string{"sh", "-c"},
+							Args:    []string{fakeEmbeddingServerScript},
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 8080, Name: "http"},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt(8080),
+									},
+								},
+								InitialDelaySeconds: 2,
+								PeriodSeconds:       2,
+								TimeoutSeconds:      5,
+								SuccessThreshold:    1,
+								FailureThreshold:    15,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": name},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       8080,
+					TargetPort: intstr.FromInt(8080),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for fake embedding server to be ready")
+	gomega.Eventually(func() bool {
+		dep := &appsv1.Deployment{}
+		err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep)
+		return err == nil && dep.Status.ReadyReplicas > 0
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "Fake embedding server should be ready")
+
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", name, namespace)
+}
+
+// CleanupFakeEmbeddingServer removes the fake embedding server Deployment and Service.
+func CleanupFakeEmbeddingServer(ctx context.Context, c client.Client, name, namespace string) {
+	_ = c.Delete(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
+	_ = c.Delete(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
+}
+
+// MockOAuth2ServerScript is a minimal OAuth2 server that accepts token requests and
+// tracks token request statistics. Designed to be used as the token endpoint for
+// TokenExchange health-check tests.
+//
+// Endpoints:
+//
+//	POST /token  – accepts grant_type=client_credentials (Basic Auth or form body)
+//	              returns {"access_token": "mock-health-check-token", ...}
+//	            – accepts grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+//	              returns {"access_token": "mock-exchanged-token", ..., "issued_token_type": "...access_token"}
+//	GET  /stats  – returns {"token_requests": N, "client_credentials_requests": N, "last_client_id": "..."}
+const MockOAuth2ServerScript = `
+pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
+from flask import Flask, jsonify, request
+import base64
+import sys
+
+app = Flask(__name__)
+
+stats = {
+    "token_requests": 0,
+    "client_credentials_requests": 0,
+    "last_client_id": None,
+}
+
+@app.route('/token', methods=['POST'])
+def token():
+    grant_type = request.form.get('grant_type', '')
+
+    # Extract client credentials from Basic Auth header first
+    client_id = None
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Basic '):
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
+            parts = decoded.split(':', 1)
+            if len(parts) == 2:
+                client_id = parts[0]
+        except Exception:
+            pass
+
+    # Fall back to form body
+    if not client_id:
+        client_id = request.form.get('client_id', '')
+
+    stats['token_requests'] += 1
+    stats['last_client_id'] = client_id
+
+    print(f"Token request #{stats['token_requests']}: grant_type={grant_type} client_id={client_id}", flush=True)
+    sys.stdout.flush()
+
+    if grant_type == 'client_credentials':
+        stats['client_credentials_requests'] += 1
+        return jsonify({
+            "access_token": "mock-health-check-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })
+
+    if grant_type == 'urn:ietf:params:oauth:grant-type:token-exchange':
+        return jsonify({
+            "access_token": "mock-exchanged-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        })
+
+    return jsonify({"error": "unsupported_grant_type"}), 400
+
+@app.route('/stats')
+def get_stats():
+    print(f"Stats request: {stats}", flush=True)
+    sys.stdout.flush()
+    return jsonify(stats)
+
+if __name__ == '__main__':
+    print("Mock OAuth2 server starting on port 8080", flush=True)
+    sys.stdout.flush()
+    app.run(host='0.0.0.0', port=8080)
+PYTHON_SCRIPT
+`
+
+// DeployMockOAuth2Server deploys a minimal OAuth2 server in-cluster that accepts
+// client_credentials and token-exchange grant requests, and exposes a /stats endpoint.
+// The service is ClusterIP — use GetMockOAuth2Stats to query /stats via a curl pod
+// rather than relying on NodePort reachability from the test process.
+//
+// Returns:
+//   - inClusterTokenURL: the /token URL reachable from inside the cluster
+//   - cleanup:           function that removes all created resources
+func DeployMockOAuth2Server(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) (inClusterTokenURL string, cleanup func()) {
+	inClusterTokenURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080/token", name, namespace)
+
+	ginkgo.By("Creating mock OAuth2 server pod: " + name)
+	gomega.Expect(c.Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app": name},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:    "mock-oauth2",
+				Image:   images.PythonImage,
+				Command: []string{"sh", "-c"},
+				Args:    []string{MockOAuth2ServerScript},
+				Ports:   []corev1.ContainerPort{{ContainerPort: 8080, Name: "http"}},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/stats",
+							Port: intstr.FromInt(8080),
+						},
+					},
+					InitialDelaySeconds: 5,
+					PeriodSeconds:       2,
+					FailureThreshold:    30,
+				},
+			}},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating mock OAuth2 server ClusterIP service: " + name)
+	gomega.Expect(c.Create(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": name},
+			Ports: []corev1.ServicePort{{
+				Port:       8080,
+				TargetPort: intstr.FromInt(8080),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for mock OAuth2 server to be ready")
+	gomega.Eventually(func() bool {
+		pod := &corev1.Pod{}
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod); err != nil {
+			return false
+		}
+		if pod.Status.Phase != corev1.PodRunning {
+			return false
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+		return false
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "mock OAuth2 server should be ready")
+
+	cleanup = func() {
+		_ = c.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		gomega.Eventually(func() bool {
+			pod := &corev1.Pod{}
+			svcObj := &corev1.Service{}
+			podGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod))
+			svcGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, svcObj))
+			return podGone && svcGone
+		}, timeout, pollingInterval).Should(gomega.BeTrue(), "mock OAuth2 pod and service should be fully deleted")
+	}
+	return inClusterTokenURL, cleanup
+}
+
+// ---- /status and /api/backends/health HTTP helpers ----
+
+// VMCPStatusResponse mirrors server.StatusResponse
+// (pkg/vmcp/server/status.go) for test deserialization.
+type VMCPStatusResponse struct {
+	Backends []VMCPBackendStatus `json:"backends"`
+	Healthy  bool                `json:"healthy"`
+	Version  string              `json:"version"`
+	GroupRef string              `json:"group_ref"`
+}
+
+// VMCPBackendStatus mirrors server.BackendStatus
+// (pkg/vmcp/server/status.go) for test deserialization.
+type VMCPBackendStatus struct {
+	Name      string `json:"name"`
+	Health    string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
+	Transport string `json:"transport"`
+	AuthType  string `json:"auth_type,omitempty"`
+}
+
+// VMCPBackendsHealthResponse mirrors BackendHealthResponse
+// (pkg/vmcp/server/server.go) for test deserialization.
+type VMCPBackendsHealthResponse struct {
+	MonitoringEnabled bool                               `json:"monitoring_enabled"`
+	Backends          map[string]*VMCPBackendHealthState `json:"backends,omitempty"`
+}
+
+// VMCPBackendHealthState mirrors health.State for test deserialization.
+// Field names are capitalized (no json tags on the server struct).
+type VMCPBackendHealthState struct {
+	Status              string `json:"Status"`
+	ConsecutiveFailures int    `json:"ConsecutiveFailures"`
+	LastErrorCategory   string `json:"LastErrorCategory"`
+}
+
+// getAndDecodeJSON issues a GET to url, checks for HTTP 200, and decodes the
+// JSON body into a value of type T. Returns a pointer to the decoded value.
+func getAndDecodeJSON[T any](url, label string) (*T, error) {
+	resp, err := http.Get(url) //nolint:gosec // test helper, URL is constructed from controlled input
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", label, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s returned HTTP %d", label, resp.StatusCode)
+	}
+	var result T
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", label, err)
+	}
+	return &result, nil
+}
+
+// GetVMCPStatus queries the /status endpoint on the given NodePort and returns
+// the parsed response.
+func GetVMCPStatus(nodePort int32) (*VMCPStatusResponse, error) {
+	return getAndDecodeJSON[VMCPStatusResponse](
+		fmt.Sprintf("http://localhost:%d/status", nodePort), "/status")
+}
+
+// GetVMCPBackendsHealth queries the /api/backends/health endpoint on the given
+// NodePort and returns the parsed response.
+func GetVMCPBackendsHealth(nodePort int32) (*VMCPBackendsHealthResponse, error) {
+	return getAndDecodeJSON[VMCPBackendsHealthResponse](
+		fmt.Sprintf("http://localhost:%d/api/backends/health", nodePort), "/api/backends/health")
 }

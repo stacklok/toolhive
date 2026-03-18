@@ -10,12 +10,12 @@ permissions:
 jobs:
   operator-tests:
     name: Operator Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -31,12 +31,12 @@ jobs:
 
   operator-tests-integration:
     name: Operator Tests Integration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -52,12 +52,12 @@ jobs:
 
   build-operator:
     name: Build Operator
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -139,7 +139,7 @@ jobs:
 
   e2e-tests-operator:
     name: E2E Tests Operator
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-8cores-32gb
     timeout-minutes: 30
     defaults:
       run:
@@ -167,7 +167,7 @@ jobs:
       uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
 
     - name: Set up Go
-      uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
       with:
         go-version-file: 'go.mod'
         cache: true
@@ -185,15 +185,33 @@ jobs:
     - name: Install Chainsaw
       uses: kyverno/action-install-chainsaw@06560d18422209e9c1e08e931d477d04bf2674c1 # v0.2.14
       with:
-        release: v0.2.12
+        release: v0.2.14 # chainsaw
+
+    - name: Disable containerd image store
+      # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795
+      # Docker 29+ defaults to containerd image store, which causes
+      # `kind load docker-image` to fail for multi-arch images because
+      # `docker save` preserves the OCI index referencing all platforms
+      # even when only the host platform layers were pulled.
+      # --platform on docker pull is not sufficient; the image store
+      # itself must be switched back to the classic overlay2 driver.
+      run: |
+        sudo mkdir -p /etc/docker
+        echo '{"features":{"containerd-snapshotter": false}}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl restart docker
 
     - name: Create KIND Cluster
       uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # pin@v1.12.0
       with:
         cluster_name: toolhive
-        version: v0.29.0
+        version: v0.31.0 # kind
         cloud_provider: true
         node_image: ${{ matrix.version }}
+
+    - name: Pre-load test images
+      run: |
+        docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+        kind load docker-image --name toolhive ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
 
     - name: Run Chainsaw tests
       run: |

@@ -40,22 +40,9 @@ Do NOT invoke for: Writing new code (golang-code-writer), docs-only changes (doc
 - [ ] Follows conventions in `.claude/rules/testing.md`
 - [ ] Both success and failure paths tested
 
-
-### Documentation
-- [ ] Public APIs have godoc comments
-- [ ] Complex logic has explanatory comments
-- [ ] README/docs updated if behavior changes
-- [ ] Commit messages follow CONTRIBUTING.md guidelines
-
 ### vMCP Code (for `pkg/vmcp/` and `cmd/vmcp/`)
 
 When reviewing changes that touch vMCP code, also run the `/vmcp-review` skill to check for vMCP-specific anti-patterns in addition to the standard review checklist above.
-
-### Performance
-- [ ] No unnecessary allocations in hot paths
-- [ ] Appropriate use of buffers and pooling
-- [ ] Database queries optimized
-- [ ] Container operations batched where possible
 
 ### Backwards Compatibility
 - [ ] Changes won't break existing users

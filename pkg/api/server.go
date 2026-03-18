@@ -35,10 +35,12 @@ import (
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
@@ -251,7 +253,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			_ = store.Close()
 			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
 		}
-		registry, regErr := ociskills.NewRegistry()
+		ociRegistry, regErr := ociskills.NewRegistry()
 		if regErr != nil {
 			_ = store.Close()
 			// ociStore is directory-backed with no open handles; no cleanup needed.
@@ -259,13 +261,19 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		}
 		packager := ociskills.NewPackager(ociStore)
 
-		b.skillManager = skillsvc.New(store,
+		skillOpts := []skillsvc.Option{
 			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
 			skillsvc.WithOCIStore(ociStore),
 			skillsvc.WithPackager(packager),
-			skillsvc.WithRegistryClient(registry),
+			skillsvc.WithRegistryClient(ociRegistry),
 			skillsvc.WithGroupManager(b.groupManager),
-		)
+		}
+
+		if opt := buildSkillLookupOption(); opt != nil {
+			skillOpts = append(skillOpts, opt)
+		}
+
+		b.skillManager = skillsvc.New(store, skillOpts...)
 	}
 
 	return nil
@@ -593,6 +601,25 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 	}
 
 	return listener, addrType, nil
+}
+
+// buildSkillLookupOption creates a WithSkillLookup option if a registry provider
+// can be initialized. Returns nil on any failure (best-effort).
+func buildSkillLookupOption() skillsvc.Option {
+	cfg, err := config.NewDefaultProvider().LoadOrCreateConfig()
+	if err != nil {
+		slog.Debug("skill lookup not available: could not load config", "error", err)
+		return nil
+	}
+	if cfg == nil {
+		return nil
+	}
+	rp, err := registry.NewRegistryProvider(cfg, registry.WithInteractive(false))
+	if err != nil {
+		slog.Debug("skill lookup not available: could not create registry provider", "error", err)
+		return nil
+	}
+	return skillsvc.WithSkillLookup(rp)
 }
 
 // clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.

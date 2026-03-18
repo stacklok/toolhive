@@ -80,7 +80,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 		oidcConfig *mcpv1alpha1.OIDCConfigRef
 		mockReturn *oidc.OIDCConfig
 		mockErr    error
-		validate   func(t *testing.T, config *vmcpconfig.Config, err error)
+		validate   func(t *testing.T, config *vmcpconfig.RuntimeConfig, err error)
 	}{
 		{
 			name:       "successful resolution maps all fields",
@@ -89,7 +89,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				Issuer: "https://issuer.example.com", Audience: "my-audience",
 				ResourceURL: "https://resource.example.com", JWKSAllowPrivateIP: true,
 			},
-			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				require.NotNil(t, config.IncomingAuth.OIDC)
@@ -103,7 +103,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			name:       "resolution error returns error (fail-closed)",
 			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeConfigMap},
 			mockErr:    errors.New("configmap not found"),
-			validate: func(t *testing.T, _ *vmcpconfig.Config, err error) {
+			validate: func(t *testing.T, _ *vmcpconfig.RuntimeConfig, err error) {
 				t.Helper()
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "OIDC resolution failed")
@@ -113,7 +113,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			name:       "nil resolved config results in nil OIDC",
 			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeInline},
 			mockReturn: nil,
-			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.Nil(t, config.IncomingAuth.OIDC)
@@ -126,7 +126,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				Inline: &mcpv1alpha1.InlineOIDCConfig{ClientSecret: "secret"},
 			},
 			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
-			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.Equal(t, "VMCP_OIDC_CLIENT_SECRET", config.IncomingAuth.OIDC.ClientSecretEnv)
@@ -139,7 +139,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{Name: "config"},
 			},
 			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com", ClientSecret: "secret"},
-			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.Equal(t, "VMCP_OIDC_CLIENT_SECRET", config.IncomingAuth.OIDC.ClientSecretEnv)
@@ -149,7 +149,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			name:       "kubernetes type does not set ClientSecretEnv",
 			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
 			mockReturn: &oidc.OIDCConfig{Issuer: "https://kubernetes.default.svc"},
-			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.Empty(t, config.IncomingAuth.OIDC.ClientSecretEnv)
@@ -381,7 +381,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 		k8sClient     client.Client
 		expectError   bool
 		errorContains string
-		validate      func(t *testing.T, config *vmcpconfig.Config)
+		validate      func(t *testing.T, config *vmcpconfig.RuntimeConfig)
 	}{
 		{
 			name: "successfully fetch and merge referenced composite tool",
@@ -421,7 +421,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 			},
 			expectError: false,
-			validate: func(t *testing.T, config *vmcpconfig.Config) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig) {
 				t.Helper()
 				require.Len(t, config.CompositeTools, 1)
 				assert.Equal(t, "referenced-tool", config.CompositeTools[0].Name)
@@ -482,7 +482,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 			},
 			expectError: false,
-			validate: func(t *testing.T, config *vmcpconfig.Config) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig) {
 				t.Helper()
 				require.Len(t, config.CompositeTools, 2)
 				// Check that both tools are present
@@ -641,7 +641,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 			},
 			expectError: false,
-			validate: func(t *testing.T, config *vmcpconfig.Config) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig) {
 				t.Helper()
 				require.Len(t, config.CompositeTools, 2)
 				toolNames := make(map[string]bool)
@@ -697,7 +697,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 			},
 			expectError: false,
-			validate: func(t *testing.T, config *vmcpconfig.Config) {
+			validate: func(t *testing.T, config *vmcpconfig.RuntimeConfig) {
 				t.Helper()
 				require.Len(t, config.CompositeTools, 1)
 				tool := config.CompositeTools[0]

@@ -1072,10 +1072,11 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 	results := make([]string, iterations)
 
 	for i := 0; i < iterations; i++ {
-		config, err := converter.Convert(context.Background(), testVmcp)
+		rtCfg, err := converter.Convert(context.Background(), testVmcp)
 		require.NoError(t, err)
 
-		yamlBytes, err := yaml.Marshal(config)
+		// Marshal only the serializable Config part, not the full RuntimeConfig.
+		yamlBytes, err := yaml.Marshal(rtCfg.Config)
 		require.NoError(t, err)
 
 		results[i] = string(yamlBytes)

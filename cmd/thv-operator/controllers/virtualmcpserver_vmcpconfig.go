@@ -41,10 +41,12 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}
-	config, err := converter.Convert(ctx, vmcp)
+	rtCfg, err := converter.Convert(ctx, vmcp)
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
+	// config is the serializable subset of rtCfg; helper functions mutate it in place.
+	config := &rtCfg.Config
 
 	// Process outgoing auth configuration for both inline and discovered modes
 	if err := r.processOutgoingAuth(ctx, vmcp, config, typedWorkloads, statusManager); err != nil {
@@ -62,7 +64,8 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("invalid vmcp Config: %w", err)
 	}
 
-	// Marshal to YAML for storage in ConfigMap
+	// Marshal only the serializable Config (not RuntimeConfig) to YAML for storage in ConfigMap.
+	// RuntimeConfig carries runtime-only fields (e.g. AuthServer) that must not be serialized.
 	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
 	vmcpConfigYAML, err := yaml.Marshal(config)

@@ -18,6 +18,8 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
+	"github.com/stacklok/toolhive/pkg/authserver"
+	authstorage "github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -32,6 +34,10 @@ const (
 	// The deployment controller mounts secrets as environment variables with this name.
 	//nolint:gosec // This is an environment variable name, not a credential
 	vmcpOIDCClientSecretEnvVar = "VMCP_OIDC_CLIENT_SECRET"
+
+	// secretMountBasePath is the base directory where Kubernetes secrets are mounted as volumes.
+	// The deployment controller mounts each referenced secret under this path.
+	secretMountBasePath = "/secrets"
 )
 
 // Converter converts VirtualMCPServer CRD specs to vmcp Config
@@ -59,16 +65,19 @@ func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Convert
 	}, nil
 }
 
-// Convert converts VirtualMCPServer CRD spec to vmcp Config.
+// Convert converts VirtualMCPServer CRD spec to vmcp RuntimeConfig.
 //
 // The conversion starts with a DeepCopy of the embedded config.Config from the CRD spec.
 // This ensures that simple fields (like Optimizer, Metadata, etc.) are automatically
 // passed through without explicit mapping. Only fields that require special handling
 // (auth, aggregation, composite tools, telemetry) are explicitly converted below.
+//
+// The returned RuntimeConfig embeds Config (the serializable config) and may additionally
+// carry an AuthServer config when AuthServerConfigRef is set on the VirtualMCPServer.
 func (c *Converter) Convert(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) (*vmcpconfig.Config, error) {
+) (*vmcpconfig.RuntimeConfig, error) {
 	// Start with a deep copy of the embedded config for automatic field passthrough.
 	// This ensures new fields added to config.Config are automatically included
 	// without requiring explicit mapping in this converter.
@@ -146,7 +155,18 @@ func (c *Converter) Convert(
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
 
-	return config, nil
+	rtCfg := &vmcpconfig.RuntimeConfig{Config: *config}
+
+	// Convert AuthServerConfig if an auth server reference is specified.
+	if vmcp.Spec.AuthServerConfigRef != nil {
+		authServerCfg, err := c.convertAuthServerConfig(ctx, vmcp, config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert auth server config: %w", err)
+		}
+		rtCfg.AuthServer = authServerCfg
+	}
+
+	return rtCfg, nil
 }
 
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.
@@ -247,6 +267,451 @@ func mapResolvedOIDCToVmcpConfig(
 	}
 
 	return config
+}
+
+// convertAuthServerConfig fetches the MCPExternalAuthConfig referenced by
+// AuthServerConfigRef, verifies it is of type "embeddedAuthServer", and maps its
+// fields to an authserver.RunConfig wrapped in a vmcpconfig.AuthServerConfig.
+//
+// Secret references are converted to file paths following the convention
+// /secrets/{secret-name}/{key}, which is the path used by the deployment controller
+// when mounting Kubernetes secrets as volumes into the vMCP pod.
+//
+// The AllowedAudiences field is derived from the incoming OIDC audience configured
+// on the VirtualMCPServer rather than being repeated on EmbeddedAuthServerConfig.
+func (c *Converter) convertAuthServerConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	config *vmcpconfig.Config,
+) (*vmcpconfig.AuthServerConfig, error) {
+	ref := vmcp.Spec.AuthServerConfigRef
+	if ref == nil {
+		return nil, nil
+	}
+
+	// Fetch the referenced MCPExternalAuthConfig resource.
+	extAuthCfg := &mcpv1alpha1.MCPExternalAuthConfig{}
+	if err := c.k8sClient.Get(ctx, types.NamespacedName{
+		Name:      ref.Name,
+		Namespace: vmcp.Namespace,
+	}, extAuthCfg); err != nil {
+		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s/%s: %w",
+			vmcp.Namespace, ref.Name, err)
+	}
+
+	// Defense-in-depth: verify the referenced config is the expected type.
+	// The reconciler should have already validated this, but we check again here
+	// to catch any inconsistencies between validation and conversion time.
+	if extAuthCfg.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		return nil, fmt.Errorf(
+			"MCPExternalAuthConfig %q has type %q but authServerConfigRef requires type %q",
+			ref.Name, extAuthCfg.Spec.Type, mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer)
+	}
+
+	// The EmbeddedAuthServer field must be non-nil when type is embeddedAuthServer
+	// (enforced by CRD validation), but check defensively.
+	if extAuthCfg.Spec.EmbeddedAuthServer == nil {
+		return nil, fmt.Errorf(
+			"MCPExternalAuthConfig %q has type embeddedAuthServer but embeddedAuthServer config is nil",
+			ref.Name)
+	}
+
+	embCfg := extAuthCfg.Spec.EmbeddedAuthServer
+
+	// Build the RunConfig and derive AllowedAudiences from the vMCP's incoming OIDC audience.
+	rc, err := buildAuthServerRunConfig(embCfg, vmcp)
+	if err != nil {
+		return nil, err
+	}
+	rc.AllowedAudiences = deriveAllowedAudiences(config)
+
+	return vmcpconfig.NewAuthServerConfig(rc), nil
+}
+
+// buildAuthServerRunConfig maps an EmbeddedAuthServerConfig to an authserver.RunConfig.
+// Secret refs are converted to mounted file paths; all sub-conversions are delegated to
+// focused helpers to keep cyclomatic complexity manageable.
+func buildAuthServerRunConfig(
+	embCfg *mcpv1alpha1.EmbeddedAuthServerConfig,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*authserver.RunConfig, error) {
+	rc := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        embCfg.Issuer,
+	}
+
+	// Map signing key secret refs to file paths.
+	// The first ref becomes the primary signing key; subsequent refs are fallback keys.
+	if len(embCfg.SigningKeySecretRefs) > 0 {
+		rc.SigningKeyConfig = convertSigningKeyRefs(embCfg.SigningKeySecretRefs)
+	}
+
+	// Map HMAC secret refs to file paths.
+	for i := range embCfg.HMACSecretRefs {
+		ref := &embCfg.HMACSecretRefs[i]
+		filePath := fmt.Sprintf("%s/auth-server-hmac-%d/%s", secretMountBasePath, i, ref.Key)
+		rc.HMACSecretFiles = append(rc.HMACSecretFiles, filePath)
+	}
+
+	// Map token lifespans if configured.
+	if embCfg.TokenLifespans != nil {
+		rc.TokenLifespans = &authserver.TokenLifespanRunConfig{
+			AccessTokenLifespan:  embCfg.TokenLifespans.AccessTokenLifespan,
+			RefreshTokenLifespan: embCfg.TokenLifespans.RefreshTokenLifespan,
+			AuthCodeLifespan:     embCfg.TokenLifespans.AuthCodeLifespan,
+		}
+	}
+
+	// Convert upstream providers.
+	upstreams, err := convertUpstreamProviders(embCfg.UpstreamProviders)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert upstream providers: %w", err)
+	}
+	rc.Upstreams = upstreams
+
+	// Convert storage config.
+	if embCfg.Storage != nil {
+		storageCfg, err := convertAuthServerStorage(embCfg.Storage, vmcp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert auth server storage: %w", err)
+		}
+		rc.Storage = storageCfg
+	}
+
+	return rc, nil
+}
+
+// convertSigningKeyRefs maps a slice of SecretKeyRefs to a SigningKeyRunConfig.
+// The first ref is the primary signing key; subsequent refs become fallback keys for rotation.
+func convertSigningKeyRefs(refs []mcpv1alpha1.SecretKeyRef) *authserver.SigningKeyRunConfig {
+	if len(refs) == 0 {
+		return nil
+	}
+	cfg := &authserver.SigningKeyRunConfig{
+		KeyDir:         fmt.Sprintf("%s/auth-server-signing-key-0", secretMountBasePath),
+		SigningKeyFile: refs[0].Key,
+	}
+	for i, ref := range refs[1:] {
+		fallbackPath := fmt.Sprintf("%s/auth-server-signing-key-%d/%s", secretMountBasePath, i+1, ref.Key)
+		cfg.FallbackKeyFiles = append(cfg.FallbackKeyFiles, fallbackPath)
+	}
+	return cfg
+}
+
+// deriveAllowedAudiences derives the AllowedAudiences list from the already-resolved
+// vmcp Config. The CRD intentionally omits AllowedAudiences on EmbeddedAuthServerConfig
+// — the converter derives it here so the auth server can validate the "resource"
+// parameter (RFC 8707) on every token request.
+//
+// Per RFC 8707, the resource indicator is the authoritative value for token audience.
+// When Resource is set, it takes precedence over Audience (consistent with
+// controllerutil/authserver.go which uses ResourceURL for AllowedAudiences).
+// Falls back to Audience when Resource is not specified.
+//
+// Using the resolved config (rather than the raw CRD spec) ensures the value is
+// populated correctly for all OIDC config types (inline, configMap, kubernetes).
+func deriveAllowedAudiences(config *vmcpconfig.Config) []string {
+	if config.IncomingAuth == nil || config.IncomingAuth.OIDC == nil {
+		return nil
+	}
+	oidc := config.IncomingAuth.OIDC
+	// Resource (RFC 8707) takes precedence, falling back to Audience.
+	value := oidc.Resource
+	if value == "" {
+		value = oidc.Audience
+	}
+	if value == "" {
+		return nil
+	}
+	return []string{value}
+}
+
+// convertUpstreamProviders converts a slice of CRD UpstreamProviderConfig to
+// authserver UpstreamRunConfig values.
+func convertUpstreamProviders(
+	providers []mcpv1alpha1.UpstreamProviderConfig,
+) ([]authserver.UpstreamRunConfig, error) {
+	upstreams := make([]authserver.UpstreamRunConfig, 0, len(providers))
+	for i, provider := range providers {
+		up, err := convertUpstreamProvider(&providers[i])
+		if err != nil {
+			return nil, fmt.Errorf("upstream provider %q (index %d): %w", provider.Name, i, err)
+		}
+		upstreams = append(upstreams, up)
+	}
+	return upstreams, nil
+}
+
+// convertUpstreamProvider converts a single CRD UpstreamProviderConfig to an
+// authserver.UpstreamRunConfig.
+func convertUpstreamProvider(p *mcpv1alpha1.UpstreamProviderConfig) (authserver.UpstreamRunConfig, error) {
+	up := authserver.UpstreamRunConfig{
+		Name: p.Name,
+		// Convert between the CRD UpstreamProviderType and authserver.UpstreamProviderType.
+		// Both use the same string values ("oidc" / "oauth2") but are distinct Go types.
+		Type: authserver.UpstreamProviderType(p.Type),
+	}
+
+	switch p.Type {
+	case mcpv1alpha1.UpstreamProviderTypeOIDC:
+		if p.OIDCConfig == nil {
+			return authserver.UpstreamRunConfig{}, fmt.Errorf("oidcConfig is required for type 'oidc'")
+		}
+		up.OIDCConfig = convertOIDCUpstreamConfig(p.OIDCConfig)
+
+	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
+		if p.OAuth2Config == nil {
+			return authserver.UpstreamRunConfig{}, fmt.Errorf("oauth2Config is required for type 'oauth2'")
+		}
+		oauth2Cfg, err := convertOAuth2UpstreamConfig(p.OAuth2Config)
+		if err != nil {
+			return authserver.UpstreamRunConfig{}, err
+		}
+		up.OAuth2Config = oauth2Cfg
+
+	default:
+		return authserver.UpstreamRunConfig{}, fmt.Errorf("unsupported upstream provider type: %q", p.Type)
+	}
+
+	return up, nil
+}
+
+// convertOIDCUpstreamConfig maps a CRD OIDCUpstreamConfig to an authserver OIDCUpstreamRunConfig.
+func convertOIDCUpstreamConfig(cfg *mcpv1alpha1.OIDCUpstreamConfig) *authserver.OIDCUpstreamRunConfig {
+	if cfg == nil {
+		return nil
+	}
+	rc := &authserver.OIDCUpstreamRunConfig{
+		IssuerURL:   cfg.IssuerURL,
+		ClientID:    cfg.ClientID,
+		RedirectURI: cfg.RedirectURI,
+		Scopes:      cfg.Scopes,
+	}
+	// Map client secret ref to a mounted file path.
+	if cfg.ClientSecretRef != nil {
+		rc.ClientSecretFile = secretRefToFilePath(cfg.ClientSecretRef)
+	}
+	// Map optional UserInfo override.
+	if cfg.UserInfoOverride != nil {
+		rc.UserInfoOverride = convertUserInfoConfig(cfg.UserInfoOverride)
+	}
+	return rc
+}
+
+// convertOAuth2UpstreamConfig maps a CRD OAuth2UpstreamConfig to an authserver OAuth2UpstreamRunConfig.
+func convertOAuth2UpstreamConfig(cfg *mcpv1alpha1.OAuth2UpstreamConfig) (*authserver.OAuth2UpstreamRunConfig, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	if cfg.UserInfo == nil {
+		return nil, fmt.Errorf("userInfo is required for OAuth2 upstream provider")
+	}
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		AuthorizationEndpoint: cfg.AuthorizationEndpoint,
+		TokenEndpoint:         cfg.TokenEndpoint,
+		ClientID:              cfg.ClientID,
+		RedirectURI:           cfg.RedirectURI,
+		Scopes:                cfg.Scopes,
+		UserInfo:              convertUserInfoConfig(cfg.UserInfo),
+	}
+	// Map client secret ref to a mounted file path.
+	if cfg.ClientSecretRef != nil {
+		rc.ClientSecretFile = secretRefToFilePath(cfg.ClientSecretRef)
+	}
+	// Map optional token response field mapping.
+	if cfg.TokenResponseMapping != nil {
+		rc.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
+			AccessTokenPath:  cfg.TokenResponseMapping.AccessTokenPath,
+			ScopePath:        cfg.TokenResponseMapping.ScopePath,
+			RefreshTokenPath: cfg.TokenResponseMapping.RefreshTokenPath,
+			ExpiresInPath:    cfg.TokenResponseMapping.ExpiresInPath,
+		}
+	}
+	return rc, nil
+}
+
+// convertUserInfoConfig maps a CRD UserInfoConfig to an authserver UserInfoRunConfig.
+func convertUserInfoConfig(cfg *mcpv1alpha1.UserInfoConfig) *authserver.UserInfoRunConfig {
+	if cfg == nil {
+		return nil
+	}
+	rc := &authserver.UserInfoRunConfig{
+		EndpointURL:       cfg.EndpointURL,
+		HTTPMethod:        cfg.HTTPMethod,
+		AdditionalHeaders: cfg.AdditionalHeaders,
+	}
+	if cfg.FieldMapping != nil {
+		rc.FieldMapping = &authserver.UserInfoFieldMappingRunConfig{
+			SubjectFields: cfg.FieldMapping.SubjectFields,
+			NameFields:    cfg.FieldMapping.NameFields,
+			EmailFields:   cfg.FieldMapping.EmailFields,
+		}
+	}
+	return rc
+}
+
+// convertAuthServerStorage maps a CRD AuthServerStorageConfig to a storage.RunConfig.
+func convertAuthServerStorage(
+	cfg *mcpv1alpha1.AuthServerStorageConfig,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*authstorage.RunConfig, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	rc := &authstorage.RunConfig{
+		Type: string(cfg.Type),
+	}
+	if cfg.Type == mcpv1alpha1.AuthServerStorageTypeRedis {
+		if cfg.Redis == nil {
+			return nil, fmt.Errorf("redis storage config is required when type is 'redis'")
+		}
+		redisRC, err := convertRedisStorageConfig(cfg.Redis, vmcp)
+		if err != nil {
+			return nil, fmt.Errorf("redis storage config: %w", err)
+		}
+		rc.RedisConfig = redisRC
+	}
+	return rc, nil
+}
+
+// convertRedisStorageConfig maps a CRD RedisStorageConfig to a storage.RedisRunConfig.
+func convertRedisStorageConfig(
+	cfg *mcpv1alpha1.RedisStorageConfig,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*authstorage.RedisRunConfig, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	if cfg.SentinelConfig == nil {
+		return nil, fmt.Errorf("sentinelConfig is required")
+	}
+	if cfg.ACLUserConfig == nil {
+		return nil, fmt.Errorf("aclUserConfig is required")
+	}
+
+	sentinel, err := convertRedisSentinelConfig(cfg.SentinelConfig, vmcp.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("sentinelConfig: %w", err)
+	}
+
+	rc := &authstorage.RedisRunConfig{
+		SentinelConfig: sentinel,
+		AuthType:       authstorage.AuthTypeACLUser,
+		ACLUserConfig: &authstorage.ACLUserRunConfig{
+			UsernameEnvVar: secretRefToEnvVarName(cfg.ACLUserConfig.UsernameSecretRef),
+			PasswordEnvVar: secretRefToEnvVarName(cfg.ACLUserConfig.PasswordSecretRef),
+		},
+		// KeyPrefix scopes all Redis keys to this CR's namespace and name,
+		// preventing cross-tenant key collisions in shared Redis clusters.
+		KeyPrefix:    fmt.Sprintf("thv:auth:%s:%s:", vmcp.Namespace, vmcp.Name),
+		DialTimeout:  cfg.DialTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+	}
+
+	// Map optional TLS configs.
+	if cfg.TLS != nil {
+		rc.TLS = convertRedisTLSConfig(cfg.TLS)
+	}
+	if cfg.SentinelTLS != nil {
+		rc.SentinelTLS = convertRedisTLSConfig(cfg.SentinelTLS)
+	}
+
+	return rc, nil
+}
+
+// convertRedisSentinelConfig maps a CRD RedisSentinelConfig to a storage.SentinelRunConfig.
+// SentinelService references are resolved to addresses using Kubernetes DNS convention
+// ({service}.{namespace}.svc.cluster.local:{port}).
+//
+// crNamespace is the namespace of the VirtualMCPServer CR; it is used as the default
+// when SentinelService.Namespace is empty, co-locating the sentinel service in the same
+// namespace as the CR rather than falling back to "default".
+func convertRedisSentinelConfig(
+	cfg *mcpv1alpha1.RedisSentinelConfig,
+	crNamespace string,
+) (*authstorage.SentinelRunConfig, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+
+	rc := &authstorage.SentinelRunConfig{
+		MasterName: cfg.MasterName,
+		DB:         int(cfg.DB),
+	}
+
+	switch {
+	case len(cfg.SentinelAddrs) > 0:
+		rc.SentinelAddrs = cfg.SentinelAddrs
+	case cfg.SentinelService != nil:
+		svc := cfg.SentinelService
+		port := svc.Port
+		if port == 0 {
+			port = 26379
+		}
+		ns := svc.Namespace
+		if ns == "" {
+			// Default to the CR's own namespace so the sentinel service is looked up
+			// in the same namespace as the VirtualMCPServer, not the "default" namespace.
+			ns = crNamespace
+		}
+		addr := fmt.Sprintf("%s.%s.svc.cluster.local:%d", svc.Name, ns, port)
+		rc.SentinelAddrs = []string{addr}
+	default:
+		return nil, fmt.Errorf("either sentinelAddrs or sentinelService must be set")
+	}
+
+	return rc, nil
+}
+
+// convertRedisTLSConfig maps a CRD RedisTLSConfig to a storage.RedisTLSRunConfig.
+func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig) *authstorage.RedisTLSRunConfig {
+	if cfg == nil {
+		return nil
+	}
+	rc := &authstorage.RedisTLSRunConfig{
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+	if cfg.CACertSecretRef != nil {
+		rc.CACertFile = secretRefToFilePath(cfg.CACertSecretRef)
+	}
+	return rc
+}
+
+// secretRefToFilePath converts a SecretKeyRef to a mounted file path.
+// The deployment controller mounts each referenced Kubernetes Secret as a volume
+// under /secrets/{secret-name}/, so the key becomes a file in that directory.
+func secretRefToFilePath(ref *mcpv1alpha1.SecretKeyRef) string {
+	if ref == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s/%s", secretMountBasePath, ref.Name, ref.Key)
+}
+
+// secretRefToEnvVarName converts a SecretKeyRef to a deterministic environment variable name.
+// This is used for Redis ACL credentials which are passed via environment variables.
+// The generated name is upper-cased and uses underscores in place of hyphens.
+func secretRefToEnvVarName(ref *mcpv1alpha1.SecretKeyRef) string {
+	if ref == nil {
+		return ""
+	}
+	// Produce a stable, shell-safe environment variable name from the secret name and key.
+	// Example: secret "my-redis-secret", key "password" → "MY_REDIS_SECRET_PASSWORD"
+	import_safe := func(s string) string {
+		result := make([]byte, len(s))
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if c == '-' || c == '.' || c == '/' {
+				result[i] = '_'
+			} else if c >= 'a' && c <= 'z' {
+				result[i] = c - 32
+			} else {
+				result[i] = c
+			}
+		}
+		return string(result)
+	}
+	return import_safe(ref.Name) + "_" + import_safe(ref.Key)
 }
 
 // convertOutgoingAuth converts OutgoingAuthConfig from CRD to vmcp config

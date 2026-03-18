@@ -8,6 +8,63 @@ const docTemplate = `{
     "schemes": {{ marshal .Schemes }},
     "components": {
         "schemas": {
+            "auth.TokenValidatorConfig": {
+                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
+                "properties": {
+                    "allowPrivateIP": {
+                        "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
+                        "type": "boolean"
+                    },
+                    "audience": {
+                        "description": "Audience is the expected audience for the token",
+                        "type": "string"
+                    },
+                    "authTokenFile": {
+                        "description": "AuthTokenFile is the path to file containing bearer token for authentication",
+                        "type": "string"
+                    },
+                    "cacertPath": {
+                        "description": "CACertPath is the path to the CA certificate bundle for HTTPS requests",
+                        "type": "string"
+                    },
+                    "clientID": {
+                        "description": "ClientID is the OIDC client ID",
+                        "type": "string"
+                    },
+                    "clientSecret": {
+                        "description": "ClientSecret is the optional OIDC client secret for introspection",
+                        "type": "string"
+                    },
+                    "insecureAllowHTTP": {
+                        "description": "InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing\nWARNING: This is insecure and should NEVER be used in production",
+                        "type": "boolean"
+                    },
+                    "introspectionURL": {
+                        "description": "IntrospectionURL is the optional introspection endpoint for validating tokens",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)",
+                        "type": "string"
+                    },
+                    "jwksurl": {
+                        "description": "JWKSURL is the URL to fetch the JWKS from",
+                        "type": "string"
+                    },
+                    "resourceURL": {
+                        "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)\nIf empty, defaults to [\"openid\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive-core_registry_types.Registry": {
                 "description": "Full registry data",
                 "properties": {
@@ -110,63 +167,6 @@ const docTemplate = `{
                     "maxDataSize": {
                         "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
                         "type": "integer"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig": {
-                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
-                "properties": {
-                    "allowPrivateIP": {
-                        "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
-                        "type": "boolean"
-                    },
-                    "audience": {
-                        "description": "Audience is the expected audience for the token",
-                        "type": "string"
-                    },
-                    "authTokenFile": {
-                        "description": "AuthTokenFile is the path to file containing bearer token for authentication",
-                        "type": "string"
-                    },
-                    "cacertPath": {
-                        "description": "CACertPath is the path to the CA certificate bundle for HTTPS requests",
-                        "type": "string"
-                    },
-                    "clientID": {
-                        "description": "ClientID is the OIDC client ID",
-                        "type": "string"
-                    },
-                    "clientSecret": {
-                        "description": "ClientSecret is the optional OIDC client secret for introspection",
-                        "type": "string"
-                    },
-                    "insecureAllowHTTP": {
-                        "description": "InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing\nWARNING: This is insecure and should NEVER be used in production",
-                        "type": "boolean"
-                    },
-                    "introspectionURL": {
-                        "description": "IntrospectionURL is the optional introspection endpoint for validating tokens",
-                        "type": "string"
-                    },
-                    "issuer": {
-                        "description": "Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)",
-                        "type": "string"
-                    },
-                    "jwksurl": {
-                        "description": "JWKSURL is the URL to fetch the JWKS from",
-                        "type": "string"
-                    },
-                    "resourceURL": {
-                        "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)\nIf empty, defaults to [\"openid\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array"
                     }
                 },
                 "type": "object"
@@ -599,7 +599,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig"
                     },
                     "storage": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig"
+                        "$ref": "#/components/schemas/storage.RunConfig"
                     },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
@@ -1098,7 +1098,19 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "status": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
+                        "description": "Status is the current status of the workload.",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
+                        "type": "string"
                     },
                     "status_context": {
                         "description": "StatusContext provides additional context about the workload's status.\nThe exact meaning is determined by the status and the underlying runtime.",
@@ -1113,7 +1125,14 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "transport_type": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
+                        "description": "TransportType is the type of transport used for this workload.",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
+                        "type": "string"
                     },
                     "url": {
                         "description": "URL is the URL of the workload exposed by the ToolHive proxy.",
@@ -1373,7 +1392,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "ignore_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ignore.Config"
+                        "$ref": "#/components/schemas/ignore.Config"
                     },
                     "image": {
                         "description": "Image is the Docker image to run",
@@ -1398,7 +1417,7 @@ const docTemplate = `{
                     "middleware_configs": {
                         "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                            "$ref": "#/components/schemas/types.MiddlewareConfig"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -1416,7 +1435,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "oidc_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig"
+                        "$ref": "#/components/schemas/auth.TokenValidatorConfig"
                     },
                     "permission_profile_name_or_path": {
                         "description": "PermissionProfileNameOrPath is the name or path of the permission profile",
@@ -1427,7 +1446,12 @@ const docTemplate = `{
                         "type": "integer"
                     },
                     "proxy_mode": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.ProxyMode"
+                        "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                        "enum": [
+                            "sse",
+                            "streamable-http"
+                        ],
+                        "type": "string"
                     },
                     "publish": {
                         "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
@@ -1524,7 +1548,14 @@ const docTemplate = `{
                         "type": "object"
                     },
                     "transport": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
+                        "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
+                        "type": "string"
                     },
                     "trust_proxy_headers": {
                         "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
@@ -1916,15 +1947,16 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig": {
+            "ignore.Config": {
+                "description": "IgnoreConfig contains configuration for ignore processing",
                 "properties": {
-                    "parameters": {
-                        "description": "Parameters is a JSON object containing the middleware parameters.\nIt is stored as a raw message to allow flexible parameter types.",
-                        "type": "object"
+                    "loadGlobal": {
+                        "description": "Whether to load global ignore patterns",
+                        "type": "boolean"
                     },
-                    "type": {
-                        "description": "Type is a string representing the middleware type.",
-                        "type": "string"
+                    "printOverlays": {
+                        "description": "Whether to print resolved overlay paths for debugging",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -3698,7 +3730,19 @@ const docTemplate = `{
                 "description": "Response containing workload status information",
                 "properties": {
                     "status": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
+                        "description": "Current status of the workload",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
+                        "type": "string"
                     }
                 },
                 "type": "object"

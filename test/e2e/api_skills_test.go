@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/registry"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -196,6 +198,58 @@ func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
 	installResp := installSkill(server, installSkillRequest{Name: skillName})
 	defer installResp.Body.Close()
 	ExpectWithOffset(1, installResp.StatusCode).To(Equal(http.StatusCreated))
+}
+
+func pushSkill(server *e2e.Server, reference string) *http.Response {
+	reqBody := pushSkillRequest{Reference: reference}
+	jsonData, err := json.Marshal(reqBody)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills/push",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+type pushSkillRequest struct {
+	Reference string `json:"reference"`
+}
+
+// createUpstreamRegistryWithSkill creates a JSON file in the upstream registry
+// format containing a single skill entry that points to the given OCI reference.
+func createUpstreamRegistryWithSkill(skillName, ociReference string) string {
+	registryData := map[string]interface{}{
+		"version": "1.0.0",
+		"meta":    map[string]string{"last_updated": "2025-01-01T00:00:00Z"},
+		"data": map[string]interface{}{
+			"servers": []interface{}{},
+			"skills": []map[string]interface{}{
+				{
+					"namespace":   "e2e-test",
+					"name":        skillName,
+					"description": "E2E test skill",
+					"version":     "0.1.0",
+					"packages": []map[string]interface{}{
+						{
+							"registryType": "oci",
+							"identifier":   ociReference,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(registryData)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	tempDir := GinkgoT().TempDir()
+	testFile := filepath.Join(tempDir, "test-skill-registry.json")
+	ExpectWithOffset(1, os.WriteFile(testFile, data, 0o600)).To(Succeed())
+	return testFile
 }
 
 // Test suite
@@ -917,6 +971,60 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			infoResp2 := getSkillInfo(apiServer, skillName)
 			defer infoResp2.Body.Close()
 			Expect(infoResp2.StatusCode).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("Registry lookup install", func() {
+		It("should resolve a plain name from the registry and install from OCI", func() {
+			skillName := "registry-lookup-skill"
+
+			By("Starting an in-process OCI registry")
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+
+			// The OCI reference must use the skill name as the last path
+			// component — the supply-chain check in installFromOCI validates
+			// that the artifact's declared name matches the repository name.
+			ociRef := fmt.Sprintf("%s/e2e-test/%s:v0.1.0",
+				ociRegistry.Listener.Addr().String(), skillName)
+
+			By("Creating and building the skill locally")
+			skillDir := createTestSkillDir(skillName, "A skill for registry lookup E2E testing")
+			buildResp := buildSkill(apiServer, skillDir, ociRef)
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Pushing the skill to the in-process OCI registry")
+			pushResp := pushSkill(apiServer, ociRef)
+			defer pushResp.Body.Close()
+			Expect(pushResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Creating an upstream-format registry JSON pointing to the OCI reference")
+			registryFile := createUpstreamRegistryWithSkill(skillName, ociRef)
+
+			By("Configuring the server to use the test registry")
+			updateResp := updateRegistry(apiServer, "default", map[string]interface{}{
+				"local_path": registryFile,
+			})
+			defer updateResp.Body.Close()
+			Expect(updateResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing by plain skill name — should resolve from registry")
+			installResp := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Verifying the skill is fully installed (not pending)")
+			var result installSkillResponse
+			Expect(json.NewDecoder(installResp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Skill.Status).To(Equal("installed"))
+			Expect(result.Skill.Metadata.Name).To(Equal(skillName))
+			Expect(result.Skill.Digest).ToNot(BeEmpty())
+			Expect(result.Skill.Metadata.Version).To(Equal("0.1.0"))
+
+			By("Cleaning up")
+			cleanupResp := uninstallSkill(apiServer, skillName)
+			defer cleanupResp.Body.Close()
 		})
 	})
 })

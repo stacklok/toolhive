@@ -187,7 +187,7 @@ func TestRenewClientSecret_MissingConfig(t *testing.T) {
 		}
 		err := h.renewClientSecret(context.Background())
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "registration_client_uri not available")
+		assert.Contains(t, err.Error(), "registration_client_uri missing")
 	})
 
 	t.Run("missing registration_token_ref", func(t *testing.T) {
@@ -201,7 +201,7 @@ func TestRenewClientSecret_MissingConfig(t *testing.T) {
 		}
 		err := h.renewClientSecret(context.Background())
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "registration_access_token not available")
+		assert.Contains(t, err.Error(), "registration_access_token missing")
 	})
 
 	t.Run("missing secret provider", func(t *testing.T) {

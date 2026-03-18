@@ -364,11 +364,27 @@ type PromptArgument struct {
 	Required bool
 }
 
-// Content represents MCP content (text, image, audio, embedded resource).
+// ContentType represents the type of content in an MCP message.
+type ContentType string
+
+const (
+	// ContentTypeText represents text content.
+	ContentTypeText ContentType = "text"
+	// ContentTypeImage represents image content.
+	ContentTypeImage ContentType = "image"
+	// ContentTypeAudio represents audio content.
+	ContentTypeAudio ContentType = "audio"
+	// ContentTypeResource represents embedded resource content.
+	ContentTypeResource ContentType = "resource"
+	// ContentTypeLink represents a resource link.
+	ContentTypeLink ContentType = "resource_link"
+)
+
+// Content represents MCP content (text, image, audio, embedded resource, resource link).
 // This is used by ToolCallResult to preserve the full content structure from backends.
 type Content struct {
-	// Type indicates the content type: "text", "image", "audio", "resource"
-	Type string
+	// Type indicates the content type.
+	Type ContentType
 
 	// Text is the content text (for TextContent)
 	Text string
@@ -376,11 +392,17 @@ type Content struct {
 	// Data is the base64-encoded data (for ImageContent/AudioContent)
 	Data string
 
-	// MimeType is the MIME type (for ImageContent/AudioContent)
+	// MimeType is the MIME type (for ImageContent/AudioContent/ResourceLink)
 	MimeType string
 
-	// URI is the resource URI (for EmbeddedResource)
+	// URI is the resource URI (for EmbeddedResource/ResourceLink)
 	URI string
+
+	// Name is the resource name (for ResourceLink)
+	Name string
+
+	// Description is the resource description (for ResourceLink)
+	Description string
 }
 
 // ToolCallResult wraps a tool call response with metadata.

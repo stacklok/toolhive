@@ -240,6 +240,41 @@ func TestCallbackHandler_NoIDPProvider(t *testing.T) {
 	assert.Contains(t, location, "error=server_error")
 }
 
+func TestCallbackHandler_ProviderMismatchRejected(t *testing.T) {
+	t.Parallel()
+	handler, storState, mockUpstream := handlerTestSetup(t)
+
+	// The handler is configured with upstreamName = "test-upstream" (from handlerTestSetup).
+	// Store a pending authorization that was originated by a different upstream ("github").
+	internalState := testInternalState
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		UpstreamProviderName: "github",
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[internalState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	// fosite uses 303 See Other for error redirects per RFC 6749
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=server_error")
+	assert.Contains(t, location, "state=client-state")
+
+	// Verify no upstream code exchange was attempted
+	assert.Empty(t, mockUpstream.capturedCode, "upstream code exchange must not be attempted on provider mismatch")
+}
+
 func TestCallbackHandler_IdentityResolutionFailure(t *testing.T) {
 	t.Parallel()
 	handler, storState, mockUpstream := handlerTestSetup(t)

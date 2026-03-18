@@ -961,6 +961,11 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID, provide
 		if (legacyErr != nil && !errors.Is(legacyErr, ErrExpired)) || legacyTokens == nil {
 			return tokens, err
 		}
+		if !isLegacyUpstreamProviderID(legacyTokens.ProviderID) {
+			// Legacy key exists but belongs to a logical provider name already;
+			// do not re-label it under a different namespace.
+			return nil, fmt.Errorf("%w: upstream tokens not found for provider %q", ErrNotFound, providerName)
+		}
 		return s.migrateLegacyUpstreamTokens(ctx, sessionID, providerName, legacyKey, legacyTokens)
 	}
 	return tokens, err
@@ -993,6 +998,14 @@ func (s *RedisStorage) migrateLegacyUpstreamTokens(
 		return legacyTokens, ErrExpired
 	}
 	return legacyTokens, nil
+}
+
+// isLegacyUpstreamProviderID reports whether id is a legacy protocol-type provider
+// ID that may be migrated to a logical provider name. Only tokens stored under a
+// legacy protocol-type ID should be claimed by the migration path; tokens that
+// already carry a logical name must not be re-labelled.
+func isLegacyUpstreamProviderID(id string) bool {
+	return id == "" || id == "oidc" || id == "oauth2"
 }
 
 // GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.

@@ -829,6 +829,47 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("migration refused when legacy token has logical provider name", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write a token under the legacy key with a logical provider name (not a protocol-type ID).
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "logical-session")
+			legacyData := `{"provider_id":"some-logical-name","access_token":"logical-at","refresh_token":"logical-rt","expires_at":0,"user_id":"user-1","upstream_subject":"sub-1","client_id":"client-1"}`
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			// A different provider must NOT be able to claim this token.
+			_, err := s.GetUpstreamTokens(ctx, "logical-session", "other-provider")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+
+			// Legacy key must still exist (no migration occurred).
+			exists, err := s.client.Exists(ctx, legacyKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), exists, "legacy key must not be deleted when migration is refused")
+		})
+	})
+
+	t.Run("migration proceeds when legacy token has known protocol-type ID", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write a token under the legacy key with a protocol-type provider ID.
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "proto-session")
+			legacyData := `{"provider_id":"oidc","access_token":"proto-at","refresh_token":"proto-rt","expires_at":0,"user_id":"user-3","upstream_subject":"sub-3","client_id":"client-3"}`
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			// Migration should succeed and patch ProviderID.
+			tokens, err := s.GetUpstreamTokens(ctx, "proto-session", "my-provider")
+			require.NoError(t, err)
+			require.NotNil(t, tokens)
+			assert.Equal(t, "proto-at", tokens.AccessToken)
+			assert.Equal(t, "proto-rt", tokens.RefreshToken)
+			assert.Equal(t, "my-provider", tokens.ProviderID, "ProviderID should be patched to the logical name")
+
+			// Legacy key should be deleted after migration.
+			exists, err := s.client.Exists(ctx, legacyKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(0), exists, "legacy key should be deleted after migration")
+		})
+	})
+
 	t.Run("legacy fallback skipped when new key exists", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			// Write both legacy and new format keys

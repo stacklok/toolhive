@@ -336,7 +336,7 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		},
 	}
 
-	handler := NewHandler(provider, oauth2Config, stor, mockUpstream, "test-upstream")
+	handler := NewHandler(provider, oauth2Config, stor, mockUpstream, "test-upstream", NewUserResolver(stor, ""))
 
 	return handler, storState, mockUpstream
 }

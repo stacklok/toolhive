@@ -135,7 +135,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	}
 	slog.Debug("upstream IDP provider configured", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
 
-	handlerInstance := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP, upstreamCfg.Name)
+	userResolver := handlers.NewUserResolver(stor, string(upstreamCfg.Type))
+	handlerInstance := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP, upstreamCfg.Name, userResolver)
 
 	// Create HTTP handler serving all endpoints
 	router := handlerInstance.Routes()

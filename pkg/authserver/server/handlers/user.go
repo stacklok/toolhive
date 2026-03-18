@@ -18,12 +18,16 @@ import (
 // UserResolver handles finding or creating users based on provider identity.
 // It manages the mapping between upstream provider subjects and internal user IDs.
 type UserResolver struct {
-	storage storage.UserStorage
+	storage          storage.UserStorage
+	legacyProviderID string
 }
 
 // NewUserResolver creates a new UserResolver with the given storage.
-func NewUserResolver(stor storage.UserStorage) *UserResolver {
-	return &UserResolver{storage: stor}
+// legacyProviderID is the protocol-based provider ID ("oidc" or "oauth2") used before
+// multi-upstream support. It scopes legacy migration to only the correct upstream type,
+// preventing cross-provider account merge when two providers share a subject value.
+func NewUserResolver(stor storage.UserStorage, legacyProviderID string) *UserResolver {
+	return &UserResolver{storage: stor, legacyProviderID: legacyProviderID}
 }
 
 // ResolveUser finds an existing user or creates a new one for the provider identity.
@@ -53,7 +57,11 @@ func (r *UserResolver) ResolveUser(
 		}
 		// Not found under current provider ID — check legacy IDs before creating new user.
 		// TODO: Remove legacy migration once all deployments have migrated.
-		if legacyIdentity, legacyErr := r.findLegacyProviderIdentity(ctx, providerID, providerSubject); legacyErr == nil {
+		legacyIdentity, legacyErr := r.findLegacyProviderIdentity(ctx, providerID, providerSubject)
+		if legacyErr != nil && !errors.Is(legacyErr, storage.ErrNotFound) {
+			return nil, legacyErr
+		}
+		if legacyErr == nil {
 			r.linkMigratedIdentity(ctx, providerID, providerSubject, legacyIdentity.UserID)
 			user, userErr := r.storage.GetUser(ctx, legacyIdentity.UserID)
 			if userErr != nil {
@@ -116,36 +124,30 @@ func (r *UserResolver) createUserWithIdentity(
 	return user, nil
 }
 
-// legacyProviderIDs are the protocol-based provider IDs used before multi-upstream
-// support. These were derived from upstream.ProviderType ("oidc", "oauth2").
-// TODO: Remove once all deployments have migrated.
-var legacyProviderIDs = []string{"oidc", "oauth2"}
-
-// findLegacyProviderIdentity checks legacy protocol-based provider IDs for an
-// existing identity, enabling transparent migration to logical provider names.
+// findLegacyProviderIdentity checks the single legacy protocol-based provider ID
+// for an existing identity, enabling transparent migration to logical provider names.
+// Only the legacy ID matching this upstream's type is checked, preventing cross-provider
+// account merge when two upstreams share a subject value.
 func (r *UserResolver) findLegacyProviderIdentity(
 	ctx context.Context,
 	currentProviderID string,
 	providerSubject string,
 ) (*storage.ProviderIdentity, error) {
-	for _, legacyID := range legacyProviderIDs {
-		if legacyID == currentProviderID {
-			continue
-		}
-		identity, err := r.storage.GetProviderIdentity(ctx, legacyID, providerSubject)
-		if err == nil {
-			slog.Info("found legacy provider identity",
-				"legacy_provider_id", legacyID,
-				"new_provider_id", currentProviderID,
-				"user_id", identity.UserID)
-			return identity, nil
-		}
-		if !errors.Is(err, storage.ErrNotFound) {
-			slog.Warn("error checking legacy provider identity",
-				"legacy_provider_id", legacyID, "error", err)
-		}
+	if r.legacyProviderID == "" {
+		return nil, storage.ErrNotFound
 	}
-	return nil, storage.ErrNotFound
+	if r.legacyProviderID == currentProviderID {
+		return nil, storage.ErrNotFound
+	}
+	identity, err := r.storage.GetProviderIdentity(ctx, r.legacyProviderID, providerSubject)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("found legacy provider identity",
+		"legacy_provider_id", r.legacyProviderID,
+		"new_provider_id", currentProviderID,
+		"user_id", identity.UserID)
+	return identity, nil
 }
 
 // linkMigratedIdentity creates a new provider identity under the current provider

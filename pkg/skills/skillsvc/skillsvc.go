@@ -188,6 +188,12 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// the same lock key and DB record.
 	opts.ProjectRoot = projectRoot
 
+	// Default to the "default" group when none is specified, matching
+	// workload behavior (pkg/api/v1/workload_service.go).
+	if opts.Group == "" {
+		opts.Group = groups.DefaultGroup
+	}
+
 	ref, isOCI, err := parseOCIReference(opts.Name)
 	if err != nil {
 		return nil, httperr.WithCode(

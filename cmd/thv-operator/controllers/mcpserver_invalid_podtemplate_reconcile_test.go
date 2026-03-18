@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -107,7 +107,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 			require.NoError(t, mcpv1alpha1.AddToScheme(s))
 
 			// Create a fake event recorder for each test
-			eventRecorder := record.NewFakeRecorder(10)
+			eventRecorder := events.NewFakeRecorder(10)
 
 			// Create a fake client with the MCPServer
 			fakeClient := fake.NewClientBuilder().
@@ -211,7 +211,7 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 	r := &MCPServerReconciler{
 		Client:           fakeClient,
 		Scheme:           s,
-		Recorder:         record.NewFakeRecorder(10),
+		Recorder:         events.NewFakeRecorder(10),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 

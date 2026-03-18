@@ -27,6 +27,7 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
+	transportmiddleware "github.com/stacklok/toolhive/pkg/transport/middleware"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
@@ -47,7 +48,10 @@ const (
 	// defaultReadTimeout is the maximum duration for reading the entire request, including body.
 	defaultReadTimeout = 30 * time.Second
 
-	// defaultWriteTimeout is the maximum duration before timing out writes of the response.
+	// defaultWriteTimeout is the server-level write deadline set on http.Server.WriteTimeout.
+	// It protects all routes (health, metrics, well-known, etc.) from slow-write clients.
+	// For qualifying SSE (GET) connections, transportmiddleware.WriteTimeout clears this
+	// per-request via http.ResponseController.SetWriteDeadline(time.Time{}) (golang/go#16100).
 	defaultWriteTimeout = 30 * time.Second
 
 	// defaultIdleTimeout is the maximum amount of time to wait for the next request when keep-alive's are enabled.
@@ -556,6 +560,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
 	mcpHandler = headerValidatingMiddleware(mcpHandler)
+
+	// Clear the write deadline for qualifying SSE connections (GET +
+	// Accept: text/event-stream + MCP endpoint path) so the server-level
+	// WriteTimeout does not kill long-lived SSE streams (see golang/go#16100).
+	// Non-qualifying requests are left untouched; http.Server.WriteTimeout
+	// (defaultWriteTimeout) remains in effect for them.
+	mcpHandler = transportmiddleware.WriteTimeout(s.config.EndpointPath)(mcpHandler)
 
 	// Apply recovery middleware as outermost (catches panics from all inner middleware)
 	mcpHandler = recovery.Middleware(mcpHandler)

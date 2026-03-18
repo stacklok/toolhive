@@ -226,7 +226,21 @@ func createUpstreamRegistryWithSkill(skillName, ociReference string) string {
 		"version": "1.0.0",
 		"meta":    map[string]string{"last_updated": "2025-01-01T00:00:00Z"},
 		"data": map[string]interface{}{
-			"servers": []interface{}{},
+			// A dummy server is required because the config validator rejects
+			// upstream registry files that contain no servers or groups.
+			"servers": []map[string]interface{}{
+				{
+					"name":        "dummy-server",
+					"description": "Placeholder to satisfy registry validation",
+					"repository": map[string]string{
+						"url":  "https://github.com/example/dummy",
+						"type": "git",
+					},
+					"version_detail": map[string]string{
+						"version": "0.0.1",
+					},
+				},
+			},
 			"skills": []map[string]interface{}{
 				{
 					"namespace":   "e2e-test",
@@ -974,9 +988,7 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 	})
 
 	Describe("Registry lookup install", func() {
-		// TODO(#4200): The upstream registry JSON schema validation rejects
-		// the test fixture. Debug the exact required fields and re-enable.
-		PIt("should resolve a plain name from the registry and install from OCI", func() {
+		It("should resolve a plain name from the registry and install from OCI", func() {
 			skillName := "registry-lookup-skill"
 
 			By("Starting an in-process OCI registry")

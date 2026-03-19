@@ -646,7 +646,9 @@ func (s *service) resolveFromRegistry(name string) (nameref.Reference, error) {
 		)
 	}
 
-	// Exactly one match -- find an OCI package.
+	// Exactly one match -- use the first OCI package found.
+	// Selection policy: packages are returned in registry order; we take the
+	// first one with type "oci" and a non-empty identifier.
 	for _, pkg := range matches[0].Packages {
 		if pkg.RegistryType == "oci" && pkg.Identifier != "" {
 			ref, parseErr := nameref.ParseReference(pkg.Identifier)

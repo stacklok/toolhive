@@ -861,6 +861,78 @@ func TestSessionManager_GetAdaptedTools(t *testing.T) {
 		assert.Contains(t, string(byName["alpha"].RawInputSchema), `"type"`)
 	})
 
+	t.Run("preserves annotations and output schema", func(t *testing.T) {
+		t.Parallel()
+
+		boolPtr := func(b bool) *bool { return &b }
+		tools := []vmcp.Tool{
+			{
+				Name:        "annotated",
+				Description: "tool with annotations",
+				InputSchema: map[string]any{"type": "object"},
+				OutputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"result": map[string]any{"type": "string"},
+					},
+				},
+				Annotations: &vmcp.ToolAnnotations{
+					Title:           "Annotated Tool",
+					ReadOnlyHint:    boolPtr(true),
+					DestructiveHint: boolPtr(false),
+				},
+			},
+			{
+				Name:        "plain",
+				Description: "tool without annotations or output schema",
+				InputSchema: map[string]any{"type": "object"},
+			},
+		}
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				return newMockSession(t, ctrl, id, tools), nil
+			}).Times(1)
+
+		registry := newFakeRegistry()
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		adaptedTools, err := sm.GetAdaptedTools(sessionID)
+		require.NoError(t, err)
+		require.Len(t, adaptedTools, 2)
+
+		byName := map[string]mcp.Tool{}
+		for _, st := range adaptedTools {
+			byName[st.Tool.Name] = st.Tool
+		}
+
+		// Verify annotations are preserved on the annotated tool.
+		annotated := byName["annotated"]
+		assert.Equal(t, "Annotated Tool", annotated.Annotations.Title)
+		require.NotNil(t, annotated.Annotations.ReadOnlyHint)
+		assert.True(t, *annotated.Annotations.ReadOnlyHint)
+		require.NotNil(t, annotated.Annotations.DestructiveHint)
+		assert.False(t, *annotated.Annotations.DestructiveHint)
+		assert.Nil(t, annotated.Annotations.IdempotentHint)
+		assert.Nil(t, annotated.Annotations.OpenWorldHint)
+
+		// Verify output schema is preserved.
+		assert.NotNil(t, annotated.RawOutputSchema)
+		assert.Contains(t, string(annotated.RawOutputSchema), `"result"`)
+
+		// Verify nil annotations produce zero-valued annotations and nil output schema.
+		plain := byName["plain"]
+		assert.Empty(t, plain.Annotations.Title)
+		assert.Nil(t, plain.Annotations.ReadOnlyHint)
+		assert.Nil(t, plain.RawOutputSchema)
+	})
+
 	t.Run("handlers delegate to session CallTool", func(t *testing.T) {
 		t.Parallel()
 

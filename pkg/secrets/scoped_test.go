@@ -243,6 +243,42 @@ func TestScopedProvider_ListSecrets(t *testing.T) {
 func TestScopedProvider_Cleanup(t *testing.T) {
 	t.Parallel()
 
+	t.Run("no-op when no keys in scope", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		inner := []secrets.SecretDescription{
+			{Key: "__thv_workloads_key1"},
+			{Key: "user-key"},
+		}
+
+		mock := mocks.NewMockProvider(ctrl)
+		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
+
+		p := secrets.NewScopedProvider(mock, secrets.ScopeRegistry)
+		err := p.Cleanup()
+		require.NoError(t, err)
+	})
+
+	t.Run("propagates ListSecrets error", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		listErr := errors.New("list failed")
+
+		mock := mocks.NewMockProvider(ctrl)
+		mock.EXPECT().ListSecrets(gomock.Any()).Return(nil, listErr)
+
+		p := secrets.NewScopedProvider(mock, secrets.ScopeRegistry)
+		err := p.Cleanup()
+		require.Error(t, err)
+		assert.Equal(t, listErr, err)
+	})
+
 	t.Run("deletes only scoped keys", func(t *testing.T) {
 		t.Parallel()
 
@@ -542,6 +578,201 @@ func TestUserProvider_ListSecrets(t *testing.T) {
 				for i, wantKey := range tc.wantKeys {
 					assert.Equal(t, wantKey, got[i].Key)
 				}
+			}
+		})
+	}
+}
+
+func TestUserProvider_Cleanup(t *testing.T) {
+	t.Parallel()
+
+	t.Run("deletes only user keys, leaves system keys", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		inner := []secrets.SecretDescription{
+			{Key: "__thv_registry_key1"},
+			{Key: "__thv_workloads_key2"},
+			{Key: "user-key1"},
+			{Key: "user-key2"},
+		}
+
+		mock := mocks.NewMockProvider(ctrl)
+		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
+		mock.EXPECT().BulkDeleteSecrets(gomock.Any(), []string{"user-key1", "user-key2"}).Return(nil)
+
+		p := secrets.NewUserProvider(mock)
+		err := p.Cleanup()
+		require.NoError(t, err)
+	})
+
+	t.Run("no-op when no user keys exist", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		inner := []secrets.SecretDescription{
+			{Key: "__thv_registry_key1"},
+			{Key: "__thv_workloads_key2"},
+		}
+
+		mock := mocks.NewMockProvider(ctrl)
+		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
+
+		p := secrets.NewUserProvider(mock)
+		err := p.Cleanup()
+		require.NoError(t, err)
+	})
+
+	t.Run("propagates ListSecrets error", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		listErr := errors.New("list failed")
+
+		mock := mocks.NewMockProvider(ctrl)
+		mock.EXPECT().ListSecrets(gomock.Any()).Return(nil, listErr)
+
+		p := secrets.NewUserProvider(mock)
+		err := p.Cleanup()
+		require.Error(t, err)
+		assert.Equal(t, listErr, err)
+	})
+
+	t.Run("propagates BulkDeleteSecrets error", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		inner := []secrets.SecretDescription{{Key: "user-key1"}}
+		bulkErr := errors.New("bulk delete failed")
+
+		mock := mocks.NewMockProvider(ctrl)
+		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
+		mock.EXPECT().BulkDeleteSecrets(gomock.Any(), []string{"user-key1"}).Return(bulkErr)
+
+		p := secrets.NewUserProvider(mock)
+		err := p.Cleanup()
+		require.Error(t, err)
+		assert.Equal(t, bulkErr, err)
+	})
+}
+
+func TestScopedProvider_BulkDeleteSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		inputNames []string
+		expectKeys []string
+		innerErr   error
+		wantErr    bool
+	}{
+		{
+			name:       "prefixes bare names with scope key",
+			inputNames: []string{"key1", "key2"},
+			expectKeys: []string{"__thv_registry_key1", "__thv_registry_key2"},
+		},
+		{
+			name:       "propagates error from inner",
+			inputNames: []string{"key1"},
+			expectKeys: []string{"__thv_registry_key1"},
+			innerErr:   errors.New("backend error"),
+			wantErr:    true,
+		},
+		{
+			name:       "empty list delegates empty list",
+			inputNames: []string{},
+			expectKeys: []string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mock := mocks.NewMockProvider(ctrl)
+			mock.EXPECT().BulkDeleteSecrets(ctx, tc.expectKeys).Return(tc.innerErr)
+
+			p := secrets.NewScopedProvider(mock, secrets.ScopeRegistry)
+			err := p.BulkDeleteSecrets(ctx, tc.inputNames)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tc.innerErr, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestUserProvider_BulkDeleteSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		inputNames  []string
+		wantErr     bool
+		wantReserve bool
+		innerErr    error
+		expectCall  bool
+	}{
+		{
+			name:       "passes through user keys",
+			inputNames: []string{"key1", "key2"},
+			expectCall: true,
+		},
+		{
+			name:        "rejects system-prefixed key",
+			inputNames:  []string{"__thv_registry_mykey"},
+			wantErr:     true,
+			wantReserve: true,
+		},
+		{
+			name:       "propagates error from inner",
+			inputNames: []string{"valid-key"},
+			wantErr:    true,
+			expectCall: true,
+			innerErr:   errors.New("backend error"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mock := mocks.NewMockProvider(ctrl)
+			if tc.expectCall {
+				mock.EXPECT().BulkDeleteSecrets(ctx, tc.inputNames).Return(tc.innerErr)
+			}
+
+			p := secrets.NewUserProvider(mock)
+			err := p.BulkDeleteSecrets(ctx, tc.inputNames)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.wantReserve {
+					assert.ErrorIs(t, err, secrets.ErrReservedKeyName)
+				} else {
+					assert.Equal(t, tc.innerErr, err)
+				}
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

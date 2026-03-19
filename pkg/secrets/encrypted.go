@@ -121,10 +121,23 @@ func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, 
 // BulkDeleteSecrets removes all named keys from the store.
 func (e *EncryptedManager) BulkDeleteSecrets(_ context.Context, keys []string) error {
 	return fileutils.WithFileLock(e.filePath, func() error {
+		// Re-read the file inside the lock to avoid losing changes made
+		// by other processes since this manager was created.
+		current, err := e.readFileSecrets()
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			delete(current, key)
+		}
+		if err := e.writeFileSecrets(current); err != nil {
+			return err
+		}
+		// Update in-memory cache after the disk write.
 		for _, key := range keys {
 			e.secrets.Delete(key)
 		}
-		return e.updateFile()
+		return nil
 	})
 }
 

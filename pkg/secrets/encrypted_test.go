@@ -370,7 +370,61 @@ func TestEncryptedManager_Concurrency(t *testing.T) {
 	}
 }
 
-// End of tests
+func TestEncryptedManager_BulkDeleteSecrets(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempFile := createTempFile(t)
+	defer os.Remove(tempFile)
+
+	key := generateRandomKey(t)
+	manager := createEncryptedManager(t, tempFile, key)
+
+	require.NoError(t, manager.SetSecret(ctx, "key1", "value1"), "Setting key1 should not return an error")
+	require.NoError(t, manager.SetSecret(ctx, "key2", "value2"), "Setting key2 should not return an error")
+	require.NoError(t, manager.SetSecret(ctx, "key3", "value3"), "Setting key3 should not return an error")
+
+	// Case 1: Deletes specified keys, leaves others untouched.
+	err := manager.BulkDeleteSecrets(ctx, []string{"key1", "key2"})
+	assert.NoError(t, err, "BulkDeleteSecrets should not return an error")
+
+	_, err = manager.GetSecret(ctx, "key1")
+	assert.Error(t, err, "key1 should have been deleted")
+	assert.Contains(t, err.Error(), "not found", "Error should indicate key1 was not found")
+
+	_, err = manager.GetSecret(ctx, "key2")
+	assert.Error(t, err, "key2 should have been deleted")
+	assert.Contains(t, err.Error(), "not found", "Error should indicate key2 was not found")
+
+	value3, err := manager.GetSecret(ctx, "key3")
+	assert.NoError(t, err, "key3 should still exist")
+	assert.Equal(t, "value3", value3, "key3 value should be unchanged")
+
+	// Case 2: Persists to disk — reload from the same file and verify only key3 remains.
+	reloaded := createEncryptedManager(t, tempFile, key)
+
+	_, err = reloaded.GetSecret(ctx, "key1")
+	assert.Error(t, err, "key1 should be gone after reload")
+
+	_, err = reloaded.GetSecret(ctx, "key2")
+	assert.Error(t, err, "key2 should be gone after reload")
+
+	reloadedValue3, err := reloaded.GetSecret(ctx, "key3")
+	assert.NoError(t, err, "key3 should persist across reload")
+	assert.Equal(t, "value3", reloadedValue3, "key3 value should match after reload")
+
+	// Case 3: Empty key list is a no-op.
+	err = manager.BulkDeleteSecrets(ctx, []string{})
+	assert.NoError(t, err, "BulkDeleteSecrets with empty list should not return an error")
+
+	remaining, err := manager.ListSecrets(ctx)
+	assert.NoError(t, err, "ListSecrets should not return an error after no-op bulk delete")
+	assert.Len(t, remaining, 1, "Only key3 should remain after no-op bulk delete")
+
+	// Case 4: Non-existent keys do not error.
+	err = manager.BulkDeleteSecrets(ctx, []string{"does-not-exist"})
+	assert.NoError(t, err, "BulkDeleteSecrets with non-existent key should not return an error")
+}
 
 // Helper functions
 func createTempFile(t *testing.T) string {

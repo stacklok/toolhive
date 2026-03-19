@@ -9,15 +9,18 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.opentelemetry.io/otel/trace"
+	"gopkg.in/yaml.v3"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
+	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -228,7 +231,23 @@ func loadAndValidateConfig(configPath string) (*config.RuntimeConfig, error) {
 		slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(cfg.CompositeTools)))
 	}
 
-	return &config.RuntimeConfig{Config: *cfg}, nil
+	rtCfg := &config.RuntimeConfig{Config: *cfg}
+
+	// Load auth server config from sibling file if present.
+	// The operator serializes authserver.RunConfig as a separate ConfigMap key
+	// (authserver-config.yaml) alongside the main config.yaml.
+	authServerPath := filepath.Join(filepath.Dir(configPath), "authserver-config.yaml")
+	//nolint:gosec // path derived from trusted --config flag
+	if authServerData, readErr := os.ReadFile(authServerPath); readErr == nil {
+		var rc authserverconfig.RunConfig
+		if unmarshalErr := yaml.Unmarshal(authServerData, &rc); unmarshalErr != nil {
+			return nil, fmt.Errorf("failed to parse auth server config %s: %w", authServerPath, unmarshalErr)
+		}
+		rtCfg.AuthServer = config.NewAuthServerConfig(&rc)
+		slog.Info("auth server configuration loaded", "path", authServerPath)
+	}
+
+	return rtCfg, nil
 }
 
 // discoverBackends initializes managers, discovers backends, and creates backend client

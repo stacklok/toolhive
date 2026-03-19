@@ -64,8 +64,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("invalid vmcp Config: %w", err)
 	}
 
-	// Marshal only the serializable Config (not RuntimeConfig) to YAML for storage in ConfigMap.
-	// RuntimeConfig carries runtime-only fields (e.g. AuthServer) that must not be serialized.
+	// Marshal the serializable Config to YAML for storage in ConfigMap.
 	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
 	vmcpConfigYAML, err := yaml.Marshal(config)
@@ -74,15 +73,28 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 
 	configMapName := vmcpConfigMapName(vmcp.Name)
+	configMapData := map[string]string{
+		"config.yaml": string(vmcpConfigYAML),
+	}
+
+	// If an embedded auth server is configured, serialize its RunConfig as a separate key.
+	// RunConfig contains only references (file paths, env var names) — never actual secrets —
+	// so it is safe for ConfigMap storage. The vMCP binary loads this alongside config.yaml.
+	if rtCfg.AuthServer != nil {
+		authServerYAML, marshalErr := yaml.Marshal(rtCfg.AuthServer.RunConfig())
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal auth server config: %w", marshalErr)
+		}
+		configMapData["authserver-config.yaml"] = string(authServerYAML)
+	}
+
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
 			Namespace: vmcp.Namespace,
 			Labels:    labelsForVmcpConfig(vmcp.Name),
 		},
-		Data: map[string]string{
-			"config.yaml": string(vmcpConfigYAML),
-		},
+		Data: configMapData,
 	}
 
 	// Compute and add content checksum annotation using robust SHA256-based checksum

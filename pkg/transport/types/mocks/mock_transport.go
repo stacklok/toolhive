@@ -137,20 +137,6 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenReader() *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenReader", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenReader))
 }
 
-// GetUpstreamTokenService mocks base method.
-func (m *MockMiddlewareRunner) GetUpstreamTokenService() func() upstreamtoken.Service {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUpstreamTokenService")
-	ret0, _ := ret[0].(func() upstreamtoken.Service)
-	return ret0
-}
-
-// GetUpstreamTokenService indicates an expected call of GetUpstreamTokenService.
-func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenService() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenService", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenService))
-}
-
 // SetAuthInfoHandler mocks base method.
 func (m *MockMiddlewareRunner) SetAuthInfoHandler(handler http.Handler) {
 	m.ctrl.T.Helper()

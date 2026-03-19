@@ -76,14 +76,9 @@ type Runner struct {
 	// Only initialized when Config.EmbeddedAuthServerConfig is set.
 	embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 
-	// upstreamTokenService is the upstream token service, created eagerly
-	// after the embedded auth server is initialized in Run().
-	// Nil when no embedded auth server is configured.
-	upstreamTokenService upstreamtoken.Service
-
 	// upstreamTokenReader provides read-only access to upstream tokens for
-	// identity enrichment in auth middleware. Set alongside upstreamTokenService
-	// when the embedded auth server is initialized in Run().
+	// identity enrichment in auth middleware. Set when the embedded auth
+	// server is initialized in Run().
 	// Nil when no embedded auth server is configured.
 	upstreamTokenReader upstreamtoken.UpstreamTokenReader
 }
@@ -134,18 +129,6 @@ func (r *Runner) SetPrometheusHandler(handler http.Handler) {
 // GetConfig returns a config interface for middleware to access runner configuration
 func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
-}
-
-// GetUpstreamTokenService returns an accessor for the upstream token service.
-// The returned function should be called at request time; it returns nil if
-// the embedded auth server is not configured.
-//
-// This method always returns a non-nil function. Service availability is
-// determined at request time when the returned function is called.
-func (r *Runner) GetUpstreamTokenService() func() upstreamtoken.Service {
-	return func() upstreamtoken.Service {
-		return r.upstreamTokenService
-	}
 }
 
 // GetUpstreamTokenReader returns the UpstreamTokenReader for identity
@@ -271,9 +254,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// InProcessService handles this gracefully (returns ErrNoRefreshToken).
 		stor := r.embeddedAuthServer.IDPTokenStorage()
 		refresher := r.embeddedAuthServer.UpstreamTokenRefresher()
-		inProc := upstreamtoken.NewInProcessService(stor, refresher)
-		r.upstreamTokenService = inProc
-		r.upstreamTokenReader = inProc
+		r.upstreamTokenReader = upstreamtoken.NewInProcessService(stor, refresher)
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)

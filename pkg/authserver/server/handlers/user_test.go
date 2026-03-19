@@ -24,14 +24,13 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 	testProviderSubject := "github-user-456"
 
 	tests := []struct {
-		name             string
-		legacyProviderID string // defaults to "oidc" if empty
-		providerID       string
-		providerSubject  string
-		setupMock        func(*mocks.MockUserStorage)
-		wantErr          bool
-		wantErrContains  string
-		validateResult   func(*testing.T, *storage.User)
+		name            string
+		providerID      string
+		providerSubject string
+		setupMock       func(*mocks.MockUserStorage)
+		wantErr         bool
+		wantErrContains string
+		validateResult  func(*testing.T, *storage.User)
 	}{
 		{
 			name:            "empty provider ID returns error",
@@ -114,34 +113,13 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 			wantErrContains: "failed to lookup provider identity",
 		},
 		{
-			name:            "transient storage error during legacy lookup returns error, does not create user",
-			providerID:      testProviderID,
-			providerSubject: testProviderSubject,
-			setupMock: func(m *mocks.MockUserStorage) {
-				// Primary lookup returns not found
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				// Legacy lookup returns transient error
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
-					Return(nil, errors.New("connection reset"))
-				// CreateUser must NOT be called
-			},
-			wantErr:         true,
-			wantErrContains: "connection reset",
-		},
-		{
 			name:            "new user creation success",
 			providerID:      testProviderID,
 			providerSubject: testProviderSubject,
 			setupMock: func(m *mocks.MockUserStorage) {
-				// No existing identity found (current or legacy)
+				// No existing identity found
 				m.EXPECT().
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				// Create new user succeeds
 				m.EXPECT().
@@ -181,9 +159,6 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				m.EXPECT().
 					CreateUser(gomock.Any(), gomock.Any()).
 					Return(errors.New("user creation failed"))
 			},
@@ -199,9 +174,6 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 
 				m.EXPECT().
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				m.EXPECT().
 					CreateUser(gomock.Any(), gomock.Any()).
@@ -232,9 +204,6 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
 					Return(nil, storage.ErrNotFound)
 				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				m.EXPECT().
 					CreateUser(gomock.Any(), gomock.Any()).
 					Return(nil)
 				m.EXPECT().
@@ -248,35 +217,6 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 			wantErr:         true,
 			wantErrContains: "failed to link provider identity",
 		},
-		{
-			name:             "cross-provider isolation: oauth2 identity not returned when legacyProviderID is oidc",
-			legacyProviderID: "oidc",
-			providerID:       testProviderID,
-			providerSubject:  testProviderSubject,
-			setupMock: func(m *mocks.MockUserStorage) {
-				// No identity under the current provider name
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				// Legacy lookup for "oidc" finds nothing (the identity exists under "oauth2"
-				// but this resolver only checks "oidc", so "oauth2" is never queried)
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), "oidc", testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				// A new user is created instead of merging with an oauth2 identity
-				m.EXPECT().
-					CreateUser(gomock.Any(), gomock.Any()).
-					Return(nil)
-				m.EXPECT().
-					CreateProviderIdentity(gomock.Any(), gomock.Any()).
-					Return(nil)
-			},
-			wantErr: false,
-			validateResult: func(t *testing.T, user *storage.User) {
-				t.Helper()
-				require.NotEmpty(t, user.ID)
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -287,11 +227,7 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 			mockStorage := mocks.NewMockUserStorage(ctrl)
 			tt.setupMock(mockStorage)
 
-			legacyID := tt.legacyProviderID
-			if legacyID == "" {
-				legacyID = "oidc"
-			}
-			resolver := NewUserResolver(mockStorage, legacyID)
+			resolver := NewUserResolver(mockStorage)
 			ctx := context.Background()
 
 			user, err := resolver.ResolveUser(ctx, tt.providerID, tt.providerSubject)
@@ -368,7 +304,7 @@ func TestUserResolver_UpdateLastAuthenticated(t *testing.T) {
 			mockStorage := mocks.NewMockUserStorage(ctrl)
 			tt.setupMock(mockStorage)
 
-			resolver := NewUserResolver(mockStorage, "oidc")
+			resolver := NewUserResolver(mockStorage)
 			ctx := context.Background()
 
 			// This method should not panic or return an error regardless of storage behavior
@@ -384,9 +320,8 @@ func TestNewUserResolver(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockStorage := mocks.NewMockUserStorage(ctrl)
 
-	resolver := NewUserResolver(mockStorage, "oidc")
+	resolver := NewUserResolver(mockStorage)
 
 	require.NotNil(t, resolver)
 	require.NotNil(t, resolver.storage)
-	require.Equal(t, "oidc", resolver.legacyProviderID)
 }

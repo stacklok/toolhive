@@ -18,16 +18,12 @@ import (
 // UserResolver handles finding or creating users based on provider identity.
 // It manages the mapping between upstream provider subjects and internal user IDs.
 type UserResolver struct {
-	storage          storage.UserStorage
-	legacyProviderID string
+	storage storage.UserStorage
 }
 
 // NewUserResolver creates a new UserResolver with the given storage.
-// legacyProviderID is the protocol-based provider ID ("oidc" or "oauth2") used before
-// multi-upstream support. It scopes legacy migration to only the correct upstream type,
-// preventing cross-provider account merge when two providers share a subject value.
-func NewUserResolver(stor storage.UserStorage, legacyProviderID string) *UserResolver {
-	return &UserResolver{storage: stor, legacyProviderID: legacyProviderID}
+func NewUserResolver(stor storage.UserStorage) *UserResolver {
+	return &UserResolver{storage: stor}
 }
 
 // ResolveUser finds an existing user or creates a new one for the provider identity.
@@ -49,27 +45,13 @@ func (r *UserResolver) ResolveUser(
 		return nil, errors.New("provider subject cannot be empty")
 	}
 
-	// First, try to find existing identity link
+	// Try to find existing identity link
 	identity, err := r.storage.GetProviderIdentity(ctx, providerID, providerSubject)
 	if err != nil {
 		if !errors.Is(err, storage.ErrNotFound) {
 			return nil, fmt.Errorf("failed to lookup provider identity: %w", err)
 		}
-		// Not found under current provider ID — check legacy IDs before creating new user.
-		// TODO: Remove legacy migration once all deployments have migrated.
-		legacyIdentity, legacyErr := r.findLegacyProviderIdentity(ctx, providerID, providerSubject)
-		if legacyErr != nil && !errors.Is(legacyErr, storage.ErrNotFound) {
-			return nil, legacyErr
-		}
-		if legacyErr == nil {
-			r.linkMigratedIdentity(ctx, providerID, providerSubject, legacyIdentity.UserID)
-			user, userErr := r.storage.GetUser(ctx, legacyIdentity.UserID)
-			if userErr != nil {
-				return nil, fmt.Errorf("migrated identity but user not found: %w", userErr)
-			}
-			return user, nil
-		}
-		// No existing or legacy identity — create new user and link
+		// No existing identity — create new user and link
 		return r.createUserWithIdentity(ctx, providerID, providerSubject)
 	}
 
@@ -122,57 +104,6 @@ func (r *UserResolver) createUserWithIdentity(
 	)
 
 	return user, nil
-}
-
-// findLegacyProviderIdentity checks the single legacy protocol-based provider ID
-// for an existing identity, enabling transparent migration to logical provider names.
-// Only the legacy ID matching this upstream's type is checked, preventing cross-provider
-// account merge when two upstreams share a subject value.
-func (r *UserResolver) findLegacyProviderIdentity(
-	ctx context.Context,
-	currentProviderID string,
-	providerSubject string,
-) (*storage.ProviderIdentity, error) {
-	if r.legacyProviderID == "" {
-		return nil, storage.ErrNotFound
-	}
-	if r.legacyProviderID == currentProviderID {
-		return nil, storage.ErrNotFound
-	}
-	identity, err := r.storage.GetProviderIdentity(ctx, r.legacyProviderID, providerSubject)
-	if err != nil {
-		return nil, err
-	}
-	slog.Info("found legacy provider identity",
-		"legacy_provider_id", r.legacyProviderID,
-		"new_provider_id", currentProviderID,
-		"user_id", identity.UserID)
-	return identity, nil
-}
-
-// linkMigratedIdentity creates a new provider identity under the current provider
-// ID pointing to the same user, preserving internal user ID continuity.
-// Best-effort: errors are logged but do not fail the request.
-func (r *UserResolver) linkMigratedIdentity(
-	ctx context.Context,
-	providerID, providerSubject, userID string,
-) {
-	identity := &storage.ProviderIdentity{
-		UserID:          userID,
-		ProviderID:      providerID,
-		ProviderSubject: providerSubject,
-		LinkedAt:        time.Now(),
-		LastUsedAt:      time.Now(),
-	}
-	if err := r.storage.CreateProviderIdentity(ctx, identity); err != nil {
-		if !errors.Is(err, storage.ErrAlreadyExists) {
-			slog.Warn("failed to create migrated provider identity",
-				"user_id", userID, "provider_id", providerID, "error", err)
-		}
-	} else {
-		slog.Info("migrated provider identity to new provider name",
-			"user_id", userID, "provider_id", providerID)
-	}
 }
 
 // UpdateLastAuthenticated updates the last authentication timestamp for a provider identity.

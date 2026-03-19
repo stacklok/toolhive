@@ -135,7 +135,15 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	}
 	slog.Debug("upstream IDP provider configured", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
 
-	userResolver := handlers.NewUserResolver(stor, string(upstreamCfg.Type))
+	// Run one-shot bulk migration of legacy data before handler construction.
+	// TODO(migration): Remove once all deployments have upgraded past this version.
+	if rs, ok := stor.(*storage.RedisStorage); ok {
+		if err := rs.MigrateLegacyUpstreamData(ctx, upstreamCfg.Name, string(upstreamCfg.Type)); err != nil {
+			return nil, fmt.Errorf("legacy data migration failed: %w", err)
+		}
+	}
+
+	userResolver := handlers.NewUserResolver(stor)
 	handlerInstance := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP, upstreamCfg.Name, userResolver)
 
 	// Create HTTP handler serving all endpoints

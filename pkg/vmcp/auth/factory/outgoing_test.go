@@ -32,6 +32,7 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			authtypes.StrategyTypeUnauthenticated,
 			authtypes.StrategyTypeHeaderInjection,
 			authtypes.StrategyTypeTokenExchange,
+			authtypes.StrategyTypeUpstreamInject,
 		}
 
 		for _, strategyType := range strategyTypes {
@@ -162,6 +163,7 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			{authtypes.StrategyTypeUnauthenticated, "unauthenticated"},
 			{authtypes.StrategyTypeHeaderInjection, "header_injection"},
 			{authtypes.StrategyTypeTokenExchange, "token_exchange"},
+			{authtypes.StrategyTypeUpstreamInject, "upstream_inject"},
 		}
 
 		for _, tc := range testCases {

@@ -37,18 +37,15 @@ type Identity struct {
 	// This is redacted in String() and MarshalJSON() to prevent leakage.
 	Token string
 
+	// UpstreamTokens contains per-provider upstream access tokens, keyed by provider name.
+	// Populated by upstream token middleware. Values are redacted in MarshalJSON().
+	UpstreamTokens map[string]string
+
 	// TokenType is the type of token (e.g., "Bearer", "JWT").
 	TokenType string
 
 	// Metadata stores additional identity information.
 	Metadata map[string]string
-
-	// UpstreamTokens maps upstream provider names to their access tokens.
-	// This is populated by the auth middleware when an embedded auth server
-	// is active and the JWT contains a token session ID (tsid claim).
-	// Redacted in MarshalJSON() to prevent token leakage.
-	// MUST NOT be mutated after the Identity is placed in the request context.
-	UpstreamTokens map[string]string
 }
 
 // String returns a string representation of the Identity with sensitive fields redacted.

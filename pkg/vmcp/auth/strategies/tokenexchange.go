@@ -119,13 +119,26 @@ func (s *TokenExchangeStrategy) Authenticate(
 		return fmt.Errorf("no identity found in context")
 	}
 
-	if identity.Token == "" {
-		return fmt.Errorf("identity has no token")
+	subjectToken, err := func() (string, error) {
+		if config.SubjectProviderName != "" {
+			tok := identity.UpstreamTokens[config.SubjectProviderName] // nil map safe in Go
+			if tok == "" {
+				return "", fmt.Errorf("provider %q: %w", config.SubjectProviderName, authtypes.ErrUpstreamTokenNotFound)
+			}
+			return tok, nil
+		}
+		if identity.Token == "" {
+			return "", fmt.Errorf("identity has no token")
+		}
+		return identity.Token, nil
+	}()
+	if err != nil {
+		return err
 	}
 
 	// Get user-specific exchange config. This creates a fresh config instance
 	// with the current user's token. The underlying server config is cached.
-	exchangeConfig := s.createUserConfig(config, identity.Token)
+	exchangeConfig := s.createUserConfig(config, subjectToken)
 	tokenSource := exchangeConfig.TokenSource(ctx)
 
 	token, err := tokenSource.Token()
@@ -179,12 +192,13 @@ func (s *TokenExchangeStrategy) Validate(strategy *authtypes.BackendAuthStrategy
 
 // tokenExchangeConfig holds the parsed token exchange configuration.
 type tokenExchangeConfig struct {
-	TokenURL         string
-	ClientID         string
-	ClientSecret     string //nolint:gosec // G117: field legitimately holds sensitive data
-	Audience         string
-	Scopes           []string
-	SubjectTokenType string
+	TokenURL            string
+	ClientID            string
+	ClientSecret        string //nolint:gosec // G117: field legitimately holds sensitive data
+	Audience            string
+	Scopes              []string
+	SubjectTokenType    string
+	SubjectProviderName string
 }
 
 // parseClientSecret parses and validates ClientSecret or ClientSecretEnv from TokenExchangeConfig.
@@ -257,6 +271,9 @@ func (s *TokenExchangeStrategy) parseTokenExchangeConfig(strategy *authtypes.Bac
 		}
 		config.SubjectTokenType = normalized
 	}
+
+	// Optional: SubjectProviderName
+	config.SubjectProviderName = tokenExchangeCfg.SubjectProviderName
 
 	return config, nil
 }

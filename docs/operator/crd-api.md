@@ -116,6 +116,7 @@ _Appears in:_
 | `audience` _string_ | Audience is the target audience for the exchanged token. |  |  |
 | `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
 | `subjectTokenType` _string_ | SubjectTokenType is the token type of the incoming subject token.<br />Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified. |  |  |
+| `subjectProviderName` _string_ | SubjectProviderName is the upstream provider name whose token is used as the<br />RFC 8693 subject token instead of identity.Token when performing token exchange.<br />When set, the strategy looks up the provider's access token from<br />identity.UpstreamTokens rather than using the incoming bearer token. |  | Optional: \{\} <br /> |
 
 
 #### auth.types.UpstreamInjectConfig

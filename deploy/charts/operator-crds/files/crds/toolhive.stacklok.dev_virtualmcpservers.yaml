@@ -1403,6 +1403,13 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName is the upstream provider name whose token is used as the
+                                    RFC 8693 subject token instead of identity.Token when performing token exchange.
+                                    When set, the strategy looks up the provider's access token from
+                                    identity.UpstreamTokens rather than using the incoming bearer token.
+                                  type: string
                                 subjectTokenType:
                                   description: |-
                                     SubjectTokenType is the token type of the incoming subject token.
@@ -1492,6 +1499,13 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName is the upstream provider name whose token is used as the
+                                  RFC 8693 subject token instead of identity.Token when performing token exchange.
+                                  When set, the strategy looks up the provider's access token from
+                                  identity.UpstreamTokens rather than using the incoming bearer token.
+                                type: string
                               subjectTokenType:
                                 description: |-
                                   SubjectTokenType is the token type of the incoming subject token.

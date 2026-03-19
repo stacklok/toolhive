@@ -548,6 +548,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		// It uses the incoming OIDC token for AssumeRoleWithWebIdentity
 		return nil, nil
 
+	case mcpv1alpha1.ExternalAuthTypeUpstreamInject:
+		// Upstream inject uses the embedded auth server's upstream tokens at runtime
+		// No secrets to mount via env vars
+		return nil, nil
+
 	default:
 		return nil, nil // Not applicable
 	}

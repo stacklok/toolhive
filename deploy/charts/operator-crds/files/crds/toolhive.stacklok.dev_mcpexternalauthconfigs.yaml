@@ -782,6 +782,11 @@ spec:
                     items:
                       type: string
                     type: array
+                  subjectProviderName:
+                    description: |-
+                      SubjectProviderName is the name of the upstream provider whose token is used as the
+                      RFC 8693 subject token instead of identity.Token when performing token exchange.
+                    type: string
                   subjectTokenType:
                     description: |-
                       SubjectTokenType is the type of the incoming subject token.
@@ -809,7 +814,22 @@ spec:
                 - unauthenticated
                 - embeddedAuthServer
                 - awsSts
+                - upstreamInject
                 type: string
+              upstreamInject:
+                description: |-
+                  UpstreamInject configures upstream token injection for backend requests.
+                  Only used when Type is "upstreamInject".
+                properties:
+                  providerName:
+                    description: |-
+                      ProviderName is the name of the upstream IDP provider whose access token
+                      should be injected as the Authorization: Bearer header.
+                    minLength: 1
+                    type: string
+                required:
+                - providerName
+                type: object
             required:
             - type
             type: object
@@ -830,10 +850,14 @@ spec:
                 : !has(self.embeddedAuthServer)'
             - message: awsSts configuration must be set if and only if type is 'awsSts'
               rule: 'self.type == ''awsSts'' ? has(self.awsSts) : !has(self.awsSts)'
+            - message: upstreamInject configuration must be set if and only if type
+                is 'upstreamInject'
+              rule: 'self.type == ''upstreamInject'' ? has(self.upstreamInject) :
+                !has(self.upstreamInject)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts)) : true'
+                && !has(self.awsSts) && !has(self.upstreamInject)) : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig

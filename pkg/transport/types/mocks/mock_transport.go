@@ -123,6 +123,20 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetConfig))
 }
 
+// GetUpstreamTokenReader mocks base method.
+func (m *MockMiddlewareRunner) GetUpstreamTokenReader() upstreamtoken.UpstreamTokenReader {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUpstreamTokenReader")
+	ret0, _ := ret[0].(upstreamtoken.UpstreamTokenReader)
+	return ret0
+}
+
+// GetUpstreamTokenReader indicates an expected call of GetUpstreamTokenReader.
+func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenReader() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenReader", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenReader))
+}
+
 // GetUpstreamTokenService mocks base method.
 func (m *MockMiddlewareRunner) GetUpstreamTokenService() func() upstreamtoken.Service {
 	m.ctrl.T.Helper()

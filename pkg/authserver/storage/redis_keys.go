@@ -47,8 +47,10 @@ const (
 	// KeyTypeReqIDRefresh is the key type for request ID to refresh token mappings.
 	KeyTypeReqIDRefresh = "reqid:refresh"
 
-	// KeyTypeUpstreamIdx is the key type for the session index set that tracks all provider keys
-	// for a given session. Used with GetAllUpstreamTokens and atomic session deletion.
+	// KeyTypeUpstreamIdx is the key type for the session index set — a Redis SET that
+	// tracks all per-provider token keys (upstream:{sid}:{provider}) belonging to a session.
+	// This enables O(1) enumeration via SMEMBERS without scanning the keyspace.
+	// Used by GetAllUpstreamTokens (bulk read) and DeleteUpstreamTokens (bulk delete).
 	KeyTypeUpstreamIdx = "upstream:idx"
 
 	// KeyTypeUserUpstream is the key type for user to upstream token reverse lookups.
@@ -58,7 +60,7 @@ const (
 	KeyTypeUserProviders = "user:providers"
 )
 
-// DeriveKeyPrefix creates the key prefix from server namespace and name.
+// DeriveKeyPrefix creates the key prefix from the Kubernetes namespace and MCP server name.
 // The format is "thv:auth:{ns:name}:" where {ns:name} is a Redis hash tag.
 //
 // Note: The hash tag format {ns:name} intentionally combines namespace and name

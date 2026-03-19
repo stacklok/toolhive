@@ -896,6 +896,10 @@ const docTemplate = `{
                     "aws_sts_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.Config"
                     },
+                    "backend_replicas": {
+                        "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen omitted or null, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count passed to consuming code.",
+                        "type": "integer"
+                    },
                     "base_name": {
                         "description": "BaseName is the base name used for the container (without prefixes)",
                         "type": "string"
@@ -1023,6 +1027,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "session_cache_size": {
+                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nA value of 0 causes consuming code to apply a sensible default (1000).",
+                        "type": "integer"
                     },
                     "target_host": {
                         "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",

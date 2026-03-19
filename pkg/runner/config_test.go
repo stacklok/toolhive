@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -2238,5 +2239,110 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.HMACSecretFiles)
 		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.TokenLifespans)
 		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.Upstreams)
+	})
+}
+
+func TestRunConfig_BackendReplicasAndSessionCacheSize(t *testing.T) {
+	t.Parallel()
+
+	const testServerName = "srv"
+	int32ptr := func(v int32) *int32 { return &v }
+
+	t.Run("round-trip with both fields set", func(t *testing.T) {
+		t.Parallel()
+		original := NewRunConfig()
+		original.Name = "test-server"
+		original.BackendReplicas = int32ptr(3)
+		original.SessionCacheSize = 500
+
+		var buf bytes.Buffer
+		require.NoError(t, original.WriteJSON(&buf))
+
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		require.NotNil(t, got.BackendReplicas)
+		assert.Equal(t, int32(3), *got.BackendReplicas)
+		assert.Equal(t, 500, got.SessionCacheSize)
+	})
+
+	t.Run("round-trip without new fields preserves zero values", func(t *testing.T) {
+		t.Parallel()
+		// Marshal a minimal config that has no BackendReplicas or SessionCacheSize set,
+		// then unmarshal and verify the new fields are absent (nil / 0).
+		minimal := NewRunConfig()
+		minimal.Name = testServerName
+		var buf bytes.Buffer
+		require.NoError(t, minimal.WriteJSON(&buf))
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		assert.Nil(t, got.BackendReplicas, "BackendReplicas should be nil when omitted")
+		assert.Equal(t, 0, got.SessionCacheSize, "SessionCacheSize should be 0 when omitted")
+	})
+
+	t.Run("BackendReplicas nil is omitted from JSON output", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "no-replicas"
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.NotContains(t, buf.String(), "backend_replicas")
+	})
+
+	t.Run("SessionCacheSize zero is omitted from JSON output", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "no-cache-size"
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.NotContains(t, buf.String(), "session_cache_size")
+	})
+
+	t.Run("explicit backend_replicas 2 in JSON deserializes to pointer with value 2", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = testServerName
+		cfg.BackendReplicas = int32ptr(2)
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		require.NotNil(t, got.BackendReplicas, "BackendReplicas should be non-nil when present in JSON")
+		assert.Equal(t, int32(2), *got.BackendReplicas)
+	})
+
+	t.Run("backend_replicas 0 in JSON deserializes to pointer-to-zero, not nil", func(t *testing.T) {
+		t.Parallel()
+		// Explicitly encoding 0 is distinct from omitting the field entirely.
+		// omitempty only omits the field when the pointer is nil; a pointer-to-zero
+		// is a meaningful "set to 0" and must survive a round-trip.
+		cfg := NewRunConfig()
+		cfg.Name = testServerName
+		cfg.BackendReplicas = int32ptr(0)
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		require.NotNil(t, got.BackendReplicas, "BackendReplicas should be non-nil when explicitly set to 0 in JSON")
+		assert.Equal(t, int32(0), *got.BackendReplicas)
+	})
+
+	t.Run("YAML round-trip with both fields set", func(t *testing.T) {
+		t.Parallel()
+		original := NewRunConfig()
+		original.Name = "yaml-server"
+		original.BackendReplicas = int32ptr(5)
+		original.SessionCacheSize = 250
+
+		// Marshal to YAML then unmarshal back using the standard yaml library.
+		data, err := yaml.Marshal(original)
+		require.NoError(t, err)
+
+		var got RunConfig
+		require.NoError(t, yaml.Unmarshal(data, &got))
+		require.NotNil(t, got.BackendReplicas)
+		assert.Equal(t, int32(5), *got.BackendReplicas)
+		assert.Equal(t, 250, got.SessionCacheSize)
 	})
 }

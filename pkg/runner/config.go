@@ -210,6 +210,15 @@ type RunConfig struct {
 	// When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
 	// This is the serializable RunConfig; secrets are referenced by file paths or env var names.
 	EmbeddedAuthServerConfig *authserver.RunConfig `json:"embedded_auth_server_config,omitempty" yaml:"embedded_auth_server_config,omitempty"` //nolint:lll
+
+	// BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.
+	// When omitted or null, replicas are unmanaged (preserving HPA or manual kubectl control).
+	// When set (including 0), the value is an explicit replica count passed to consuming code.
+	BackendReplicas *int32 `json:"backend_replicas,omitempty" yaml:"backend_replicas,omitempty"`
+
+	// SessionCacheSize is the maximum number of sessions held in the local LRU cache.
+	// A value of 0 causes consuming code to apply a sensible default (1000).
+	SessionCacheSize int `json:"session_cache_size,omitempty" yaml:"session_cache_size,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

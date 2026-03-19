@@ -150,6 +150,16 @@ func TestIdentity_String(t *testing.T) {
 			identity: nil,
 			want:     "<nil>",
 		},
+		{
+			name: "does_not_leak_upstream_tokens",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+				UpstreamTokens: map[string]string{
+					"github": "gho_secret123",
+				},
+			},
+			want: `Identity{Subject:"user123"}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -291,6 +301,92 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 			checkFunc: func(t *testing.T, data []byte) {
 				t.Helper()
 				assert.Equal(t, "null", string(data))
+			},
+		},
+		{
+			name: "redacts_upstream_tokens",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+				UpstreamTokens: map[string]string{
+					"github":    "gho_secret123",
+					"atlassian": "atl_secret456",
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				err := json.Unmarshal(data, &result)
+				require.NoError(t, err)
+
+				tokens, ok := result["upstreamTokens"].(map[string]any)
+				require.True(t, ok, "upstreamTokens should be a map")
+				assert.Equal(t, "REDACTED", tokens["github"])
+				assert.Equal(t, "REDACTED", tokens["atlassian"])
+				assert.NotContains(t, string(data), "gho_secret123")
+				assert.NotContains(t, string(data), "atl_secret456")
+			},
+		},
+		{
+			name: "empty_upstream_tokens_omitted",
+			identity: &Identity{
+				PrincipalInfo:  PrincipalInfo{Subject: "user123"},
+				UpstreamTokens: map[string]string{},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				err := json.Unmarshal(data, &result)
+				require.NoError(t, err)
+
+				// Empty map should be omitted because len() == 0 produces nil redacted map
+				_, exists := result["upstreamTokens"]
+				assert.False(t, exists, "empty upstreamTokens should be omitted")
+			},
+		},
+		{
+			name: "nil_upstream_tokens_omitted",
+			identity: &Identity{
+				PrincipalInfo:  PrincipalInfo{Subject: "user123"},
+				UpstreamTokens: nil,
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				err := json.Unmarshal(data, &result)
+				require.NoError(t, err)
+
+				_, exists := result["upstreamTokens"]
+				assert.False(t, exists, "nil upstreamTokens should be omitted")
+			},
+		},
+		{
+			name: "upstream_tokens_mixed_empty_and_populated",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+				UpstreamTokens: map[string]string{
+					"github":  "gho_secret123",
+					"pending": "",
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				err := json.Unmarshal(data, &result)
+				require.NoError(t, err)
+
+				tokens, ok := result["upstreamTokens"].(map[string]any)
+				require.True(t, ok, "upstreamTokens should be a map")
+				assert.Equal(t, "REDACTED", tokens["github"])
+				assert.Equal(t, "", tokens["pending"])
+				assert.NotContains(t, string(data), "gho_secret123")
 			},
 		},
 	}

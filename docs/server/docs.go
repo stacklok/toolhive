@@ -857,6 +857,28 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig": {
+                "description": "AuthConfig contains the non-secret OAuth configuration when auth is configured.\nNil when auth_status is \"none\".",
+                "properties": {
+                    "audience": {
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig": {
                 "description": "HeaderForward contains configuration for injecting headers into requests to remote servers.",
                 "properties": {
@@ -1462,6 +1484,32 @@ const docTemplate = `{
                     "RegistryTypeDefault"
                 ]
             },
+            "pkg_api_v1.UpdateRegistryAuthRequest": {
+                "description": "OAuth authentication configuration (optional)",
+                "properties": {
+                    "audience": {
+                        "description": "OAuth audience (optional)",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "OAuth client ID",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "OIDC issuer URL",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "OAuth scopes (optional)",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.UpdateRegistryRequest": {
                 "description": "Request containing registry configuration updates",
                 "properties": {
@@ -1472,6 +1520,9 @@ const docTemplate = `{
                     "api_url": {
                         "description": "MCP Registry API URL",
                         "type": "string"
+                    },
+                    "auth": {
+                        "$ref": "#/components/schemas/pkg_api_v1.UpdateRegistryAuthRequest"
                     },
                     "local_path": {
                         "description": "Local registry file path",
@@ -1772,6 +1823,17 @@ const docTemplate = `{
             "pkg_api_v1.getRegistryResponse": {
                 "description": "Response containing registry details",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty — see registryInfo for rationale.",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty — see registryInfo for rationale.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"
@@ -2022,6 +2084,17 @@ const docTemplate = `{
             "pkg_api_v1.registryInfo": {
                 "description": "Basic information about a registry",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty so clients always receive the field,\neven when the value is \"none\" (the zero-value equivalent).",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty so clients can distinguish \"no auth\nconfigured\" (empty string) from \"field missing\" without extra logic.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"

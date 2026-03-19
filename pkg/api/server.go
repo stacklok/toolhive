@@ -287,7 +287,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 	standardRouters := map[string]http.Handler{
 		"/health":               v1.HealthcheckRouter(b.containerRuntime),
 		"/api/v1beta/version":   v1.VersionRouter(),
-		"/api/v1beta/registry":  v1.RegistryRouter(),
+		"/api/v1beta/registry":  v1.RegistryRouter(true),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),

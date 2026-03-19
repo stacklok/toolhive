@@ -7,13 +7,10 @@ package upstreamswap
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -45,10 +42,6 @@ type Config struct {
 type MiddlewareParams struct {
 	Config *Config `json:"config,omitempty"`
 }
-
-// ServiceGetter is a function that returns an upstream token service.
-// It returns nil when the service is unavailable (e.g., auth server not configured).
-type ServiceGetter func() upstreamtoken.Service
 
 // Middleware wraps the upstream swap middleware functionality.
 type Middleware struct {
@@ -83,10 +76,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("invalid upstream swap configuration: %w", err)
 	}
 
-	// Get the lazy service accessor from the runner.
-	serviceGetter := ServiceGetter(runner.GetUpstreamTokenService())
-
-	middleware := createMiddlewareFunc(cfg, serviceGetter)
+	middleware := createMiddlewareFunc(cfg)
 
 	upstreamSwapMw := &Middleware{
 		middleware: middleware,
@@ -146,7 +136,9 @@ func createCustomInjector(headerName string) injectionFunc {
 }
 
 // createMiddlewareFunc creates the actual middleware function.
-func createMiddlewareFunc(cfg *Config, serviceGetter ServiceGetter) types.MiddlewareFunction {
+// It reads upstream tokens from Identity.UpstreamTokens, which are populated
+// during JWT validation by the auth middleware (Step 3).
+func createMiddlewareFunc(cfg *Config) types.MiddlewareFunction {
 	// Determine injection strategy at startup time
 	strategy := cfg.HeaderStrategy
 	if strategy == "" {
@@ -166,70 +158,19 @@ func createMiddlewareFunc(cfg *Config, serviceGetter ServiceGetter) types.Middle
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 1. Get identity from auth middleware
 			identity, ok := auth.IdentityFromContext(r.Context())
 			if !ok {
-				slog.Debug("No identity in context, proceeding without swap",
-					"middleware", "upstreamswap")
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// 2. Extract tsid from claims
-			tsid, ok := identity.Claims[upstreamtoken.TokenSessionIDClaimKey].(string)
-			if !ok || tsid == "" {
-				slog.Debug("No tsid claim in identity, proceeding without swap",
-					"middleware", "upstreamswap")
-				next.ServeHTTP(w, r)
+			token, exists := identity.UpstreamTokens[cfg.ProviderName]
+			if !exists || token == "" {
+				writeUpstreamAuthRequired(w)
 				return
 			}
 
-			// 3. Get token service — fail closed if unavailable.
-			// The tsid claim confirms this request expects upstream token injection;
-			// passing through with the original JWT would leak it to the backend.
-			svc := serviceGetter()
-			if svc == nil {
-				slog.Warn("Token service unavailable, cannot perform required upstream swap",
-					"middleware", "upstreamswap")
-				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
-				return
-			}
-
-			// 4. Get valid upstream tokens (with transparent refresh)
-			cred, err := svc.GetValidTokens(r.Context(), tsid, cfg.ProviderName)
-			if err != nil {
-				slog.Warn("Failed to get upstream tokens",
-					"middleware", "upstreamswap",
-					"provider", cfg.ProviderName,
-					"error", err)
-
-				// Client-attributable errors require re-authentication.
-				if errors.Is(err, upstreamtoken.ErrSessionNotFound) ||
-					errors.Is(err, upstreamtoken.ErrNoRefreshToken) ||
-					errors.Is(err, upstreamtoken.ErrRefreshFailed) ||
-					errors.Is(err, upstreamtoken.ErrInvalidBinding) {
-					writeUpstreamAuthRequired(w)
-					return
-				}
-				// Other errors: fail closed to avoid bypassing the token swap
-				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
-				return
-			}
-
-			// 5. Inject access token — fail closed if empty to prevent bypassing the swap
-			if cred.AccessToken == "" {
-				slog.Warn("Upstream token service returned empty access token",
-					"middleware", "upstreamswap",
-					"provider", cfg.ProviderName)
-				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
-				return
-			}
-
-			injectToken(r, cred.AccessToken)
-			slog.Debug("Injected upstream access token",
-				"middleware", "upstreamswap",
-				"provider", cfg.ProviderName)
-
+			injectToken(r, token)
 			next.ServeHTTP(w, r)
 		})
 	}

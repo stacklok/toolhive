@@ -207,13 +207,3 @@ operator:
 registryAPI:
   # -- Container image for the registry API
   image: "ghcr.io/stacklok/thv-registry-api:v0.6.4"
-  # -- Service account configuration for the registry API
-  serviceAccount:
-    # -- Automatically mount a ServiceAccount's API credentials
-    automountServiceAccountToken: true
-    # -- The name of the service account to use for the registry API
-    name: "toolhive-registry-api"
-    # -- Annotations to add to the registry API service account
-    annotations: {}
-    # -- Labels to add to the registry API service account
-    labels: {}

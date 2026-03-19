@@ -29,8 +29,11 @@ type InProcessService struct {
 	sfGroup   singleflight.Group
 }
 
-// Compile-time check.
-var _ Service = (*InProcessService)(nil)
+// Compile-time checks.
+var (
+	_ Service             = (*InProcessService)(nil)
+	_ UpstreamTokenReader = (*InProcessService)(nil)
+)
 
 // NewInProcessService creates a new InProcessService.
 // The refresher may be nil if upstream token refresh is not configured;
@@ -75,6 +78,51 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 	}
 
 	return &UpstreamCredential{AccessToken: tokens.AccessToken}, nil
+}
+
+// GetAllValidTokens returns access tokens for all upstream providers in a session.
+// Expired tokens are refreshed transparently; if refresh fails, the expired
+// access token is included as-is so that downstream middleware can attempt the
+// request (the upstream may accept slightly-expired tokens due to clock skew).
+func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, error) {
+	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("bulk read upstream tokens: %w", err)
+	}
+
+	if len(allTokens) == 0 {
+		return map[string]string{}, nil
+	}
+
+	result := make(map[string]string, len(allTokens))
+	// TODO(auth): Refresh providers in parallel using errgroup to avoid
+	// worst-case latency of N * refreshTimeout when multiple providers need refresh.
+	for providerName, tokens := range allTokens {
+		if tokens == nil {
+			continue
+		}
+
+		// If token is not expired, use it directly.
+		if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
+			result[providerName] = tokens.AccessToken
+			continue
+		}
+
+		// Token is expired — attempt refresh.
+		refreshed, refreshErr := s.refreshOrFail(ctx, sessionID, providerName, tokens)
+		if refreshErr != nil {
+			// Refresh failed — include expired access token as-is.
+			// TODO(auth): The fallback-to-expired-token policy may forward tokens after
+			// revocation. Consider omitting the provider from the result or enriching the
+			// return type with a per-provider staleness signal (e.g., map[string]UpstreamCredential
+			// with a Stale bool) so callers can make informed decisions.
+			result[providerName] = tokens.AccessToken
+			continue
+		}
+		result[providerName] = refreshed.AccessToken
+	}
+
+	return result, nil
 }
 
 // refreshOrFail attempts a singleflight-deduplicated refresh and maps errors

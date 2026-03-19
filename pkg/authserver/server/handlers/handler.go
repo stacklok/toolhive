@@ -15,6 +15,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -38,8 +39,6 @@ type Handler struct {
 // NewHandler creates a new Handler with the given dependencies.
 // The upstreamName identifies the logical upstream provider (matching UpstreamConfig.Name).
 // If empty, it defaults to "default".
-// userResolver must not be nil; use NewUserResolver to construct one with the appropriate
-// legacyProviderID for the upstream being served.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
@@ -47,9 +46,9 @@ func NewHandler(
 	upstreamIDP upstream.OAuth2Provider,
 	upstreamName string,
 	userResolver *UserResolver,
-) *Handler {
+) (*Handler, error) {
 	if userResolver == nil {
-		panic("handlers.NewHandler: userResolver must not be nil")
+		return nil, errors.New("userResolver must not be nil")
 	}
 	if upstreamName == "" {
 		upstreamName = "default"
@@ -61,7 +60,7 @@ func NewHandler(
 		upstream:     upstreamIDP,
 		upstreamName: upstreamName,
 		userResolver: userResolver,
-	}
+	}, nil
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.

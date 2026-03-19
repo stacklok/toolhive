@@ -144,7 +144,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	}
 
 	userResolver := handlers.NewUserResolver(stor)
-	handlerInstance := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP, upstreamCfg.Name, userResolver)
+	handlerInstance, err := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP, upstreamCfg.Name, userResolver)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create handler: %w", err)
+	}
 
 	// Create HTTP handler serving all endpoints
 	router := handlerInstance.Routes()

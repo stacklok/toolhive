@@ -12,6 +12,12 @@
 //   - Backend auth configuration structs (BackendAuthStrategy, etc.)
 package types
 
+import "errors"
+
+// ErrUpstreamTokenNotFound is returned when a required upstream provider token
+// is not present in the identity's UpstreamTokens map.
+var ErrUpstreamTokenNotFound = errors.New("upstream token not found")
+
 // Strategy type identifiers used to identify authentication strategies.
 const (
 	// StrategyTypeUnauthenticated identifies the unauthenticated strategy.
@@ -103,6 +109,11 @@ type TokenExchangeConfig struct {
 	// SubjectTokenType is the token type of the incoming subject token.
 	// Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified.
 	SubjectTokenType string `json:"subjectTokenType,omitempty" yaml:"subjectTokenType,omitempty"`
+
+	// SubjectProviderName selects which upstream provider's token to use as the
+	// subject token. When set, the token is looked up from Identity.UpstreamTokens
+	// instead of using Identity.Token.
+	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
 }
 
 // UpstreamInjectConfig configures the upstream inject auth strategy.

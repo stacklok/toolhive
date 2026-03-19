@@ -15,7 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
@@ -919,5 +922,319 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 		require.NotNil(t, d1)
 		require.NotNil(t, d2)
 		assert.NotEqual(t, d1.Annotations[podTemplateSpecHashAnnotation], d2.Annotations[podTemplateSpecHashAnnotation])
+	})
+}
+
+func TestEnsureDeployment(t *testing.T) {
+	t.Parallel()
+
+	newScheme := func() *runtime.Scheme {
+		s := runtime.NewScheme()
+		_ = mcpv1alpha1.AddToScheme(s)
+		_ = appsv1.AddToScheme(s)
+		_ = corev1.AddToScheme(s)
+		return s
+	}
+
+	baseMCPRegistry := func() *mcpv1alpha1.MCPRegistry {
+		return &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "test-namespace",
+				UID:       types.UID("test-uid"),
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("creates deployment when none exists", func(t *testing.T) {
+		t.Parallel()
+
+		scheme := newScheme()
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		mgr := &manager{client: fakeClient, scheme: scheme}
+
+		mcpRegistry := baseMCPRegistry()
+		configManager := config.NewConfigManager(mcpRegistry)
+
+		deployment, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+		require.NotNil(t, deployment)
+
+		// Fetch from fake client to verify it was actually created
+		fetched := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, fetched)
+		require.NoError(t, err)
+
+		assert.Equal(t, "test-registry-api", fetched.Name)
+		assert.Equal(t, "test-namespace", fetched.Namespace)
+
+		// Verify labels
+		assert.Equal(t, "test-registry-api", fetched.Labels["app.kubernetes.io/name"])
+		assert.Equal(t, "registry-api", fetched.Labels["app.kubernetes.io/component"])
+		assert.Equal(t, "toolhive-operator", fetched.Labels["app.kubernetes.io/managed-by"])
+		assert.Equal(t, "test-registry", fetched.Labels["toolhive.stacklok.io/registry-name"])
+
+		// Verify config-hash annotation on pod template
+		configHash := fetched.Spec.Template.Annotations[configHashAnnotation]
+		assert.NotEmpty(t, configHash)
+
+		// Verify container image
+		require.Len(t, fetched.Spec.Template.Spec.Containers, 1)
+		assert.Equal(t, getRegistryAPIImage(), fetched.Spec.Template.Spec.Containers[0].Image)
+	})
+
+	t.Run("updates deployment when MCPRegistry spec changes", func(t *testing.T) {
+		t.Parallel()
+
+		scheme := newScheme()
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		mgr := &manager{client: fakeClient, scheme: scheme}
+
+		mcpRegistry := baseMCPRegistry()
+		configManager := config.NewConfigManager(mcpRegistry)
+
+		// First call: create
+		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Capture the original config hash
+		original := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, original)
+		require.NoError(t, err)
+		originalHash := original.Spec.Template.Annotations[configHashAnnotation]
+
+		// Modify the spec by adding a registry entry
+		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryConfig{
+			Name:   "extra",
+			Format: mcpv1alpha1.RegistryFormatToolHive,
+			ConfigMapRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
+				Key:                  "extra.json",
+			},
+		})
+		configManager = config.NewConfigManager(mcpRegistry)
+
+		// Second call: update
+		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Fetch updated deployment
+		updated := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, updated)
+		require.NoError(t, err)
+
+		updatedHash := updated.Spec.Template.Annotations[configHashAnnotation]
+		assert.NotEqual(t, originalHash, updatedHash, "config-hash annotation should change when spec changes")
+	})
+
+	t.Run("updates deployment when PodTemplateSpec is added", func(t *testing.T) {
+		t.Parallel()
+
+		scheme := newScheme()
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		mgr := &manager{client: fakeClient, scheme: scheme}
+
+		mcpRegistry := baseMCPRegistry()
+		configManager := config.NewConfigManager(mcpRegistry)
+
+		// First call: create without PodTemplateSpec
+		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Add PodTemplateSpec with imagePullSecrets
+		mcpRegistry.Spec.PodTemplateSpec = &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"my-secret"}]}}`),
+		}
+		configManager = config.NewConfigManager(mcpRegistry)
+
+		// Second call: update
+		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Fetch updated deployment
+		fetched := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, fetched)
+		require.NoError(t, err)
+
+		// Verify imagePullSecrets appeared
+		require.NotEmpty(t, fetched.Spec.Template.Spec.ImagePullSecrets)
+		assert.Equal(t, "my-secret", fetched.Spec.Template.Spec.ImagePullSecrets[0].Name)
+
+		// Verify podtemplatespec-hash annotation is now set
+		ptsHash, hasPTSHash := fetched.Annotations[podTemplateSpecHashAnnotation]
+		assert.True(t, hasPTSHash, "should have podtemplatespec-hash annotation after adding PodTemplateSpec")
+		assert.NotEmpty(t, ptsHash)
+	})
+
+	t.Run("updates deployment when PodTemplateSpec changes", func(t *testing.T) {
+		t.Parallel()
+
+		scheme := newScheme()
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		mgr := &manager{client: fakeClient, scheme: scheme}
+
+		mcpRegistry := baseMCPRegistry()
+		mcpRegistry.Spec.PodTemplateSpec = &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"secret-a"}]}}`),
+		}
+		configManager := config.NewConfigManager(mcpRegistry)
+
+		// First call: create with PodTemplateSpec
+		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		original := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, original)
+		require.NoError(t, err)
+		originalPTSHash := original.Annotations[podTemplateSpecHashAnnotation]
+
+		// Change the PodTemplateSpec
+		mcpRegistry.Spec.PodTemplateSpec = &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"secret-b"}]}}`),
+		}
+		configManager = config.NewConfigManager(mcpRegistry)
+
+		// Second call: update
+		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Fetch updated deployment
+		fetched := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, fetched)
+		require.NoError(t, err)
+
+		// Verify the imagePullSecrets changed
+		require.NotEmpty(t, fetched.Spec.Template.Spec.ImagePullSecrets)
+		assert.Equal(t, "secret-b", fetched.Spec.Template.Spec.ImagePullSecrets[0].Name)
+
+		// Verify the podtemplatespec-hash annotation changed
+		updatedPTSHash := fetched.Annotations[podTemplateSpecHashAnnotation]
+		assert.NotEqual(t, originalPTSHash, updatedPTSHash, "podtemplatespec-hash should change when PodTemplateSpec changes")
+	})
+
+	t.Run("skips update when nothing changed", func(t *testing.T) {
+		t.Parallel()
+
+		scheme := newScheme()
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		mgr := &manager{client: fakeClient, scheme: scheme}
+
+		mcpRegistry := baseMCPRegistry()
+		configManager := config.NewConfigManager(mcpRegistry)
+
+		// First call: create
+		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Capture ResourceVersion after creation
+		created := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, created)
+		require.NoError(t, err)
+		originalResourceVersion := created.ResourceVersion
+
+		// Second call: same spec, should skip update
+		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Fetch again and verify ResourceVersion did not change
+		afterSecondCall := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, afterSecondCall)
+		require.NoError(t, err)
+
+		assert.Equal(t, originalResourceVersion, afterSecondCall.ResourceVersion,
+			"ResourceVersion should not change when no update is needed")
+	})
+
+	t.Run("preserves Spec.Replicas on update", func(t *testing.T) {
+		t.Parallel()
+
+		scheme := newScheme()
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		mgr := &manager{client: fakeClient, scheme: scheme}
+
+		mcpRegistry := baseMCPRegistry()
+		configManager := config.NewConfigManager(mcpRegistry)
+
+		// First call: create
+		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Simulate HPA scaling the deployment to 3 replicas
+		existing := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, existing)
+		require.NoError(t, err)
+
+		hpaReplicas := int32(3)
+		existing.Spec.Replicas = &hpaReplicas
+		err = fakeClient.Update(context.Background(), existing)
+		require.NoError(t, err)
+
+		// Modify the MCPRegistry spec to trigger an update
+		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryConfig{
+			Name:   "extra",
+			Format: mcpv1alpha1.RegistryFormatToolHive,
+			ConfigMapRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
+				Key:                  "extra.json",
+			},
+		})
+		configManager = config.NewConfigManager(mcpRegistry)
+
+		// Second call: update triggered by spec change
+		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
+		require.NoError(t, err)
+
+		// Fetch and verify replicas were preserved
+		updated := &appsv1.Deployment{}
+		err = fakeClient.Get(context.Background(), client.ObjectKey{
+			Name:      "test-registry-api",
+			Namespace: "test-namespace",
+		}, updated)
+		require.NoError(t, err)
+
+		require.NotNil(t, updated.Spec.Replicas)
+		assert.Equal(t, int32(3), *updated.Spec.Replicas,
+			"Spec.Replicas should be preserved after update (HPA scaling should not be overwritten)")
 	})
 }

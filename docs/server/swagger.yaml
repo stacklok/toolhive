@@ -326,6 +326,11 @@ components:
           description: 'HeaderStrategy determines how to inject the token: "replace"
             (default) or "custom".'
           type: string
+        provider_name:
+          description: |-
+            ProviderName identifies which upstream provider's tokens to retrieve for injection.
+            This is required and must match a configured upstream provider name.
+          type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig:
       description: |-

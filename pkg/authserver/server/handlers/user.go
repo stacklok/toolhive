@@ -45,13 +45,13 @@ func (r *UserResolver) ResolveUser(
 		return nil, errors.New("provider subject cannot be empty")
 	}
 
-	// First, try to find existing identity link
+	// Try to find existing identity link
 	identity, err := r.storage.GetProviderIdentity(ctx, providerID, providerSubject)
 	if err != nil {
 		if !errors.Is(err, storage.ErrNotFound) {
 			return nil, fmt.Errorf("failed to lookup provider identity: %w", err)
 		}
-		// No existing identity - create new user and link
+		// No existing identity — create new user and link
 		return r.createUserWithIdentity(ctx, providerID, providerSubject)
 	}
 

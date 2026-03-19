@@ -601,7 +601,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
-	t.Run("empty inner map cleanup", func(t *testing.T) {
+	t.Run("expired entry cleanup", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			// Store a single provider with an already-expired storage TTL
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{
@@ -609,20 +609,14 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 				ExpiresAt:   time.Now().Add(-DefaultRefreshTokenTTL - time.Hour),
 			}))
 
-			// Verify the inner map exists
-			s.mu.RLock()
-			_, sessionExists := s.upstreamTokens["session-1"]
-			s.mu.RUnlock()
-			assert.True(t, sessionExists, "session inner map should exist before cleanup")
+			// Verify the entry exists
+			assert.Equal(t, 1, s.Stats().UpstreamTokens, "entry should exist before cleanup")
 
-			// Run cleanup to expire the single provider entry
+			// Run cleanup to expire the entry
 			s.cleanupExpired()
 
-			// Verify the inner map is cleaned up (session key removed entirely)
-			s.mu.RLock()
-			_, sessionExists = s.upstreamTokens["session-1"]
-			s.mu.RUnlock()
-			assert.False(t, sessionExists, "empty inner map should be cleaned up")
+			// Verify the entry is cleaned up
+			assert.Equal(t, 0, s.Stats().UpstreamTokens, "expired entry should be cleaned up")
 		})
 	})
 }

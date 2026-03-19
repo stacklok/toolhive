@@ -32,6 +32,12 @@ type timedEntry[T any] struct {
 	expiresAt time.Time
 }
 
+// upstreamKey is the composite key for the flat upstream token map.
+type upstreamKey struct {
+	sessionID    string
+	providerName string
+}
+
 // MemoryStorage implements the Storage interface with in-memory maps.
 // This implementation is thread-safe and suitable for development and testing.
 // For production use, consider implementing a persistent storage backend.
@@ -67,8 +73,8 @@ type MemoryStorage struct {
 	// Validated during token exchange per RFC 7636.
 	pkceRequests map[string]*timedEntry[fosite.Requester]
 
-	// upstreamTokens maps sessionID -> providerName -> timedEntry for multi-provider support.
-	upstreamTokens map[string]map[string]*timedEntry[*UpstreamTokens]
+	// upstreamTokens maps (sessionID, providerName) -> timedEntry for multi-provider support.
+	upstreamTokens map[upstreamKey]*timedEntry[*UpstreamTokens]
 
 	// pendingAuthorizations tracks authorization requests awaiting upstream IDP callback
 	pendingAuthorizations map[string]*timedEntry[*PendingAuthorization]
@@ -117,7 +123,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		accessTokens:          make(map[string]*timedEntry[fosite.Requester]),
 		refreshTokens:         make(map[string]*timedEntry[fosite.Requester]),
 		pkceRequests:          make(map[string]*timedEntry[fosite.Requester]),
-		upstreamTokens:        make(map[string]map[string]*timedEntry[*UpstreamTokens]),
+		upstreamTokens:        make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
 		pendingAuthorizations: make(map[string]*timedEntry[*PendingAuthorization]),
 		invalidatedCodes:      make(map[string]*timedEntry[bool]),
 		clientAssertionJWTs:   make(map[string]time.Time),
@@ -214,16 +220,10 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
-	type upstreamKey struct {
-		sessionID    string
-		providerName string
-	}
 	var expiredUpstreamTokens []upstreamKey
-	for sessionID, providers := range s.upstreamTokens {
-		for providerName, v := range providers {
-			if now.After(v.expiresAt) {
-				expiredUpstreamTokens = append(expiredUpstreamTokens, upstreamKey{sessionID, providerName})
-			}
+	for k, v := range s.upstreamTokens {
+		if now.After(v.expiresAt) {
+			expiredUpstreamTokens = append(expiredUpstreamTokens, k)
 		}
 	}
 
@@ -281,13 +281,7 @@ func (s *MemoryStorage) cleanupExpired() {
 	}
 
 	for _, k := range expiredUpstreamTokens {
-		if providers, ok := s.upstreamTokens[k.sessionID]; ok {
-			delete(providers, k.providerName)
-			// Clean up empty inner maps to prevent memory leaks
-			if len(providers) == 0 {
-				delete(s.upstreamTokens, k.sessionID)
-			}
-		}
+		delete(s.upstreamTokens, k)
 	}
 
 	for _, k := range expiredPendingAuthorizations {
@@ -732,12 +726,7 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 		}
 	}
 
-	// Create inner map if needed
-	if s.upstreamTokens[sessionID] == nil {
-		s.upstreamTokens[sessionID] = make(map[string]*timedEntry[*UpstreamTokens])
-	}
-
-	s.upstreamTokens[sessionID][providerName] = &timedEntry[*UpstreamTokens]{
+	s.upstreamTokens[upstreamKey{sessionID, providerName}] = &timedEntry[*UpstreamTokens]{
 		value:     tokensCopy,
 		createdAt: now,
 		expiresAt: expiresAt,
@@ -758,15 +747,9 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	providers, ok := s.upstreamTokens[sessionID]
+	entry, ok := s.upstreamTokens[upstreamKey{sessionID, providerName}]
 	if !ok {
 		slog.Debug("upstream tokens not found", "session_id", sessionID, "provider_name", providerName)
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
-	}
-
-	entry, ok := providers[providerName]
-	if !ok {
-		slog.Debug("upstream tokens not found for provider", "session_id", sessionID, "provider_name", providerName)
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
 
@@ -806,19 +789,17 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 	defer s.mu.RUnlock()
 
 	result := make(map[string]*UpstreamTokens)
-	providers, ok := s.upstreamTokens[sessionID]
-	if !ok {
-		return result, nil
-	}
-
-	for providerName, entry := range providers {
+	for key, entry := range s.upstreamTokens {
+		if key.sessionID != sessionID {
+			continue
+		}
 		tokens := entry.value
 		if tokens == nil {
-			result[providerName] = nil
+			result[key.providerName] = nil
 			continue
 		}
 		// Defensive copy
-		result[providerName] = &UpstreamTokens{
+		result[key.providerName] = &UpstreamTokens{
 			ProviderID:      tokens.ProviderID,
 			AccessToken:     tokens.AccessToken,
 			RefreshToken:    tokens.RefreshToken,
@@ -838,10 +819,16 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.upstreamTokens[sessionID]; !ok {
+	found := false
+	for key := range s.upstreamTokens {
+		if key.sessionID == sessionID {
+			delete(s.upstreamTokens, key)
+			found = true
+		}
+	}
+	if !found {
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
-	delete(s.upstreamTokens, sessionID)
 	return nil
 }
 
@@ -1016,15 +1003,9 @@ func (s *MemoryStorage) DeleteUser(_ context.Context, id string) error {
 	}
 
 	// Delete all associated upstream tokens
-	for sessionID, providers := range s.upstreamTokens {
-		for providerName, entry := range providers {
-			if entry.value != nil && entry.value.UserID == id {
-				delete(providers, providerName)
-			}
-		}
-		// Clean up empty inner maps
-		if len(providers) == 0 {
-			delete(s.upstreamTokens, sessionID)
+	for key, entry := range s.upstreamTokens {
+		if entry.value != nil && entry.value.UserID == id {
+			delete(s.upstreamTokens, key)
 		}
 	}
 
@@ -1169,18 +1150,13 @@ func (s *MemoryStorage) Stats() Stats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	upstreamCount := 0
-	for _, providers := range s.upstreamTokens {
-		upstreamCount += len(providers)
-	}
-
 	return Stats{
 		Clients:               len(s.clients),
 		AuthCodes:             len(s.authCodes),
 		AccessTokens:          len(s.accessTokens),
 		RefreshTokens:         len(s.refreshTokens),
 		PKCERequests:          len(s.pkceRequests),
-		UpstreamTokens:        upstreamCount,
+		UpstreamTokens:        len(s.upstreamTokens),
 		PendingAuthorizations: len(s.pendingAuthorizations),
 		InvalidatedCodes:      len(s.invalidatedCodes),
 		ClientAssertionJWTs:   len(s.clientAssertionJWTs),

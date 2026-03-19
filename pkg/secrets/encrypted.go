@@ -118,6 +118,16 @@ func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, 
 	return secretNames, nil
 }
 
+// BulkDeleteSecrets removes all named keys from the store.
+func (e *EncryptedManager) BulkDeleteSecrets(_ context.Context, keys []string) error {
+	return fileutils.WithFileLock(e.filePath, func() error {
+		for _, key := range keys {
+			e.secrets.Delete(key)
+		}
+		return e.updateFile()
+	})
+}
+
 // Cleanup removes all secrets managed by this manager.
 func (e *EncryptedManager) Cleanup() error {
 	return fileutils.WithFileLock(e.filePath, func() error {

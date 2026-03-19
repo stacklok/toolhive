@@ -92,6 +92,11 @@ func (o *OnePasswordManager) ListSecrets(ctx context.Context) ([]SecretDescripti
 	return secrets, nil
 }
 
+// BulkDeleteSecrets is a no-op for the 1Password provider (read-only).
+func (*OnePasswordManager) BulkDeleteSecrets(_ context.Context, _ []string) error {
+	return nil
+}
+
 // Cleanup is not needed for 1Password.
 func (*OnePasswordManager) Cleanup() error {
 	return nil

@@ -67,6 +67,11 @@ func (f *FallbackProvider) ListSecrets(ctx context.Context) ([]SecretDescription
 	return f.primary.ListSecrets(ctx)
 }
 
+// BulkDeleteSecrets delegates to the primary provider.
+func (f *FallbackProvider) BulkDeleteSecrets(ctx context.Context, keys []string) error {
+	return f.primary.BulkDeleteSecrets(ctx, keys)
+}
+
 // Cleanup delegates to the primary provider
 func (f *FallbackProvider) Cleanup() error {
 	return f.primary.Cleanup()

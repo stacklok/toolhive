@@ -43,6 +43,10 @@ func (*mockSecretsProvider) ListSecrets(_ context.Context) ([]secrets.SecretDesc
 	return nil, nil
 }
 
+func (*mockSecretsProvider) BulkDeleteSecrets(_ context.Context, _ []string) error {
+	return nil
+}
+
 func (*mockSecretsProvider) Cleanup() error {
 	return nil
 }

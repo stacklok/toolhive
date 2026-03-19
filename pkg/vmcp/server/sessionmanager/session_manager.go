@@ -387,6 +387,16 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 			Name:           domainTool.Name,
 			Description:    domainTool.Description,
 			RawInputSchema: schemaJSON,
+			Annotations:    conversion.ToMCPToolAnnotations(domainTool.Annotations),
+		}
+		if domainTool.OutputSchema != nil {
+			outputSchemaJSON, marshalErr := json.Marshal(domainTool.OutputSchema)
+			if marshalErr != nil {
+				slog.Warn("failed to marshal tool output schema",
+					"tool", domainTool.Name, "error", marshalErr)
+			} else {
+				tool.RawOutputSchema = outputSchemaJSON
+			}
 		}
 
 		capturedSess := multiSess

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -369,6 +370,166 @@ func TestConvertWorkflowDefsToToolsWithOutputSchema(t *testing.T) {
 				}
 				if tool.Description == "" {
 					t.Error("Tool missing description")
+				}
+			}
+		})
+	}
+}
+
+func TestFilterWorkflowDefsForSession(t *testing.T) {
+	t.Parallel()
+
+	makeRT := func(toolNames ...string) *vmcp.RoutingTable {
+		rt := &vmcp.RoutingTable{Tools: make(map[string]*vmcp.BackendTarget)}
+		for _, name := range toolNames {
+			rt.Tools[name] = &vmcp.BackendTarget{WorkloadID: name}
+		}
+		return rt
+	}
+
+	tests := []struct {
+		name      string
+		defs      map[string]*composer.WorkflowDefinition
+		rt        *vmcp.RoutingTable
+		wantNames []string // workflow names expected in result
+	}{
+		{
+			name:      "empty defs",
+			defs:      map[string]*composer.WorkflowDefinition{},
+			rt:        makeRT("tool_a"),
+			wantNames: []string{},
+		},
+		{
+			name: "all tools accessible",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf1": {
+					Name:  "wf1",
+					Steps: []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "tool_a"}},
+				},
+			},
+			rt:        makeRT("tool_a", "tool_b"),
+			wantNames: []string{"wf1"},
+		},
+		{
+			name: "missing tool excludes workflow",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf1": {
+					Name:  "wf1",
+					Steps: []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "tool_a"}},
+				},
+			},
+			rt:        makeRT("tool_b"),
+			wantNames: []string{},
+		},
+		{
+			name: "partially accessible: only accessible workflow included",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf_ok": {
+					Name: "wf_ok",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "tool_a"},
+					},
+				},
+				"wf_restricted": {
+					Name: "wf_restricted",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "tool_a"},
+						{ID: "s2", Type: composer.StepTypeTool, Tool: "tool_secret"},
+					},
+				},
+			},
+			rt:        makeRT("tool_a"),
+			wantNames: []string{"wf_ok"},
+		},
+		{
+			name: "elicitation steps do not require routing table entry",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf1": {
+					Name: "wf1",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeElicitation},
+						{ID: "s2", Type: composer.StepTypeTool, Tool: "tool_a"},
+					},
+				},
+			},
+			rt:        makeRT("tool_a"),
+			wantNames: []string{"wf1"},
+		},
+		{
+			// Composite tool steps use "{workloadID}.{toolName}" convention.
+			// With prefix conflict resolution the routing table key is
+			// "{workloadID}_echo", but the step still uses "{workloadID}.echo".
+			// The filter must resolve via WorkloadID + OriginalCapabilityName.
+			name: "dotted step tool resolved via workload ID and original name",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf1": {
+					Name: "wf1",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "my-backend.echo"},
+					},
+				},
+			},
+			rt: func() *vmcp.RoutingTable {
+				rt := &vmcp.RoutingTable{Tools: make(map[string]*vmcp.BackendTarget)}
+				// Prefix strategy stores "my-backend_echo" as the resolved key.
+				rt.Tools["my-backend_echo"] = &vmcp.BackendTarget{
+					WorkloadID:             "my-backend",
+					OriginalCapabilityName: "echo",
+				}
+				return rt
+			}(),
+			wantNames: []string{"wf1"},
+		},
+		{
+			name: "dotted step tool excluded when workload not in session",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf1": {
+					Name: "wf1",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "restricted-backend.echo"},
+					},
+				},
+			},
+			rt: func() *vmcp.RoutingTable {
+				rt := &vmcp.RoutingTable{Tools: make(map[string]*vmcp.BackendTarget)}
+				rt.Tools["other-backend_echo"] = &vmcp.BackendTarget{
+					WorkloadID:             "other-backend",
+					OriginalCapabilityName: "echo",
+				}
+				return rt
+			}(),
+			wantNames: []string{},
+		},
+		{
+			name: "nil routing table excludes workflows with tool steps",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf_tool": {
+					Name:  "wf_tool",
+					Steps: []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "tool_a"}},
+				},
+				"wf_elicit_only": {
+					Name:  "wf_elicit_only",
+					Steps: []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeElicitation}},
+				},
+			},
+			rt:        nil,
+			wantNames: []string{"wf_elicit_only"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := filterWorkflowDefsForSession(tt.defs, tt.rt)
+
+			if len(got) != len(tt.wantNames) {
+				t.Errorf("filterWorkflowDefsForSession() returned %d defs, want %d (%v)",
+					len(got), len(tt.wantNames), tt.wantNames)
+			}
+			for _, name := range tt.wantNames {
+				if _, ok := got[name]; !ok {
+					t.Errorf("expected workflow %q in result but it was absent", name)
 				}
 			}
 		})

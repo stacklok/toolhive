@@ -258,17 +258,23 @@ func (t telemetryBackendClient) ListCapabilities(
 	return t.backendClient.ListCapabilities(ctx, target)
 }
 
-// monitorWorkflowExecutors decorates workflow executors with telemetry recording.
-// It wraps each executor to emit metrics and traces for execution count, duration, and errors.
-func monitorWorkflowExecutors(
+// workflowExecutorInstruments holds pre-created OTEL instruments for workflow telemetry.
+// Instruments are created once at server startup and reused across all session registrations
+// to avoid re-registering the same metric names on every session creation.
+type workflowExecutorInstruments struct {
+	tracer            trace.Tracer
+	executionsTotal   metric.Int64Counter
+	errorsTotal       metric.Int64Counter
+	executionDuration metric.Float64Histogram
+}
+
+// newWorkflowExecutorInstruments creates the OTEL instruments used to decorate
+// per-session workflow executors. Call this once at server startup; pass the
+// result to wrapExecutor at session registration time.
+func newWorkflowExecutorInstruments(
 	meterProvider metric.MeterProvider,
 	tracerProvider trace.TracerProvider,
-	executors map[string]adapter.WorkflowExecutor,
-) (map[string]adapter.WorkflowExecutor, error) {
-	if len(executors) == 0 {
-		return executors, nil
-	}
-
+) (*workflowExecutorInstruments, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
 	executionsTotal, err := meter.Int64Counter(
@@ -297,21 +303,25 @@ func monitorWorkflowExecutors(
 		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)
 	}
 
-	tracer := tracerProvider.Tracer(instrumentationName)
+	return &workflowExecutorInstruments{
+		tracer:            tracerProvider.Tracer(instrumentationName),
+		executionsTotal:   executionsTotal,
+		errorsTotal:       errorsTotal,
+		executionDuration: executionDuration,
+	}, nil
+}
 
-	monitored := make(map[string]adapter.WorkflowExecutor, len(executors))
-	for name, executor := range executors {
-		monitored[name] = &telemetryWorkflowExecutor{
-			name:              name,
-			executor:          executor,
-			tracer:            tracer,
-			executionsTotal:   executionsTotal,
-			errorsTotal:       errorsTotal,
-			executionDuration: executionDuration,
-		}
+// wrapExecutor returns a telemetry-decorated WorkflowExecutor using the
+// pre-created instruments. Safe to call on every session registration.
+func (i *workflowExecutorInstruments) wrapExecutor(name string, ex adapter.WorkflowExecutor) adapter.WorkflowExecutor {
+	return &telemetryWorkflowExecutor{
+		name:              name,
+		executor:          ex,
+		tracer:            i.tracer,
+		executionsTotal:   i.executionsTotal,
+		errorsTotal:       i.errorsTotal,
+		executionDuration: i.executionDuration,
 	}
-
-	return monitored, nil
 }
 
 // telemetryWorkflowExecutor wraps a WorkflowExecutor with telemetry recording.

@@ -7,11 +7,94 @@ package server
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
+
+// filterWorkflowDefsForSession returns only the workflow definitions whose every
+// tool step references a backend tool that is present in the session routing table.
+//
+// If a session does not have access to a backend tool (e.g. due to identity-based
+// filtering), any composite tool that depends on that backend tool is also excluded.
+// This prevents a session from invoking a composite tool that would fail at runtime
+// because one or more of its underlying tools are not routable for that session.
+func filterWorkflowDefsForSession(
+	defs map[string]*composer.WorkflowDefinition,
+	rt *vmcp.RoutingTable,
+) map[string]*composer.WorkflowDefinition {
+	if len(defs) == 0 {
+		return defs
+	}
+
+	filtered := make(map[string]*composer.WorkflowDefinition, len(defs))
+	for name, def := range defs {
+		if allToolStepsAccessible(def, rt) {
+			filtered[name] = def
+		}
+	}
+	return filtered
+}
+
+// allToolStepsAccessible reports whether every tool step in the workflow
+// references a backend tool that is present in the session routing table.
+// Returns false if rt is nil and the workflow contains any tool steps,
+// since a nil routing table means no tools are routable in this session.
+//
+// Composite tool step names use the convention "{workloadID}.{toolName}" where
+// workloadID is a Kubernetes resource name (no dots). The routing table may store
+// tools under resolved/prefixed names (e.g. "{workloadID}_echo" with prefix strategy),
+// so we look up by BackendTarget.WorkloadID rather than the resolved key directly.
+func allToolStepsAccessible(def *composer.WorkflowDefinition, rt *vmcp.RoutingTable) bool {
+	for _, step := range def.Steps {
+		if step.Type == composer.StepTypeTool {
+			if rt == nil {
+				return false
+			}
+			if !isToolStepAccessible(step.Tool, rt) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isToolStepAccessible reports whether a composite tool step's tool name can be
+// resolved to an accessible backend tool in the given routing table.
+//
+// Step tool names use the "{workloadID}.{toolName}" convention. Since conflict
+// resolution strategies (e.g. prefix) may rename tools in the routing table
+// (e.g. "echo" → "yardstick-backend_echo"), we check for accessibility by
+// matching on WorkloadID and the original backend capability name rather than
+// the resolved routing table key.
+func isToolStepAccessible(stepTool string, rt *vmcp.RoutingTable) bool {
+	// Fast path: exact match in the routing table.
+	if _, ok := rt.Tools[stepTool]; ok {
+		return true
+	}
+
+	// Parse "{workloadID}.{toolName}" convention.
+	// Workload IDs are Kubernetes resource names and cannot contain dots,
+	// so the first dot separates the workload ID from the tool name.
+	dotIdx := strings.Index(stepTool, ".")
+	if dotIdx <= 0 {
+		return false
+	}
+	workloadID := stepTool[:dotIdx]
+	originalName := stepTool[dotIdx+1:]
+
+	for resolvedName, target := range rt.Tools {
+		if target.WorkloadID != workloadID {
+			continue
+		}
+		if target.GetBackendCapabilityName(resolvedName) == originalName {
+			return true
+		}
+	}
+	return false
+}
 
 // convertWorkflowDefsToTools converts workflow definitions to vmcp.Tool format.
 //

@@ -115,7 +115,13 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			mock.EXPECT().Resources().Return(nil).AnyTimes()
 			mock.EXPECT().Prompts().Return(nil).AnyTimes()
 			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
-			mock.EXPECT().GetRoutingTable().Return(nil).AnyTimes()
+			// Build a routing table from the provided tools so that
+			// filterWorkflowDefsForSession can check tool accessibility per session.
+			rt := &vmcp.RoutingTable{Tools: make(map[string]*vmcp.BackendTarget, len(tools))}
+			for _, tool := range tools {
+				rt.Tools[tool.Name] = &vmcp.BackendTarget{WorkloadID: tool.Name}
+			}
+			mock.EXPECT().GetRoutingTable().Return(rt).AnyTimes()
 			mock.EXPECT().ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 			mock.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 			callResult := &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}
@@ -768,6 +774,79 @@ func TestIntegration_SessionManagement_CompositeToolConflict(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, toolResp.StatusCode,
 		"backend tool call should succeed after conflict detection; body: %s", string(respBody))
+}
+
+// TestIntegration_SessionManagement_CompositeToolsFilteredForSession verifies that
+// composite tools whose underlying backend tools are not routable in a session are
+// excluded from that session's tools/list. This enforces per-session authorization:
+// a session that cannot access a backend tool also cannot access composite tools
+// that depend on it.
+func TestIntegration_SessionManagement_CompositeToolsFilteredForSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	// The session only has "allowed-tool"; it does NOT have "restricted-tool".
+	allowedTool := vmcp.Tool{Name: "allowed-tool", Description: "accessible backend tool"}
+	factory, _ := newMockFactory(t, ctrl, []vmcp.Tool{allowedTool})
+
+	// accessible-workflow only uses allowed-tool → should appear for this session.
+	accessibleDef := &composer.WorkflowDefinition{
+		Name:        "accessible-workflow",
+		Description: "uses only allowed backend tools",
+		Steps: []composer.WorkflowStep{
+			{ID: "s1", Type: composer.StepTypeTool, Tool: "allowed-tool"},
+		},
+	}
+	// restricted-workflow uses restricted-tool which is absent from this session's
+	// routing table → must NOT appear for this session.
+	restrictedDef := &composer.WorkflowDefinition{
+		Name:        "restricted-workflow",
+		Description: "uses a backend tool not accessible in this session",
+		Steps: []composer.WorkflowStep{
+			{ID: "s1", Type: composer.StepTypeTool, Tool: "allowed-tool"},
+			{ID: "s2", Type: composer.StepTypeTool, Tool: "restricted-tool"},
+		},
+	}
+
+	ts := buildTestServerWithOptions(t, factory, serverOptions{
+		workflowDefs: map[string]*composer.WorkflowDefinition{
+			"accessible-workflow": accessibleDef,
+			"restricted-workflow": restrictedDef,
+		},
+	})
+
+	initResp := postMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	// Wait until accessible-workflow appears, then verify restricted-workflow does not.
+	require.Eventually(t, func() bool {
+		for _, n := range listToolNames(t, ts.URL, sessionID) {
+			if n == "accessible-workflow" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 20*time.Millisecond,
+		"accessible-workflow should appear in tools/list")
+
+	toolNames := listToolNames(t, ts.URL, sessionID)
+	assert.Contains(t, toolNames, "accessible-workflow",
+		"composite tool whose backend tools are all accessible must be visible")
+	assert.NotContains(t, toolNames, "restricted-workflow",
+		"composite tool that depends on an inaccessible backend tool must be hidden")
 }
 
 // TestIntegration_SessionManagement_OptimizerMode verifies that when an optimizer

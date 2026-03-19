@@ -322,6 +322,41 @@ func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, 
 	return multiSess, ok
 }
 
+// DecorateSession retrieves the MultiSession for sessionID, applies fn to it,
+// and stores the result back. Returns an error if the session is not found or
+// has not yet been upgraded from placeholder to MultiSession.
+//
+// A re-check is performed immediately before UpsertSession to guard against a
+// race with Terminate(): if the session is deleted between GetMultiSession and
+// UpsertSession, the upsert would silently resurrect a terminated session. The
+// re-check catches that window. A narrow TOCTOU gap remains between the
+// re-check and the upsert, but its consequence is bounded: Terminate() already
+// called Close() on the underlying MultiSession before deleting it, so any
+// resurrected decorator wraps an already-closed session and will fail on first
+// use rather than leaking backend connections.
+func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiSession) sessiontypes.MultiSession) error {
+	sess, ok := sm.GetMultiSession(sessionID)
+	if !ok {
+		return fmt.Errorf("DecorateSession: session %q not found or not a multi-session", sessionID)
+	}
+	decorated := fn(sess)
+	if decorated == nil {
+		return fmt.Errorf("DecorateSession: decorator returned nil session")
+	}
+	if decorated.ID() != sessionID {
+		return fmt.Errorf("DecorateSession: decorator changed session ID from %q to %q", sessionID, decorated.ID())
+	}
+	// Re-check: guard against a race with Terminate() deleting the session
+	// between GetMultiSession (above) and UpsertSession (below).
+	if _, ok := sm.GetMultiSession(sessionID); !ok {
+		return fmt.Errorf("DecorateSession: session %q was terminated during decoration", sessionID)
+	}
+	if err := sm.storage.UpsertSession(decorated); err != nil {
+		return fmt.Errorf("DecorateSession: failed to store decorated session: %w", err)
+	}
+	return nil
+}
+
 // GetAdaptedTools returns SDK-format tools for the given session, with handlers
 // that delegate tool invocations directly to the session's CallTool() method.
 //

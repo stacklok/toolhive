@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
@@ -510,5 +511,32 @@ func TestRunner_GetUpstreamTokenService(t *testing.T) {
 		serviceGetter := runner.GetUpstreamTokenService()
 		svc := serviceGetter()
 		assert.NotNil(t, svc, "service should not be nil when upstreamTokenService is set")
+	})
+}
+
+func TestRunner_GetUpstreamTokenReader(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns nil when no auth server configured", func(t *testing.T) {
+		t.Parallel()
+
+		r := &Runner{}
+		reader := r.GetUpstreamTokenReader()
+		assert.Nil(t, reader)
+	})
+
+	t.Run("returns reader when auth server configured", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		svc := upstreamtoken.NewInProcessService(mockStorage, nil)
+
+		r := &Runner{
+			upstreamTokenReader: svc,
+		}
+		reader := r.GetUpstreamTokenReader()
+		assert.NotNil(t, reader)
+		assert.Equal(t, svc, reader)
 	})
 }

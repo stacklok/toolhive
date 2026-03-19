@@ -414,9 +414,9 @@ func TestMonitoredTokenSource_MultipleCallsToToken(t *testing.T) {
 // timeoutNetError is a minimal net.Error with Timeout() == true.
 type timeoutNetError struct{}
 
-func (e *timeoutNetError) Error() string   { return "i/o timeout" }
-func (e *timeoutNetError) Timeout() bool   { return true }
-func (e *timeoutNetError) Temporary() bool { return true }
+func (*timeoutNetError) Error() string   { return "i/o timeout" }
+func (*timeoutNetError) Timeout() bool   { return true }
+func (*timeoutNetError) Temporary() bool { return true }
 
 var _ net.Error = (*timeoutNetError)(nil)
 

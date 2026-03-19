@@ -19,6 +19,19 @@ type UpstreamCredential struct {
 	AccessToken string
 }
 
+// UpstreamTokenReader retrieves upstream provider access tokens for a session.
+// This narrow interface decouples the auth middleware from storage internals.
+//
+// TODO(auth): Consider enriching the return type from map[string]string to
+// map[string]UpstreamCredential to carry per-provider freshness/error metadata.
+type UpstreamTokenReader interface {
+	// GetAllValidTokens returns access tokens for all upstream providers in a session.
+	// Expired tokens are refreshed transparently when possible; if refresh fails,
+	// the provider is omitted from the result.
+	// Returns an empty map (not error) for unknown sessions.
+	GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, error)
+}
+
 // Service owns the upstream token lifecycle: read, refresh, error handling.
 type Service interface {
 	// GetValidTokens returns a valid upstream credential for a session and provider.

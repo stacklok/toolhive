@@ -136,18 +136,6 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
-// GetUpstreamTokenService returns an accessor for the upstream token service.
-// The returned function should be called at request time; it returns nil if
-// the embedded auth server is not configured.
-//
-// This method always returns a non-nil function. Service availability is
-// determined at request time when the returned function is called.
-func (r *Runner) GetUpstreamTokenService() func() upstreamtoken.Service {
-	return func() upstreamtoken.Service {
-		return r.upstreamTokenService
-	}
-}
-
 // GetUpstreamTokenReader returns the UpstreamTokenReader for identity
 // enrichment in the auth middleware. Returns nil if no embedded auth
 // server is configured.

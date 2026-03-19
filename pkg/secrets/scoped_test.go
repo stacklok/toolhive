@@ -20,9 +20,8 @@ import (
 // ScopedProvider tests
 // ---------------------------------------------------------------------------
 
-func TestScopedProvider_GetSecret(t *testing.T) { //nolint:paralleltest
+func TestScopedProvider_GetSecret(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
 		name        string
@@ -51,7 +50,10 @@ func TestScopedProvider_GetSecret(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -74,9 +76,8 @@ func TestScopedProvider_GetSecret(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestScopedProvider_SetSecret(t *testing.T) { //nolint:paralleltest
+func TestScopedProvider_SetSecret(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
 		name     string
@@ -99,7 +100,10 @@ func TestScopedProvider_SetSecret(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -119,9 +123,8 @@ func TestScopedProvider_SetSecret(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestScopedProvider_DeleteSecret(t *testing.T) { //nolint:paralleltest
+func TestScopedProvider_DeleteSecret(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
 		name     string
@@ -144,7 +147,10 @@ func TestScopedProvider_DeleteSecret(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -164,16 +170,15 @@ func TestScopedProvider_DeleteSecret(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestScopedProvider_ListSecrets(t *testing.T) { //nolint:paralleltest
+func TestScopedProvider_ListSecrets(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
-		name       string
-		innerList  []secrets.SecretDescription
-		innerErr   error
-		wantKeys   []string
-		wantErr    bool
+		name      string
+		innerList []secrets.SecretDescription
+		innerErr  error
+		wantKeys  []string
+		wantErr   bool
 	}{
 		{
 			name: "returns only entries in scope with prefix stripped",
@@ -202,7 +207,10 @@ func TestScopedProvider_ListSecrets(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -232,10 +240,12 @@ func TestScopedProvider_ListSecrets(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestScopedProvider_Cleanup(t *testing.T) { //nolint:paralleltest
+func TestScopedProvider_Cleanup(t *testing.T) {
 	t.Parallel()
 
-	t.Run("deletes only scoped keys", func(t *testing.T) { //nolint:paralleltest
+	t.Run("deletes only scoped keys", func(t *testing.T) {
+		t.Parallel()
+
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
@@ -247,7 +257,6 @@ func TestScopedProvider_Cleanup(t *testing.T) { //nolint:paralleltest
 
 		mock := mocks.NewMockProvider(ctrl)
 		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
-		// Only the registry-scoped key should be bulk-deleted in a single call.
 		mock.EXPECT().BulkDeleteSecrets(gomock.Any(), []string{"__thv_registry_key1"}).Return(nil)
 
 		p := secrets.NewScopedProvider(mock, secrets.ScopeRegistry)
@@ -255,7 +264,9 @@ func TestScopedProvider_Cleanup(t *testing.T) { //nolint:paralleltest
 		require.NoError(t, err)
 	})
 
-	t.Run("returns error from BulkDeleteSecrets", func(t *testing.T) { //nolint:paralleltest
+	t.Run("returns error from BulkDeleteSecrets", func(t *testing.T) {
+		t.Parallel()
+
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
@@ -277,7 +288,7 @@ func TestScopedProvider_Cleanup(t *testing.T) { //nolint:paralleltest
 	})
 }
 
-func TestScopedProvider_Capabilities(t *testing.T) { //nolint:paralleltest
+func TestScopedProvider_Capabilities(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -302,9 +313,8 @@ func TestScopedProvider_Capabilities(t *testing.T) { //nolint:paralleltest
 // UserProvider tests
 // ---------------------------------------------------------------------------
 
-func TestUserProvider_GetSecret(t *testing.T) { //nolint:paralleltest
+func TestUserProvider_GetSecret(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
 		name        string
@@ -330,7 +340,10 @@ func TestUserProvider_GetSecret(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -355,9 +368,8 @@ func TestUserProvider_GetSecret(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestUserProvider_SetSecret(t *testing.T) { //nolint:paralleltest
+func TestUserProvider_SetSecret(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
 		name        string
@@ -380,7 +392,10 @@ func TestUserProvider_SetSecret(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -404,9 +419,8 @@ func TestUserProvider_SetSecret(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestUserProvider_DeleteSecret(t *testing.T) { //nolint:paralleltest
+func TestUserProvider_DeleteSecret(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
 		name        string
@@ -429,7 +443,10 @@ func TestUserProvider_DeleteSecret(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -453,9 +470,8 @@ func TestUserProvider_DeleteSecret(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestUserProvider_ListSecrets(t *testing.T) { //nolint:paralleltest
+func TestUserProvider_ListSecrets(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	tests := []struct {
 		name      string
@@ -498,7 +514,10 @@ func TestUserProvider_ListSecrets(t *testing.T) { //nolint:paralleltest
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -528,7 +547,7 @@ func TestUserProvider_ListSecrets(t *testing.T) { //nolint:paralleltest
 	}
 }
 
-func TestUserProvider_Capabilities(t *testing.T) { //nolint:paralleltest
+func TestUserProvider_Capabilities(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)

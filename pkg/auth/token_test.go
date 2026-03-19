@@ -24,6 +24,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -2222,4 +2223,145 @@ func TestMiddleware_RFC6750JSONErrorResponse(t *testing.T) {
 			require.Contains(t, body.ErrorDescription, tt.wantDescSubstring)
 		})
 	}
+}
+
+func TestLoadUpstreamTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		claims     jwt.MapClaims
+		reader     upstreamtoken.UpstreamTokenReader
+		wantResult map[string]string
+	}{
+		{
+			name: "loads tokens when tsid present",
+			claims: jwt.MapClaims{
+				"sub":                                "user123",
+				upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			},
+			reader: &mockUpstreamTokenReader{
+				tokens: map[string]string{
+					"github":    "gh-token",
+					"atlassian": "atl-token",
+				},
+			},
+			wantResult: map[string]string{
+				"github":    "gh-token",
+				"atlassian": "atl-token",
+			},
+		},
+		{
+			name: "returns nil when no tsid claim",
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			reader:     &mockUpstreamTokenReader{},
+			wantResult: nil,
+		},
+		{
+			name: "returns nil when tsid is empty string",
+			claims: jwt.MapClaims{
+				"sub":                                "user123",
+				upstreamtoken.TokenSessionIDClaimKey: "",
+			},
+			reader:     &mockUpstreamTokenReader{},
+			wantResult: nil,
+		},
+		{
+			name: "returns nil when tsid is non-string type",
+			claims: jwt.MapClaims{
+				"sub":                                "user123",
+				upstreamtoken.TokenSessionIDClaimKey: 12345,
+			},
+			reader:     &mockUpstreamTokenReader{},
+			wantResult: nil,
+		},
+		{
+			name: "returns nil when reader returns error",
+			claims: jwt.MapClaims{
+				"sub":                                "user123",
+				upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			},
+			reader: &mockUpstreamTokenReader{
+				err: errors.New("storage unavailable"),
+			},
+			wantResult: nil,
+		},
+		{
+			name: "returns empty map from reader",
+			claims: jwt.MapClaims{
+				"sub":                                "user123",
+				upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			},
+			reader: &mockUpstreamTokenReader{
+				tokens: map[string]string{},
+			},
+			wantResult: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			v := &TokenValidator{
+				upstreamTokenReader: tt.reader,
+			}
+
+			result := v.loadUpstreamTokens(context.Background(), tt.claims)
+
+			if tt.wantResult == nil {
+				require.Nil(t, result)
+			} else {
+				require.Equal(t, tt.wantResult, result)
+			}
+		})
+	}
+}
+
+func TestLoadUpstreamTokens_PassesCorrectSessionID(t *testing.T) {
+	t.Parallel()
+
+	reader := &mockUpstreamTokenReader{
+		tokens: map[string]string{"github": "token"},
+	}
+
+	v := &TokenValidator{
+		upstreamTokenReader: reader,
+	}
+
+	claims := jwt.MapClaims{
+		"sub":                                "user123",
+		upstreamtoken.TokenSessionIDClaimKey: "session-xyz",
+	}
+
+	result := v.loadUpstreamTokens(context.Background(), claims)
+
+	require.NotNil(t, result)
+	require.Equal(t, "session-xyz", reader.calledWith)
+}
+
+// mockUpstreamTokenReader is a simple mock for testing loadUpstreamTokens.
+type mockUpstreamTokenReader struct {
+	tokens     map[string]string
+	err        error
+	calledWith string
+}
+
+func (m *mockUpstreamTokenReader) GetAllValidTokens(_ context.Context, sessionID string) (map[string]string, error) {
+	m.calledWith = sessionID
+	return m.tokens, m.err
+}
+
+func TestWithUpstreamTokenReader(t *testing.T) {
+	t.Parallel()
+
+	reader := &mockUpstreamTokenReader{}
+	opt := WithUpstreamTokenReader(reader)
+
+	o := &tokenValidatorOptions{}
+	opt(o)
+
+	require.Equal(t, reader, o.upstreamTokenReader)
 }

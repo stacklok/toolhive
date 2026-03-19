@@ -433,10 +433,14 @@ func (c *Converter) resolveToolConfigRefs(
 			wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
 			for name, override := range toolConfig.Overrides {
 				if override != nil {
-					wtc.Overrides[name] = &vmcpconfig.ToolOverride{
+					o := &vmcpconfig.ToolOverride{
 						Name:        override.Name,
 						Description: override.Description,
 					}
+					if override.Annotations != nil {
+						o.Annotations = override.Annotations.DeepCopy()
+					}
+					wtc.Overrides[name] = o
 				}
 			}
 		}
@@ -507,15 +511,32 @@ func (*Converter) mergeToolConfigOverrides(
 
 	for toolName, override := range resolvedConfig.Spec.ToolsOverride {
 		if _, exists := wtc.Overrides[toolName]; !exists {
-			wtc.Overrides[toolName] = &vmcpconfig.ToolOverride{
+			o := &vmcpconfig.ToolOverride{
 				Name:        override.Name,
 				Description: override.Description,
 			}
+			if override.Annotations != nil {
+				o.Annotations = convertCRDAnnotationsOverride(override.Annotations)
+			}
+			wtc.Overrides[toolName] = o
 		}
 	}
 }
 
-// applyInlineOverrides applies inline tool overrides
+// convertCRDAnnotationsOverride converts CRD ToolAnnotationsOverride to config ToolAnnotationsOverride.
+func convertCRDAnnotationsOverride(src *mcpv1alpha1.ToolAnnotationsOverride) *vmcpconfig.ToolAnnotationsOverride {
+	if src == nil {
+		return nil
+	}
+	return &vmcpconfig.ToolAnnotationsOverride{
+		Title:           src.Title,
+		ReadOnlyHint:    src.ReadOnlyHint,
+		DestructiveHint: src.DestructiveHint,
+		IdempotentHint:  src.IdempotentHint,
+		OpenWorldHint:   src.OpenWorldHint,
+	}
+}
+
 // resolveMCPToolConfig fetches an MCPToolConfig resource by name and namespace
 func (c *Converter) resolveMCPToolConfig(
 	ctx context.Context,

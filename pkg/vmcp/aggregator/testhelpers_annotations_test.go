@@ -9,6 +9,8 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+func stringPtr(s string) *string { return &s }
+
 func newTestToolWithAnnotations(name, backendID string, annotations *vmcp.ToolAnnotations) vmcp.Tool {
 	return vmcp.Tool{
 		Name:        name,

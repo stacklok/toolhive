@@ -109,6 +109,169 @@ func TestProcessBackendTools_AnnotationsAndOutputSchema(t *testing.T) {
 			wantAnnotations:  nil,
 			wantOutputSchema: nil,
 		},
+		{
+			name:      "annotation override applies title while preserving other annotations",
+			backendID: "backend1",
+			tools: []vmcp.Tool{
+				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+					Title:        "Original Title",
+					ReadOnlyHint: boolPtr(true),
+				}),
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload: "backend1",
+				Overrides: map[string]*config.ToolOverride{
+					"tool1": {
+						Name: "tool1_renamed",
+						Annotations: &config.ToolAnnotationsOverride{
+							Title: stringPtr("Overridden Title"),
+						},
+					},
+				},
+			},
+			wantCount: 1,
+			wantNames: []string{"tool1_renamed"},
+			wantAnnotations: &vmcp.ToolAnnotations{
+				Title:        "Overridden Title",
+				ReadOnlyHint: boolPtr(true),
+			},
+			wantOutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"result": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
+			name:      "annotation override applies bool hint correctly",
+			backendID: "backend1",
+			tools: []vmcp.Tool{
+				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+					Title:           "My Tool",
+					ReadOnlyHint:    boolPtr(true),
+					DestructiveHint: boolPtr(false),
+				}),
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload: "backend1",
+				Overrides: map[string]*config.ToolOverride{
+					"tool1": {
+						Description: "Updated desc",
+						Annotations: &config.ToolAnnotationsOverride{
+							ReadOnlyHint: boolPtr(false),
+						},
+					},
+				},
+			},
+			wantCount: 1,
+			wantNames: []string{"tool1"},
+			wantAnnotations: &vmcp.ToolAnnotations{
+				Title:           "My Tool",
+				ReadOnlyHint:    boolPtr(false),
+				DestructiveHint: boolPtr(false),
+			},
+			wantOutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"result": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
+			name:      "nil base annotations with override creates new annotations",
+			backendID: "backend1",
+			tools: []vmcp.Tool{
+				{
+					Name:        "tool1",
+					Description: "A tool",
+					InputSchema: map[string]any{"type": "object"},
+					BackendID:   "backend1",
+				},
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload: "backend1",
+				Overrides: map[string]*config.ToolOverride{
+					"tool1": {
+						Name: "tool1_new",
+						Annotations: &config.ToolAnnotationsOverride{
+							Title:        stringPtr("New Title"),
+							ReadOnlyHint: boolPtr(true),
+						},
+					},
+				},
+			},
+			wantCount: 1,
+			wantNames: []string{"tool1_new"},
+			wantAnnotations: &vmcp.ToolAnnotations{
+				Title:        "New Title",
+				ReadOnlyHint: boolPtr(true),
+			},
+			wantOutputSchema: nil,
+		},
+		{
+			name:      "nil annotation override leaves annotations unchanged",
+			backendID: "backend1",
+			tools: []vmcp.Tool{
+				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+					Title:        "Keep Me",
+					ReadOnlyHint: boolPtr(true),
+				}),
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload: "backend1",
+				Overrides: map[string]*config.ToolOverride{
+					"tool1": {
+						Name:        "renamed_tool1",
+						Annotations: nil,
+					},
+				},
+			},
+			wantCount: 1,
+			wantNames: []string{"renamed_tool1"},
+			wantAnnotations: &vmcp.ToolAnnotations{
+				Title:        "Keep Me",
+				ReadOnlyHint: boolPtr(true),
+			},
+			wantOutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"result": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
+			name:      "title cleared to empty string via override",
+			backendID: "backend1",
+			tools: []vmcp.Tool{
+				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+					Title:        "Original Title",
+					ReadOnlyHint: boolPtr(true),
+				}),
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload: "backend1",
+				Overrides: map[string]*config.ToolOverride{
+					"tool1": {
+						Name: "tool1_cleared",
+						Annotations: &config.ToolAnnotationsOverride{
+							Title: stringPtr(""),
+						},
+					},
+				},
+			},
+			wantCount: 1,
+			wantNames: []string{"tool1_cleared"},
+			wantAnnotations: &vmcp.ToolAnnotations{
+				Title:        "",
+				ReadOnlyHint: boolPtr(true),
+			},
+			wantOutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"result": map[string]any{"type": "string"},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -152,4 +315,185 @@ func TestProcessBackendTools_AnnotationsAndOutputSchema(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApplyAnnotationOverrides(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		base      *vmcp.ToolAnnotations
+		overrides *config.ToolAnnotationsOverride
+		want      *vmcp.ToolAnnotations
+	}{
+		{
+			name: "nil overrides returns base unchanged",
+			base: &vmcp.ToolAnnotations{
+				Title:        "Original",
+				ReadOnlyHint: boolPtr(true),
+			},
+			overrides: nil,
+			want: &vmcp.ToolAnnotations{
+				Title:        "Original",
+				ReadOnlyHint: boolPtr(true),
+			},
+		},
+		{
+			name:      "nil base with non-nil overrides creates new annotations",
+			base:      nil,
+			overrides: &config.ToolAnnotationsOverride{
+				Title:        stringPtr("Brand New"),
+				ReadOnlyHint: boolPtr(false),
+			},
+			want: &vmcp.ToolAnnotations{
+				Title:        "Brand New",
+				ReadOnlyHint: boolPtr(false),
+			},
+		},
+		{
+			name: "title override only preserves other fields",
+			base: &vmcp.ToolAnnotations{
+				Title:           "Old Title",
+				ReadOnlyHint:    boolPtr(true),
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  boolPtr(true),
+				OpenWorldHint:   boolPtr(false),
+			},
+			overrides: &config.ToolAnnotationsOverride{
+				Title: stringPtr("New Title"),
+			},
+			want: &vmcp.ToolAnnotations{
+				Title:           "New Title",
+				ReadOnlyHint:    boolPtr(true),
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  boolPtr(true),
+				OpenWorldHint:   boolPtr(false),
+			},
+		},
+		{
+			name: "readOnlyHint override only",
+			base: &vmcp.ToolAnnotations{
+				Title:        "Keep",
+				ReadOnlyHint: boolPtr(true),
+			},
+			overrides: &config.ToolAnnotationsOverride{
+				ReadOnlyHint: boolPtr(false),
+			},
+			want: &vmcp.ToolAnnotations{
+				Title:        "Keep",
+				ReadOnlyHint: boolPtr(false),
+			},
+		},
+		{
+			name: "multiple fields overridden simultaneously",
+			base: &vmcp.ToolAnnotations{
+				Title:           "Original",
+				ReadOnlyHint:    boolPtr(true),
+				DestructiveHint: boolPtr(false),
+			},
+			overrides: &config.ToolAnnotationsOverride{
+				Title:          stringPtr("Updated"),
+				ReadOnlyHint:   boolPtr(false),
+				OpenWorldHint:  boolPtr(true),
+				IdempotentHint: boolPtr(true),
+			},
+			want: &vmcp.ToolAnnotations{
+				Title:           "Updated",
+				ReadOnlyHint:    boolPtr(false),
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  boolPtr(true),
+				OpenWorldHint:   boolPtr(true),
+			},
+		},
+		{
+			name: "title set to empty string clears it",
+			base: &vmcp.ToolAnnotations{
+				Title:        "Has Title",
+				ReadOnlyHint: boolPtr(true),
+			},
+			overrides: &config.ToolAnnotationsOverride{
+				Title: stringPtr(""),
+			},
+			want: &vmcp.ToolAnnotations{
+				Title:        "",
+				ReadOnlyHint: boolPtr(true),
+			},
+		},
+		{
+			name: "bool hints set to false explicitly",
+			base: &vmcp.ToolAnnotations{
+				Title:           "Tool",
+				ReadOnlyHint:    boolPtr(true),
+				DestructiveHint: boolPtr(true),
+				IdempotentHint:  boolPtr(true),
+				OpenWorldHint:   boolPtr(true),
+			},
+			overrides: &config.ToolAnnotationsOverride{
+				ReadOnlyHint:    boolPtr(false),
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  boolPtr(false),
+				OpenWorldHint:   boolPtr(false),
+			},
+			want: &vmcp.ToolAnnotations{
+				Title:           "Tool",
+				ReadOnlyHint:    boolPtr(false),
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  boolPtr(false),
+				OpenWorldHint:   boolPtr(false),
+			},
+		},
+		{
+			name:      "nil base and nil overrides returns base",
+			base:      nil,
+			overrides: nil,
+			want:      nil,
+		},
+		{
+			name:      "nil base with empty overrides returns zero-value annotations",
+			base:      nil,
+			overrides: &config.ToolAnnotationsOverride{},
+			want:      &vmcp.ToolAnnotations{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := applyAnnotationOverrides(tt.base, tt.overrides)
+
+			if tt.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+
+			require.NotNil(t, got)
+			assert.Equal(t, tt.want.Title, got.Title)
+			assert.Equal(t, tt.want.ReadOnlyHint, got.ReadOnlyHint)
+			assert.Equal(t, tt.want.DestructiveHint, got.DestructiveHint)
+			assert.Equal(t, tt.want.IdempotentHint, got.IdempotentHint)
+			assert.Equal(t, tt.want.OpenWorldHint, got.OpenWorldHint)
+		})
+	}
+}
+
+func TestApplyAnnotationOverrides_DoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	base := &vmcp.ToolAnnotations{
+		Title:        "Original",
+		ReadOnlyHint: boolPtr(true),
+	}
+	overrides := &config.ToolAnnotationsOverride{
+		Title: stringPtr("Changed"),
+	}
+
+	got := applyAnnotationOverrides(base, overrides)
+
+	// The returned value should have the override applied
+	assert.Equal(t, "Changed", got.Title)
+
+	// The original base should not be mutated
+	assert.Equal(t, "Original", base.Title)
+	assert.Equal(t, boolPtr(true), base.ReadOnlyHint)
 }

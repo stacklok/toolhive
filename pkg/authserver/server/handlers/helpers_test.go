@@ -442,4 +442,3 @@ func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDP
 
 	return handler, storState, mockProvider1, mockProvider2
 }
-

@@ -32,6 +32,10 @@ const (
 
 	// ExternalAuthTypeAWSSts is the type for AWS STS authentication
 	ExternalAuthTypeAWSSts ExternalAuthType = "awsSts"
+
+	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
+	// This injects an upstream IDP access token as the Authorization: Bearer header
+	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -46,12 +50,13 @@ type ExternalAuthType string
 // +kubebuilder:validation:XValidation:rule="self.type == 'bearerToken' ? has(self.bearerToken) : !has(self.bearerToken)",message="bearerToken configuration must be set if and only if type is 'bearerToken'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'embeddedAuthServer' ? has(self.embeddedAuthServer) : !has(self.embeddedAuthServer)",message="embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
-// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts)) : true",message="no configuration must be set when type is 'unauthenticated'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'upstreamInject' ? has(self.upstreamInject) : !has(self.upstreamInject)",message="upstreamInject configuration must be set if and only if type is 'upstreamInject'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject)) : true",message="no configuration must be set when type is 'unauthenticated'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -79,6 +84,11 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "awsSts"
 	// +optional
 	AWSSts *AWSStsConfig `json:"awsSts,omitempty"`
+
+	// UpstreamInject configures upstream token injection for backend requests.
+	// Only used when Type is "upstreamInject".
+	// +optional
+	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -123,6 +133,11 @@ type TokenExchangeConfig struct {
 	// If empty or not set, the exchanged token will replace the Authorization header (default behavior).
 	// +optional
 	ExternalTokenHeaderName string `json:"externalTokenHeaderName,omitempty"`
+
+	// SubjectProviderName is the name of the upstream provider whose token is used as the
+	// RFC 8693 subject token instead of identity.Token when performing token exchange.
+	// +optional
+	SubjectProviderName string `json:"subjectProviderName,omitempty"`
 }
 
 // HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
@@ -671,6 +686,17 @@ type RoleMapping struct {
 	Priority *int32 `json:"priority,omitempty"`
 }
 
+// UpstreamInjectSpec holds configuration for upstream token injection.
+// This strategy injects an upstream IDP access token obtained by the embedded
+// authorization server into backend requests as the Authorization: Bearer header.
+type UpstreamInjectSpec struct {
+	// ProviderName is the name of the upstream IDP provider whose access token
+	// should be injected as the Authorization: Bearer header.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ProviderName string `json:"providerName"`
+}
+
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
@@ -737,6 +763,11 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		return r.validateEmbeddedAuthServer()
 	case ExternalAuthTypeAWSSts:
 		return r.validateAWSSts()
+	case ExternalAuthTypeUpstreamInject:
+		if r.Spec.UpstreamInject == nil || r.Spec.UpstreamInject.ProviderName == "" {
+			return fmt.Errorf("upstreamInject requires a non-empty providerName")
+		}
+		return nil
 	case ExternalAuthTypeTokenExchange,
 		ExternalAuthTypeHeaderInjection,
 		ExternalAuthTypeBearerToken,
@@ -768,6 +799,9 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	if (r.Spec.AWSSts == nil) == (r.Spec.Type == ExternalAuthTypeAWSSts) {
 		return fmt.Errorf("awsSts configuration must be set if and only if type is 'awsSts'")
 	}
+	if (r.Spec.UpstreamInject == nil) == (r.Spec.Type == ExternalAuthTypeUpstreamInject) {
+		return fmt.Errorf("upstreamInject configuration must be set if and only if type is 'upstreamInject'")
+	}
 
 	// Check that unauthenticated has no config
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
@@ -775,7 +809,8 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 			r.Spec.HeaderInjection != nil ||
 			r.Spec.BearerToken != nil ||
 			r.Spec.EmbeddedAuthServer != nil ||
-			r.Spec.AWSSts != nil {
+			r.Spec.AWSSts != nil ||
+			r.Spec.UpstreamInject != nil {
 			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
 		}
 	}

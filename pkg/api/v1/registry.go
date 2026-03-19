@@ -84,6 +84,15 @@ func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error
 // This endpoint is only available in serve mode and is designed for desktop
 // clients (e.g. Studio) where the user has a local browser. Headless or
 // remote deployments should pre-configure credentials via the CLI instead.
+//
+//	@Summary		Registry login
+//	@Description	Trigger an interactive OAuth flow to authenticate with the configured registry. Only available in serve mode.
+//	@Tags			registry
+//	@Produce		json
+//	@Success		200	{object}	map[string]string	"Authenticated successfully"
+//	@Failure		400	{string}	string				"Bad Request - Registry OAuth not configured"
+//	@Failure		500	{string}	string				"Internal Server Error"
+//	@Router			/api/v1beta/registry/auth/login [post]
 func (rr *RegistryRoutes) registryAuthLogin(w http.ResponseWriter, r *http.Request) {
 	secretsProvider, err := newSecretsProvider(rr.configProvider)
 	if err != nil {
@@ -112,6 +121,15 @@ func (rr *RegistryRoutes) registryAuthLogin(w http.ResponseWriter, r *http.Reque
 // registryAuthLogout handles POST /registry/auth/logout.
 // It clears cached OAuth tokens for the configured registry.
 // This endpoint is only available in serve mode.
+//
+//	@Summary		Registry logout
+//	@Description	Clear cached OAuth tokens for the configured registry. Only available in serve mode.
+//	@Tags			registry
+//	@Produce		json
+//	@Success		200	{object}	map[string]string	"Logged out successfully"
+//	@Failure		400	{string}	string				"Bad Request - Registry OAuth not configured"
+//	@Failure		500	{string}	string				"Internal Server Error"
+//	@Router			/api/v1beta/registry/auth/logout [post]
 func (rr *RegistryRoutes) registryAuthLogout(w http.ResponseWriter, r *http.Request) {
 	secretsProvider, err := newSecretsProvider(rr.configProvider)
 	if err != nil {

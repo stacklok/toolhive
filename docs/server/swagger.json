@@ -3546,6 +3546,94 @@
                 ]
             }
         },
+        "/api/v1beta/registry/auth/login": {
+            "post": {
+                "description": "Trigger an interactive OAuth flow to authenticate with the configured registry. Only available in serve mode.",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Authenticated successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request - Registry OAuth not configured"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Registry login",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
+        "/api/v1beta/registry/auth/logout": {
+            "post": {
+                "description": "Clear cached OAuth tokens for the configured registry. Only available in serve mode.",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Logged out successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request - Registry OAuth not configured"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Registry logout",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
         "/api/v1beta/registry/{name}": {
             "delete": {
                 "description": "Remove a specific registry",

@@ -857,6 +857,28 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig": {
+                "description": "AuthConfig contains the non-secret OAuth configuration when auth is configured.\nNil when auth_status is \"none\".",
+                "properties": {
+                    "audience": {
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig": {
                 "description": "HeaderForward contains configuration for injecting headers into requests to remote servers.",
                 "properties": {
@@ -1801,6 +1823,9 @@ const docTemplate = `{
             "pkg_api_v1.getRegistryResponse": {
                 "description": "Response containing registry details",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
                     "auth_status": {
                         "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty — see registryInfo for rationale.",
                         "type": "string"
@@ -2059,6 +2084,9 @@ const docTemplate = `{
             "pkg_api_v1.registryInfo": {
                 "description": "Basic information about a registry",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
                     "auth_status": {
                         "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty so clients always receive the field,\neven when the value is \"none\" (the zero-value equivalent).",
                         "type": "string"

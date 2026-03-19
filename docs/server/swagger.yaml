@@ -821,6 +821,23 @@ components:
           type: array
           uniqueItems: false
       type: object
+    github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig:
+      description: |-
+        AuthConfig contains the non-secret OAuth configuration when auth is configured.
+        Nil when auth_status is "none".
+      properties:
+        audience:
+          type: string
+        client_id:
+          type: string
+        issuer:
+          type: string
+        scopes:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig:
       description: HeaderForward contains configuration for injecting headers into
         requests to remote servers.
@@ -1609,6 +1626,8 @@ components:
     pkg_api_v1.getRegistryResponse:
       description: Response containing registry details
       properties:
+        auth_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig'
         auth_status:
           description: |-
             AuthStatus is one of: "none", "configured", "authenticated".
@@ -1806,6 +1825,8 @@ components:
     pkg_api_v1.registryInfo:
       description: Basic information about a registry
       properties:
+        auth_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig'
         auth_status:
           description: |-
             AuthStatus is one of: "none", "configured", "authenticated".

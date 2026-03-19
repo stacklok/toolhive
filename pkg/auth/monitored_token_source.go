@@ -5,13 +5,25 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+)
+
+const (
+	// tokenRefreshInitialRetryInterval is the starting interval for exponential
+	// backoff when a token refresh fails during background monitoring.
+	tokenRefreshInitialRetryInterval = 30 * time.Second
+	// tokenRefreshMaxRetryInterval caps the exponential growth of the retry interval.
+	tokenRefreshMaxRetryInterval = 5 * time.Minute
 )
 
 // StatusUpdater is an interface for updating workload authentication status.
@@ -24,6 +36,11 @@ type StatusUpdater interface {
 // MonitoredTokenSource is a wrapper around an oauth2.TokenSource that monitors authentication
 // failures and automatically marks workloads as unauthenticated when tokens expire or fail.
 // It provides both per-request token retrieval and background monitoring.
+//
+// When the background monitor encounters a token refresh failure it retries with exponential
+// backoff rather than immediately marking the workload as unauthenticated. This handles
+// scenarios like overnight VPN disconnects where the token refresh endpoint is temporarily
+// unreachable.
 type MonitoredTokenSource struct {
 	tokenSource    oauth2.TokenSource
 	workloadName   string
@@ -31,6 +48,9 @@ type MonitoredTokenSource struct {
 	monitoringCtx  context.Context
 	stopMonitoring chan struct{}
 	stopOnce       sync.Once
+	// newRetryBackOff is a factory for the backoff used during transient-error retries.
+	// It is nil by default (production path) and overridable in tests for fast execution.
+	newRetryBackOff func() backoff.BackOff
 
 	timer *time.Timer
 }
@@ -106,28 +126,123 @@ func (mts *MonitoredTokenSource) resetTimer(d time.Duration) {
 	mts.timer.Reset(d)
 }
 
-// onTick returns (shouldStop bool, nextDelay time.Duration)
+// getRetryBackOff returns the backoff to use for transient-error retries.
+// Uses mts.newRetryBackOff if set (e.g. in tests); otherwise returns a default
+// exponential backoff with no MaxElapsedTime (context cancellation is the stop signal).
+func (mts *MonitoredTokenSource) getRetryBackOff() backoff.BackOff {
+	if mts.newRetryBackOff != nil {
+		return mts.newRetryBackOff()
+	}
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = tokenRefreshInitialRetryInterval
+	eb.MaxInterval = tokenRefreshMaxRetryInterval
+	// No MaxElapsedTime — context cancellation is the stop signal.
+	eb.Reset()
+	return eb
+}
+
+// onTick returns (shouldStop bool, nextDelay time.Duration).
+//
+// On a transient network error (DNS failure, TCP-level error, timeout) it retries
+// with exponential backoff (respecting mts.monitoringCtx) before marking the workload
+// as unauthenticated. Non-transient errors (OAuth 4xx, invalid_grant, etc.) cause an
+// immediate failure. If the context is cancelled while retrying (e.g. the workload is
+// removed), monitoring stops cleanly without marking the workload as unauthenticated.
 func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 	tok, err := mts.tokenSource.Token()
-	if err != nil {
-		// Any error → mark as unauthenticated and stop
+	if err == nil {
+		if tok == nil || tok.Expiry.IsZero() {
+			return true, 0
+		}
+		wait := time.Until(tok.Expiry)
+		if wait < time.Second {
+			wait = time.Second
+		}
+		return false, wait
+	}
+
+	if !isTransientNetworkError(err) {
 		mts.markAsUnauthenticated(fmt.Sprintf("No valid token: %v", err))
 		return true, 0
 	}
 
-	// Success → schedule next check
-	if tok.Expiry.IsZero() {
-		// no expiry → nothing to monitor
+	// Transient network error (e.g. VPN disconnected, DNS unavailable).
+	// Retry with exponential backoff until the network recovers or monitoring stops.
+	slog.Warn("token refresh failed due to transient network error, retrying with backoff",
+		"workload", mts.workloadName,
+		"error", err,
+	)
+
+	b := mts.getRetryBackOff()
+
+	var refreshed *oauth2.Token
+
+	_, retryErr := backoff.Retry(mts.monitoringCtx, func() (*oauth2.Token, error) {
+		t, tokenErr := mts.tokenSource.Token()
+		if tokenErr == nil {
+			refreshed = t
+			return t, nil
+		}
+		if !isTransientNetworkError(tokenErr) {
+			// Non-transient error inside retry — stop immediately.
+			return nil, backoff.Permanent(tokenErr)
+		}
+		return nil, tokenErr
+	},
+		backoff.WithBackOff(b),
+		backoff.WithNotify(func(retryErr error, d time.Duration) {
+			slog.Warn("token refresh retry failed",
+				"workload", mts.workloadName,
+				"retry_in", d,
+				"error", retryErr,
+			)
+		}),
+	)
+
+	if retryErr != nil {
+		if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
+			// Monitoring context was cancelled (workload removed) — do not mark as unauthenticated.
+			return true, 0
+		}
+		mts.markAsUnauthenticated(fmt.Sprintf("Token refresh failed after retries: %v", retryErr))
 		return true, 0
 	}
-	wait := time.Until(tok.Expiry)
+
+	// Retry succeeded — schedule next check at the new token's expiry.
+	if refreshed == nil || refreshed.Expiry.IsZero() {
+		return true, 0
+	}
+	wait := time.Until(refreshed.Expiry)
 	if wait < time.Second {
 		wait = time.Second
 	}
 	return false, wait
 }
 
-// markAsUnauthenticated marks the workload as unauthenticated.
+// isTransientNetworkError reports whether err represents a transient network condition
+// (DNS failure, TCP-level error, timeout) that is likely to resolve when the network
+// recovers — for example, after a VPN reconnects.
+//
+// OAuth2 HTTP-level auth failures (invalid_grant, 401, 400) are NOT considered
+// transient and return false so the workload is marked unauthenticated immediately.
+func isTransientNetworkError(err error) bool {
+	if err == nil ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.As(err, new(*oauth2.RetrieveError)) {
+		return false
+	}
+
+	// Transient: DNS lookup failure, TCP-level (connection refused, unreachable), or timeout.
+	_, isDNS := errors.AsType[*net.DNSError](err)
+	_, isOp := errors.AsType[*net.OpError](err)
+	netErr, isNet := errors.AsType[net.Error](err)
+
+	isTransient := isDNS || isOp || (isNet && netErr.Timeout())
+
+	return isTransient
+}
+
+// markAsUnauthenticated marks the workload as unauthenticated and stops background monitoring.
 func (mts *MonitoredTokenSource) markAsUnauthenticated(reason string) {
 	_ = mts.statusUpdater.SetWorkloadStatus(
 		context.Background(),

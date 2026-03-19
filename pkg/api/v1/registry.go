@@ -54,6 +54,13 @@ func (rr *RegistryRoutes) resolveAuthStatus() (authStatus, authType string) {
 	return authMgr.GetAuthStatus()
 }
 
+// resolveAuthConfig returns the non-secret OAuth configuration for API responses,
+// or nil if no OAuth auth is configured.
+func (rr *RegistryRoutes) resolveAuthConfig() *regpkg.OAuthPublicConfig {
+	authMgr := regpkg.NewAuthManager(rr.configProvider)
+	return authMgr.GetOAuthPublicConfig()
+}
+
 // isRegistryAuthError checks if an error is a registry auth required error.
 func isRegistryAuthError(err error) bool {
 	return errors.Is(err, auth.ErrRegistryAuthRequired)
@@ -335,6 +342,7 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 			Source:      source,
 			AuthStatus:  regAuthStatus,
 			AuthType:    regAuthType,
+			AuthConfig:  rr.resolveAuthConfig(),
 		},
 	}
 
@@ -408,6 +416,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		Source:      source,
 		AuthStatus:  regAuthStatus,
 		AuthType:    regAuthType,
+		AuthConfig:  rr.resolveAuthConfig(),
 		Registry:    reg,
 	}
 
@@ -757,6 +766,9 @@ type registryInfo struct {
 	// Intentionally omits omitempty so clients can distinguish "no auth
 	// configured" (empty string) from "field missing" without extra logic.
 	AuthType string `json:"auth_type"`
+	// AuthConfig contains the non-secret OAuth configuration when auth is configured.
+	// Nil when auth_status is "none".
+	AuthConfig *regpkg.OAuthPublicConfig `json:"auth_config,omitempty"`
 }
 
 // registryListResponse represents the response for listing registries
@@ -789,6 +801,9 @@ type getRegistryResponse struct {
 	// AuthType is "oauth", "bearer" (future), or empty string when no auth.
 	// Intentionally omits omitempty — see registryInfo for rationale.
 	AuthType string `json:"auth_type"`
+	// AuthConfig contains the non-secret OAuth configuration when auth is configured.
+	// Nil when auth_status is "none".
+	AuthConfig *regpkg.OAuthPublicConfig `json:"auth_config,omitempty"`
 	// Full registry data
 	Registry *registry.Registry `json:"registry"`
 }

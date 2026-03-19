@@ -21,6 +21,15 @@ const (
 	AuthStatusAuthenticated = "authenticated"
 )
 
+// OAuthPublicConfig holds the non-secret OAuth configuration fields
+// suitable for returning in API responses.
+type OAuthPublicConfig struct {
+	Issuer   string   `json:"issuer"`
+	ClientID string   `json:"client_id"`
+	Audience string   `json:"audience,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+}
+
 // AuthManager provides operations for managing registry authentication configuration.
 type AuthManager interface {
 	// SetOAuthAuth configures OAuth/OIDC authentication for the registry.
@@ -37,6 +46,10 @@ type AuthManager interface {
 	// Status is one of AuthStatusNone, AuthStatusConfigured, or AuthStatusAuthenticated.
 	// AuthType is "oauth" or empty string when no auth is configured.
 	GetAuthStatus() (status, authType string)
+
+	// GetOAuthPublicConfig returns the non-secret OAuth configuration,
+	// or nil if no OAuth auth is configured.
+	GetOAuthPublicConfig() *OAuthPublicConfig
 }
 
 // DefaultAuthManager is the default implementation of AuthManager.
@@ -91,4 +104,19 @@ func (c *DefaultAuthManager) GetAuthStatus() (string, string) {
 		return AuthStatusAuthenticated, authType
 	}
 	return AuthStatusConfigured, authType
+}
+
+// GetOAuthPublicConfig returns the non-secret OAuth configuration,
+// or nil if no OAuth auth is configured.
+func (c *DefaultAuthManager) GetOAuthPublicConfig() *OAuthPublicConfig {
+	cfg := c.provider.GetConfig()
+	if cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
+		return nil
+	}
+	return &OAuthPublicConfig{
+		Issuer:   cfg.RegistryAuth.OAuth.Issuer,
+		ClientID: cfg.RegistryAuth.OAuth.ClientID,
+		Audience: cfg.RegistryAuth.OAuth.Audience,
+		Scopes:   cfg.RegistryAuth.OAuth.Scopes,
+	}
 }

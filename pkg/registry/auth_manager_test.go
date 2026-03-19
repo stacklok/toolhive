@@ -216,6 +216,95 @@ func TestDefaultAuthManager_GetAuthStatus(t *testing.T) {
 	}
 }
 
+func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		registryAuth config.RegistryAuth
+		wantConfig   *OAuthPublicConfig
+	}{
+		{
+			name:         "returns nil when no auth configured",
+			registryAuth: config.RegistryAuth{},
+			wantConfig:   nil,
+		},
+		{
+			name: "returns nil when type is oauth but OAuth section is nil",
+			registryAuth: config.RegistryAuth{
+				Type:  config.RegistryAuthTypeOAuth,
+				OAuth: nil,
+			},
+			wantConfig: nil,
+		},
+		{
+			name: "returns config with all fields populated",
+			registryAuth: config.RegistryAuth{
+				Type: config.RegistryAuthTypeOAuth,
+				OAuth: &config.RegistryOAuthConfig{
+					Issuer:   "https://auth.example.com",
+					ClientID: "my-client",
+					Audience: "api://toolhive",
+					Scopes:   []string{"openid", "profile"},
+				},
+			},
+			wantConfig: &OAuthPublicConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "my-client",
+				Audience: "api://toolhive",
+				Scopes:   []string{"openid", "profile"},
+			},
+		},
+		{
+			name: "returns config without optional fields",
+			registryAuth: config.RegistryAuth{
+				Type: config.RegistryAuthTypeOAuth,
+				OAuth: &config.RegistryOAuthConfig{
+					Issuer:   "https://auth.example.com",
+					ClientID: "my-client",
+				},
+			},
+			wantConfig: &OAuthPublicConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "my-client",
+			},
+		},
+		{
+			name: "excludes cached token fields",
+			registryAuth: config.RegistryAuth{
+				Type: config.RegistryAuthTypeOAuth,
+				OAuth: &config.RegistryOAuthConfig{
+					Issuer:                "https://auth.example.com",
+					ClientID:              "my-client",
+					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",
+				},
+			},
+			wantConfig: &OAuthPublicConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "my-client",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockProvider := configmocks.NewMockProvider(ctrl)
+
+			mockProvider.EXPECT().
+				GetConfig().
+				Return(&config.Config{RegistryAuth: tt.registryAuth})
+
+			mgr := NewAuthManager(mockProvider)
+			got := mgr.GetOAuthPublicConfig()
+
+			require.Equal(t, tt.wantConfig, got)
+		})
+	}
+}
+
 // errUpdateFailed is a sentinel error for testing UpdateConfig failure paths.
 var errUpdateFailed = errSentinel("UpdateConfig failed")
 

@@ -477,7 +477,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nCurrently only a single upstream is supported.",
+                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig"
                         },

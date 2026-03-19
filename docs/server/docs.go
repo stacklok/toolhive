@@ -343,6 +343,10 @@ const docTemplate = `{
                     "header_strategy": {
                         "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
                         "type": "string"
+                    },
+                    "provider_name": {
+                        "description": "ProviderName identifies which upstream provider's tokens to retrieve for injection.\nThis is required and must match a configured upstream provider name.",
+                        "type": "string"
                     }
                 },
                 "type": "object"

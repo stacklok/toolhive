@@ -21,13 +21,14 @@ type UpstreamCredential struct {
 
 // Service owns the upstream token lifecycle: read, refresh, error handling.
 type Service interface {
-	// GetValidTokens returns a valid upstream credential for a session.
+	// GetValidTokens returns a valid upstream credential for a session and provider.
 	// It transparently refreshes expired access tokens using the refresh token.
+	// The providerName identifies which upstream provider's tokens to retrieve.
 	//
 	// Returns:
 	//   - *UpstreamCredential on success
-	//   - ErrSessionNotFound if no upstream tokens exist for the session
+	//   - ErrSessionNotFound if no upstream tokens exist for the session/provider
 	//   - ErrNoRefreshToken if the access token is expired and no refresh token is available
 	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token)
-	GetValidTokens(ctx context.Context, sessionID string) (*UpstreamCredential, error)
+	GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error)
 }

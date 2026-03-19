@@ -583,9 +583,9 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 				UserID:       "user-123",
 				ClientID:     "test-client-id",
 			}
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-123", tokens))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-123", "provider-a", tokens))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-123")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-123", "provider-a")
 			require.NoError(t, err)
 			assert.Equal(t, tokens.AccessToken, retrieved.AccessToken)
 			assert.Equal(t, tokens.RefreshToken, retrieved.RefreshToken)
@@ -596,26 +596,26 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("get non-existent", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			_, err := s.GetUpstreamTokens(ctx, "non-existent")
+			_, err := s.GetUpstreamTokens(ctx, "non-existent", "provider-a")
 			requireRedisNotFoundError(t, err)
 		})
 	})
 
 	t.Run("delete", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "to-delete", &UpstreamTokens{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour)}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "to-delete", "provider-a", &UpstreamTokens{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour)}))
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "to-delete"))
-			_, err := s.GetUpstreamTokens(ctx, "to-delete")
+			_, err := s.GetUpstreamTokens(ctx, "to-delete", "provider-a")
 			requireRedisNotFoundError(t, err)
 		})
 	})
 
 	t.Run("overwrite existing tokens", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-1", UserID: "user1", ExpiresAt: time.Now().Add(time.Hour)}))
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-2", UserID: "user2", ExpiresAt: time.Now().Add(time.Hour)}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-1", UserID: "user1", ExpiresAt: time.Now().Add(time.Hour)}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-2", UserID: "user2", ExpiresAt: time.Now().Add(time.Hour)}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
 			require.NoError(t, err)
 			assert.Equal(t, "token-2", retrieved.AccessToken)
 			assert.Equal(t, "user2", retrieved.UserID)
@@ -627,13 +627,13 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			// Store with an ExpiresAt that's already in the past.
 			// The TTL includes DefaultRefreshTokenTTL so the key survives
 			// past access token expiry, allowing refresh token retrieval.
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "expired", "provider-a", &UpstreamTokens{
 				AccessToken:  "expired-token",
 				RefreshToken: "refresh-token",
 				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "expired")
+			retrieved, err := s.GetUpstreamTokens(ctx, "expired", "provider-a")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
 			// Tokens should be returned alongside ErrExpired for refresh purposes
@@ -647,12 +647,12 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			// Store tokens with zero ExpiresAt (no expiry set).
 			// These should be retrievable — Redis TTL handles actual expiration.
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "no-expiry", &UpstreamTokens{
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "no-expiry", "provider-a", &UpstreamTokens{
 				AccessToken: "no-expiry-token",
 				ProviderID:  "test-provider",
 			}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "no-expiry")
+			retrieved, err := s.GetUpstreamTokens(ctx, "no-expiry", "provider-a")
 			require.NoError(t, err)
 			require.NotNil(t, retrieved)
 			assert.Equal(t, "no-expiry-token", retrieved.AccessToken)
@@ -663,10 +663,307 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("nil tokens is valid", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", nil))
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-id")
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", "provider-a", nil))
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-id", "provider-a")
 			require.NoError(t, err)
 			assert.Nil(t, retrieved)
+		})
+	})
+
+	t.Run("multi-provider store and get", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			tokensA := &UpstreamTokens{
+				ProviderID:  "github",
+				AccessToken: "github-access",
+				UserID:      "user-1",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}
+			tokensB := &UpstreamTokens{
+				ProviderID:  "google",
+				AccessToken: "google-access",
+				UserID:      "user-1",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-multi", "github", tokensA))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-multi", "google", tokensB))
+
+			retrievedA, err := s.GetUpstreamTokens(ctx, "session-multi", "github")
+			require.NoError(t, err)
+			assert.Equal(t, "github-access", retrievedA.AccessToken)
+
+			retrievedB, err := s.GetUpstreamTokens(ctx, "session-multi", "google")
+			require.NoError(t, err)
+			assert.Equal(t, "google-access", retrievedB.AccessToken)
+		})
+	})
+
+	t.Run("GetAllUpstreamTokens with two providers", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			tokensA := &UpstreamTokens{
+				ProviderID:  "github",
+				AccessToken: "github-access",
+				UserID:      "user-1",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}
+			tokensB := &UpstreamTokens{
+				ProviderID:  "google",
+				AccessToken: "google-access",
+				UserID:      "user-1",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-all", "github", tokensA))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-all", "google", tokensB))
+
+			allTokens, err := s.GetAllUpstreamTokens(ctx, "session-all")
+			require.NoError(t, err)
+			require.Len(t, allTokens, 2)
+
+			assert.Equal(t, "github-access", allTokens["github"].AccessToken)
+			assert.Equal(t, "google-access", allTokens["google"].AccessToken)
+		})
+	})
+
+	t.Run("GetAllUpstreamTokens unknown session", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			allTokens, err := s.GetAllUpstreamTokens(ctx, "unknown-session")
+			require.NoError(t, err)
+			assert.Empty(t, allTokens)
+		})
+	})
+
+	t.Run("session delete wipes all providers", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-wipe", "github", &UpstreamTokens{
+				AccessToken: "gh-token", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-wipe", "google", &UpstreamTokens{
+				AccessToken: "gl-token", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+
+			require.NoError(t, s.DeleteUpstreamTokens(ctx, "session-wipe"))
+
+			_, err := s.GetUpstreamTokens(ctx, "session-wipe", "github")
+			requireRedisNotFoundError(t, err)
+
+			_, err = s.GetUpstreamTokens(ctx, "session-wipe", "google")
+			requireRedisNotFoundError(t, err)
+
+			allTokens, err := s.GetAllUpstreamTokens(ctx, "session-wipe")
+			require.NoError(t, err)
+			assert.Empty(t, allTokens)
+		})
+	})
+
+	t.Run("empty providerName returns error for Store and Get", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.StoreUpstreamTokens(ctx, "session-ep", "", &UpstreamTokens{AccessToken: "t"})
+			require.Error(t, err)
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+
+			_, err = s.GetUpstreamTokens(ctx, "session-ep", "")
+			require.Error(t, err)
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+}
+
+// --- Bulk Migration Tests ---
+
+func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
+	t.Parallel()
+
+	t.Run("migrates legacy token key to new format", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write directly to the legacy key format (upstream:{sessionID})
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "legacy-session")
+			legacyData := `{"provider_id":"oidc","access_token":"legacy-at","refresh_token":"legacy-rt","expires_at":0,"user_id":"user-1","upstream_subject":"sub-1","client_id":"client-1"}`
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
+
+			// Legacy key should be deleted
+			exists, err := s.client.Exists(ctx, legacyKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(0), exists, "legacy key should be deleted after migration")
+
+			// New key should be readable
+			tokens, err := s.GetUpstreamTokens(ctx, "legacy-session", "default")
+			require.NoError(t, err)
+			require.NotNil(t, tokens)
+			assert.Equal(t, "legacy-at", tokens.AccessToken)
+			assert.Equal(t, "legacy-rt", tokens.RefreshToken)
+			assert.Equal(t, "default", tokens.ProviderID)
+			assert.Equal(t, "user-1", tokens.UserID)
+		})
+	})
+
+	t.Run("skips legacy token with logical provider name", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write a token under the legacy key with a logical provider name
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "logical-session")
+			legacyData := `{"provider_id":"some-logical-name","access_token":"logical-at","expires_at":0}`
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
+
+			// Legacy key should still exist (not migrated)
+			exists, err := s.client.Exists(ctx, legacyKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), exists, "legacy key should not be deleted for non-legacy provider ID")
+
+			// New key should not exist
+			_, err = s.GetUpstreamTokens(ctx, "logical-session", "default")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("idempotent: skips when new key already exists", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write legacy key
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "both-keys")
+			legacyData := `{"provider_id":"oidc","access_token":"old-token","expires_at":0}`
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			// Write new-format key
+			newTokens := &UpstreamTokens{ProviderID: "default", AccessToken: "new-token", ExpiresAt: time.Now().Add(time.Hour)}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "both-keys", "default", newTokens))
+
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
+
+			// New key should have the original new-format data, not the legacy data
+			tokens, err := s.GetUpstreamTokens(ctx, "both-keys", "default")
+			require.NoError(t, err)
+			assert.Equal(t, "new-token", tokens.AccessToken)
+		})
+	})
+
+	t.Run("migrates provider identity under new name", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			now := time.Now()
+			// Create a user first
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-migrate", CreatedAt: now, UpdatedAt: now}))
+
+			// Create identity under legacy provider ID
+			legacyIdentity := &ProviderIdentity{
+				UserID: "user-migrate", ProviderID: "oidc", ProviderSubject: "sub-123",
+				LinkedAt: now, LastUsedAt: now,
+			}
+			require.NoError(t, s.CreateProviderIdentity(ctx, legacyIdentity))
+
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "my-upstream", "oidc"))
+
+			// Identity should now be findable under the new provider name
+			newIdentity, err := s.GetProviderIdentity(ctx, "my-upstream", "sub-123")
+			require.NoError(t, err)
+			assert.Equal(t, "user-migrate", newIdentity.UserID)
+			assert.Equal(t, "my-upstream", newIdentity.ProviderID)
+
+			// Legacy identity should still exist (not deleted for safe rollback)
+			legacyRetrieved, err := s.GetProviderIdentity(ctx, "oidc", "sub-123")
+			require.NoError(t, err)
+			assert.Equal(t, "user-migrate", legacyRetrieved.UserID)
+		})
+	})
+
+	t.Run("skips provider identity migration when names match", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-same", CreatedAt: now, UpdatedAt: now}))
+
+			// Create identity where legacy ID equals provider name
+			identity := &ProviderIdentity{
+				UserID: "user-same", ProviderID: "oidc", ProviderSubject: "sub-same",
+				LinkedAt: now, LastUsedAt: now,
+			}
+			require.NoError(t, s.CreateProviderIdentity(ctx, identity))
+
+			// When legacyProviderID == providerName, nothing should be migrated
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "oidc", "oidc"))
+
+			// Only the original identity should exist
+			retrieved, err := s.GetProviderIdentity(ctx, "oidc", "sub-same")
+			require.NoError(t, err)
+			assert.Equal(t, "user-same", retrieved.UserID)
+		})
+	})
+
+	t.Run("no-op on empty database", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
+		})
+	})
+
+	t.Run("migrates multiple legacy token keys", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write multiple legacy keys
+			for i := 0; i < 3; i++ {
+				legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, fmt.Sprintf("session-%d", i))
+				legacyData := fmt.Sprintf(`{"provider_id":"oidc","access_token":"at-%d","refresh_token":"rt-%d","expires_at":0,"user_id":"user-%d"}`, i, i, i)
+				require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+			}
+
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
+
+			// All should be readable under new format
+			for i := 0; i < 3; i++ {
+				tokens, err := s.GetUpstreamTokens(ctx, fmt.Sprintf("session-%d", i), "default")
+				require.NoError(t, err)
+				assert.Equal(t, fmt.Sprintf("at-%d", i), tokens.AccessToken)
+				assert.Equal(t, "default", tokens.ProviderID)
+			}
+		})
+	})
+
+	t.Run("does not touch new-format keys during scan", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Write a new-format key directly
+			newTokens := &UpstreamTokens{
+				ProviderID: "default", AccessToken: "new-at", ExpiresAt: time.Now().Add(time.Hour),
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "new-session", "default", newTokens))
+
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
+
+			// New key should be unchanged
+			tokens, err := s.GetUpstreamTokens(ctx, "new-session", "default")
+			require.NoError(t, err)
+			assert.Equal(t, "new-at", tokens.AccessToken)
+		})
+	})
+
+	t.Run("DeleteUser removes migrated upstream tokens", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Create a user so DeleteUser has something to delete.
+			userID := "migrate-delete-user"
+			require.NoError(t, s.CreateUser(ctx, &User{
+				ID: userID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}))
+
+			// Write a legacy token key with that user's ID.
+			legacyKey := redisKey(s.keyPrefix, KeyTypeUpstream, "del-session")
+			legacyData := fmt.Sprintf(
+				`{"provider_id":"oidc","access_token":"del-at","refresh_token":"del-rt","expires_at":0,"user_id":"%s","upstream_subject":"sub-del","client_id":"client-del"}`,
+				userID,
+			)
+			require.NoError(t, s.client.Set(ctx, legacyKey, legacyData, time.Hour).Err())
+
+			// Migrate — this should populate user:upstream:{userID} with the new key.
+			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
+
+			// Sanity: token is reachable under the new key.
+			tokens, err := s.GetUpstreamTokens(ctx, "del-session", "default")
+			require.NoError(t, err)
+			assert.Equal(t, "del-at", tokens.AccessToken)
+
+			// Delete the user — cascade should remove the migrated upstream token.
+			require.NoError(t, s.DeleteUser(ctx, userID))
+
+			// The upstream token must be gone.
+			_, err = s.GetUpstreamTokens(ctx, "del-session", "default")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound, "migrated token should be removed by DeleteUser cascade")
 		})
 	})
 }
@@ -809,8 +1106,8 @@ func TestRedisStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 			ProviderID: "google", AccessToken: "other-token", UserID: "other-user",
 			UpstreamSubject: "other-google-sub", ClientID: "client-1", ExpiresAt: now.Add(time.Hour),
 		}
-		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-user", userTokens))
-		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-other", otherTokens))
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-user", "provider-a", userTokens))
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-other", "provider-a", otherTokens))
 
 		// Delete the user - should cascade delete associated data
 		require.NoError(t, s.DeleteUser(ctx, "user-cascade"))
@@ -827,7 +1124,7 @@ func TestRedisStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the user's upstream tokens are gone
-		_, err = s.GetUpstreamTokens(ctx, "session-user")
+		_, err = s.GetUpstreamTokens(ctx, "session-user", "provider-a")
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the other user still exists
@@ -841,7 +1138,7 @@ func TestRedisStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.Equal(t, "other-user", retrieved.UserID)
 
 		// Verify the other user's upstream tokens are still there
-		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other")
+		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other", "provider-a")
 		require.NoError(t, err)
 		assert.Equal(t, "other-token", otherRetrieved.AccessToken)
 	})
@@ -1037,7 +1334,7 @@ func TestRedisStorage_InputValidation(t *testing.T) {
 			return s.CreatePKCERequestSession(ctx, "sig", nil)
 		}, fosite.ErrInvalidRequest},
 		{"StoreUpstreamTokens empty sessionID", func(ctx context.Context, s *RedisStorage) error {
-			return s.StoreUpstreamTokens(ctx, "", &UpstreamTokens{AccessToken: "t"})
+			return s.StoreUpstreamTokens(ctx, "", "provider-a", &UpstreamTokens{AccessToken: "t"})
 		}, fosite.ErrInvalidRequest},
 		{"StorePendingAuthorization empty state", func(ctx context.Context, s *RedisStorage) error {
 			return s.StorePendingAuthorization(ctx, "", &PendingAuthorization{ClientID: "c"})

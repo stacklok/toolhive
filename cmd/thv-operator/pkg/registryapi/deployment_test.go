@@ -85,8 +85,10 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				// Verify pod template labels
 				assert.Equal(t, expectedLabels, deployment.Spec.Template.Labels)
 
-				// Verify pod template annotations
-				assert.Equal(t, "hash-dummy-value", deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"])
+				// Verify pod template annotations - config hash should be a real computed hash, not a dummy
+				configHash := deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"]
+				assert.NotEmpty(t, configHash)
+				assert.NotEqual(t, "hash-dummy-value", configHash)
 
 				// Verify service account uses the dynamically generated name (registry-name + "-registry-api")
 				assert.Equal(t, "test-registry-registry-api", deployment.Spec.Template.Spec.ServiceAccountName)
@@ -568,4 +570,354 @@ func TestHasVolumeMount(t *testing.T) {
 			assert.Equal(t, tt.expected, result, tt.description)
 		})
 	}
+}
+
+func TestDeploymentNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		existing *appsv1.Deployment
+		desired  *appsv1.Deployment
+		expected bool
+	}{
+		{
+			name:     "nil existing returns true",
+			existing: nil,
+			desired:  &appsv1.Deployment{},
+			expected: true,
+		},
+		{
+			name:     "nil desired returns true",
+			existing: &appsv1.Deployment{},
+			desired:  nil,
+			expected: true,
+		},
+		{
+			name: "identical deployments return false",
+			existing: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"toolhive.stacklok.io/podtemplatespec-hash": "abc123",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "hash1",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "registry-api",
+								Image: "ghcr.io/stacklok/thv-registry-api:latest",
+							}},
+						},
+					},
+				},
+			},
+			desired: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"toolhive.stacklok.io/podtemplatespec-hash": "abc123",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "hash1",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "registry-api",
+								Image: "ghcr.io/stacklok/thv-registry-api:latest",
+							}},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "different config hash returns true",
+			existing: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "old-hash",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			desired: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "new-hash",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "different podtemplatespec hash returns true",
+			existing: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"toolhive.stacklok.io/podtemplatespec-hash": "old-pts-hash",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			desired: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"toolhive.stacklok.io/podtemplatespec-hash": "new-pts-hash",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "podtemplatespec hash added returns true",
+			existing: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			desired: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"toolhive.stacklok.io/podtemplatespec-hash": "new-hash",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "podtemplatespec hash removed returns true",
+			existing: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"toolhive.stacklok.io/podtemplatespec-hash": "old-hash",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			desired: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Image: "img:v1"}},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "different container image returns true",
+			existing: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "registry-api",
+								Image: "ghcr.io/stacklok/thv-registry-api:v1.0.0",
+							}},
+						},
+					},
+				},
+			},
+			desired: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"toolhive.stacklok.dev/config-hash": "same",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "registry-api",
+								Image: "ghcr.io/stacklok/thv-registry-api:v2.0.0",
+							}},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := deploymentNeedsUpdate(tt.existing, tt.desired)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no podtemplatespec has no hash annotation", func(t *testing.T) {
+		t.Parallel()
+		mgr := &manager{}
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "test-namespace",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
+				},
+			},
+		}
+		configManager := config.NewConfigManager(mcpRegistry)
+		deployment := mgr.buildRegistryAPIDeployment(context.Background(), mcpRegistry, configManager)
+
+		require.NotNil(t, deployment)
+		_, hasPTSHash := deployment.Annotations[podTemplateSpecHashAnnotation]
+		assert.False(t, hasPTSHash, "should not have podtemplatespec hash when no PodTemplateSpec is set")
+	})
+
+	t.Run("with podtemplatespec has hash annotation", func(t *testing.T) {
+		t.Parallel()
+		mgr := &manager{}
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "test-namespace",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"registry-creds"}]}}`),
+				},
+			},
+		}
+		configManager := config.NewConfigManager(mcpRegistry)
+		deployment := mgr.buildRegistryAPIDeployment(context.Background(), mcpRegistry, configManager)
+
+		require.NotNil(t, deployment)
+		ptsHash, hasPTSHash := deployment.Annotations[podTemplateSpecHashAnnotation]
+		assert.True(t, hasPTSHash, "should have podtemplatespec hash annotation")
+		assert.NotEmpty(t, ptsHash)
+	})
+
+	t.Run("different podtemplatespec produces different hash", func(t *testing.T) {
+		t.Parallel()
+		mgr := &manager{}
+		base := mcpv1alpha1.MCPRegistrySpec{
+			Registries: []mcpv1alpha1.MCPRegistryConfig{
+				{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
+			},
+		}
+
+		registry1 := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries:      base.Registries,
+				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-a"}]}}`)},
+			},
+		}
+		registry2 := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries:      base.Registries,
+				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-b"}]}}`)},
+			},
+		}
+
+		d1 := mgr.buildRegistryAPIDeployment(context.Background(), registry1, config.NewConfigManager(registry1))
+		d2 := mgr.buildRegistryAPIDeployment(context.Background(), registry2, config.NewConfigManager(registry2))
+
+		require.NotNil(t, d1)
+		require.NotNil(t, d2)
+		assert.NotEqual(t, d1.Annotations[podTemplateSpecHashAnnotation], d2.Annotations[podTemplateSpecHashAnnotation])
+	})
 }

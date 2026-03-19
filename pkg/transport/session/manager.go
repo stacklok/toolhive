@@ -113,6 +113,26 @@ func NewManagerWithStorage(ttl time.Duration, factory Factory, storage Storage) 
 	return m
 }
 
+// NewManagerWithRedis creates a session manager backed by Redis.
+// cfg supplies the Redis connection configuration; ttl is applied as both the
+// manager's cleanup interval and the Redis key TTL.
+// Returns an error if the Redis client cannot be constructed (e.g. invalid config or TLS error).
+// Callers that do not require Redis should continue to use NewManager or NewTypedManager.
+//
+// cfg is intentionally passed by value (not *RedisConfig): NewManagerWithRedis is a dedicated
+// Redis constructor. Callers that want LocalStorage should use NewManager or NewTypedManager
+// directly; there is no "nil config falls back to local" path by design.
+//
+// context.Background() is passed to NewRedisStorage because the Ping timeout is already bounded
+// by cfg.DialTimeout (default 5 s). A redundant context deadline at this layer would add no value.
+func NewManagerWithRedis(ttl time.Duration, factory Factory, cfg RedisConfig) (*Manager, error) {
+	storage, err := NewRedisStorage(context.Background(), cfg, ttl)
+	if err != nil {
+		return nil, fmt.Errorf("creating redis storage: %w", err)
+	}
+	return NewManagerWithStorage(ttl, factory, storage), nil
+}
+
 func (m *Manager) cleanupRoutine() {
 	ticker := time.NewTicker(m.ttl / 2)
 	defer ticker.Stop()

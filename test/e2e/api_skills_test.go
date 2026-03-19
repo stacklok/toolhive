@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/registry"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -182,6 +184,87 @@ This is a test skill.
 	)).To(Succeed())
 
 	return skillDir
+}
+
+// buildAndInstallSkill creates a skill directory, builds it, and installs by
+// plain name via the build-then-install flow. Returns the skill name.
+func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
+	skillDir := createTestSkillDir(skillName, description)
+
+	buildResp := buildSkill(server, skillDir, "")
+	defer buildResp.Body.Close()
+	ExpectWithOffset(1, buildResp.StatusCode).To(Equal(http.StatusOK))
+
+	installResp := installSkill(server, installSkillRequest{Name: skillName})
+	defer installResp.Body.Close()
+	ExpectWithOffset(1, installResp.StatusCode).To(Equal(http.StatusCreated))
+}
+
+func pushSkill(server *e2e.Server, reference string) *http.Response {
+	reqBody := pushSkillRequest{Reference: reference}
+	jsonData, err := json.Marshal(reqBody)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills/push",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+type pushSkillRequest struct {
+	Reference string `json:"reference"`
+}
+
+// createUpstreamRegistryWithSkill creates a JSON file in the upstream registry
+// format containing a single skill entry that points to the given OCI reference.
+func createUpstreamRegistryWithSkill(skillName, ociReference string) string {
+	registryData := map[string]interface{}{
+		"$schema": "https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json",
+		"version": "1.0.0",
+		"meta":    map[string]string{"last_updated": "2025-01-01T00:00:00Z"},
+		"data": map[string]interface{}{
+			// A dummy server is required because the config validator rejects
+			// upstream registry files that contain no servers or groups.
+			"servers": []map[string]interface{}{
+				{
+					"name":        "dummy-server",
+					"description": "Placeholder to satisfy registry validation",
+					"repository": map[string]string{
+						"url":  "https://github.com/example/dummy",
+						"type": "git",
+					},
+					"version_detail": map[string]string{
+						"version": "0.0.1",
+					},
+				},
+			},
+			"skills": []map[string]interface{}{
+				{
+					"namespace":   "e2e-test",
+					"name":        skillName,
+					"description": "E2E test skill",
+					"version":     "0.1.0",
+					"packages": []map[string]interface{}{
+						{
+							"registryType": "oci",
+							"identifier":   ociReference,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(registryData)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	tempDir := GinkgoT().TempDir()
+	testFile := filepath.Join(tempDir, "test-skill-registry.json")
+	ExpectWithOffset(1, os.WriteFile(testFile, data, 0o600)).To(Succeed())
+	return testFile
 }
 
 // Test suite
@@ -460,10 +543,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		})
 
 		It("should include installed skills", func() {
-			By("Installing a skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: "list-test-skill"})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "list-test-skill", "A skill for list testing")
 
 			By("Listing skills")
 			resp := listSkills(apiServer)
@@ -496,23 +577,13 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			}
 		})
 
-		It("should install a skill with pending status", func() {
-			By("Installing a skill by name")
+		It("should return 404 for plain name not in local store or registry", func() {
+			By("Attempting to install a skill by plain name without building first")
 			resp := installSkill(apiServer, installSkillRequest{Name: "install-test-skill"})
 			defer resp.Body.Close()
 
-			By("Verifying response status is 201 Created")
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-
-			By("Verifying the skill has pending status")
-			var result installSkillResponse
-			Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
-			Expect(result.Skill.Status).To(Equal("pending"))
-			Expect(result.Skill.Metadata.Name).To(Equal("install-test-skill"))
-			Expect(result.Skill.InstalledAt).ToNot(BeZero(), "InstalledAt should be a valid timestamp")
-
-			By("Verifying Location header is set")
-			Expect(resp.Header.Get("Location")).To(Equal("/api/v1beta/skills/install-test-skill"))
+			By("Verifying response status is 404 Not Found")
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
 		It("should reject empty name", func() {
@@ -533,18 +604,16 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 		})
 
-		It("should reject duplicate install", func() {
-			By("Installing a skill")
-			resp := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
-			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+		It("should be idempotent for same digest", func() {
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "dup-test-skill", "A skill for idempotent testing")
 
-			By("Attempting to install the same skill again")
+			By("Installing the same skill again (same digest)")
 			resp2 := installSkill(apiServer, installSkillRequest{Name: "dup-test-skill"})
 			defer resp2.Body.Close()
 
-			By("Verifying response status is 409 Conflict")
-			Expect(resp2.StatusCode).To(Equal(http.StatusConflict))
+			By("Verifying response status is 201 Created (idempotent no-op)")
+			Expect(resp2.StatusCode).To(Equal(http.StatusCreated))
 		})
 
 		It("should reject malformed JSON", func() {
@@ -569,10 +638,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		})
 
 		It("should return info for an installed skill", func() {
-			By("Installing a skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: "info-test-skill"})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "info-test-skill", "A skill for info testing")
 
 			By("Getting skill info")
 			resp := getSkillInfo(apiServer, "info-test-skill")
@@ -608,10 +675,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 
 	Describe("DELETE /api/v1beta/skills/{name} - Uninstall a skill", func() {
 		It("should uninstall an installed skill", func() {
-			By("Installing a skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: "uninstall-test"})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing a skill")
+			buildAndInstallSkill(apiServer, "uninstall-test", "A skill for uninstall testing")
 
 			By("Uninstalling the skill")
 			resp := uninstallSkill(apiServer, "uninstall-test")
@@ -670,7 +735,13 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should register the skill in the group on install", func() {
 			skillName := "group-install-skill"
 
-			By("Installing a skill into the group")
+			By("Creating and building the skill")
+			skillDir := createTestSkillDir(skillName, "A skill for group install testing")
+			buildResp := buildSkill(apiServer, skillDir, "")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing the skill into the group")
 			resp := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
@@ -693,10 +764,22 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			skillInGroup := "group-filter-in"
 			skillOutGroup := "group-filter-out"
 
-			By("Installing a skill into the group")
+			By("Creating and building the in-group skill")
+			inDir := createTestSkillDir(skillInGroup, "A skill for group filter testing (in)")
+			inBuild := buildSkill(apiServer, inDir, "")
+			defer inBuild.Body.Close()
+			Expect(inBuild.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing the skill into the group")
 			r1 := installSkill(apiServer, installSkillRequest{Name: skillInGroup, Group: groupName})
 			defer r1.Body.Close()
 			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Creating and building the out-of-group skill")
+			outDir := createTestSkillDir(skillOutGroup, "A skill for group filter testing (out)")
+			outBuild := buildSkill(apiServer, outDir, "")
+			defer outBuild.Body.Close()
+			Expect(outBuild.StatusCode).To(Equal(http.StatusOK))
 
 			By("Installing a skill without a group")
 			r2 := installSkill(apiServer, installSkillRequest{Name: skillOutGroup})
@@ -722,7 +805,13 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should remove the skill from the group on uninstall", func() {
 			skillName := "group-uninstall-skill"
 
-			By("Installing a skill into the group")
+			By("Creating and building the skill")
+			skillDir := createTestSkillDir(skillName, "A skill for group uninstall testing")
+			buildResp := buildSkill(apiServer, skillDir, "")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing the skill into the group")
 			r1 := installSkill(apiServer, installSkillRequest{Name: skillName, Group: groupName})
 			defer r1.Body.Close()
 			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
@@ -747,9 +836,17 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		})
 
 		It("should return error when installing into a non-existent group", func() {
-			By("Attempting to install a skill into a non-existent group")
+			skillName := "group-noexist-skill"
+
+			By("Creating and building the skill")
+			skillDir := createTestSkillDir(skillName, "A skill for non-existent group testing")
+			buildResp := buildSkill(apiServer, skillDir, "")
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Attempting to install the skill into a non-existent group")
 			resp := installSkill(apiServer, installSkillRequest{
-				Name:  "group-noexist-skill",
+				Name:  skillName,
 				Group: "no-such-group-xyz",
 			})
 			defer resp.Body.Close()
@@ -760,31 +857,32 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 	})
 
 	Describe("Overwrite protection", func() {
-		It("should reject install over existing skill without force", func() {
+		AfterEach(func() {
+			for _, name := range []string{"overwrite-noflag", "overwrite-reinstall", "overwrite-force-dup"} {
+				resp := uninstallSkill(apiServer, name)
+				resp.Body.Close()
+			}
+		})
+
+		It("should be idempotent when reinstalling same digest", func() {
 			skillName := "overwrite-noflag"
 
-			By("Installing the skill for the first time")
-			resp := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill for the first time")
+			buildAndInstallSkill(apiServer, skillName, "A skill for overwrite testing")
 
-			By("Uninstalling via API so the DB record is gone but leave the concept of a conflict test")
-			// Instead we test duplicate detection: installing the same name again
-			// should return 409 Conflict (the DB record still exists).
+			By("Installing the same skill again (same local artifact)")
 			resp2 := installSkill(apiServer, installSkillRequest{Name: skillName})
 			defer resp2.Body.Close()
 
-			By("Verifying response status is 409 Conflict")
-			Expect(resp2.StatusCode).To(Equal(http.StatusConflict))
+			By("Verifying response status is 201 Created (idempotent, same digest)")
+			Expect(resp2.StatusCode).To(Equal(http.StatusCreated))
 		})
 
 		It("should allow reinstall after uninstall", func() {
 			skillName := "overwrite-reinstall"
 
-			By("Installing the skill")
-			r1 := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer r1.Body.Close()
-			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill")
+			buildAndInstallSkill(apiServer, skillName, "A skill for reinstall testing")
 
 			By("Uninstalling the skill")
 			r2 := uninstallSkill(apiServer, skillName)
@@ -797,20 +895,18 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			Expect(r3.StatusCode).To(Equal(http.StatusCreated))
 		})
 
-		It("should still reject duplicate DB record even with force flag", func() {
+		It("should be idempotent with force flag and same digest", func() {
 			skillName := "overwrite-force-dup"
 
-			By("Installing the skill for the first time")
-			r1 := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer r1.Body.Close()
-			Expect(r1.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill for the first time")
+			buildAndInstallSkill(apiServer, skillName, "A skill for force-dup testing")
 
-			By("Force-installing the same skill again (force is for filesystem conflicts, not DB duplicates)")
+			By("Force-installing the same skill again (same digest)")
 			r2 := installSkill(apiServer, installSkillRequest{Name: skillName, Force: true})
 			defer r2.Body.Close()
 
-			By("Verifying response is still 409 Conflict (DB record exists)")
-			Expect(r2.StatusCode).To(Equal(http.StatusConflict))
+			By("Verifying response is 201 Created (idempotent, same digest)")
+			Expect(r2.StatusCode).To(Equal(http.StatusCreated))
 		})
 	})
 
@@ -843,10 +939,8 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 		It("should support install → list → info → uninstall → list → info", func() {
 			skillName := "lifecycle-test"
 
-			By("Installing the skill")
-			installResp := installSkill(apiServer, installSkillRequest{Name: skillName})
-			defer installResp.Body.Close()
-			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+			By("Building and installing the skill")
+			buildAndInstallSkill(apiServer, skillName, "A skill for lifecycle testing")
 
 			By("Listing skills — should contain the skill")
 			listResp := listSkills(apiServer)
@@ -890,6 +984,60 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			infoResp2 := getSkillInfo(apiServer, skillName)
 			defer infoResp2.Body.Close()
 			Expect(infoResp2.StatusCode).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("Registry lookup install", func() {
+		It("should resolve a plain name from the registry and install from OCI", func() {
+			skillName := "registry-lookup-skill"
+
+			By("Starting an in-process OCI registry")
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+
+			// The OCI reference must use the skill name as the last path
+			// component — the supply-chain check in installFromOCI validates
+			// that the artifact's declared name matches the repository name.
+			ociRef := fmt.Sprintf("%s/e2e-test/%s:v0.1.0",
+				ociRegistry.Listener.Addr().String(), skillName)
+
+			By("Creating and building the skill locally")
+			skillDir := createTestSkillDir(skillName, "A skill for registry lookup E2E testing")
+			buildResp := buildSkill(apiServer, skillDir, ociRef)
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Pushing the skill to the in-process OCI registry")
+			pushResp := pushSkill(apiServer, ociRef)
+			defer pushResp.Body.Close()
+			Expect(pushResp.StatusCode).To(Equal(http.StatusNoContent))
+
+			By("Creating an upstream-format registry JSON pointing to the OCI reference")
+			registryFile := createUpstreamRegistryWithSkill(skillName, ociRef)
+
+			By("Configuring the server to use the test registry")
+			updateResp := updateRegistry(apiServer, "default", map[string]interface{}{
+				"local_path": registryFile,
+			})
+			defer updateResp.Body.Close()
+			Expect(updateResp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Installing by plain skill name — should resolve from registry")
+			installResp := installSkill(apiServer, installSkillRequest{Name: skillName})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Verifying the skill is fully installed (not pending)")
+			var result installSkillResponse
+			Expect(json.NewDecoder(installResp.Body).Decode(&result)).To(Succeed())
+			Expect(result.Skill.Status).To(Equal("installed"))
+			Expect(result.Skill.Metadata.Name).To(Equal(skillName))
+			Expect(result.Skill.Digest).ToNot(BeEmpty())
+			Expect(result.Skill.Metadata.Version).To(Equal("0.1.0"))
+
+			By("Cleaning up")
+			cleanupResp := uninstallSkill(apiServer, skillName)
+			defer cleanupResp.Body.Close()
 		})
 	})
 })

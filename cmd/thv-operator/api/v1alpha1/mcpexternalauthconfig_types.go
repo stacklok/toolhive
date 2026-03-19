@@ -37,7 +37,6 @@ const (
 // ExternalAuthType represents the type of external authentication
 type ExternalAuthType string
 
-
 // MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
 // MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
 // MCPServer resources in the same namespace.

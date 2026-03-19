@@ -73,7 +73,7 @@ func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Convert
 // (auth, aggregation, composite tools, telemetry) are explicitly converted below.
 //
 // The returned RuntimeConfig embeds Config (the serializable config) and may additionally
-// carry an AuthServer config when AuthServerConfigRef is set on the VirtualMCPServer.
+// carry an AuthServer config when AuthServerConfig is set on the VirtualMCPServer spec.
 func (c *Converter) Convert(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -157,9 +157,9 @@ func (c *Converter) Convert(
 
 	rtCfg := &vmcpconfig.RuntimeConfig{Config: *config}
 
-	// Convert AuthServerConfig if an auth server reference is specified.
-	if vmcp.Spec.AuthServerConfigRef != nil {
-		authServerCfg, err := c.convertAuthServerConfig(ctx, vmcp, config)
+	// Convert inline AuthServerConfig if specified.
+	if vmcp.Spec.AuthServerConfig != nil {
+		authServerCfg, err := c.convertAuthServerConfig(vmcp, config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert auth server config: %w", err)
 		}
@@ -269,56 +269,23 @@ func mapResolvedOIDCToVmcpConfig(
 	return config
 }
 
-// convertAuthServerConfig fetches the MCPExternalAuthConfig referenced by
-// AuthServerConfigRef, verifies it is of type "embeddedAuthServer", and maps its
-// fields to an authserver.RunConfig wrapped in a vmcpconfig.AuthServerConfig.
+// convertAuthServerConfig converts the inline EmbeddedAuthServerConfig from the
+// VirtualMCPServer spec to an authserver.RunConfig wrapped in AuthServerConfig.
 //
 // Secret references are converted to file paths following the convention
 // /secrets/{secret-name}/{key}, which is the path used by the deployment controller
 // when mounting Kubernetes secrets as volumes into the vMCP pod.
 //
-// The AllowedAudiences field is derived from the incoming OIDC audience configured
-// on the VirtualMCPServer rather than being repeated on EmbeddedAuthServerConfig.
-func (c *Converter) convertAuthServerConfig(
-	ctx context.Context,
+// AllowedAudiences is derived from the incoming OIDC Resource (RFC 8707) or Audience.
+func (*Converter) convertAuthServerConfig(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	config *vmcpconfig.Config,
 ) (*vmcpconfig.AuthServerConfig, error) {
-	ref := vmcp.Spec.AuthServerConfigRef
-	if ref == nil {
+	embCfg := vmcp.Spec.AuthServerConfig
+	if embCfg == nil {
 		return nil, nil
 	}
 
-	// Fetch the referenced MCPExternalAuthConfig resource.
-	extAuthCfg := &mcpv1alpha1.MCPExternalAuthConfig{}
-	if err := c.k8sClient.Get(ctx, types.NamespacedName{
-		Name:      ref.Name,
-		Namespace: vmcp.Namespace,
-	}, extAuthCfg); err != nil {
-		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s/%s: %w",
-			vmcp.Namespace, ref.Name, err)
-	}
-
-	// Defense-in-depth: verify the referenced config is the expected type.
-	// The reconciler should have already validated this, but we check again here
-	// to catch any inconsistencies between validation and conversion time.
-	if extAuthCfg.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
-		return nil, fmt.Errorf(
-			"MCPExternalAuthConfig %q has type %q but authServerConfigRef requires type %q",
-			ref.Name, extAuthCfg.Spec.Type, mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer)
-	}
-
-	// The EmbeddedAuthServer field must be non-nil when type is embeddedAuthServer
-	// (enforced by CRD validation), but check defensively.
-	if extAuthCfg.Spec.EmbeddedAuthServer == nil {
-		return nil, fmt.Errorf(
-			"MCPExternalAuthConfig %q has type embeddedAuthServer but embeddedAuthServer config is nil",
-			ref.Name)
-	}
-
-	embCfg := extAuthCfg.Spec.EmbeddedAuthServer
-
-	// Build the RunConfig and derive AllowedAudiences from the vMCP's incoming OIDC audience.
 	rc, err := buildAuthServerRunConfig(embCfg, vmcp)
 	if err != nil {
 		return nil, err
@@ -346,10 +313,10 @@ func buildAuthServerRunConfig(
 		rc.SigningKeyConfig = convertSigningKeyRefs(embCfg.SigningKeySecretRefs)
 	}
 
-	// Map HMAC secret refs to file paths.
+	// Map HMAC secret refs to file paths using the same mount paths as GenerateAuthServerVolumes.
 	for i := range embCfg.HMACSecretRefs {
-		ref := &embCfg.HMACSecretRefs[i]
-		filePath := fmt.Sprintf("%s/auth-server-hmac-%d/%s", secretMountBasePath, i, ref.Key)
+		filePath := fmt.Sprintf("%s/"+controllerutil.AuthServerHMACFilePattern,
+			controllerutil.AuthServerHMACMountPath, i)
 		rc.HMACSecretFiles = append(rc.HMACSecretFiles, filePath)
 	}
 
@@ -387,12 +354,14 @@ func convertSigningKeyRefs(refs []mcpv1alpha1.SecretKeyRef) *authserver.SigningK
 	if len(refs) == 0 {
 		return nil
 	}
+	// Use the same mount paths as GenerateAuthServerVolumes (controllerutil).
 	cfg := &authserver.SigningKeyRunConfig{
-		KeyDir:         fmt.Sprintf("%s/auth-server-signing-key-0", secretMountBasePath),
-		SigningKeyFile: refs[0].Key,
+		KeyDir:         controllerutil.AuthServerKeysMountPath,
+		SigningKeyFile: fmt.Sprintf(controllerutil.AuthServerKeyFilePattern, 0),
 	}
-	for i, ref := range refs[1:] {
-		fallbackPath := fmt.Sprintf("%s/auth-server-signing-key-%d/%s", secretMountBasePath, i+1, ref.Key)
+	for i := range refs[1:] {
+		fallbackPath := fmt.Sprintf("%s/"+controllerutil.AuthServerKeyFilePattern,
+			controllerutil.AuthServerKeysMountPath, i+1)
 		cfg.FallbackKeyFiles = append(cfg.FallbackKeyFiles, fallbackPath)
 	}
 	return cfg
@@ -414,11 +383,11 @@ func deriveAllowedAudiences(config *vmcpconfig.Config) []string {
 	if config.IncomingAuth == nil || config.IncomingAuth.OIDC == nil {
 		return nil
 	}
-	oidc := config.IncomingAuth.OIDC
+	oidcCfg := config.IncomingAuth.OIDC
 	// Resource (RFC 8707) takes precedence, falling back to Audience.
-	value := oidc.Resource
+	value := oidcCfg.Resource
 	if value == "" {
-		value = oidc.Audience
+		value = oidcCfg.Audience
 	}
 	if value == "" {
 		return nil
@@ -436,6 +405,17 @@ func convertUpstreamProviders(
 		up, err := convertUpstreamProvider(&providers[i])
 		if err != nil {
 			return nil, fmt.Errorf("upstream provider %q (index %d): %w", provider.Name, i, err)
+		}
+		// Override client secret reference to use env var (matching GenerateAuthServerEnvVars)
+		// instead of file path. The deployment controller mounts secrets as indexed env vars.
+		envVarName := fmt.Sprintf("%s_%d", controllerutil.UpstreamClientSecretEnvVar, i)
+		if up.OIDCConfig != nil && up.OIDCConfig.ClientSecretFile != "" {
+			up.OIDCConfig.ClientSecretFile = ""
+			up.OIDCConfig.ClientSecretEnvVar = envVarName
+		}
+		if up.OAuth2Config != nil && up.OAuth2Config.ClientSecretFile != "" {
+			up.OAuth2Config.ClientSecretFile = ""
+			up.OAuth2Config.ClientSecretEnvVar = envVarName
 		}
 		upstreams = append(upstreams, up)
 	}

@@ -124,19 +124,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
 	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 
-	// Add embedded auth server volumes and env vars if configured
-	if vmcp.Spec.AuthServerConfigRef != nil {
-		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
-			ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfigRef,
-		)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
-		} else {
-			volumes = append(volumes, authServerVolumes...)
-			volumeMounts = append(volumeMounts, authServerMounts...)
-			env = append(env, authServerEnvVars...)
-		}
+	// Add embedded auth server volumes and env vars if configured (inline config)
+	if vmcp.Spec.AuthServerConfig != nil {
+		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		authServerEnvVars := ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
 	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)

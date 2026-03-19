@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 )
 
@@ -803,6 +804,195 @@ func TestWorkflowEngine_SessionEngine_CoercesTemplateStringToTypedArg(t *testing
 	}
 
 	result, err := engine.ExecuteWorkflow(context.Background(), workflow, map[string]any{"n": "42"})
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+}
+
+// TestWorkflowEngine_DotConvention_CoercesTypesWithSessionRouter reproduces
+// the issue where composite tool steps using dot-convention tool names
+// (e.g., "github.pull_request_read") fail type coercion because
+// getToolInputSchema uses ResolveToolName to map the dot name to the
+// conflict-resolved key in the tools list.
+func TestWorkflowEngine_DotConvention_CoercesTypesWithSessionRouter(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	// Simulate a conflict-resolved routing table where the GitHub backend's
+	// "pull_request_read" tool is stored as "github_pull_request_read".
+	routingTable := &vmcp.RoutingTable{
+		Tools: map[string]*vmcp.BackendTarget{
+			"github_pull_request_read": {
+				WorkloadID:             "github",
+				BaseURL:                "http://github-mcp:8080",
+				OriginalCapabilityName: "pull_request_read",
+			},
+		},
+	}
+
+	// Use the real session router (not a mock) to exercise dot-convention resolution.
+	sessionRtr := router.NewSessionRouter(routingTable)
+
+	mockBackend := mocks.NewMockBackendClient(ctrl)
+
+	// The tools list must use the conflict-resolved name, matching the routing table key.
+	tools := []vmcp.Tool{
+		{
+			Name: "github_pull_request_read",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"owner":      map[string]any{"type": "string"},
+					"repo":       map[string]any{"type": "string"},
+					"pullNumber": map[string]any{"type": "number"},
+				},
+				"required": []any{"owner", "repo", "pullNumber"},
+			},
+		},
+	}
+
+	engine := NewWorkflowEngine(sessionRtr, mockBackend, nil, nil, nil, tools)
+
+	target := routingTable.Tools["github_pull_request_read"]
+
+	// Expect the backend to receive coerced args: pullNumber as float64, not string.
+	coercedArgs := map[string]any{
+		"owner":      "stacklok",
+		"repo":       "toolhive",
+		"pullNumber": float64(42),
+	}
+	mockBackend.EXPECT().
+		CallTool(gomock.Any(), target, "github.pull_request_read", coercedArgs, gomock.Any()).
+		Return(&vmcp.ToolCallResult{
+			StructuredContent: map[string]any{"id": float64(1)},
+			Content:           []vmcp.Content{},
+		}, nil)
+
+	workflow := &WorkflowDefinition{
+		Name: "pr_review",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pr_number": map[string]any{"type": "number"},
+			},
+		},
+		Steps: []WorkflowStep{
+			{
+				ID:   "pr_review_comments",
+				Type: StepTypeTool,
+				// Use dot convention — the way composite tool definitions
+				// typically reference backend tools.
+				Tool: "github.pull_request_read",
+				Arguments: map[string]any{
+					"owner":      "stacklok",
+					"repo":       "toolhive",
+					"pullNumber": "{{.params.pr_number}}",
+				},
+			},
+		},
+	}
+
+	result, err := engine.ExecuteWorkflow(
+		context.Background(), workflow, map[string]any{"pr_number": float64(42)},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+}
+
+// TestWorkflowEngine_DotConvention_ExcludedToolCoercesWithAllRoutableTools
+// verifies the fix for the bug where a backend tool excluded from the advertised
+// tools list (via excludeAll or filter) but still routable would fail type
+// coercion. The workflow engine's getToolInputSchema searched only the tools
+// list, returning nil for non-advertised tools → no coercion → backend rejects
+// string values.
+//
+// The fix is at the session/server level: server.go now passes
+// AllRoutableTools() (which includes non-advertised tools with their schemas)
+// to the composer factory instead of Tools(). This test simulates that by
+// providing the full tools list to NewWorkflowEngine, which is what the server
+// now does after the fix.
+func TestWorkflowEngine_DotConvention_ExcludedToolCoercesWithAllRoutableTools(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	// Routing table has the tool (routing works).
+	routingTable := &vmcp.RoutingTable{
+		Tools: map[string]*vmcp.BackendTarget{
+			"github_pull_request_read": {
+				WorkloadID:             "github",
+				BaseURL:                "http://github-mcp:8080",
+				OriginalCapabilityName: "pull_request_read",
+			},
+		},
+	}
+
+	sessionRtr := router.NewSessionRouter(routingTable)
+	mockBackend := mocks.NewMockBackendClient(ctrl)
+
+	// Simulate AllRoutableTools(): the tool IS in the list even though it
+	// would NOT appear in Tools() (excluded by advertising filter).
+	// This is the key difference from the old bug: the server now passes
+	// AllRoutableTools() to the composer factory.
+	allRoutableTools := []vmcp.Tool{
+		{
+			Name: "github_pull_request_read",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"owner":      map[string]any{"type": "string"},
+					"repo":       map[string]any{"type": "string"},
+					"pullNumber": map[string]any{"type": "number"},
+				},
+				"required": []any{"owner", "repo", "pullNumber"},
+			},
+		},
+	}
+
+	engine := NewWorkflowEngine(sessionRtr, mockBackend, nil, nil, nil, allRoutableTools)
+
+	target := routingTable.Tools["github_pull_request_read"]
+
+	// After the fix, coercion works: pullNumber is float64(42), not "42".
+	coercedArgs := map[string]any{
+		"owner":      "stacklok",
+		"repo":       "toolhive",
+		"pullNumber": float64(42),
+	}
+	mockBackend.EXPECT().
+		CallTool(gomock.Any(), target, "github.pull_request_read", coercedArgs, gomock.Any()).
+		Return(&vmcp.ToolCallResult{
+			StructuredContent: map[string]any{"id": float64(1)},
+			Content:           []vmcp.Content{},
+		}, nil)
+
+	workflow := &WorkflowDefinition{
+		Name: "pr_review",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pr_number": map[string]any{"type": "number"},
+			},
+		},
+		Steps: []WorkflowStep{
+			{
+				ID:   "pr_review_comments",
+				Type: StepTypeTool,
+				Tool: "github.pull_request_read",
+				Arguments: map[string]any{
+					"owner":      "stacklok",
+					"repo":       "toolhive",
+					"pullNumber": "{{.params.pr_number}}",
+				},
+			},
+		},
+	}
+
+	result, err := engine.ExecuteWorkflow(
+		context.Background(), workflow, map[string]any{"pr_number": float64(42)},
+	)
 	require.NoError(t, err)
 	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 }

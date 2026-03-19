@@ -59,12 +59,13 @@ type defaultMultiSession struct {
 	transportsession.Session // embedded interface — provides ID, Type, timestamps, etc.
 
 	// All fields below are written once by MakeSession and are read-only thereafter.
-	connections     map[string]backend.Session
-	routingTable    *vmcp.RoutingTable
-	tools           []vmcp.Tool
-	resources       []vmcp.Resource
-	prompts         []vmcp.Prompt
-	backendSessions map[string]string
+	connections      map[string]backend.Session
+	routingTable     *vmcp.RoutingTable
+	tools            []vmcp.Tool
+	allRoutableTools []vmcp.Tool // includes tools excluded from advertising
+	resources        []vmcp.Resource
+	prompts          []vmcp.Prompt
+	backendSessions  map[string]string
 
 	queue AdmissionQueue
 }
@@ -73,6 +74,14 @@ type defaultMultiSession struct {
 func (s *defaultMultiSession) Tools() []vmcp.Tool {
 	result := make([]vmcp.Tool, len(s.tools))
 	copy(result, s.tools)
+	return result
+}
+
+// AllRoutableTools returns all tools in the routing table, including those
+// excluded from client advertising by aggregator filters.
+func (s *defaultMultiSession) AllRoutableTools() []vmcp.Tool {
+	result := make([]vmcp.Tool, len(s.allRoutableTools))
+	copy(result, s.allRoutableTools)
 	return result
 }
 

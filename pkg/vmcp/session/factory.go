@@ -259,11 +259,17 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 // pipeline (overrides, conflict resolution, advertising filter) to the raw
 // backend capabilities in results, producing resolved tool names identical to
 // the standard aggregation path. Resources and prompts pass through unchanged.
+//
+// Returns:
+//   - rt: the routing table
+//   - advertisedTools: tools passing the advertising filter (for tools/list)
+//   - allRoutableTools: ALL tools in the routing table with schemas (for workflow coercion)
+//   - allResources, allPrompts: resources and prompts
 func buildRoutingTableWithAggregator(
 	ctx context.Context,
 	agg aggregator.Aggregator,
 	results []initResult,
-) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
+) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
 	toolsByBackend := make(map[string][]vmcp.Tool, len(results))
 	targets := make(map[string]*vmcp.BackendTarget, len(results))
 	for i := range results {
@@ -272,9 +278,9 @@ func buildRoutingTableWithAggregator(
 		targets[r.target.WorkloadID] = r.target
 	}
 
-	allTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
+	advertisedTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	rt := &vmcp.RoutingTable{
@@ -282,6 +288,12 @@ func buildRoutingTableWithAggregator(
 		Resources: make(map[string]*vmcp.BackendTarget),
 		Prompts:   make(map[string]*vmcp.BackendTarget),
 	}
+
+	// Build the complete routable tools list by looking up the original tool
+	// schema for every entry in the routing table. This includes tools excluded
+	// from advertising (e.g. via excludeAll or filter) that are still routable
+	// and need schema information for workflow type coercion.
+	allRoutableTools := buildAllRoutableTools(toolsRouting, toolsByBackend, targets)
 
 	var allResources []vmcp.Resource
 	var allPrompts []vmcp.Prompt
@@ -300,7 +312,51 @@ func buildRoutingTableWithAggregator(
 		}
 	}
 
-	return rt, allTools, allResources, allPrompts, nil
+	return rt, advertisedTools, allRoutableTools, allResources, allPrompts, nil
+}
+
+// buildAllRoutableTools constructs a tool list for every entry in the routing
+// table by looking up the original backend tool schema. The returned slice uses
+// the resolved (routing-table) name as the tool Name, preserving the InputSchema
+// from the backend so that workflow type coercion works for non-advertised tools.
+func buildAllRoutableTools(
+	toolsRouting map[string]*vmcp.BackendTarget,
+	toolsByBackend map[string][]vmcp.Tool,
+	targets map[string]*vmcp.BackendTarget,
+) []vmcp.Tool {
+	// Index backend tools by (workloadID, toolName) for O(1) lookup.
+	type backendToolKey struct {
+		workloadID string
+		toolName   string
+	}
+	toolIndex := make(map[backendToolKey]vmcp.Tool)
+	for backendID, tools := range toolsByBackend {
+		for _, tool := range tools {
+			toolIndex[backendToolKey{workloadID: backendID, toolName: tool.Name}] = tool
+		}
+	}
+
+	result := make([]vmcp.Tool, 0, len(toolsRouting))
+	for resolvedName, target := range toolsRouting {
+		backendName := target.GetBackendCapabilityName(resolvedName)
+		if orig, ok := toolIndex[backendToolKey{workloadID: target.WorkloadID, toolName: backendName}]; ok {
+			result = append(result, vmcp.Tool{
+				Name:         resolvedName,
+				Description:  orig.Description,
+				InputSchema:  orig.InputSchema,
+				OutputSchema: orig.OutputSchema,
+				Annotations:  orig.Annotations,
+				BackendID:    target.WorkloadID,
+			})
+		}
+	}
+
+	// Sort for deterministic ordering.
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+
+	return result
 }
 
 // MakeSessionWithID implements MultiSessionFactory.
@@ -428,21 +484,24 @@ func (f *defaultMultiSessionFactory) makeSession(
 	// resolved tool names — identical to the standard aggregation path.
 	// Without an aggregator, the raw backend names are used directly.
 	var (
-		routingTable *vmcp.RoutingTable
-		allTools     []vmcp.Tool
-		allResources []vmcp.Resource
-		allPrompts   []vmcp.Prompt
+		routingTable     *vmcp.RoutingTable
+		allTools         []vmcp.Tool
+		allRoutableTools []vmcp.Tool
+		allResources     []vmcp.Resource
+		allPrompts       []vmcp.Prompt
 	)
 
 	if f.aggregator != nil {
 		var aggErr error
-		routingTable, allTools, allResources, allPrompts, aggErr = buildRoutingTableWithAggregator(ctx, f.aggregator, results)
+		routingTable, allTools, allRoutableTools, allResources, allPrompts, aggErr = buildRoutingTableWithAggregator(ctx, f.aggregator, results)
 		if aggErr != nil {
 			return nil, fmt.Errorf("failed to process backend capabilities: %w", aggErr)
 		}
 	} else {
 		// Build the routing table; first-writer (alphabetically) wins on conflicts.
 		routingTable, allTools, allResources, allPrompts = buildRoutingTable(results)
+		// Without an aggregator, all tools are advertised — no filtering.
+		allRoutableTools = allTools
 	}
 
 	transportSess := transportsession.NewStreamableSession(sessID)
@@ -458,14 +517,15 @@ func (f *defaultMultiSessionFactory) makeSession(
 
 	// Create the base session
 	baseSession := &defaultMultiSession{
-		Session:         transportSess,
-		connections:     connections,
-		routingTable:    routingTable,
-		tools:           allTools,
-		resources:       allResources,
-		prompts:         allPrompts,
-		backendSessions: backendSessions,
-		queue:           newAdmissionQueue(),
+		Session:          transportSess,
+		connections:      connections,
+		routingTable:     routingTable,
+		tools:            allTools,
+		allRoutableTools: allRoutableTools,
+		resources:        allResources,
+		prompts:          allPrompts,
+		backendSessions:  backendSessions,
+		queue:            newAdmissionQueue(),
 	}
 
 	// Apply hijack prevention: computes token binding, stores metadata, and wraps

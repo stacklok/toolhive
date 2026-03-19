@@ -131,6 +131,13 @@ type MultiSession interface {
 	// Used by the discovery middleware to inject DiscoveredCapabilities into the
 	// request context so composite tool workflow steps can route backend tool calls.
 	GetRoutingTable() *vmcp.RoutingTable
+
+	// AllRoutableTools returns all tools in the routing table, including those
+	// excluded from client advertising. Used by the workflow engine for
+	// schema-based type coercion of composite tool arguments.
+	//
+	// When no aggregator filtering is active, this returns the same list as Tools().
+	AllRoutableTools() []vmcp.Tool
 }
 
 const (

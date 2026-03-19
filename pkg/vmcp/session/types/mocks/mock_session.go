@@ -44,6 +44,20 @@ func (m *MockMultiSession) EXPECT() *MockMultiSessionMockRecorder {
 	return m.recorder
 }
 
+// AllRoutableTools mocks base method.
+func (m *MockMultiSession) AllRoutableTools() []vmcp.Tool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AllRoutableTools")
+	ret0, _ := ret[0].([]vmcp.Tool)
+	return ret0
+}
+
+// AllRoutableTools indicates an expected call of AllRoutableTools.
+func (mr *MockMultiSessionMockRecorder) AllRoutableTools() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AllRoutableTools", reflect.TypeOf((*MockMultiSession)(nil).AllRoutableTools))
+}
+
 // BackendSessions mocks base method.
 func (m *MockMultiSession) BackendSessions() map[string]string {
 	m.ctrl.T.Helper()

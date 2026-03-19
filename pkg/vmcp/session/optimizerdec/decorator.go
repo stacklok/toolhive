@@ -77,6 +77,13 @@ func NewDecorator(sess sessiontypes.MultiSession, opt optimizer.Optimizer) sessi
 	}
 }
 
+// AllRoutableTools returns all routable tools (including non-advertised) from
+// the underlying session. This is used by the workflow engine for schema-based
+// type coercion and is unaffected by optimizer mode.
+func (d *optimizerDecorator) AllRoutableTools() []vmcp.Tool {
+	return d.MultiSession.AllRoutableTools()
+}
+
 // Tools returns only find_tool and call_tool, replacing the full backend tool list.
 // A defensive copy is returned so callers cannot mutate the decorator's internal slice.
 func (d *optimizerDecorator) Tools() []vmcp.Tool {

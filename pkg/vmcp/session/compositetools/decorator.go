@@ -60,6 +60,13 @@ func NewDecorator(
 	}
 }
 
+// AllRoutableTools returns all routable tools (including non-advertised) from
+// the underlying session. Composite tools are not included here because they
+// are not routed through a backend.
+func (d *compositeToolsDecorator) AllRoutableTools() []vmcp.Tool {
+	return d.MultiSession.AllRoutableTools()
+}
+
 // Tools returns backend tools followed by composite tools.
 func (d *compositeToolsDecorator) Tools() []vmcp.Tool {
 	backend := d.MultiSession.Tools()

@@ -1109,7 +1109,9 @@ func (s *Server) applyCompositeToolsDecorator(sessionID string) error {
 	}
 
 	// Build per-session workflow executors bound to this session's routing table.
-	sessionComposer := s.composerFactory(multiSess.GetRoutingTable(), multiSess.Tools())
+	// Use AllRoutableTools (not Tools) so that schema-based type coercion works
+	// for tools excluded from advertising (e.g. via excludeAll or filter).
+	sessionComposer := s.composerFactory(multiSess.GetRoutingTable(), multiSess.AllRoutableTools())
 	sessionExecutors := make(map[string]compositetools.WorkflowExecutor, len(sessionDefs))
 	for _, def := range sessionDefs {
 		ex := newComposerWorkflowExecutor(sessionComposer, def)

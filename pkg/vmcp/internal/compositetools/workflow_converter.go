@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package server implements the Virtual MCP Server that aggregates
-// multiple backend MCP servers into a unified interface.
-package server
+package compositetools
 
 import (
 	"fmt"
@@ -14,14 +12,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-// filterWorkflowDefsForSession returns only the workflow definitions whose every
+// FilterWorkflowDefsForSession returns only the workflow definitions whose every
 // tool step references a backend tool that is present in the session routing table.
 //
 // If a session does not have access to a backend tool (e.g. due to identity-based
 // filtering), any composite tool that depends on that backend tool is also excluded.
 // This prevents a session from invoking a composite tool that would fail at runtime
 // because one or more of its underlying tools are not routable for that session.
-func filterWorkflowDefsForSession(
+func FilterWorkflowDefsForSession(
 	defs map[string]*composer.WorkflowDefinition,
 	rt *vmcp.RoutingTable,
 ) map[string]*composer.WorkflowDefinition {
@@ -96,7 +94,7 @@ func isToolStepAccessible(stepTool string, rt *vmcp.RoutingTable) bool {
 	return false
 }
 
-// convertWorkflowDefsToTools converts workflow definitions to vmcp.Tool format.
+// ConvertWorkflowDefsToTools converts workflow definitions to vmcp.Tool format.
 //
 // This creates the tool metadata (name, description, schema) that gets exposed
 // via the MCP tools/list endpoint. The actual workflow execution logic is handled
@@ -109,7 +107,7 @@ func isToolStepAccessible(stepTool string, rt *vmcp.RoutingTable) bool {
 //   - OutputSchema: workflow.Output (JSON Schema format, if defined)
 //
 // Returns a slice of vmcp.Tool ready for aggregation and exposure to clients.
-func convertWorkflowDefsToTools(defs map[string]*composer.WorkflowDefinition) []vmcp.Tool {
+func ConvertWorkflowDefsToTools(defs map[string]*composer.WorkflowDefinition) []vmcp.Tool {
 	if len(defs) == 0 {
 		return nil // Idiomatic Go: nil slice for empty result
 	}
@@ -133,7 +131,7 @@ func convertWorkflowDefsToTools(defs map[string]*composer.WorkflowDefinition) []
 	return tools
 }
 
-// validateNoToolConflicts validates that composite tool names don't conflict with backend tool names.
+// ValidateNoToolConflicts validates that composite tool names don't conflict with backend tool names.
 //
 // Tool name conflicts would cause ambiguity in routing/execution:
 //   - Which tool should be invoked when a client calls the name?
@@ -141,7 +139,7 @@ func convertWorkflowDefsToTools(defs map[string]*composer.WorkflowDefinition) []
 //
 // This validation ensures clear separation and prevents runtime confusion.
 // Returns an error listing all conflicting tool names if any conflicts are found.
-func validateNoToolConflicts(backendTools, compositeTools []vmcp.Tool) error {
+func ValidateNoToolConflicts(backendTools, compositeTools []vmcp.Tool) error {
 	// Build set of backend tool names for O(1) lookups
 	backendNames := make(map[string]bool, len(backendTools))
 	for _, tool := range backendTools {

@@ -18,8 +18,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/compositetools"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/compositetools"
 )
 
 //go:generate mockgen -destination=mocks/mock_handler_factory.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/server/adapter HandlerFactory

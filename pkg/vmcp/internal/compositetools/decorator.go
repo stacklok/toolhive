@@ -80,34 +80,35 @@ func (d *compositeToolsDecorator) CallTool(
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	if exec, ok := d.executors[toolName]; ok {
-		slog.Debug("handling composite tool call", "tool", toolName)
-		res, err := exec.ExecuteWorkflow(ctx, arguments)
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				slog.Warn("workflow execution timeout", "tool", toolName, "error", err)
-				return errorResult("Workflow execution timeout exceeded"), nil
-			}
-			slog.Error("workflow execution failed", "tool", toolName, "error", err)
-			return errorResult(fmt.Sprintf("Workflow execution failed: %v", err)), nil
-		}
-		if res == nil {
-			slog.Error("workflow executor returned nil result", "tool", toolName)
-			return errorResult("Workflow executor returned nil result"), nil
-		}
-		if res.Error != nil {
-			slog.Error("workflow completed with error", "tool", toolName, "error", res.Error)
-			return errorResult(fmt.Sprintf("Workflow error: %v", res.Error)), nil
-		}
-		slog.Debug("composite tool completed successfully", "tool", toolName)
-		jsonBytes, err := json.Marshal(res.Output)
-		if err != nil {
-			return errorResult(fmt.Sprintf("failed to marshal output: %v", err)), nil
-		}
-		return &vmcp.ToolCallResult{
-			Content:           []vmcp.Content{{Type: "text", Text: string(jsonBytes)}},
-			StructuredContent: res.Output,
-		}, nil
+	exec, ok := d.executors[toolName]
+	if !ok {
+		return d.MultiSession.CallTool(ctx, caller, toolName, arguments, meta)
 	}
-	return d.MultiSession.CallTool(ctx, caller, toolName, arguments, meta)
+	slog.Debug("handling composite tool call", "tool", toolName)
+	res, err := exec.ExecuteWorkflow(ctx, arguments)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("workflow execution timeout", "tool", toolName, "error", err)
+			return errorResult("Workflow execution timeout exceeded"), nil
+		}
+		slog.Error("workflow execution failed", "tool", toolName, "error", err)
+		return errorResult(fmt.Sprintf("Workflow execution failed: %v", err)), nil
+	}
+	if res == nil {
+		slog.Error("workflow executor returned nil result", "tool", toolName)
+		return errorResult("Workflow executor returned nil result"), nil
+	}
+	if res.Error != nil {
+		slog.Error("workflow completed with error", "tool", toolName, "error", res.Error)
+		return errorResult(fmt.Sprintf("Workflow error: %v", res.Error)), nil
+	}
+	slog.Debug("composite tool completed successfully", "tool", toolName)
+	jsonBytes, err := json.Marshal(res.Output)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to marshal output: %v", err)), nil
+	}
+	return &vmcp.ToolCallResult{
+		Content:           []vmcp.Content{{Type: "text", Text: string(jsonBytes)}},
+		StructuredContent: res.Output,
+	}, nil
 }

@@ -477,7 +477,7 @@ func (f *Flow) processToken(_ context.Context, token *oauth2.Token) *TokenResult
 	var base oauth2.TokenSource
 	if f.config.Resource != "" {
 		// Use resourceTokenSource wrapper to add resource parameter to refresh requests (RFC 8707)
-		base = newResourceTokenSource(f.oauth2Config, token, f.config.Resource)
+		base = NewResourceTokenSource(f.oauth2Config, token, f.config.Resource)
 	} else {
 		// No resource parameter needed, use standard token source
 		base = f.oauth2Config.TokenSource(context.Background(), token)

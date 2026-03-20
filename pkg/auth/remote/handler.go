@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -282,12 +283,21 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		}
 	}
 
-	// Create token source from cached refresh token
-	baseSource := CreateTokenSourceFromCached(
-		oauth2Config,
-		refreshToken,
-		h.config.CachedTokenExpiry,
-	)
+	// Create token source from cached refresh token.
+	// Use resource-aware source if configured (RFC 8707), mirroring the fresh OAuth flow.
+	cachedToken := &oauth2.Token{
+		AccessToken:  "", // Empty - will trigger immediate refresh
+		RefreshToken: refreshToken,
+		Expiry:       h.config.CachedTokenExpiry,
+		TokenType:    "Bearer",
+	}
+	var base oauth2.TokenSource
+	if h.config.Resource != "" {
+		base = oauth.NewResourceTokenSource(oauth2Config, cachedToken, h.config.Resource)
+	} else {
+		base = oauth2Config.TokenSource(context.Background(), cachedToken)
+	}
+	baseSource := oauth2.ReuseTokenSource(cachedToken, base)
 
 	// Try to get a token to verify the cached tokens are valid
 	// This will trigger a refresh since we don't have an access token

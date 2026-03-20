@@ -237,9 +237,10 @@ var _ OAuth2Provider = (*BaseOAuth2Provider)(nil)
 // This can be used standalone for OAuth 2.0 providers without OIDC support,
 // or embedded by OIDCProvider to share common OAuth 2.0 logic.
 type BaseOAuth2Provider struct {
-	config       *OAuth2Config
-	oauth2Config *oauth2.Config
-	httpClient   *http.Client
+	config             *OAuth2Config
+	oauth2Config       *oauth2.Config
+	httpClient         *http.Client
+	forceConsentScreen bool
 }
 
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
@@ -249,6 +250,13 @@ type OAuth2ProviderOption func(*BaseOAuth2Provider)
 func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 	return func(p *BaseOAuth2Provider) {
 		p.httpClient = client
+	}
+}
+
+// WithOAuth2ForceConsentScreen forces the consent screen on every authorization request.
+func WithOAuth2ForceConsentScreen(force bool) OAuth2ProviderOption {
+	return func(p *BaseOAuth2Provider) {
+		p.forceConsentScreen = force
 	}
 }
 
@@ -377,6 +385,11 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 	// Add any additional parameters
 	for k, v := range authOpts.additionalParams {
 		oauth2Opts = append(oauth2Opts, oauth2.SetAuthURLParam(k, v))
+	}
+
+	// Force consent screen if configured (demo/testing use)
+	if p.forceConsentScreen {
+		oauth2Opts = append(oauth2Opts, oauth2.SetAuthURLParam("prompt", "consent"))
 	}
 
 	return p.oauth2Config.AuthCodeURL(state, oauth2Opts...), nil

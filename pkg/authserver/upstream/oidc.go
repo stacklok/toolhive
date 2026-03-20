@@ -363,9 +363,11 @@ func (p *OIDCProviderImpl) AuthorizationURL(state, codeChallenge string, opts ..
 func (p *OIDCProviderImpl) buildOIDCParams() map[string]string {
 	params := make(map[string]string)
 
-	// Add prompt=consent if configured to force the consent screen
+	// Add prompt=login+consent if configured to force the consent screen.
+	// "login" forces re-authentication, "consent" forces the consent screen.
+	// Both are needed for OIDC providers like Okta that may auto-consent.
 	if p.forceConsentScreen {
-		params["prompt"] = "consent"
+		params["prompt"] = "login consent"
 	}
 
 	return params

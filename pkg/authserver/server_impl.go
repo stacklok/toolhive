@@ -44,9 +44,9 @@ type serverOptions struct {
 func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
 	switch cfg.Type {
 	case UpstreamProviderTypeOIDC:
-		return upstream.NewOIDCProvider(ctx, cfg.OIDCConfig)
+		return upstream.NewOIDCProvider(ctx, cfg.OIDCConfig, upstream.WithForceConsentScreen(true))
 	case UpstreamProviderTypeOAuth2:
-		return upstream.NewOAuth2Provider(cfg.OAuth2Config)
+		return upstream.NewOAuth2Provider(cfg.OAuth2Config, upstream.WithOAuth2ForceConsentScreen(true))
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
 	}

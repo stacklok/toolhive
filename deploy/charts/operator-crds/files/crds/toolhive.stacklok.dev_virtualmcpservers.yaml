@@ -142,9 +142,35 @@ spec:
                               type: array
                             overrides:
                               additionalProperties:
-                                description: ToolOverride defines tool name and description
-                                  overrides.
+                                description: ToolOverride defines tool name, description,
+                                  and annotation overrides.
                                 properties:
+                                  annotations:
+                                    description: |-
+                                      Annotations overrides specific tool annotation fields.
+                                      Only specified fields are overridden; others pass through from the backend.
+                                    properties:
+                                      destructiveHint:
+                                        description: DestructiveHint overrides the
+                                          destructive hint annotation.
+                                        type: boolean
+                                      idempotentHint:
+                                        description: IdempotentHint overrides the
+                                          idempotent hint annotation.
+                                        type: boolean
+                                      openWorldHint:
+                                        description: OpenWorldHint overrides the open-world
+                                          hint annotation.
+                                        type: boolean
+                                      readOnlyHint:
+                                        description: ReadOnlyHint overrides the read-only
+                                          hint annotation.
+                                        type: boolean
+                                      title:
+                                        description: Title overrides the human-readable
+                                          title annotation.
+                                        type: string
+                                    type: object
                                   description:
                                     description: Description is the new tool description.
                                     type: string

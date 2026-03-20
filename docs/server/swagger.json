@@ -336,6 +336,10 @@
                     "header_strategy": {
                         "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
                         "type": "string"
+                    },
+                    "provider_name": {
+                        "description": "ProviderName identifies which upstream provider's tokens to retrieve for injection.\nThis is required and must match a configured upstream provider name.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -1027,6 +1031,9 @@
                     "runtime_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
+                    "scaling_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig"
+                    },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema",
                         "type": "string"
@@ -1096,6 +1103,20 @@
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.ScalingConfig": {
+                "description": "ScalingConfig contains configuration for horizontal scaling of the proxy runner.\nOnly applicable when running in Kubernetes with the ToolHive operator.\nWhen nil, no scaling configuration is applied (single-replica default behavior).",
+                "properties": {
+                    "backend_replicas": {
+                        "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
+                        "type": "integer"
+                    },
+                    "session_cache_size": {
+                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nWhen nil, consuming code applies a sensible default (e.g. 1000).",
+                        "type": "integer"
                     }
                 },
                 "type": "object"

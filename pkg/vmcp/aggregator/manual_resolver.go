@@ -126,6 +126,7 @@ func (r *ManualConflictResolver) applyOverridesAndResolve(
 func (r *ManualConflictResolver) resolveToolWithOverride(backendID string, tool vmcp.Tool) *ResolvedTool {
 	resolvedName := tool.Name
 	description := tool.Description
+	annotations := tool.Annotations
 
 	// Check if there's an override for this tool
 	key := fmt.Sprintf("%s:%s", backendID, tool.Name)
@@ -136,6 +137,7 @@ func (r *ManualConflictResolver) resolveToolWithOverride(backendID string, tool 
 		if override.Description != "" {
 			description = override.Description
 		}
+		annotations = applyAnnotationOverrides(annotations, override.Annotations)
 	}
 
 	return &ResolvedTool{
@@ -144,7 +146,7 @@ func (r *ManualConflictResolver) resolveToolWithOverride(backendID string, tool 
 		Description:               description,
 		InputSchema:               tool.InputSchema,
 		OutputSchema:              tool.OutputSchema,
-		Annotations:               tool.Annotations,
+		Annotations:               annotations,
 		BackendID:                 backendID,
 		ConflictResolutionApplied: vmcp.ConflictStrategyManual,
 	}

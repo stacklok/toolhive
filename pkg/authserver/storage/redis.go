@@ -805,10 +805,12 @@ type storedUpstreamTokens struct {
 }
 
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
-// data, and updates user reverse-index sets. This prevents a race condition where
-// concurrent writes for the same session could leave orphaned entries in user sets.
+// data, updates the session index set, and updates user reverse-index sets.
+// This prevents a race condition where concurrent writes for the same session
+// could leave orphaned entries in user sets.
 //
-// KEYS[1] = token key
+// KEYS[1] = per-provider token key (e.g. "thv:auth:{ns:name}:upstream:{sessionID}:{providerName}")
+// KEYS[2] = session index set key (e.g. "thv:auth:{ns:name}:upstream:idx:{sessionID}")
 // ARGV[1] = new token data (JSON or "null" marker)
 // ARGV[2] = TTL in milliseconds
 // ARGV[3] = new UserID ("" if no user)
@@ -828,6 +830,16 @@ if ttlMs > 0 then
     redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
 else
     redis.call('SET', KEYS[1], ARGV[1])
+end
+
+-- Add the per-provider key to the session index set
+redis.call('SADD', KEYS[2], KEYS[1])
+-- Keep the index set alive at least as long as the token
+if ttlMs > 0 then
+    local currentTTL = redis.call('PTTL', KEYS[2])
+    if currentTTL < ttlMs then
+        redis.call('PEXPIRE', KEYS[2], ttlMs)
+    end
 end
 
 local newUserID = ARGV[3]
@@ -886,15 +898,19 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 	return data, ttl, nil
 }
 
-// StoreUpstreamTokens stores the upstream IDP tokens for a session.
-// Uses a Lua script to atomically read the old UserID, write new token data,
+// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
+// Uses a Lua script to atomically write token data, update the session index set,
 // and update user reverse-index sets, preventing race conditions on concurrent writes.
-func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID string, tokens *UpstreamTokens) error {
+func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *UpstreamTokens) error {
 	if sessionID == "" {
 		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
 	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
 
-	key := redisKey(s.keyPrefix, KeyTypeUpstream, sessionID)
+	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
+	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
 
 	data, ttl, err := marshalUpstreamTokensWithTTL(tokens)
 	if err != nil {
@@ -909,7 +925,7 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID string
 	userSetKeyPrefix := s.keyPrefix + KeyTypeUserUpstream + ":"
 
 	_, err = storeUpstreamTokensScript.Run(ctx, s.client,
-		[]string{key},
+		[]string{key, idxKey},
 		string(data),
 		ttl.Milliseconds(),
 		newUserID,
@@ -922,12 +938,137 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID string
 	return nil
 }
 
-// GetUpstreamTokens retrieves the upstream IDP tokens for a session.
+// GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 // Returns a new UpstreamTokens struct deserialized from Redis, which acts as
 // a defensive copy - callers cannot modify the stored data by mutating the return value.
-func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) (*UpstreamTokens, error) {
-	key := redisKey(s.keyPrefix, KeyTypeUpstream, sessionID)
+func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*UpstreamTokens, error) {
+	if sessionID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
 
+	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
+	return s.getUpstreamTokensFromKey(ctx, key)
+}
+
+// GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.
+// Uses SMEMBERS on the session index set to find all provider keys, then MGET to fetch them.
+// Returns a map of providerName -> tokens. Returns an empty map for unknown sessions.
+func (s *RedisStorage) GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*UpstreamTokens, error) {
+	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
+	result := make(map[string]*UpstreamTokens)
+
+	// Get all provider keys from the session index set
+	providerKeys, err := s.client.SMembers(ctx, idxKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return result, nil
+		}
+		return nil, fmt.Errorf("failed to get upstream token index: %w", err)
+	}
+
+	if len(providerKeys) == 0 {
+		return result, nil
+	}
+
+	// Fetch all provider tokens in a single MGET
+	values, err := s.client.MGet(ctx, providerKeys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
+	}
+
+	// The per-provider key format is "{prefix}upstream:{sessionID}:{providerName}"
+	// Extract providerName by stripping the prefix + "upstream:{sessionID}:"
+	keyPrefix := fmt.Sprintf("%s%s:%s:", s.keyPrefix, KeyTypeUpstream, sessionID)
+
+	for i, val := range values {
+		if val == nil {
+			continue
+		}
+
+		data, ok := val.(string)
+		if !ok {
+			slog.Warn("skipping upstream token entry: unexpected type", "key", providerKeys[i])
+			continue
+		}
+
+		tokens, parseErr := unmarshalUpstreamTokens([]byte(data))
+		if parseErr != nil && !errors.Is(parseErr, ErrExpired) {
+			slog.Warn("skipping corrupt upstream token entry", "key", providerKeys[i], "error", parseErr)
+			continue
+		}
+
+		// Extract provider name from the key
+		providerName := ""
+		if len(providerKeys[i]) > len(keyPrefix) {
+			providerName = providerKeys[i][len(keyPrefix):]
+		}
+		if providerName == "" && tokens != nil {
+			providerName = tokens.ProviderID
+		}
+
+		if providerName != "" {
+			result[providerName] = tokens
+		}
+	}
+
+	return result, nil
+}
+
+// DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
+// Uses the session index set to find all provider keys and deletes them atomically.
+func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID string) error {
+	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
+
+	// Get all provider keys from the session index set
+	providerKeys, err := s.client.SMembers(ctx, idxKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		}
+		return fmt.Errorf("failed to get upstream token index: %w", err)
+	}
+
+	if len(providerKeys) == 0 {
+		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	// Collect UserIDs for reverse-index cleanup before deleting
+	var userIDs []string
+	for _, providerKey := range providerKeys {
+		data, getErr := s.client.Get(ctx, providerKey).Bytes()
+		if getErr != nil {
+			continue
+		}
+		if string(data) != nullMarker {
+			var stored storedUpstreamTokens
+			if unmarshalErr := json.Unmarshal(data, &stored); unmarshalErr == nil && stored.UserID != "" {
+				userIDs = append(userIDs, stored.UserID)
+			}
+		}
+	}
+
+	// Delete all provider keys and the index set
+	keysToDelete := append(slices.Clone(providerKeys), idxKey)
+	if err := s.client.Del(ctx, keysToDelete...).Err(); err != nil {
+		return fmt.Errorf("failed to delete upstream tokens: %w", err)
+	}
+
+	// Best-effort secondary index cleanup for user:upstream sets
+	for _, userID := range userIDs {
+		userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID)
+		for _, providerKey := range providerKeys {
+			warnOnCleanupErr(s.client.SRem(ctx, userUpstreamSetKey, providerKey).Err(), "SRem", userUpstreamSetKey)
+		}
+	}
+
+	return nil
+}
+
+// getUpstreamTokensFromKey retrieves and deserializes upstream tokens from a specific Redis key.
+func (s *RedisStorage) getUpstreamTokensFromKey(ctx context.Context, key string) (*UpstreamTokens, error) {
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -936,6 +1077,11 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) 
 		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
 	}
 
+	return unmarshalUpstreamTokens(data)
+}
+
+// unmarshalUpstreamTokens deserializes upstream tokens from JSON bytes.
+func unmarshalUpstreamTokens(data []byte) (*UpstreamTokens, error) {
 	// Handle null marker
 	if string(data) == nullMarker {
 		return nil, nil
@@ -976,36 +1122,6 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) 
 	return tokens, nil
 }
 
-// DeleteUpstreamTokens removes the upstream IDP tokens for a session.
-func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID string) error {
-	key := redisKey(s.keyPrefix, KeyTypeUpstream, sessionID)
-
-	// Get token first to find UserID for cleanup of user:upstream set
-	data, err := s.client.Get(ctx, key).Bytes()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
-		}
-		return fmt.Errorf("failed to get upstream tokens: %w", err)
-	}
-
-	// Delete the token
-	if err := s.client.Del(ctx, key).Err(); err != nil {
-		return fmt.Errorf("failed to delete upstream tokens: %w", err)
-	}
-
-	// Best-effort secondary index cleanup (see warnOnCleanupErr).
-	if string(data) != nullMarker {
-		var stored storedUpstreamTokens
-		if err := json.Unmarshal(data, &stored); err == nil && stored.UserID != "" {
-			userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, stored.UserID)
-			warnOnCleanupErr(s.client.SRem(ctx, userUpstreamSetKey, key).Err(), "SRem", userUpstreamSetKey)
-		}
-	}
-
-	return nil
-}
-
 // -----------------------
 // Pending Authorization Storage
 // -----------------------
@@ -1021,6 +1137,8 @@ type storedPendingAuthorization struct {
 	InternalState        string   `json:"internal_state"`
 	UpstreamPKCEVerifier string   `json:"upstream_pkce_verifier"`
 	UpstreamNonce        string   `json:"upstream_nonce"`
+	UpstreamProviderName string   `json:"upstream_provider_name,omitempty"`
+	SessionID            string   `json:"session_id,omitempty"`
 	CreatedAt            int64    `json:"created_at"`
 }
 
@@ -1045,6 +1163,8 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		InternalState:        pending.InternalState,
 		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
 		UpstreamNonce:        pending.UpstreamNonce,
+		UpstreamProviderName: pending.UpstreamProviderName,
+		SessionID:            pending.SessionID,
 		CreatedAt:            pending.CreatedAt.Unix(),
 	}
 
@@ -1090,6 +1210,8 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 		InternalState:        stored.InternalState,
 		UpstreamPKCEVerifier: stored.UpstreamPKCEVerifier,
 		UpstreamNonce:        stored.UpstreamNonce,
+		UpstreamProviderName: stored.UpstreamProviderName,
+		SessionID:            stored.SessionID,
 		CreatedAt:            createdAt,
 	}, nil
 }

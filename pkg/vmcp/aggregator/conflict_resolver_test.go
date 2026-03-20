@@ -279,7 +279,8 @@ func TestManualConflictResolver(t *testing.T) {
 		workloadConfigs []*config.WorkloadToolConfig
 		toolsByBackend  map[string][]vmcp.Tool
 		wantCount       int
-		wantNames       []string // Expected resolved names
+		wantNames       []string                         // Expected resolved names
+		wantAnnotations map[string]*vmcp.ToolAnnotations // tool name -> expected annotations (optional)
 		wantErr         bool
 		errContains     string
 	}{
@@ -356,6 +357,64 @@ func TestManualConflictResolver(t *testing.T) {
 			wantCount: 1,
 			wantNames: []string{"create_pr"},
 		},
+		{
+			name: "annotation override applied in manual conflict resolution",
+			workloadConfigs: []*config.WorkloadToolConfig{
+				{
+					Workload: "github",
+					Overrides: map[string]*config.ToolOverride{
+						"create_issue": {
+							Name: "gh_create_issue",
+							Annotations: &config.ToolAnnotationsOverride{
+								Title:        stringPtr("GitHub Issue Creator"),
+								ReadOnlyHint: boolPtr(false),
+							},
+						},
+					},
+				},
+				{
+					Workload: "jira",
+					Overrides: map[string]*config.ToolOverride{
+						"create_issue": {
+							Name: "jira_create_issue",
+							Annotations: &config.ToolAnnotationsOverride{
+								DestructiveHint: boolPtr(true),
+							},
+						},
+					},
+				},
+			},
+			toolsByBackend: map[string][]vmcp.Tool{
+				"github": {{
+					Name:        "create_issue",
+					Description: "GitHub issue",
+					Annotations: &vmcp.ToolAnnotations{
+						Title:        "Original GH",
+						ReadOnlyHint: boolPtr(true),
+					},
+				}},
+				"jira": {{
+					Name:        "create_issue",
+					Description: "Jira issue",
+					Annotations: &vmcp.ToolAnnotations{
+						Title:           "Original Jira",
+						DestructiveHint: boolPtr(false),
+					},
+				}},
+			},
+			wantCount: 2,
+			wantNames: []string{"gh_create_issue", "jira_create_issue"},
+			wantAnnotations: map[string]*vmcp.ToolAnnotations{
+				"gh_create_issue": {
+					Title:        "GitHub Issue Creator",
+					ReadOnlyHint: boolPtr(false),
+				},
+				"jira_create_issue": {
+					Title:           "Original Jira",
+					DestructiveHint: boolPtr(true),
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -392,8 +451,52 @@ func TestManualConflictResolver(t *testing.T) {
 					t.Errorf("expected tool %q not found", name)
 				}
 			}
+
+			// Verify annotations if specified
+			for toolName, wantAnnotations := range tt.wantAnnotations {
+				tool, exists := resolved[toolName]
+				if !exists {
+					t.Errorf("expected tool %q not found for annotation check", toolName)
+					continue
+				}
+				if wantAnnotations == nil {
+					if tool.Annotations != nil {
+						t.Errorf("tool %q: expected nil annotations, got %+v", toolName, tool.Annotations)
+					}
+					continue
+				}
+				if tool.Annotations == nil {
+					t.Fatalf("tool %q: expected non-nil annotations", toolName)
+				}
+				if tool.Annotations.Title != wantAnnotations.Title {
+					t.Errorf("tool %q: title = %q, want %q", toolName, tool.Annotations.Title, wantAnnotations.Title)
+				}
+				if !equalBoolPtr(tool.Annotations.ReadOnlyHint, wantAnnotations.ReadOnlyHint) {
+					t.Errorf("tool %q: readOnlyHint mismatch", toolName)
+				}
+				if !equalBoolPtr(tool.Annotations.DestructiveHint, wantAnnotations.DestructiveHint) {
+					t.Errorf("tool %q: destructiveHint mismatch", toolName)
+				}
+				if !equalBoolPtr(tool.Annotations.IdempotentHint, wantAnnotations.IdempotentHint) {
+					t.Errorf("tool %q: idempotentHint mismatch", toolName)
+				}
+				if !equalBoolPtr(tool.Annotations.OpenWorldHint, wantAnnotations.OpenWorldHint) {
+					t.Errorf("tool %q: openWorldHint mismatch", toolName)
+				}
+			}
 		})
 	}
+}
+
+// equalBoolPtr compares two *bool values for equality.
+func equalBoolPtr(a, b *bool) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 func TestNewConflictResolver(t *testing.T) {

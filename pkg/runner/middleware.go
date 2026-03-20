@@ -268,6 +268,17 @@ func addUpstreamSwapMiddleware(
 		upstreamSwapConfig = &upstreamswap.Config{}
 	}
 
+	// Derive ProviderName from the upstream config if not explicitly set
+	if upstreamSwapConfig.ProviderName == "" {
+		upstreamSwapConfig.ProviderName = func() string {
+			if cfg := config.EmbeddedAuthServerConfig; cfg != nil &&
+				len(cfg.Upstreams) > 0 && cfg.Upstreams[0].Name != "" {
+				return cfg.Upstreams[0].Name
+			}
+			return "default"
+		}()
+	}
+
 	upstreamSwapParams := upstreamswap.MiddlewareParams{
 		Config: upstreamSwapConfig,
 	}

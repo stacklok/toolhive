@@ -102,16 +102,50 @@ func processBackendTools(
 			continue
 		}
 
+		// Apply annotation overrides if configured
+		annotations := originalTool.Annotations
+		if override, hasOverride := workloadConfig.Overrides[originalName]; hasOverride && override != nil {
+			annotations = applyAnnotationOverrides(annotations, override.Annotations)
+		}
+
 		// Construct the result tool with processed name/description but original schema
 		result = append(result, vmcp.Tool{
 			Name:         simpleTool.Name,        // Use the processed (potentially overridden) name
 			Description:  simpleTool.Description, // Use the processed (potentially overridden) description
 			InputSchema:  originalTool.InputSchema,
 			OutputSchema: originalTool.OutputSchema,
-			Annotations:  originalTool.Annotations,
+			Annotations:  annotations,
 			BackendID:    backendID, // Use the backendID parameter (source of truth)
 		})
 	}
 
 	return result
+}
+
+// applyAnnotationOverrides merges annotation overrides onto a base ToolAnnotations.
+// Returns a new copy — never mutates the input. Returns base unchanged if overrides is nil.
+func applyAnnotationOverrides(base *vmcp.ToolAnnotations, overrides *config.ToolAnnotationsOverride) *vmcp.ToolAnnotations {
+	if overrides == nil {
+		return base
+	}
+	var result vmcp.ToolAnnotations
+	if base != nil {
+		result = *base
+	}
+	if overrides.Title != nil {
+		result.Title = *overrides.Title
+	}
+	if overrides.ReadOnlyHint != nil {
+		result.ReadOnlyHint = overrides.ReadOnlyHint
+	}
+	if overrides.DestructiveHint != nil {
+		result.DestructiveHint = overrides.DestructiveHint
+	}
+	if overrides.IdempotentHint != nil {
+		result.IdempotentHint = overrides.IdempotentHint
+	}
+	if overrides.OpenWorldHint != nil {
+		result.OpenWorldHint = overrides.OpenWorldHint
+	}
+	return &result
 }

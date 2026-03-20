@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -24,16 +25,28 @@ const (
 	// tokenRefreshInitialRetryInterval is the default starting interval for
 	// exponential backoff when a token refresh fails during background monitoring.
 	// Override with TOOLHIVE_TOKEN_REFRESH_INITIAL_RETRY_INTERVAL (e.g. "10s", "1m").
-	tokenRefreshInitialRetryInterval = 30 * time.Second
+	tokenRefreshInitialRetryInterval = 10 * time.Second
 	// tokenRefreshMaxRetryInterval is the default cap on the exponential growth
 	// of the retry interval.
 	// Override with TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL (e.g. "2m", "10m").
-	tokenRefreshMaxRetryInterval = 5 * time.Minute
+	tokenRefreshMaxRetryInterval = 2 * time.Minute
+	// tokenRefreshMaxTries is the default maximum number of retry attempts.
+	// Override with TOOLHIVE_TOKEN_REFRESH_MAX_TRIES (e.g. "10").
+	tokenRefreshMaxTries = 5
+	// tokenRefreshMaxElapsedTime is the default maximum elapsed time for all retry attempts.
+	// Override with TOOLHIVE_TOKEN_REFRESH_MAX_ELAPSED_TIME (e.g. "10m").
+	tokenRefreshMaxElapsedTime = 5 * time.Minute
+)
 
+const (
 	// #nosec G101 — not credentials, just initial retry interval
 	tokenRefreshInitialRetryIntervalEnv = "TOOLHIVE_TOKEN_REFRESH_INITIAL_RETRY_INTERVAL"
 	// #nosec G101 — not credentials, just max retry interval
 	tokenRefreshMaxRetryIntervalEnv = "TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL"
+	// #nosec G101 — not credentials, just max elapsed time
+	tokenRefreshMaxElapsedTimeEnv = "TOOLHIVE_TOKEN_REFRESH_MAX_ELAPSED_TIME"
+	// #nosec G101 — not credentials, just max tries
+	tokenRefreshMaxTriesEnv = "TOOLHIVE_TOKEN_REFRESH_MAX_TRIES"
 )
 
 // resolveTokenRefreshInitialRetryInterval returns the initial retry interval for
@@ -53,6 +66,31 @@ func resolveTokenRefreshMaxRetryInterval() time.Duration {
 	return resolveDurationEnv(
 		tokenRefreshMaxRetryIntervalEnv,
 		tokenRefreshMaxRetryInterval,
+	)
+}
+
+// resolveTokenRefreshMaxTries returns the maximum number of retry attempts for
+// token refresh backoff, reading from TOOLHIVE_TOKEN_REFRESH_MAX_TRIES if
+// set, otherwise returning the default.
+func resolveTokenRefreshMaxTries() uint {
+	v := os.Getenv(tokenRefreshMaxTriesEnv)
+	if v == "" {
+		return uint(tokenRefreshMaxTries)
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return uint(tokenRefreshMaxTries)
+	}
+	return uint(n)
+}
+
+// resolveTokenRefreshMaxElapsedTime returns the maximum elapsed time for all retry attempts for
+// token refresh backoff, reading from TOOLHIVE_TOKEN_REFRESH_MAX_ELAPSED_TIME if
+// set, otherwise returning the default.
+func resolveTokenRefreshMaxElapsedTime() time.Duration {
+	return resolveDurationEnv(
+		tokenRefreshMaxElapsedTimeEnv,
+		tokenRefreshMaxElapsedTime,
 	)
 }
 
@@ -172,6 +210,8 @@ func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 				"error", retryErr,
 			)
 		}),
+		backoff.WithMaxTries(resolveTokenRefreshMaxTries()),
+		backoff.WithMaxElapsedTime(resolveTokenRefreshMaxElapsedTime()),
 	)
 
 	if retryErr != nil {

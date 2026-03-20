@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -233,12 +234,9 @@ func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 
 	b := mts.getRetryBackOff()
 
-	var refreshed *oauth2.Token
-
-	_, retryErr := backoff.Retry(mts.monitoringCtx, func() (*oauth2.Token, error) {
+	refreshed, retryErr := backoff.Retry(mts.monitoringCtx, func() (*oauth2.Token, error) {
 		t, tokenErr := mts.tokenSource.Token()
 		if tokenErr == nil {
-			refreshed = t
 			return t, nil
 		}
 		if !isTransientNetworkError(tokenErr) {
@@ -278,11 +276,12 @@ func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 }
 
 // isTransientNetworkError reports whether err represents a transient network condition
-// (DNS failure, TCP-level error, timeout) that is likely to resolve when the network
+// (DNS failure, TCP transport error, timeout) that is likely to resolve when the network
 // recovers — for example, after a VPN reconnects.
 //
-// OAuth2 HTTP-level auth failures (invalid_grant, 401, 400) are NOT considered
-// transient and return false so the workload is marked unauthenticated immediately.
+// OAuth2 HTTP-level auth failures (invalid_grant, 401, 400) and TLS errors
+// (certificate verification, handshake failure) are NOT considered transient and
+// return false so the workload is marked unauthenticated immediately.
 func isTransientNetworkError(err error) bool {
 	if err == nil ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
@@ -290,14 +289,38 @@ func isTransientNetworkError(err error) bool {
 		return false
 	}
 
-	// Transient: DNS lookup failure, TCP-level (connection refused, unreachable), or timeout.
-	_, isDNS := errors.AsType[*net.DNSError](err)
-	_, isOp := errors.AsType[*net.OpError](err)
-	netErr, isNet := errors.AsType[net.Error](err)
+	// DNS lookup failures — covers VPN-disconnect scenarios where the corporate DNS
+	// resolver is unreachable.
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
+		return true
+	}
 
-	isTransient := isDNS || isOp || (isNet && netErr.Timeout())
+	// *net.OpError covers both transport-level errors (connection refused, network
+	// unreachable) AND TLS errors (certificate invalid, handshake failure). Only the
+	// former are transient, so we check whether the underlying cause is a syscall error.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return isTransportOpError(opErr)
+	}
 
-	return isTransient
+	// Generic net.Error timeout (catches any remaining net.Error implementations).
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
+		return true
+	}
+
+	return false
+}
+
+// isTransportOpError reports whether a *net.OpError is a transport-level failure
+// (syscall error: connection refused, network unreachable, etc.) rather than a
+// TLS or application-level error. TLS errors do not wrap syscall errors.
+func isTransportOpError(opErr *net.OpError) bool {
+	var se *os.SyscallError
+	if errors.As(opErr, &se) {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(opErr, &errno)
 }
 
 // markAsUnauthenticated marks the workload as unauthenticated and stops background monitoring.

@@ -9,8 +9,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -469,8 +471,8 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 		{name: "oauth2.RetrieveError 400 invalid_grant", err: createRetrieveError(http.StatusBadRequest, "invalid_grant"), isTransient: false},
 		// Transient: network-level errors must be retried.
 		{name: "*net.DNSError timeout", err: &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true}, isTransient: true},
-		{name: "*net.OpError connection refused", err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, isTransient: true},
-		{name: "*url.Error wrapping *net.OpError", err: &url.Error{Op: "Post", URL: "https://example.com/token", Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}}, isTransient: true},
+		{name: "*net.OpError connection refused", err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}, isTransient: true},
+		{name: "*url.Error wrapping *net.OpError", err: &url.Error{Op: "Post", URL: "https://example.com/token", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}}, isTransient: true},
 		{name: "net.Error timeout", err: &timeoutNetError{}, isTransient: true},
 	}
 
@@ -544,7 +546,7 @@ func TestMonitoredTokenSource_TransientErrorRetriesAndSucceeds(t *testing.T) {
 	statusUpdater, _ := newMockStatusUpdater(ctrl)
 	tokenSource := newMockTokenSource()
 
-	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
 		switch tokenSource.callCount {
 		case 1:
@@ -594,7 +596,7 @@ func TestMonitoredTokenSource_TransientErrorContextCancellation(t *testing.T) {
 	statusUpdater, _ := newMockStatusUpdater(ctrl)
 	tokenSource := newMockTokenSource()
 
-	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
 		if tokenSource.callCount == 1 {
 			return &oauth2.Token{
@@ -643,7 +645,7 @@ func TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated(t *t
 		Return(nil).
 		Times(1)
 
-	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
 	nonTransientErr := createRetrieveError(http.StatusUnauthorized, `{"error":"invalid_token"}`)
 
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {

@@ -299,11 +299,10 @@ func isTransientNetworkError(err error) bool {
 	// unreachable) AND TLS errors (certificate invalid, handshake failure). Only the
 	// former are transient; TLS errors do not wrap syscall errors, so we use that
 	// to distinguish them.
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		var se *os.SyscallError
-		var errno syscall.Errno
-		return errors.As(opErr, &se) || errors.As(opErr, &errno)
+	if opErr, ok := errors.AsType[*net.OpError](err); ok {
+		_, isSyscall := errors.AsType[*os.SyscallError](opErr)
+		_, isErrno := errors.AsType[syscall.Errno](opErr)
+		return isSyscall || isErrno
 	}
 
 	// Generic net.Error timeout (catches any remaining net.Error implementations).

@@ -1072,47 +1072,42 @@ func TestMergeToolConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestConvertCRDAnnotationsOverride(t *testing.T) {
+func TestConvertCRDToolOverride(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		input    *mcpv1alpha1.ToolAnnotationsOverride
-		expected *vmcpconfig.ToolAnnotationsOverride
+		input    mcpv1alpha1.ToolOverride
+		expected *vmcpconfig.ToolOverride
 	}{
 		{
-			name:     "nil input returns nil",
-			input:    nil,
-			expected: nil,
+			name:     "name and description only",
+			input:    toolOverride("renamed", "new desc"),
+			expected: vmcpToolOverride("renamed", "new desc"),
 		},
 		{
-			name: "all fields converted",
-			input: &mcpv1alpha1.ToolAnnotationsOverride{
+			name: "all annotation fields converted",
+			input: toolOverrideWithAnnotations("renamed", "desc", &mcpv1alpha1.ToolAnnotationsOverride{
 				Title:           stringPtr("My Title"),
 				ReadOnlyHint:    boolPtr(true),
 				DestructiveHint: boolPtr(false),
 				IdempotentHint:  boolPtr(true),
 				OpenWorldHint:   boolPtr(false),
-			},
-			expected: &vmcpconfig.ToolAnnotationsOverride{
+			}),
+			expected: vmcpToolOverrideWithAnnotations("renamed", "desc", &vmcpconfig.ToolAnnotationsOverride{
 				Title:           stringPtr("My Title"),
 				ReadOnlyHint:    boolPtr(true),
 				DestructiveHint: boolPtr(false),
 				IdempotentHint:  boolPtr(true),
 				OpenWorldHint:   boolPtr(false),
-			},
+			}),
 		},
 		{
-			name:  "title only",
-			input: &mcpv1alpha1.ToolAnnotationsOverride{Title: stringPtr("Just Title")},
-			expected: &vmcpconfig.ToolAnnotationsOverride{
+			name:  "title annotation only",
+			input: toolOverrideWithAnnotations("renamed", "desc", &mcpv1alpha1.ToolAnnotationsOverride{Title: stringPtr("Just Title")}),
+			expected: vmcpToolOverrideWithAnnotations("renamed", "desc", &vmcpconfig.ToolAnnotationsOverride{
 				Title: stringPtr("Just Title"),
-			},
-		},
-		{
-			name:     "empty struct converts to empty struct",
-			input:    &mcpv1alpha1.ToolAnnotationsOverride{},
-			expected: &vmcpconfig.ToolAnnotationsOverride{},
+			}),
 		},
 	}
 
@@ -1120,7 +1115,7 @@ func TestConvertCRDAnnotationsOverride(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := convertCRDAnnotationsOverride(tt.input)
+			result := convertCRDToolOverride(&tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

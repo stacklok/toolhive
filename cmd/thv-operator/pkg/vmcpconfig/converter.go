@@ -433,14 +433,7 @@ func (c *Converter) resolveToolConfigRefs(
 			wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
 			for name, override := range toolConfig.Overrides {
 				if override != nil {
-					o := &vmcpconfig.ToolOverride{
-						Name:        override.Name,
-						Description: override.Description,
-					}
-					if override.Annotations != nil {
-						o.Annotations = override.Annotations.DeepCopy()
-					}
-					wtc.Overrides[name] = o
+					wtc.Overrides[name] = override.DeepCopy()
 				}
 			}
 		}
@@ -511,30 +504,27 @@ func (*Converter) mergeToolConfigOverrides(
 
 	for toolName, override := range resolvedConfig.Spec.ToolsOverride {
 		if _, exists := wtc.Overrides[toolName]; !exists {
-			o := &vmcpconfig.ToolOverride{
-				Name:        override.Name,
-				Description: override.Description,
-			}
-			if override.Annotations != nil {
-				o.Annotations = convertCRDAnnotationsOverride(override.Annotations)
-			}
-			wtc.Overrides[toolName] = o
+			wtc.Overrides[toolName] = convertCRDToolOverride(&override)
 		}
 	}
 }
 
-// convertCRDAnnotationsOverride converts CRD ToolAnnotationsOverride to config ToolAnnotationsOverride.
-func convertCRDAnnotationsOverride(src *mcpv1alpha1.ToolAnnotationsOverride) *vmcpconfig.ToolAnnotationsOverride {
-	if src == nil {
-		return nil
+// convertCRDToolOverride converts a CRD ToolOverride to a config ToolOverride.
+func convertCRDToolOverride(src *mcpv1alpha1.ToolOverride) *vmcpconfig.ToolOverride {
+	o := &vmcpconfig.ToolOverride{
+		Name:        src.Name,
+		Description: src.Description,
 	}
-	return &vmcpconfig.ToolAnnotationsOverride{
-		Title:           src.Title,
-		ReadOnlyHint:    src.ReadOnlyHint,
-		DestructiveHint: src.DestructiveHint,
-		IdempotentHint:  src.IdempotentHint,
-		OpenWorldHint:   src.OpenWorldHint,
+	if src.Annotations != nil {
+		o.Annotations = &vmcpconfig.ToolAnnotationsOverride{
+			Title:           src.Annotations.Title,
+			ReadOnlyHint:    src.Annotations.ReadOnlyHint,
+			DestructiveHint: src.Annotations.DestructiveHint,
+			IdempotentHint:  src.Annotations.IdempotentHint,
+			OpenWorldHint:   src.Annotations.OpenWorldHint,
+		}
 	}
+	return o
 }
 
 // resolveMCPToolConfig fetches an MCPToolConfig resource by name and namespace

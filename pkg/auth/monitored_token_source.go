@@ -130,14 +130,59 @@ func (mts *MonitoredTokenSource) Stopped() <-chan struct{} {
 	return mts.stopped
 }
 
-// Token retrieves a token from the token source and will mark the workload as unauthenticated
-// if the token retrieval fails.
+// Token retrieves a token, retrying with exponential backoff on transient network
+// errors (DNS failures, TCP errors). On non-transient errors (OAuth 4xx, TLS failures)
+// it marks the workload as unauthenticated and returns immediately. Context cancellation
+// (workload removal) stops the retry without marking the workload as unauthenticated.
 func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 	tok, err := mts.tokenSource.Token()
-	if err != nil {
+	if err == nil {
+		return tok, nil
+	}
+
+	if !isTransientNetworkError(err) {
 		mts.markAsUnauthenticated(fmt.Sprintf("Token retrieval failed: %v", err))
 		return nil, err
 	}
+
+	// Transient network error (e.g. VPN disconnected, DNS unavailable).
+	// Retry with exponential backoff until the network recovers or monitoring stops.
+	slog.Warn("token refresh failed due to transient network error, retrying with backoff",
+		"workload", mts.workloadName,
+		"error", err,
+	)
+
+	b := mts.getRetryBackOff()
+
+	tok, retryErr := backoff.Retry(mts.monitoringCtx, func() (*oauth2.Token, error) {
+		t, tokenErr := mts.tokenSource.Token()
+		if tokenErr == nil {
+			return t, nil
+		}
+		if !isTransientNetworkError(tokenErr) {
+			return nil, backoff.Permanent(tokenErr)
+		}
+		return nil, tokenErr
+	},
+		backoff.WithBackOff(b),
+		backoff.WithNotify(func(retryErr error, d time.Duration) {
+			slog.Warn("token refresh retry failed",
+				"workload", mts.workloadName,
+				"retry_in", d,
+				"error", retryErr,
+			)
+		}),
+	)
+
+	if retryErr != nil {
+		if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
+			// Context cancelled (workload removed) — don't mark as unauthenticated.
+			return nil, retryErr
+		}
+		mts.markAsUnauthenticated(fmt.Sprintf("Token refresh failed after retries: %v", retryErr))
+		return nil, retryErr
+	}
+
 	return tok, nil
 }
 
@@ -200,75 +245,18 @@ func (mts *MonitoredTokenSource) getRetryBackOff() backoff.BackOff {
 	return eb
 }
 
-// onTick returns (shouldStop bool, nextDelay time.Duration).
-//
-// On a transient network error (DNS failure, TCP-level error, timeout) it retries
-// with exponential backoff (respecting mts.monitoringCtx) before marking the workload
-// as unauthenticated. Non-transient errors (OAuth 4xx, invalid_grant, etc.) cause an
-// immediate failure. If the context is cancelled while retrying (e.g. the workload is
-// removed), monitoring stops cleanly without marking the workload as unauthenticated.
+// onTick calls Token() to refresh the token and returns the next check delay.
+// Token() handles transient error retries and marks the workload as unauthenticated
+// on permanent failures.
 func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
-	tok, err := mts.tokenSource.Token()
-	if err == nil {
-		if tok == nil || tok.Expiry.IsZero() {
-			return true, 0
-		}
-		wait := time.Until(tok.Expiry)
-		if wait < time.Second {
-			wait = time.Second
-		}
-		return false, wait
-	}
-
-	if !isTransientNetworkError(err) {
-		mts.markAsUnauthenticated(fmt.Sprintf("No valid token: %v", err))
+	tok, err := mts.Token()
+	if err != nil {
 		return true, 0
 	}
-
-	// Transient network error (e.g. VPN disconnected, DNS unavailable).
-	// Retry with exponential backoff until the network recovers or monitoring stops.
-	slog.Warn("token refresh failed due to transient network error, retrying with backoff",
-		"workload", mts.workloadName,
-		"error", err,
-	)
-
-	b := mts.getRetryBackOff()
-
-	refreshed, retryErr := backoff.Retry(mts.monitoringCtx, func() (*oauth2.Token, error) {
-		t, tokenErr := mts.tokenSource.Token()
-		if tokenErr == nil {
-			return t, nil
-		}
-		if !isTransientNetworkError(tokenErr) {
-			// Non-transient error inside retry — stop immediately.
-			return nil, backoff.Permanent(tokenErr)
-		}
-		return nil, tokenErr
-	},
-		backoff.WithBackOff(b),
-		backoff.WithNotify(func(retryErr error, d time.Duration) {
-			slog.Warn("token refresh retry failed",
-				"workload", mts.workloadName,
-				"retry_in", d,
-				"error", retryErr,
-			)
-		}),
-	)
-
-	if retryErr != nil {
-		if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
-			// Monitoring context was cancelled (workload removed) — do not mark as unauthenticated.
-			return true, 0
-		}
-		mts.markAsUnauthenticated(fmt.Sprintf("Token refresh failed after retries: %v", retryErr))
+	if tok == nil || tok.Expiry.IsZero() {
 		return true, 0
 	}
-
-	// Retry succeeded — schedule next check at the new token's expiry.
-	if refreshed == nil || refreshed.Expiry.IsZero() {
-		return true, 0
-	}
-	wait := time.Until(refreshed.Expiry)
+	wait := time.Until(tok.Expiry)
 	if wait < time.Second {
 		wait = time.Second
 	}

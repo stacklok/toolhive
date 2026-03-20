@@ -42,6 +42,8 @@ type mockTokenSource struct {
 	mu        sync.Mutex
 	tokenFn   func() (*oauth2.Token, error)
 	callCount int
+	notifyAt  int
+	notify    chan struct{}
 }
 
 func newMockTokenSource() *mockTokenSource {
@@ -58,11 +60,27 @@ func (m *mockTokenSource) setTokenFn(fn func() (*oauth2.Token, error)) {
 	m.tokenFn = fn
 }
 
+// notifyOnCall returns a channel that is closed when Token() is called for the nth time.
+// Useful in tests to synchronise without time.Sleep.
+func (m *mockTokenSource) notifyOnCall(n int) <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch := make(chan struct{})
+	m.notifyAt = n
+	m.notify = ch
+	return ch
+}
+
 func (m *mockTokenSource) Token() (*oauth2.Token, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callCount++
-	return m.tokenFn()
+	tok, err := m.tokenFn()
+	if m.notify != nil && m.callCount >= m.notifyAt {
+		close(m.notify)
+		m.notify = nil
+	}
+	return tok, err
 }
 
 // createRetrieveError creates an error for testing token failures
@@ -522,13 +540,12 @@ func TestMonitoredTokenSource_TransientErrorRetriesAndSucceeds(t *testing.T) {
 
 	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
-		// tokenFn is called with tokenSource.mu held, so read callCount directly.
 		switch tokenSource.callCount {
 		case 1:
 			// Initial monitor kick: valid token that expires soon.
 			return &oauth2.Token{
 				AccessToken: "initial-token",
-				Expiry:      time.Now().Add(100 * time.Millisecond),
+				Expiry:      time.Now().Add(10 * time.Millisecond),
 			}, nil
 		case 2, 3, 4:
 			// Transient failures during the retry window.
@@ -542,6 +559,9 @@ func TestMonitoredTokenSource_TransientErrorRetriesAndSucceeds(t *testing.T) {
 		}
 	})
 
+	// Wait for call 5: the recovery token return.
+	recovered := tokenSource.notifyOnCall(5)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -549,8 +569,11 @@ func TestMonitoredTokenSource_TransientErrorRetriesAndSucceeds(t *testing.T) {
 	ats.newRetryBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
-	// Allow time for: initial tick → token expiry (100ms) → retry loop → recovery.
-	time.Sleep(2 * time.Second)
+	// Block until the monitor has successfully recovered, then stop it.
+	<-recovered
+	cancel()
+	<-ats.Stopped()
+	// gomock verifies SetWorkloadStatus was NOT called (no EXPECT set).
 }
 
 // TestMonitoredTokenSource_TransientErrorContextCancellation verifies that cancelling
@@ -570,12 +593,15 @@ func TestMonitoredTokenSource_TransientErrorContextCancellation(t *testing.T) {
 		if tokenSource.callCount == 1 {
 			return &oauth2.Token{
 				AccessToken: "initial-token",
-				Expiry:      time.Now().Add(100 * time.Millisecond),
+				Expiry:      time.Now().Add(10 * time.Millisecond),
 			}, nil
 		}
 		// All subsequent calls: perpetual transient error.
 		return nil, transientErr
 	})
+
+	// Wait for the first retry attempt before cancelling.
+	retrying := tokenSource.notifyOnCall(2)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -583,12 +609,11 @@ func TestMonitoredTokenSource_TransientErrorContextCancellation(t *testing.T) {
 	ats.newRetryBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
-	// Cancel while the retry loop is running.
-	time.Sleep(300 * time.Millisecond)
+	// Cancel once we know the retry loop is running, then wait for clean exit.
+	<-retrying
 	cancel()
-
-	// Give the monitor goroutine time to observe cancellation and exit cleanly.
-	time.Sleep(200 * time.Millisecond)
+	<-ats.Stopped()
+	// gomock verifies SetWorkloadStatus was NOT called (no EXPECT set).
 }
 
 // TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated verifies that
@@ -621,13 +646,13 @@ func TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated(t *t
 			// Initial tick: short-lived valid token.
 			return &oauth2.Token{
 				AccessToken: "initial-token",
-				Expiry:      time.Now().Add(100 * time.Millisecond),
+				Expiry:      time.Now().Add(10 * time.Millisecond),
 			}, nil
 		case 2, 3:
 			// Transient errors — retried.
 			return nil, transientErr
 		default:
-			// Non-transient auth failure — must stop retrying.
+			// Non-transient auth failure — must stop retrying and mark unauthenticated.
 			return nil, nonTransientErr
 		}
 	})
@@ -639,6 +664,7 @@ func TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated(t *t
 	ats.newRetryBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
-	// Allow time for: initial tick → expiry → 2 transient retries → non-transient → mark.
-	time.Sleep(2 * time.Second)
+	// Monitor stops itself after the non-transient error; wait for that.
+	<-ats.Stopped()
+	// gomock verifies SetWorkloadStatus was called exactly once.
 }

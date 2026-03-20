@@ -97,6 +97,9 @@ type MonitoredTokenSource struct {
 	// It is nil by default (production path) and overridable in tests for fast execution.
 	newRetryBackOff func() backoff.BackOff
 
+	// stopped is closed when monitorLoop exits, regardless of the reason.
+	stopped chan struct{}
+
 	timer *time.Timer
 }
 
@@ -114,7 +117,14 @@ func NewMonitoredTokenSource(
 		statusUpdater:  statusUpdater,
 		monitoringCtx:  ctx,
 		stopMonitoring: make(chan struct{}),
+		stopped:        make(chan struct{}),
 	}
+}
+
+// Stopped returns a channel that is closed when background monitoring has stopped,
+// regardless of the reason (context cancellation, auth failure, or clean shutdown).
+func (mts *MonitoredTokenSource) Stopped() <-chan struct{} {
+	return mts.stopped
 }
 
 // Token retrieves a token from the token source and will mark the workload as unauthenticated
@@ -138,6 +148,7 @@ func (mts *MonitoredTokenSource) StartBackgroundMonitoring() {
 }
 
 func (mts *MonitoredTokenSource) monitorLoop() {
+	defer close(mts.stopped)
 	for {
 		select {
 		case <-mts.monitoringCtx.Done():

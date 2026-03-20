@@ -983,6 +983,8 @@ components:
           type: string
         runtime_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig'
+        scaling_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig'
         schema_version:
           description: SchemaVersion is the version of the RunConfig schema
           type: string
@@ -1048,6 +1050,24 @@ components:
             type: string
           type: array
           uniqueItems: false
+      type: object
+    github_com_stacklok_toolhive_pkg_runner.ScalingConfig:
+      description: |-
+        ScalingConfig contains configuration for horizontal scaling of the proxy runner.
+        Only applicable when running in Kubernetes with the ToolHive operator.
+        When nil, no scaling configuration is applied (single-replica default behavior).
+      properties:
+        backend_replicas:
+          description: |-
+            BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.
+            When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
+            When set (including 0), the value is an explicit replica count.
+          type: integer
+        session_cache_size:
+          description: |-
+            SessionCacheSize is the maximum number of sessions held in the local LRU cache.
+            When nil, consuming code applies a sensible default (e.g. 1000).
+          type: integer
       type: object
     github_com_stacklok_toolhive_pkg_runner.ToolOverride:
       properties:

@@ -233,6 +233,7 @@ func TestCreateTokenSourceFromCached(t *testing.T) {
 		oauth2Config,
 		"refresh_token",
 		time.Now().Add(time.Hour),
+		"",
 	)
 
 	assert.NotNil(t, tokenSource)

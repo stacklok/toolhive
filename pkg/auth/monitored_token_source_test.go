@@ -447,78 +447,84 @@ func fastBackOff() backoff.BackOff {
 	return b
 }
 
-// --- isTransientNetworkError ---
+// --- error classification via background monitor ---
 
-func TestIsTransientNetworkError(t *testing.T) {
+// TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification verifies that the
+// background monitor correctly distinguishes transient network errors (which trigger
+// retries without marking the workload unauthenticated) from non-transient errors
+// (which immediately mark the workload as unauthenticated and stop monitoring).
+func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		err  error
-		want bool
+		name        string
+		err         error
+		isTransient bool // true → monitor retries; false → monitor marks unauthenticated
 	}{
-		{
-			name: "nil",
-			err:  nil,
-			want: false,
-		},
-		{
-			name: "context.Canceled",
-			err:  context.Canceled,
-			want: false,
-		},
-		{
-			name: "context.DeadlineExceeded",
-			err:  context.DeadlineExceeded,
-			want: false,
-		},
-		{
-			name: "plain error",
-			err:  errors.New("some error"),
-			want: false,
-		},
-		{
-			name: "oauth2.RetrieveError 401",
-			err:  createRetrieveError(http.StatusUnauthorized, "unauthorized"),
-			want: false,
-		},
-		{
-			name: "oauth2.RetrieveError 400 invalid_grant",
-			err:  createRetrieveError(http.StatusBadRequest, "invalid_grant"),
-			want: false,
-		},
-		{
-			name: "*net.DNSError",
-			err:  &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true},
-			want: true,
-		},
-		{
-			name: "*net.OpError connection refused",
-			err:  &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
-			want: true,
-		},
-		{
-			name: "*url.Error wrapping *net.OpError",
-			err: &url.Error{
-				Op:  "Post",
-				URL: "https://example.com/token",
-				Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
-			},
-			want: true,
-		},
-		{
-			name: "net.Error timeout",
-			err:  &timeoutNetError{},
-			want: true,
-		},
+		// Non-transient: plain and auth-level errors must fail fast.
+		{name: "plain error", err: errors.New("some error"), isTransient: false},
+		{name: "context.Canceled", err: context.Canceled, isTransient: false},
+		{name: "context.DeadlineExceeded", err: context.DeadlineExceeded, isTransient: false},
+		{name: "oauth2.RetrieveError 401", err: createRetrieveError(http.StatusUnauthorized, "unauthorized"), isTransient: false},
+		{name: "oauth2.RetrieveError 400 invalid_grant", err: createRetrieveError(http.StatusBadRequest, "invalid_grant"), isTransient: false},
+		// Transient: network-level errors must be retried.
+		{name: "*net.DNSError timeout", err: &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true}, isTransient: true},
+		{name: "*net.OpError connection refused", err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, isTransient: true},
+		{name: "*url.Error wrapping *net.OpError", err: &url.Error{Op: "Post", URL: "https://example.com/token", Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}}, isTransient: true},
+		{name: "net.Error timeout", err: &timeoutNetError{}, isTransient: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := isTransientNetworkError(tt.err)
-			if got != tt.want {
-				t.Errorf("isTransientNetworkError(%v) = %v, want %v", tt.err, got, tt.want)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			tokenSource := newMockTokenSource()
+			tokenSource.setTokenFn(func() (*oauth2.Token, error) {
+				if tokenSource.callCount == 1 {
+					// Initial tick: short-lived token so the monitor retries quickly.
+					return &oauth2.Token{
+						AccessToken: "initial-token",
+						Expiry:      time.Now().Add(10 * time.Millisecond),
+					}, nil
+				}
+				return nil, tt.err
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			if tt.isTransient {
+				// Transient: SetWorkloadStatus must NOT be called — no EXPECT set.
+				statusUpdater, _ := newMockStatusUpdater(ctrl)
+				retrying := tokenSource.notifyOnCall(2)
+
+				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+				ats.newRetryBackOff = fastBackOff
+				ats.StartBackgroundMonitoring()
+
+				<-retrying // Ensure the retry loop has been entered before cancelling.
+				cancel()
+				<-ats.Stopped()
+			} else {
+				// Non-transient: SetWorkloadStatus must be called exactly once.
+				statusUpdater, statusManager := newMockStatusUpdater(ctrl)
+				statusManager.EXPECT().
+					SetWorkloadStatus(
+						gomock.Any(),
+						"test-workload",
+						rt.WorkloadStatusUnauthenticated,
+						gomock.Any(),
+					).
+					Return(nil).
+					Times(1)
+
+				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+				ats.newRetryBackOff = fastBackOff
+				ats.StartBackgroundMonitoring()
+
+				<-ats.Stopped() // Monitor stops itself after marking unauthenticated.
 			}
 		})
 	}

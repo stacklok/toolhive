@@ -2252,50 +2252,43 @@ func TestRunConfig_BackendReplicasAndSessionCacheSize(t *testing.T) {
 		t.Parallel()
 		original := NewRunConfig()
 		original.Name = "test-server"
-		original.BackendReplicas = int32ptr(3)
-		original.SessionCacheSize = 500
+		original.ScalingConfig = &ScalingConfig{
+			BackendReplicas:  int32ptr(3),
+			SessionCacheSize: int32ptr(500),
+		}
 
 		var buf bytes.Buffer
 		require.NoError(t, original.WriteJSON(&buf))
 
 		got, err := ReadJSON(&buf)
 		require.NoError(t, err)
-		require.NotNil(t, got.BackendReplicas)
-		assert.Equal(t, int32(3), *got.BackendReplicas)
-		assert.Equal(t, 500, got.SessionCacheSize)
+		require.NotNil(t, got.ScalingConfig)
+		require.NotNil(t, got.ScalingConfig.BackendReplicas)
+		assert.Equal(t, int32(3), *got.ScalingConfig.BackendReplicas)
+		require.NotNil(t, got.ScalingConfig.SessionCacheSize)
+		assert.Equal(t, int32(500), *got.ScalingConfig.SessionCacheSize)
 	})
 
-	t.Run("round-trip without new fields preserves zero values", func(t *testing.T) {
+	t.Run("round-trip without scaling config preserves nil", func(t *testing.T) {
 		t.Parallel()
-		// Marshal a minimal config that has no BackendReplicas or SessionCacheSize set,
-		// then unmarshal and verify the new fields are absent (nil / 0).
 		minimal := NewRunConfig()
 		minimal.Name = testServerName
 		var buf bytes.Buffer
 		require.NoError(t, minimal.WriteJSON(&buf))
 		got, err := ReadJSON(&buf)
 		require.NoError(t, err)
-		assert.Nil(t, got.BackendReplicas, "BackendReplicas should be nil when omitted")
-		assert.Equal(t, 0, got.SessionCacheSize, "SessionCacheSize should be 0 when omitted")
+		assert.Nil(t, got.ScalingConfig, "ScalingConfig should be nil when omitted")
 	})
 
-	t.Run("BackendReplicas nil is omitted from JSON output", func(t *testing.T) {
+	t.Run("nil ScalingConfig is omitted from JSON output", func(t *testing.T) {
 		t.Parallel()
 		cfg := NewRunConfig()
-		cfg.Name = "no-replicas"
+		cfg.Name = "no-scaling"
 
 		var buf bytes.Buffer
 		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.NotContains(t, buf.String(), "scaling_config")
 		assert.NotContains(t, buf.String(), "backend_replicas")
-	})
-
-	t.Run("SessionCacheSize zero is omitted from JSON output", func(t *testing.T) {
-		t.Parallel()
-		cfg := NewRunConfig()
-		cfg.Name = "no-cache-size"
-
-		var buf bytes.Buffer
-		require.NoError(t, cfg.WriteJSON(&buf))
 		assert.NotContains(t, buf.String(), "session_cache_size")
 	})
 
@@ -2303,46 +2296,68 @@ func TestRunConfig_BackendReplicasAndSessionCacheSize(t *testing.T) {
 		t.Parallel()
 		cfg := NewRunConfig()
 		cfg.Name = testServerName
-		cfg.BackendReplicas = int32ptr(2)
+		cfg.ScalingConfig = &ScalingConfig{BackendReplicas: int32ptr(2)}
 		var buf bytes.Buffer
 		require.NoError(t, cfg.WriteJSON(&buf))
 		got, err := ReadJSON(&buf)
 		require.NoError(t, err)
-		require.NotNil(t, got.BackendReplicas, "BackendReplicas should be non-nil when present in JSON")
-		assert.Equal(t, int32(2), *got.BackendReplicas)
+		require.NotNil(t, got.ScalingConfig)
+		require.NotNil(t, got.ScalingConfig.BackendReplicas, "BackendReplicas should be non-nil when present in JSON")
+		assert.Equal(t, int32(2), *got.ScalingConfig.BackendReplicas)
+		assert.Nil(t, got.ScalingConfig.SessionCacheSize, "SessionCacheSize should be nil when omitted from JSON")
 	})
 
 	t.Run("backend_replicas 0 in JSON deserializes to pointer-to-zero, not nil", func(t *testing.T) {
 		t.Parallel()
-		// Explicitly encoding 0 is distinct from omitting the field entirely.
-		// omitempty only omits the field when the pointer is nil; a pointer-to-zero
-		// is a meaningful "set to 0" and must survive a round-trip.
+		// omitempty only omits when the pointer is nil; pointer-to-zero is a meaningful
+		// "set to 0" and must survive a round-trip.
 		cfg := NewRunConfig()
 		cfg.Name = testServerName
-		cfg.BackendReplicas = int32ptr(0)
+		cfg.ScalingConfig = &ScalingConfig{BackendReplicas: int32ptr(0)}
 		var buf bytes.Buffer
 		require.NoError(t, cfg.WriteJSON(&buf))
 		got, err := ReadJSON(&buf)
 		require.NoError(t, err)
-		require.NotNil(t, got.BackendReplicas, "BackendReplicas should be non-nil when explicitly set to 0 in JSON")
-		assert.Equal(t, int32(0), *got.BackendReplicas)
+		require.NotNil(t, got.ScalingConfig)
+		require.NotNil(t, got.ScalingConfig.BackendReplicas, "BackendReplicas should be non-nil when explicitly set to 0 in JSON")
+		assert.Equal(t, int32(0), *got.ScalingConfig.BackendReplicas)
+	})
+
+	t.Run("session_cache_size 0 in JSON deserializes to pointer-to-zero, not nil", func(t *testing.T) {
+		t.Parallel()
+		// omitempty only omits when the pointer is nil; pointer-to-zero is a meaningful
+		// "set to 0" and must survive a round-trip.
+		cfg := NewRunConfig()
+		cfg.Name = testServerName
+		cfg.ScalingConfig = &ScalingConfig{SessionCacheSize: int32ptr(0)}
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		require.NotNil(t, got.ScalingConfig)
+		require.NotNil(t, got.ScalingConfig.SessionCacheSize, "SessionCacheSize should be non-nil when explicitly set to 0 in JSON")
+		assert.Equal(t, int32(0), *got.ScalingConfig.SessionCacheSize)
+		assert.Nil(t, got.ScalingConfig.BackendReplicas, "BackendReplicas should be nil when omitted from JSON")
 	})
 
 	t.Run("YAML round-trip with both fields set", func(t *testing.T) {
 		t.Parallel()
 		original := NewRunConfig()
 		original.Name = "yaml-server"
-		original.BackendReplicas = int32ptr(5)
-		original.SessionCacheSize = 250
+		original.ScalingConfig = &ScalingConfig{
+			BackendReplicas:  int32ptr(5),
+			SessionCacheSize: int32ptr(250),
+		}
 
-		// Marshal to YAML then unmarshal back using the standard yaml library.
 		data, err := yaml.Marshal(original)
 		require.NoError(t, err)
 
 		var got RunConfig
 		require.NoError(t, yaml.Unmarshal(data, &got))
-		require.NotNil(t, got.BackendReplicas)
-		assert.Equal(t, int32(5), *got.BackendReplicas)
-		assert.Equal(t, 250, got.SessionCacheSize)
+		require.NotNil(t, got.ScalingConfig)
+		require.NotNil(t, got.ScalingConfig.BackendReplicas)
+		assert.Equal(t, int32(5), *got.ScalingConfig.BackendReplicas)
+		require.NotNil(t, got.ScalingConfig.SessionCacheSize)
+		assert.Equal(t, int32(250), *got.ScalingConfig.SessionCacheSize)
 	})
 }

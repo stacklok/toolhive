@@ -896,10 +896,6 @@ const docTemplate = `{
                     "aws_sts_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.Config"
                     },
-                    "backend_replicas": {
-                        "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen omitted or null, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count passed to consuming code.",
-                        "type": "integer"
-                    },
                     "base_name": {
                         "description": "BaseName is the base name used for the container (without prefixes)",
                         "type": "string"
@@ -1016,6 +1012,9 @@ const docTemplate = `{
                     "runtime_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
+                    "scaling_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig"
+                    },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema",
                         "type": "string"
@@ -1027,10 +1026,6 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
-                    },
-                    "session_cache_size": {
-                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nA value of 0 causes consuming code to apply a sensible default (1000).",
-                        "type": "integer"
                     },
                     "target_host": {
                         "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",
@@ -1089,6 +1084,20 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.ScalingConfig": {
+                "description": "ScalingConfig contains configuration for horizontal scaling of the proxy runner.\nOnly applicable when running in Kubernetes with the ToolHive operator.\nWhen nil, no scaling configuration is applied (single-replica default behavior).",
+                "properties": {
+                    "backend_replicas": {
+                        "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
+                        "type": "integer"
+                    },
+                    "session_cache_size": {
+                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nWhen nil, consuming code applies a sensible default (e.g. 1000).",
+                        "type": "integer"
                     }
                 },
                 "type": "object"

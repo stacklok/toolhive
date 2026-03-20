@@ -211,14 +211,25 @@ type RunConfig struct {
 	// This is the serializable RunConfig; secrets are referenced by file paths or env var names.
 	EmbeddedAuthServerConfig *authserver.RunConfig `json:"embedded_auth_server_config,omitempty" yaml:"embedded_auth_server_config,omitempty"` //nolint:lll
 
+	// ScalingConfig contains configuration for horizontal scaling of the proxy runner.
+	// Only applicable when running in Kubernetes with the ToolHive operator.
+	// When nil, no scaling configuration is applied (single-replica default behavior).
+	ScalingConfig *ScalingConfig `json:"scaling_config,omitempty" yaml:"scaling_config,omitempty"`
+}
+
+// ScalingConfig contains configuration for horizontal scaling of the proxy runner backend.
+// It is intentionally kept as a separate struct so future scaling knobs (MinReplicas,
+// MaxReplicas, ScaleDownWindow, etc.) can be added here without growing the top-level
+// RunConfig shape.
+type ScalingConfig struct {
 	// BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.
-	// When omitted or null, replicas are unmanaged (preserving HPA or manual kubectl control).
-	// When set (including 0), the value is an explicit replica count passed to consuming code.
+	// When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
+	// When set (including 0), the value is an explicit replica count.
 	BackendReplicas *int32 `json:"backend_replicas,omitempty" yaml:"backend_replicas,omitempty"`
 
 	// SessionCacheSize is the maximum number of sessions held in the local LRU cache.
-	// A value of 0 causes consuming code to apply a sensible default (1000).
-	SessionCacheSize int `json:"session_cache_size,omitempty" yaml:"session_cache_size,omitempty"`
+	// When nil, consuming code applies a sensible default (e.g. 1000).
+	SessionCacheSize *int32 `json:"session_cache_size,omitempty" yaml:"session_cache_size,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

@@ -20,6 +20,8 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -407,6 +409,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("embedded authorization server initialized (Mode B)")
 	}
 
+	// Build UpstreamTokenReader so incoming OIDC middleware enriches
+	// Identity with upstream provider tokens from the auth server's storage.
+	var validatorOpts []auth.TokenValidatorOption
+	if embeddedAuthServer != nil {
+		stor := embeddedAuthServer.IDPTokenStorage()
+		refresher := embeddedAuthServer.UpstreamTokenRefresher()
+		reader := upstreamtoken.NewInProcessService(stor, refresher)
+		validatorOpts = append(validatorOpts, auth.WithUpstreamTokenReader(reader))
+	}
+
 	// Discover backends and create client
 	backends, backendClient, outgoingRegistry, err := discoverBackends(ctx, &cfg.Config)
 	if err != nil {
@@ -495,7 +507,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type))
 
-	authMiddleware, authzMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
+	authMiddleware, authzMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(
+		ctx, cfg.IncomingAuth, validatorOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}

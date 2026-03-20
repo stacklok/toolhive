@@ -42,11 +42,15 @@ Evaluate whether the change is well-tested relative to its risk:
 - If tests are missing or weak, say specifically what should be tested.
 - For validation or branching logic, enumerate the full input matrix (type × field combinations, flag × state permutations) and verify each cell is covered. Don't eyeball — be systematic.
 
-### 4. Things That Look Fine
+### 4. vMCP Anti-Pattern Check
+
+If the change touches files under `pkg/vmcp/` or `cmd/vmcp/`, also run the `vmcp-review` skill against those files. Don't reproduce the full vmcp-review report — instead, summarize the most important findings (must-fix and should-fix severity) inline with your Key Review Questions. Link back to the specific anti-pattern by number (e.g., "see vMCP anti-pattern #8") so the reviewer can dig deeper if needed.
+
+### 5. Things That Look Fine
 
 Briefly note which parts of the change appear straightforward and low-risk so the reviewer can skim those confidently.
 
-### 5. Reading Order (large changes only)
+### 6. Reading Order (large changes only)
 
 If the change is large, suggest a reading order — which files/sections to review carefully vs. skim.
 

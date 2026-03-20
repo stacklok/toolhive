@@ -29,9 +29,10 @@ const (
 	// Override with TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL (e.g. "2m", "10m").
 	tokenRefreshMaxRetryInterval = 5 * time.Minute
 
-	// #nosec G101 — these are environment variable names, not credentials
+	// #nosec G101 — not credentials, just initial retry interval
 	tokenRefreshInitialRetryIntervalEnv = "TOOLHIVE_TOKEN_REFRESH_INITIAL_RETRY_INTERVAL"
-	tokenRefreshMaxRetryIntervalEnv     = "TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL"
+	// #nosec G101 — not credentials, just max retry interval
+	tokenRefreshMaxRetryIntervalEnv = "TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL"
 )
 
 // resolveTokenRefreshInitialRetryInterval returns the initial retry interval for

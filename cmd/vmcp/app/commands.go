@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -199,8 +200,10 @@ func getStatusReportingInterval(cfg *config.Config) time.Duration {
 	return 0
 }
 
-// loadAndValidateConfig loads and validates the vMCP configuration file
-func loadAndValidateConfig(configPath string) (*config.Config, error) {
+// loadAndValidateConfig loads and validates the vMCP configuration file.
+// Returns a RuntimeConfig that wraps the deserialized Config with any
+// runtime-only fields (e.g. AuthServer) available for later initialization.
+func loadAndValidateConfig(configPath string) (*config.RuntimeConfig, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
 
 	envReader := &env.OSReader{}
@@ -225,7 +228,7 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 		slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(cfg.CompositeTools)))
 	}
 
-	return cfg, nil
+	return &config.RuntimeConfig{Config: *cfg}, nil
 }
 
 // discoverBackends initializes managers, discovers backends, and creates backend client
@@ -368,8 +371,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("audit logging enabled with default configuration")
 	}
 
+	// Construct embedded authorization server if configured (Mode B).
+	// This is a hard failure — if the auth server is configured but cannot be
+	// created, we must not silently fall back to Mode A.
+	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
+	if cfg.AuthServer != nil {
+		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, cfg.AuthServer.RunConfig())
+		if err != nil {
+			return fmt.Errorf("failed to create embedded auth server: %w", err)
+		}
+		defer func() {
+			if closeErr := embeddedAuthServer.Close(); closeErr != nil {
+				slog.Error(fmt.Sprintf("failed to close embedded auth server: %v", closeErr))
+			}
+		}()
+		slog.Info("embedded authorization server initialized (Mode B)")
+	}
+
 	// Discover backends and create client
-	backends, backendClient, outgoingRegistry, err := discoverBackends(ctx, cfg)
+	backends, backendClient, outgoingRegistry, err := discoverBackends(ctx, &cfg.Config)
 	if err != nil {
 		return err
 	}
@@ -541,10 +561,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
+		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             cfg.Audit,
 		HealthMonitorConfig:     healthMonitorConfig,
-		StatusReportingInterval: getStatusReportingInterval(cfg),
+		StatusReportingInterval: getStatusReportingInterval(&cfg.Config),
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,

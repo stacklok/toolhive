@@ -14,7 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/compositetools"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/compositetools"
 	sessionmocks "github.com/stacklok/toolhive/pkg/vmcp/session/types/mocks"
 )
 

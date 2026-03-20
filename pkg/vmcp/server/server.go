@@ -38,9 +38,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/compositetools"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
-	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
@@ -215,23 +212,6 @@ type Server struct {
 	// vmcpSessionMgr manages session-scoped backend client lifecycle.
 	vmcpSessionMgr SessionManager
 
-	// Composite tool workflow definitions keyed by tool name.
-	// Initialized during construction and read-only thereafter.
-	// Thread-safety: Safe for concurrent reads (no writes after initialization).
-	workflowDefs map[string]*composer.WorkflowDefinition
-
-	// composerFactory creates a per-session workflow Composer bound to the
-	// session's routing table and tool list. Called at session registration
-	// time so that composite tool execution routes via the session rather than
-	// depending on the discovery middleware injecting DiscoveredCapabilities
-	// into the request context.
-	composerFactory func(rt *vmcp.RoutingTable, tools []vmcp.Tool) composer.Composer
-
-	// workflowInstruments holds pre-created OTEL metric instruments for workflow
-	// telemetry. Nil when telemetry is disabled. Created once at server startup
-	// and shared across all per-session executor wrappers.
-	workflowInstruments *workflowExecutorInstruments
-
 	// Ready channel signals when the server is ready to accept connections.
 	// Closed once the listener is created and serving.
 	ready     chan struct{}
@@ -367,19 +347,6 @@ func New(
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
-	// Pre-create workflow telemetry instruments once so they can be reused
-	// across all per-session executor wrappers without re-registering metrics.
-	var workflowInstruments *workflowExecutorInstruments
-	if cfg.TelemetryProvider != nil && len(workflowDefs) > 0 {
-		workflowInstruments, err = newWorkflowExecutorInstruments(
-			cfg.TelemetryProvider.MeterProvider(),
-			cfg.TelemetryProvider.TracerProvider(),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create workflow executor telemetry: %w", err)
-		}
-	}
-
 	// Create session manager using StreamableSession as the transport-layer placeholder.
 	// StreamableSession is a lightweight implementation of transportsession.Session that
 	// handles disconnect tracking, TTL, and metadata for Streamable HTTP connections.
@@ -412,30 +379,40 @@ func New(
 		slog.Info("health monitoring disabled")
 	}
 
-	// Create session manager
-	if cfg.SessionFactory == nil {
-		return nil, fmt.Errorf("SessionFactory is required but was not provided")
+	// Pass the whole factory config so the session manager constructs everything
+	// it needs (optimizer wiring, composite tool layers, telemetry instruments).
+	sessMgrCfg := &sessionmanager.FactoryConfig{
+		Base:              cfg.SessionFactory,
+		WorkflowDefs:      workflowDefs,
+		ComposerFactory:   sessionComposerFactory,
+		OptimizerConfig:   cfg.OptimizerConfig,
+		OptimizerFactory:  cfg.OptimizerFactory,
+		TelemetryProvider: cfg.TelemetryProvider,
 	}
-	vmcpSessMgr := sessionmanager.New(sessionManager, cfg.SessionFactory, backendRegistry)
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionManager, sessMgrCfg, backendRegistry)
+	if err != nil {
+		return nil, err
+	}
 
 	// Create Server instance
 	srv := &Server{
-		config:              cfg,
-		mcpServer:           mcpServer,
-		router:              rt,
-		backendClient:       backendClient,
-		handlerFactory:      handlerFactory,
-		discoveryMgr:        discoveryMgr,
-		backendRegistry:     backendRegistry,
-		sessionManager:      sessionManager,
-		capabilityAdapter:   capabilityAdapter,
-		workflowDefs:        workflowDefs,
-		composerFactory:     sessionComposerFactory,
-		workflowInstruments: workflowInstruments,
-		ready:               make(chan struct{}),
-		healthMonitor:       healthMon,
-		statusReporter:      cfg.StatusReporter,
-		vmcpSessionMgr:      vmcpSessMgr,
+		config:            cfg,
+		mcpServer:         mcpServer,
+		router:            rt,
+		backendClient:     backendClient,
+		handlerFactory:    handlerFactory,
+		discoveryMgr:      discoveryMgr,
+		backendRegistry:   backendRegistry,
+		sessionManager:    sessionManager,
+		capabilityAdapter: capabilityAdapter,
+		ready:             make(chan struct{}),
+		healthMonitor:     healthMon,
+		statusReporter:    cfg.StatusReporter,
+		vmcpSessionMgr:    vmcpSessMgr,
+	}
+
+	if optimizerCleanup != nil {
+		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -602,27 +579,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 //
 //nolint:gocyclo // Complexity from health monitoring and startup orchestration is acceptable
 func (s *Server) Start(ctx context.Context) error {
-	// Create optimizer store and wire factory if optimizer is configured
-	if s.config.OptimizerConfig != nil {
-		factory, cleanup, err := optimizer.NewOptimizerFactory(s.config.OptimizerConfig)
-		if err != nil {
-			return err
-		}
-		s.shutdownFuncs = append(s.shutdownFuncs, cleanup)
-		s.config.OptimizerFactory = factory
-
-		if s.config.TelemetryProvider != nil {
-			s.config.OptimizerFactory, err = monitorOptimizer(
-				s.config.TelemetryProvider.MeterProvider(),
-				s.config.TelemetryProvider.TracerProvider(),
-				s.config.OptimizerFactory,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to monitor optimizer: %w", err)
-			}
-		}
-	}
-
 	// Build the HTTP handler (middleware chain, routes, mux)
 	handler, err := s.Handler(ctx)
 	if err != nil {
@@ -1025,24 +981,6 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		return retErr
 	}
 
-	// Apply composite tools decorator (if workflow defs are configured).
-	// This appends composite tools to the session's tool list and routes their
-	// CallTool invocations through per-session workflow executors.
-	if len(s.workflowDefs) > 0 {
-		if retErr = s.applyCompositeToolsDecorator(sessionID); retErr != nil {
-			return retErr
-		}
-	}
-
-	// Apply optimizer decorator (if configured).
-	// Must come after composite tools so the optimizer indexes composite tools too.
-	// Replaces the full tool list with find_tool + call_tool.
-	if s.config.OptimizerFactory != nil {
-		if retErr = s.applyOptimizerDecorator(ctx, sessionID); retErr != nil {
-			return retErr
-		}
-	}
-
 	// Uniform registration — same code path regardless of which decorators are active.
 	// session.Tools() returns the final decorated tool list.
 	adaptedTools, retErr := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
@@ -1078,79 +1016,6 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	slog.Info("session capabilities injected",
 		"session_id", sessionID,
 		"tool_count", len(adaptedTools))
-	return nil
-}
-
-// applyCompositeToolsDecorator wraps the session with a compositeToolsDecorator.
-// It filters workflow definitions for the session, validates name conflicts with
-// backend tools, builds per-session workflow executors, then calls DecorateSession.
-//
-// Non-fatal conditions (no accessible defs, name conflicts) log a warning and
-// leave the session undecorated rather than failing.
-func (s *Server) applyCompositeToolsDecorator(sessionID string) error {
-	multiSess, hasSess := s.vmcpSessionMgr.GetMultiSession(sessionID)
-	if !hasSess {
-		slog.Warn("session not found after creation; skipping composite tools",
-			"session_id", sessionID)
-		return nil
-	}
-
-	sessionDefs := filterWorkflowDefsForSession(s.workflowDefs, multiSess.GetRoutingTable())
-	if len(sessionDefs) == 0 {
-		return nil
-	}
-
-	compositeToolsMeta := convertWorkflowDefsToTools(sessionDefs)
-	if err := validateNoToolConflicts(multiSess.Tools(), compositeToolsMeta); err != nil {
-		slog.Warn("composite tool name conflict detected; skipping composite tools",
-			"session_id", sessionID,
-			"error", err)
-		return nil
-	}
-
-	// Build per-session workflow executors bound to this session's routing table.
-	sessionComposer := s.composerFactory(multiSess.GetRoutingTable(), multiSess.Tools())
-	sessionExecutors := make(map[string]compositetools.WorkflowExecutor, len(sessionDefs))
-	for _, def := range sessionDefs {
-		ex := newComposerWorkflowExecutor(sessionComposer, def)
-		if s.workflowInstruments != nil {
-			ex = s.workflowInstruments.wrapExecutor(def.Name, ex)
-		}
-		sessionExecutors[def.Name] = ex
-	}
-
-	return s.vmcpSessionMgr.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
-		return compositetools.NewDecorator(sess, compositeToolsMeta, sessionExecutors)
-	})
-}
-
-// applyOptimizerDecorator wraps the session with an optimizerDecorator.
-// It reads the current session's tool list (including composite tools if applied),
-// builds SDK tools for the optimizer factory to index, creates the optimizer, and
-// calls DecorateSession. The optimizer replaces the tool list with find_tool + call_tool.
-func (s *Server) applyOptimizerDecorator(ctx context.Context, sessionID string) error {
-	// Snapshot the pre-optimizer SDK tools for the optimizer to index.
-	// This includes composite tools if the composite decorator was already applied.
-	sdkTools, err := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to get tools for optimizer: %w", err)
-	}
-
-	opt, err := s.config.OptimizerFactory(ctx, sdkTools)
-	if err != nil {
-		return fmt.Errorf("failed to create optimizer: %w", err)
-	}
-
-	if err = s.vmcpSessionMgr.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
-		return optimizerdec.NewDecorator(sess, opt)
-	}); err != nil {
-		return err
-	}
-
-	slog.Info("session capabilities injected (optimizer mode)",
-		"session_id", sessionID,
-		"indexed_tool_count", len(sdkTools))
-
 	return nil
 }
 

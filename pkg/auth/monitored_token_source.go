@@ -297,10 +297,13 @@ func isTransientNetworkError(err error) bool {
 
 	// *net.OpError covers both transport-level errors (connection refused, network
 	// unreachable) AND TLS errors (certificate invalid, handshake failure). Only the
-	// former are transient, so we check whether the underlying cause is a syscall error.
+	// former are transient; TLS errors do not wrap syscall errors, so we use that
+	// to distinguish them.
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		return isTransportOpError(opErr)
+		var se *os.SyscallError
+		var errno syscall.Errno
+		return errors.As(opErr, &se) || errors.As(opErr, &errno)
 	}
 
 	// Generic net.Error timeout (catches any remaining net.Error implementations).
@@ -309,18 +312,6 @@ func isTransientNetworkError(err error) bool {
 	}
 
 	return false
-}
-
-// isTransportOpError reports whether a *net.OpError is a transport-level failure
-// (syscall error: connection refused, network unreachable, etc.) rather than a
-// TLS or application-level error. TLS errors do not wrap syscall errors.
-func isTransportOpError(opErr *net.OpError) bool {
-	var se *os.SyscallError
-	if errors.As(opErr, &se) {
-		return true
-	}
-	var errno syscall.Errno
-	return errors.As(opErr, &errno)
 }
 
 // markAsUnauthenticated marks the workload as unauthenticated and stops background monitoring.

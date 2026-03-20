@@ -82,6 +82,32 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 	return c, nil
 }
 
+// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
+// If http.DefaultTransport is a *http.Transport, it is cloned directly (preserving any
+// environment-specific settings like TLS config or proxy overrides). Otherwise a transport
+// with the standard Go defaults is constructed, preserving proxy, dial timeout, HTTP/2, and
+// idle-connection settings that a zero-value &http.Transport{} would drop.
+func newBackendTransport() *http.Transport {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		return dt.Clone()
+	}
+	// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
+	// Construct a transport with the same defaults as the Go standard library uses for
+	// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
 // roundTripperFunc is a function adapter for http.RoundTripper.
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
@@ -173,7 +199,10 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
-	var baseTransport = http.DefaultTransport
+	//
+	// Clone DefaultTransport per call so each client gets an isolated connection pool,
+	// preventing stale keep-alive connections from one backend affecting others.
+	var baseTransport http.RoundTripper = newBackendTransport()
 
 	// Resolve authentication strategy ONCE at client creation time
 	authStrategy, err := h.resolveAuthStrategy(target)

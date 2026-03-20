@@ -57,7 +57,7 @@ ToolHive keeps you in control of your MCP estate. Integrate with popular clients
   - [Kubernetes Operator](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s)
 - 💬 [Discord](https://discord.gg/stacklok)
 - 🤝 [Contributing](#contributing)
-- <img src="docs/images/toolhive-mascot.png" width="20" height="20" style="vertical-align: middle" /> [Stacklok Enterprise](https://docs.stacklok.com/toolhive/enterprise)
+- <img src="docs/images/stacklok-favicon.svg" width="20" height="20" style="vertical-align: middle" /> [Stacklok Enterprise](https://docs.stacklok.com/toolhive/enterprise)
 
 ---
 

@@ -71,7 +71,7 @@ func TestProcessBackendTools_AnnotationsAndOutputSchema(t *testing.T) {
 			name:      "preserves Annotations without overrides",
 			backendID: "backend1",
 			tools: []vmcp.Tool{
-				newTestToolWithAnnotations("annotated_tool", "backend1", &vmcp.ToolAnnotations{
+				newTestToolWithAnnotations("annotated_tool", &vmcp.ToolAnnotations{
 					Title:           "Annotated",
 					DestructiveHint: boolPtr(true),
 					IdempotentHint:  boolPtr(false),
@@ -113,7 +113,7 @@ func TestProcessBackendTools_AnnotationsAndOutputSchema(t *testing.T) {
 			name:      "annotation override applies title while preserving other annotations",
 			backendID: "backend1",
 			tools: []vmcp.Tool{
-				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+				newTestToolWithAnnotations("tool1", &vmcp.ToolAnnotations{
 					Title:        "Original Title",
 					ReadOnlyHint: boolPtr(true),
 				}),
@@ -146,7 +146,7 @@ func TestProcessBackendTools_AnnotationsAndOutputSchema(t *testing.T) {
 			name:      "annotation override applies bool hint correctly",
 			backendID: "backend1",
 			tools: []vmcp.Tool{
-				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+				newTestToolWithAnnotations("tool1", &vmcp.ToolAnnotations{
 					Title:           "My Tool",
 					ReadOnlyHint:    boolPtr(true),
 					DestructiveHint: boolPtr(false),
@@ -212,7 +212,7 @@ func TestProcessBackendTools_AnnotationsAndOutputSchema(t *testing.T) {
 			name:      "nil annotation override leaves annotations unchanged",
 			backendID: "backend1",
 			tools: []vmcp.Tool{
-				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+				newTestToolWithAnnotations("tool1", &vmcp.ToolAnnotations{
 					Title:        "Keep Me",
 					ReadOnlyHint: boolPtr(true),
 				}),
@@ -243,7 +243,7 @@ func TestProcessBackendTools_AnnotationsAndOutputSchema(t *testing.T) {
 			name:      "title cleared to empty string via override",
 			backendID: "backend1",
 			tools: []vmcp.Tool{
-				newTestToolWithAnnotations("tool1", "backend1", &vmcp.ToolAnnotations{
+				newTestToolWithAnnotations("tool1", &vmcp.ToolAnnotations{
 					Title:        "Original Title",
 					ReadOnlyHint: boolPtr(true),
 				}),
@@ -339,8 +339,8 @@ func TestApplyAnnotationOverrides(t *testing.T) {
 			},
 		},
 		{
-			name:      "nil base with non-nil overrides creates new annotations",
-			base:      nil,
+			name: "nil base with non-nil overrides creates new annotations",
+			base: nil,
 			overrides: &config.ToolAnnotationsOverride{
 				Title:        stringPtr("Brand New"),
 				ReadOnlyHint: boolPtr(false),

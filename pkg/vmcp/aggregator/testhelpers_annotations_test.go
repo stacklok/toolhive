@@ -11,7 +11,7 @@ func boolPtr(b bool) *bool { return &b }
 
 func stringPtr(s string) *string { return &s }
 
-func newTestToolWithAnnotations(name, backendID string, annotations *vmcp.ToolAnnotations) vmcp.Tool {
+func newTestToolWithAnnotations(name string, annotations *vmcp.ToolAnnotations) vmcp.Tool {
 	return vmcp.Tool{
 		Name:        name,
 		Description: name + " description",
@@ -23,6 +23,6 @@ func newTestToolWithAnnotations(name, backendID string, annotations *vmcp.ToolAn
 			},
 		},
 		Annotations: annotations,
-		BackendID:   backendID,
+		BackendID:   "backend1",
 	}
 }

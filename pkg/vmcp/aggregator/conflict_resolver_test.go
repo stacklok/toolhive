@@ -279,7 +279,7 @@ func TestManualConflictResolver(t *testing.T) {
 		workloadConfigs []*config.WorkloadToolConfig
 		toolsByBackend  map[string][]vmcp.Tool
 		wantCount       int
-		wantNames       []string // Expected resolved names
+		wantNames       []string                         // Expected resolved names
 		wantAnnotations map[string]*vmcp.ToolAnnotations // tool name -> expected annotations (optional)
 		wantErr         bool
 		errContains     string

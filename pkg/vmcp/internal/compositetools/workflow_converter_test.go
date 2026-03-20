@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package server
+package compositetools
 
 import (
 	"testing"
@@ -348,10 +348,10 @@ func TestConvertWorkflowDefsToToolsWithOutputSchema(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tools := convertWorkflowDefsToTools(tt.defs)
+			tools := ConvertWorkflowDefsToTools(tt.defs)
 
 			if len(tools) != tt.want {
-				t.Errorf("convertWorkflowDefsToTools() returned %d tools, want %d", len(tools), tt.want)
+				t.Errorf("ConvertWorkflowDefsToTools() returned %d tools, want %d", len(tools), tt.want)
 			}
 
 			if tt.validateTool != nil {
@@ -521,10 +521,10 @@ func TestFilterWorkflowDefsForSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := filterWorkflowDefsForSession(tt.defs, tt.rt)
+			got := FilterWorkflowDefsForSession(tt.defs, tt.rt)
 
 			if len(got) != len(tt.wantNames) {
-				t.Errorf("filterWorkflowDefsForSession() returned %d defs, want %d (%v)",
+				t.Errorf("FilterWorkflowDefsForSession() returned %d defs, want %d (%v)",
 					len(got), len(tt.wantNames), tt.wantNames)
 			}
 			for _, name := range tt.wantNames {

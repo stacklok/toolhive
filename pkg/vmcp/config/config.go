@@ -408,7 +408,34 @@ type ToolConfigRef struct {
 	Name string `json:"name" yaml:"name"`
 }
 
-// ToolOverride defines tool name and description overrides.
+// ToolAnnotationsOverride defines overrides for tool annotation fields.
+// All fields use pointers so nil means "don't override" while zero values
+// (empty string, false) mean "explicitly set to this value."
+// +kubebuilder:object:generate=true
+// +gendoc
+type ToolAnnotationsOverride struct {
+	// Title overrides the human-readable title annotation.
+	// +optional
+	Title *string `json:"title,omitempty" yaml:"title,omitempty"`
+
+	// ReadOnlyHint overrides the read-only hint annotation.
+	// +optional
+	ReadOnlyHint *bool `json:"readOnlyHint,omitempty" yaml:"readOnlyHint,omitempty"`
+
+	// DestructiveHint overrides the destructive hint annotation.
+	// +optional
+	DestructiveHint *bool `json:"destructiveHint,omitempty" yaml:"destructiveHint,omitempty"`
+
+	// IdempotentHint overrides the idempotent hint annotation.
+	// +optional
+	IdempotentHint *bool `json:"idempotentHint,omitempty" yaml:"idempotentHint,omitempty"`
+
+	// OpenWorldHint overrides the open-world hint annotation.
+	// +optional
+	OpenWorldHint *bool `json:"openWorldHint,omitempty" yaml:"openWorldHint,omitempty"`
+}
+
+// ToolOverride defines tool name, description, and annotation overrides.
 // +kubebuilder:object:generate=true
 // +gendoc
 type ToolOverride struct {
@@ -419,6 +446,11 @@ type ToolOverride struct {
 	// Description is the new tool description.
 	// +optional
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+
+	// Annotations overrides specific tool annotation fields.
+	// Only specified fields are overridden; others pass through from the backend.
+	// +optional
+	Annotations *ToolAnnotationsOverride `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 }
 
 // OperationalConfig contains operational settings.

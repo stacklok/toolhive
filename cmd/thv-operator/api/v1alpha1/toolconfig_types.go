@@ -23,6 +23,31 @@ type MCPToolConfigSpec struct {
 	ToolsOverride map[string]ToolOverride `json:"toolsOverride,omitempty"`
 }
 
+// ToolAnnotationsOverride defines overrides for tool annotation fields.
+// All fields use pointers so nil means "don't override" while zero values
+// (empty string, false) mean "explicitly set to this value."
+type ToolAnnotationsOverride struct {
+	// Title overrides the human-readable title annotation.
+	// +optional
+	Title *string `json:"title,omitempty"`
+
+	// ReadOnlyHint overrides the read-only hint annotation.
+	// +optional
+	ReadOnlyHint *bool `json:"readOnlyHint,omitempty"`
+
+	// DestructiveHint overrides the destructive hint annotation.
+	// +optional
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
+
+	// IdempotentHint overrides the idempotent hint annotation.
+	// +optional
+	IdempotentHint *bool `json:"idempotentHint,omitempty"`
+
+	// OpenWorldHint overrides the open-world hint annotation.
+	// +optional
+	OpenWorldHint *bool `json:"openWorldHint,omitempty"`
+}
+
 // ToolOverride represents a tool override configuration.
 // Both Name and Description can be overridden independently, but
 // they can't be both empty.
@@ -34,6 +59,11 @@ type ToolOverride struct {
 	// Description is the redefined description of the tool
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// Annotations overrides specific tool annotation fields.
+	// Only specified fields are overridden; others pass through from the backend.
+	// +optional
+	Annotations *ToolAnnotationsOverride `json:"annotations,omitempty"`
 }
 
 // MCPToolConfigStatus defines the observed state of MCPToolConfig

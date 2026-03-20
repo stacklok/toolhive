@@ -77,7 +77,7 @@ func resolveTokenRefreshMaxTries() uint {
 	if v == "" {
 		return uint(tokenRefreshMaxTries)
 	}
-	n, err := strconv.ParseUint(v, 10, 64)
+	n, err := strconv.ParseUint(v, 10, strconv.IntSize)
 	if err != nil {
 		return uint(tokenRefreshMaxTries)
 	}

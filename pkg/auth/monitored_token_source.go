@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -19,12 +20,56 @@ import (
 )
 
 const (
-	// tokenRefreshInitialRetryInterval is the starting interval for exponential
-	// backoff when a token refresh fails during background monitoring.
+	// tokenRefreshInitialRetryInterval is the default starting interval for
+	// exponential backoff when a token refresh fails during background monitoring.
+	// Override with TOOLHIVE_TOKEN_REFRESH_INITIAL_RETRY_INTERVAL (e.g. "10s", "1m").
 	tokenRefreshInitialRetryInterval = 30 * time.Second
-	// tokenRefreshMaxRetryInterval caps the exponential growth of the retry interval.
+	// tokenRefreshMaxRetryInterval is the default cap on the exponential growth
+	// of the retry interval.
+	// Override with TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL (e.g. "2m", "10m").
 	tokenRefreshMaxRetryInterval = 5 * time.Minute
+
+	tokenRefreshInitialRetryIntervalEnv = "TOOLHIVE_TOKEN_REFRESH_INITIAL_RETRY_INTERVAL"
+	tokenRefreshMaxRetryIntervalEnv     = "TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL"
 )
+
+// resolveTokenRefreshInitialRetryInterval returns the initial retry interval for
+// token refresh backoff, reading from TOOLHIVE_TOKEN_REFRESH_INITIAL_RETRY_INTERVAL
+// if set, otherwise returning the default.
+func resolveTokenRefreshInitialRetryInterval() time.Duration {
+	return resolveDurationEnv(
+		tokenRefreshInitialRetryIntervalEnv,
+		tokenRefreshInitialRetryInterval,
+	)
+}
+
+// resolveTokenRefreshMaxRetryInterval returns the max retry interval for token
+// refresh backoff, reading from TOOLHIVE_TOKEN_REFRESH_MAX_RETRY_INTERVAL if
+// set, otherwise returning the default.
+func resolveTokenRefreshMaxRetryInterval() time.Duration {
+	return resolveDurationEnv(
+		tokenRefreshMaxRetryIntervalEnv,
+		tokenRefreshMaxRetryInterval,
+	)
+}
+
+// resolveDurationEnv reads a duration from the given environment variable.
+// Returns defaultVal if the variable is unset or its value is not a valid
+// positive duration.
+func resolveDurationEnv(envVar string, defaultVal time.Duration) time.Duration {
+	v := os.Getenv(envVar)
+	if v == "" {
+		return defaultVal
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("invalid duration env var, using default",
+			"env_var", envVar, "value", v, "default", defaultVal)
+		return defaultVal
+	}
+	slog.Debug("using custom token refresh interval", "env_var", envVar, "value", d)
+	return d
+}
 
 // StatusUpdater is an interface for updating workload authentication status.
 // This abstraction allows the monitored token source to work with any status management system
@@ -134,8 +179,8 @@ func (mts *MonitoredTokenSource) getRetryBackOff() backoff.BackOff {
 		return mts.newRetryBackOff()
 	}
 	eb := backoff.NewExponentialBackOff()
-	eb.InitialInterval = tokenRefreshInitialRetryInterval
-	eb.MaxInterval = tokenRefreshMaxRetryInterval
+	eb.InitialInterval = resolveTokenRefreshInitialRetryInterval()
+	eb.MaxInterval = resolveTokenRefreshMaxRetryInterval()
 	// No MaxElapsedTime — context cancellation is the stop signal.
 	eb.Reset()
 	return eb

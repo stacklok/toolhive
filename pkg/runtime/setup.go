@@ -50,6 +50,7 @@ func Setup(
 	host string,
 	targetPort int,
 	targetHost string,
+	scalingConfig *rt.ScalingConfig,
 ) (*SetupResult, error) {
 	// Add transport-specific environment variables
 	env, ok := transportEnvMap[transportType]
@@ -73,6 +74,7 @@ func Setup(
 	containerOptions := rt.NewDeployWorkloadOptions()
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 	containerOptions.IgnoreConfig = ignoreConfig
+	containerOptions.ScalingConfig = scalingConfig
 
 	if transportType == types.TransportTypeStdio {
 		containerOptions.AttachStdio = true

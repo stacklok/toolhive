@@ -164,6 +164,38 @@ var _ = Describe("CEL Validation for OIDCConfigRef and AuthzConfigRef", Label("k
 		})
 	})
 
+	Context("OIDCConfigRef multi-violation CEL validation", func() {
+		It("should report both missing-configMap and extra-inline when type=configMap but only inline is set", func() {
+			server := newMinimalMCPServer("oidc-cm-only-inline", &mcpv1alpha1.OIDCConfigRef{
+				Type: "configMap",
+				Inline: &mcpv1alpha1.InlineOIDCConfig{
+					Issuer: "https://example.com",
+				},
+			}, nil)
+			err := k8sClient.Create(ctx, server)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(And(
+				ContainSubstring("configMap must be set when type is 'configMap'"),
+				ContainSubstring("inline must be set when type is 'inline'"),
+			))
+		})
+
+		It("should report kubernetes-not-allowed violation when type=inline with inline and kubernetes both set", func() {
+			server := newMinimalMCPServer("oidc-inline-with-k8s", &mcpv1alpha1.OIDCConfigRef{
+				Type: "inline",
+				Inline: &mcpv1alpha1.InlineOIDCConfig{
+					Issuer: "https://example.com",
+				},
+				Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+					ServiceAccount: "test-sa",
+				},
+			}, nil)
+			err := k8sClient.Create(ctx, server)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("kubernetes must not be set when type is not 'kubernetes'"))
+		})
+	})
+
 	Context("AuthzConfigRef CEL validation", func() {
 		Context("type=configMap", func() {
 			It("should reject when configMap field is missing", func() {
@@ -237,6 +269,23 @@ var _ = Describe("CEL Validation for OIDCConfigRef and AuthzConfigRef", Label("k
 				err := k8sClient.Create(ctx, server)
 				Expect(err).NotTo(HaveOccurred())
 			})
+		})
+	})
+
+	Context("AuthzConfigRef multi-violation CEL validation", func() {
+		It("should report both missing-configMap and extra-inline when type=configMap but only inline is set", func() {
+			server := newMinimalMCPServer("authz-cm-only-inline", nil, &mcpv1alpha1.AuthzConfigRef{
+				Type: "configMap",
+				Inline: &mcpv1alpha1.InlineAuthzConfig{
+					Policies: []string{"permit(principal, action, resource);"},
+				},
+			})
+			err := k8sClient.Create(ctx, server)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(And(
+				ContainSubstring("configMap must be set when type is 'configMap'"),
+				ContainSubstring("inline must be set when type is 'inline'"),
+			))
 		})
 	})
 })

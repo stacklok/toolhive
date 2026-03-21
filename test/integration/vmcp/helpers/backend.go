@@ -157,6 +157,7 @@ type backendServerConfig struct {
 	withPrompts     bool
 	captureHeaders  bool
 	httpContextFunc server.HTTPContextFunc
+	httpMiddleware  func(http.Handler) http.Handler
 }
 
 // WithBackendName sets the backend server name.
@@ -177,6 +178,31 @@ func WithBackendName(name string) BackendServerOption {
 func WithCaptureHeaders() BackendServerOption {
 	return func(c *backendServerConfig) {
 		c.captureHeaders = true
+	}
+}
+
+// WithHTTPMiddleware wraps the backend's HTTP handler with the given middleware.
+// The middleware runs outside the MCP streamable-HTTP handler, so it intercepts
+// requests before they reach the MCP layer (including before any header-capture
+// configured via WithCaptureHeaders). This allows tests to inject custom HTTP
+// behaviour such as returning error status codes for the first N requests
+// (simulating transient auth failures).
+//
+// Example: return 401 for the first request, then pass through:
+//
+//	var count atomic.Int32
+//	helpers.WithHTTPMiddleware(func(next http.Handler) http.Handler {
+//	    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//	        if count.Add(1) == 1 {
+//	            w.WriteHeader(http.StatusUnauthorized)
+//	            return
+//	        }
+//	        next.ServeHTTP(w, r)
+//	    })
+//	})
+func WithHTTPMiddleware(middleware func(http.Handler) http.Handler) BackendServerOption {
+	return func(c *backendServerConfig) {
+		c.httpMiddleware = middleware
 	}
 }
 
@@ -304,8 +330,14 @@ func CreateBackendServer(tb testing.TB, tools []BackendTool, opts ...BackendServ
 		streamableOpts...,
 	)
 
+	// Wrap with optional HTTP middleware (e.g., to inject transient HTTP errors in tests)
+	var handler http.Handler = streamableServer
+	if config.httpMiddleware != nil {
+		handler = config.httpMiddleware(handler)
+	}
+
 	// Start HTTP test server
-	httpServer := httptest.NewServer(streamableServer)
+	httpServer := httptest.NewServer(handler)
 
 	tb.Logf("Created MCP backend server %q (v%s) at %s%s",
 		config.serverName,

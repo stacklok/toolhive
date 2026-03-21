@@ -129,7 +129,8 @@ func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
 
 			backendClient, err := NewHTTPBackendClient(mockRegistry)
 			require.NoError(t, err)
-			httpClient := backendClient.(*httpBackendClient)
+			retryClient := backendClient.(*retryingBackendClient)
+			httpClient := retryClient.inner.(*httpBackendClient)
 
 			_, err = httpClient.defaultClientFactory(context.Background(), target)
 
@@ -750,7 +751,8 @@ func TestResolveAuthStrategy(t *testing.T) {
 			backendClient, err := NewHTTPBackendClient(registry)
 			require.NoError(t, err)
 
-			httpClient := backendClient.(*httpBackendClient)
+			retryClient := backendClient.(*retryingBackendClient)
+			httpClient := retryClient.inner.(*httpBackendClient)
 
 			// Call resolveAuthStrategy
 			strategy, err := httpClient.resolveAuthStrategy(tt.target)

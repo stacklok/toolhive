@@ -79,7 +79,44 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 		registry: registry,
 	}
 	c.clientFactory = c.defaultClientFactory
-	return c, nil
+	return newRetryingBackendClient(c, registry), nil
+}
+
+// httpStatusRoundTripper converts HTTP 401, 403, and 5xx responses into structured
+// sentinel errors before mcp-go processes the response. This enables type-safe
+// errors.Is() checks throughout the error-handling chain without string matching.
+type httpStatusRoundTripper struct {
+	base http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper. It intercepts authentication and server
+// error status codes, converting them to sentinel errors and closing the response body.
+func (h *httpStatusRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := h.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		drainAndClose(resp.Body, resp.StatusCode)
+		return nil, fmt.Errorf("%w: HTTP %d", vmcp.ErrAuthenticationFailed, resp.StatusCode)
+	case http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		drainAndClose(resp.Body, resp.StatusCode)
+		return nil, fmt.Errorf("%w: HTTP %d", vmcp.ErrBackendUnavailable, resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// drainAndClose drains up to maxResponseSize bytes from the body before closing it,
+// allowing the underlying TCP connection to be reused by the transport.
+func drainAndClose(body io.ReadCloser, statusCode int) {
+	if _, err := io.Copy(io.Discard, io.LimitReader(body, maxResponseSize)); err != nil {
+		slog.Debug("failed to drain response body", "status", statusCode, "error", err)
+	}
+	if err := body.Close(); err != nil {
+		slog.Debug("failed to close response body", "status", statusCode, "error", err)
+	}
 }
 
 // roundTripperFunc is a function adapter for http.RoundTripper.
@@ -236,7 +273,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 			return resp, nil
 		})
 		httpClient := &http.Client{
-			Transport: sizeLimitedTransport,
+			Transport: &httpStatusRoundTripper{base: sizeLimitedTransport},
 			Timeout:   30 * time.Second,
 		}
 		c, err = client.NewStreamableHttpClient(
@@ -253,7 +290,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		// Applying io.LimitReader would silently terminate the stream after
 		// maxResponseSize cumulative bytes — not per-event — which is wrong.
 		// http.Client.Timeout is also omitted: it would kill the stream.
-		httpClient := &http.Client{Transport: baseTransport}
+		httpClient := &http.Client{Transport: &httpStatusRoundTripper{base: baseTransport}}
 		c, err = client.NewSSEMCPClient(
 			target.BaseURL,
 			transport.WithHTTPClient(httpClient),
@@ -321,21 +358,29 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrTimeout, operation, backendID, err)
 	}
 
-	// 4. String-based detection: Fall back to pattern matching for cases where
-	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
-	// Authentication errors (401, 403, auth failures)
+	// 4. Sentinel errors set by our httpStatusRoundTripper at the HTTP layer.
+	// These cover 401/403 (auth) and 5xx (backend unavailable) responses.
+	if errors.Is(err, vmcp.ErrAuthenticationFailed) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	if errors.Is(err, vmcp.ErrBackendUnavailable) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrBackendUnavailable, operation, backendID, err)
+	}
+
+	// 5. String-based fallback for errors not covered above (e.g. from test stubs,
+	// non-HTTP transports, or external libraries that don't use sentinel errors).
 	if vmcp.IsAuthenticationError(err) {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
 
-	// Timeout errors (deadline exceeded, timeout messages)
 	if vmcp.IsTimeoutError(err) {
 		return fmt.Errorf("%w: failed to %s for backend %s (timeout): %v",
 			vmcp.ErrTimeout, operation, backendID, err)
 	}
 
-	// Connection errors (refused, reset, unreachable)
 	if vmcp.IsConnectionError(err) {
 		return fmt.Errorf("%w: failed to %s for backend %s (connection error): %v",
 			vmcp.ErrBackendUnavailable, operation, backendID, err)
@@ -563,8 +608,7 @@ func (h *httpBackendClient) CallTool(
 		},
 	})
 	if err != nil {
-		// Network/connection errors are operational errors
-		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "call tool")
 	}
 
 	// Extract _meta field from backend response
@@ -663,7 +707,7 @@ func (h *httpBackendClient) ReadResource(
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "read resource")
 	}
 
 	// Concatenate all resource content items into a single byte slice.
@@ -723,7 +767,7 @@ func (h *httpBackendClient) GetPrompt(
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "get prompt")
 	}
 
 	return &vmcp.PromptGetResult{

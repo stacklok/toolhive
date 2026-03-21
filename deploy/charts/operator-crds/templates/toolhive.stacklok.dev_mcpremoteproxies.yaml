@@ -116,6 +116,13 @@ spec:
                 required:
                 - type
                 type: object
+                x-kubernetes-validations:
+                - message: configMap must be set when type is 'configMap', and must
+                    not be set otherwise
+                  rule: 'self.type == ''configMap'' ? has(self.configMap) : !has(self.configMap)'
+                - message: inline must be set when type is 'inline', and must not
+                    be set otherwise
+                  rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -411,6 +418,15 @@ spec:
                 required:
                 - type
                 type: object
+                x-kubernetes-validations:
+                - message: configMap must be set when type is 'configMap', and must
+                    not be set otherwise
+                  rule: 'self.type == ''configMap'' ? has(self.configMap) : !has(self.configMap)'
+                - message: inline must be set when type is 'inline', and must not
+                    be set otherwise
+                  rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                - message: kubernetes must not be set when type is not 'kubernetes'
+                  rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) : true'
               port:
                 default: 8080
                 description: |-

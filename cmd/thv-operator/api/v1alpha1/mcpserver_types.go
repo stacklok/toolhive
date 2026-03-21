@@ -420,6 +420,12 @@ type OutboundNetworkPermissions struct {
 }
 
 // OIDCConfigRef defines a reference to OIDC configuration
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'configMap' ? has(self.configMap) : !has(self.configMap)",message="configMap must be set when type is 'configMap', and must not be set otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type == 'inline' ? has(self.inline) : !has(self.inline)",message="inline must be set when type is 'inline', and must not be set otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type != 'kubernetes' ? !has(self.kubernetes) : true",message="kubernetes must not be set when type is not 'kubernetes'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OIDCConfigRef struct {
 	// Type is the type of OIDC configuration
 	// +kubebuilder:validation:Enum=kubernetes;configMap;inline
@@ -592,6 +598,11 @@ type InlineOIDCConfig struct {
 }
 
 // AuthzConfigRef defines a reference to authorization configuration
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'configMap' ? has(self.configMap) : !has(self.configMap)",message="configMap must be set when type is 'configMap', and must not be set otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type == 'inline' ? has(self.inline) : !has(self.inline)",message="inline must be set when type is 'inline', and must not be set otherwise"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type AuthzConfigRef struct {
 	// Type is the type of authorization configuration
 	// +kubebuilder:validation:Enum=configMap;inline

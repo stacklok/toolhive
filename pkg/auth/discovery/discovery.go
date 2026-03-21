@@ -515,6 +515,7 @@ type OAuthFlowConfig struct {
 	SecretExpiry            time.Time // zero means the secret never expires
 	RegistrationAccessToken string    //nolint:gosec // G117: field legitimately holds sensitive data
 	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -538,6 +539,7 @@ type OAuthFlowResult struct {
 	SecretExpiry            time.Time
 	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -626,6 +628,7 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 	}
 	config.RegistrationAccessToken = registrationResponse.RegistrationAccessToken
 	config.RegistrationClientURI = registrationResponse.RegistrationClientURI
+	config.TokenEndpointAuthMethod = registrationResponse.TokenEndpointAuthMethod
 
 	if registrationResponse.RegistrationAccessToken != "" {
 		slog.Debug("DCR response includes registration access token for RFC 7592 operations")
@@ -740,6 +743,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		SecretExpiry:            config.SecretExpiry,
 		RegistrationAccessToken: config.RegistrationAccessToken,
 		RegistrationClientURI:   config.RegistrationClientURI,
+		TokenEndpointAuthMethod: config.TokenEndpointAuthMethod,
 	}, nil
 }
 

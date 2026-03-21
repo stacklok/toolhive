@@ -235,6 +235,10 @@
                         "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
                         "type": "string"
                     },
+                    "cached_token_auth_method": {
+                        "description": "CachedTokenEndpointAuthMethod is the auth method used for the token endpoint\n(e.g., \"client_secret_basic\", \"none\"). Persisted for RFC 7592 updates.",
+                        "type": "string"
+                    },
                     "cached_token_expiry": {
                         "type": "string"
                     },

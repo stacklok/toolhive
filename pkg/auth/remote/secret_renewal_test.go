@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,7 +264,7 @@ func TestRenewClientSecret_Success(t *testing.T) {
 		clientCredentialsPersister: func(
 			clientID, secret string,
 			expiry time.Time,
-			regToken, regURI string,
+			regToken, regURI, _ string,
 		) error {
 			persistedClientID = clientID
 			persistedSecret = secret
@@ -303,7 +304,7 @@ func TestRenewClientSecret_ServerError(t *testing.T) {
 		secretProvider: newMockSecretProvider(map[string]string{
 			"reg-token-ref": "bad-token",
 		}),
-		clientCredentialsPersister: func(_, _ string, _ time.Time, _, _ string) error {
+		clientCredentialsPersister: func(_, _ string, _ time.Time, _, _, _ string) error {
 			return nil
 		},
 	}
@@ -371,7 +372,7 @@ func TestRenewClientSecret_ZeroExpiryInResponse(t *testing.T) {
 		secretProvider: newMockSecretProvider(map[string]string{
 			"reg-token-ref": "some-token",
 		}),
-		clientCredentialsPersister: func(_, _ string, expiry time.Time, _, _ string) error {
+		clientCredentialsPersister: func(_, _ string, expiry time.Time, _, _, _ string) error {
 			capturedExpiry = expiry
 			return nil
 		},
@@ -380,4 +381,224 @@ func TestRenewClientSecret_ZeroExpiryInResponse(t *testing.T) {
 	err := h.renewClientSecret(context.Background())
 	require.NoError(t, err)
 	assert.True(t, capturedExpiry.IsZero(), "zero client_secret_expires_at must produce zero time.Time")
+}
+
+func TestRenewClientSecret_MalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{invalid-json`))
+	}))
+	defer svc.Close()
+
+	h := &Handler{
+		config: &Config{
+			CachedRegClientURI: svc.URL,
+			CachedRegTokenRef:  "rat-ref",
+		},
+		secretProvider: &mockSecretProvider{
+			secrets: map[string]string{"rat-ref": "rat-token"},
+		},
+	}
+
+	err := h.renewClientSecret(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to decode client update response") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestRenewClientSecret_MissingFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response string
+		wantErr  string
+	}{
+		{
+			name:     "missing_client_id",
+			response: `{"client_secret": "new-secret"}`,
+			wantErr:  "client update response missing client_id",
+		},
+		{
+			name:     "missing_client_secret",
+			response: `{"client_id": "test-client-id"}`,
+			wantErr:  "client update response missing client_secret",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture loop variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer svc.Close()
+
+			h := &Handler{
+				config: &Config{
+					CachedRegClientURI: svc.URL,
+					CachedRegTokenRef:  "rat-ref",
+				},
+				secretProvider: &mockSecretProvider{
+					secrets: map[string]string{"rat-ref": "rat-token"},
+				},
+			}
+
+			err := h.renewClientSecret(context.Background())
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("unexpected error message: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRegistrationClientURI_Internal(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		uri     string
+		wantErr bool
+	}{
+		{"empty", "", true},
+		{"malformed", "://foo", true},
+		{"http_external", "http://example.com/reg", true},
+		{"https_external", "https://example.com/reg", false},
+		{"http_localhost", "http://localhost:8080/reg", false},
+		{"http_127_0_0_1", "http://127.0.0.1:8080/reg", false},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture loop variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateRegistrationClientURI(tt.uri)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateRegistrationClientURI() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestHandler_Restore_RenewSuccess(t *testing.T) {
+	t.Parallel()
+
+	// Initial setup: secret expiring in 1 hour
+	expiry := time.Now().Add(1 * time.Hour)
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"client_id": "test-client", "client_secret": "new-secret"}`))
+	}))
+	defer svc.Close()
+
+	var persistedID, persistedSecret string
+	h := &Handler{
+		config: &Config{
+			CachedClientID:        "test-client",
+			CachedSecretExpiry:    expiry,
+			CachedRegClientURI:    svc.URL,
+			CachedRegTokenRef:     "rat-ref",
+			CachedRefreshTokenRef: "refresh-token-ref",
+		},
+		secretProvider: &mockSecretProvider{
+			secrets: map[string]string{
+				"rat-ref":           "rat-token",
+				"refresh-token-ref": "some-refresh-token",
+			},
+		},
+		clientCredentialsPersister: func(id, secret string, _ time.Time, _, _, _ string) error {
+			persistedID = id
+			persistedSecret = secret
+			return nil
+		},
+	}
+
+	// Calling tryRestoreFromCachedTokens should trigger renewal because of the 1h expiry.
+	// We expect an error because it will try to refresh the token and fail (no token endpoint).
+	_, err := h.tryRestoreFromCachedTokens(context.Background(), "http://issuer", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
+
+	// But renewal DID happen
+	assert.Equal(t, "test-client", persistedID)
+	assert.Equal(t, "new-secret", persistedSecret)
+}
+
+func TestHandler_Restore_RenewFail_Soft(t *testing.T) {
+	t.Parallel()
+
+	// Initial setup: secret expiring in 1 hour
+	expiry := time.Now().Add(1 * time.Hour)
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer svc.Close()
+
+	h := &Handler{
+		config: &Config{
+			CachedClientID:        "test-client",
+			CachedSecretExpiry:    expiry,
+			CachedRegClientURI:    svc.URL,
+			CachedRegTokenRef:     "rat-ref",
+			CachedRefreshTokenRef: "refresh-token-ref",
+		},
+		secretProvider: &mockSecretProvider{
+			secrets: map[string]string{
+				"rat-ref":           "rat-token",
+				"refresh-token-ref": "some-refresh-token",
+			},
+		},
+		clientCredentialsPersister: func(_, _ string, _ time.Time, _, _, _ string) error { return nil },
+	}
+
+	// Renewal fails, but since it's only "expiring soon", it should continue (and then fail on token refresh)
+	_, err := h.tryRestoreFromCachedTokens(context.Background(), "http://issuer", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
+}
+
+func TestHandler_Restore_RenewFail_Hard(t *testing.T) {
+	t.Parallel()
+
+	// Initial setup: secret already expired
+	expiry := time.Now().Add(-1 * time.Hour)
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer svc.Close()
+
+	h := &Handler{
+		config: &Config{
+			CachedClientID:        "test-client",
+			CachedSecretExpiry:    expiry,
+			CachedRegClientURI:    svc.URL,
+			CachedRegTokenRef:     "rat-ref",
+			CachedRefreshTokenRef: "refresh-token-ref",
+		},
+		secretProvider: &mockSecretProvider{
+			secrets: map[string]string{
+				"rat-ref":           "rat-token",
+				"refresh-token-ref": "some-refresh-token",
+			},
+		},
+		clientCredentialsPersister: func(string, string, time.Time, string, string, string) error { return nil },
+	}
+
+	// Renewal fails and it's fully expired -> fatal error
+	_, err := h.tryRestoreFromCachedTokens(context.Background(), "http://issuer", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "client secret expired at")
+	assert.Contains(t, err.Error(), "and renewal failed")
 }

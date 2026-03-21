@@ -194,6 +194,7 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 			result.SecretExpiry,
 			result.RegistrationAccessToken,
 			result.RegistrationClientURI,
+			result.TokenEndpointAuthMethod,
 		); err != nil {
 			slog.Warn("Failed to persist DCR client credentials", "error", err)
 		} else {

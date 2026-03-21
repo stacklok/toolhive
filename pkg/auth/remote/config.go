@@ -71,6 +71,9 @@ type Config struct {
 	// This is the endpoint used for RFC 7592 client read/update/delete operations.
 	// Stored as plain text since it is not sensitive.
 	CachedRegClientURI string `json:"cached_reg_client_uri,omitempty" yaml:"cached_reg_client_uri,omitempty"`
+	// CachedTokenEndpointAuthMethod is the auth method used for the token endpoint
+	// (e.g., "client_secret_basic", "none"). Persisted for RFC 7592 updates.
+	CachedTokenEndpointAuthMethod string `json:"cached_token_auth_method,omitempty" yaml:"cached_token_auth_method,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -171,6 +174,7 @@ func (c *Config) ClearCachedClientCredentials() {
 	c.CachedSecretExpiry = time.Time{}
 	c.CachedRegTokenRef = ""
 	c.CachedRegClientURI = ""
+	c.CachedTokenEndpointAuthMethod = ""
 }
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.

@@ -27,12 +27,14 @@ type TokenPersister func(refreshToken string, expiry time.Time) error
 //   - secretExpiry: when the client secret expires; zero value means it never expires
 //   - registrationAccessToken: bearer token for RFC 7592 management operations (sensitive)
 //   - registrationClientURI: endpoint for RFC 7592 client update/read operations (plain text)
+//   - tokenEndpointAuthMethod: the auth method used for the token endpoint (e.g., "client_secret_basic", "none")
 type ClientCredentialsPersister func(
 	clientID string,
 	clientSecret string,
 	secretExpiry time.Time,
 	registrationAccessToken string,
 	registrationClientURI string,
+	tokenEndpointAuthMethod string,
 ) error
 
 // PersistingTokenSource wraps an oauth2.TokenSource and persists tokens

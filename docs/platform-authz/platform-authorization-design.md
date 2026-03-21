@@ -159,7 +159,7 @@ Multiple entries in the `from` list use OR semantics:
 > groups simultaneously, so that I can enforce compound conditions for
 > sensitive roles.
 
-Multiple values within a single condition use AND semantics:
+Multiple fields within a single condition use AND semantics:
 
 ```yaml
 - platformRole: writer
@@ -168,8 +168,9 @@ Multiple values within a single condition use AND semantics:
       roles: [team-lead]          # must have BOTH
 ```
 
-The user must appear in `engineering` AND `team-lead` in their token's group
-claim. If either is missing, this condition does not match.
+The user must have `engineering` in their `groups_claim` AND `team-lead` in
+their `roles_claim`. If either is missing, this condition does not match.
+(Each field maps to its own JWT claim — see [Claim Mapping](#7-claim-mapping).)
 
 **US-2.4 — Combine OR and AND (DNF)**
 
@@ -189,7 +190,7 @@ ANDs:
 ```
 
 A user matches if they satisfy Condition A (in `platform-eng`) **or**
-Condition B (in both `engineering` and `team-lead`).
+Condition B (`engineering` in groups claim AND `team-lead` in roles claim).
 
 **US-2.5 — Audit the group-to-role mapping**
 
@@ -381,7 +382,10 @@ accidentally deleted, the next Helm sync re-creates them.
 
 ## 3. Technical Design: CRDs
 
-Three namespace-scoped CRDs under the `toolhive.stacklok.dev` API group, following the Kubernetes RBAC pattern (Role defines permissions, Binding assigns principals, Policy scopes to targets):
+Three CRDs under the `toolhive.stacklok.dev` API group, following the Kubernetes RBAC pattern (`ClusterRole`/`ClusterRoleBinding` define permissions cluster-wide, `RoleBinding` scopes to a namespace):
+
+- `ToolhivePlatformRole` and `ToolhiveRoleBinding` are **cluster-scoped** — they define platform-wide concepts that apply uniformly across namespaces.
+- `ToolhiveAuthorizationPolicy` is **namespace-scoped** — it targets a specific MCPServer by name within the same namespace.
 
 ### ToolhivePlatformRole — defines WHAT a role can do
 
@@ -422,7 +426,7 @@ spec:
       from:
         - groups: [platform-eng]
         - groups: [sre-team]
-    # AND condition: must be in engineering AND have team-lead role
+    # AND condition: must be in engineering group AND have team-lead role
     - platformRole: writer
       from:
         - groups: [engineering]
@@ -437,7 +441,7 @@ The `from` field uses **DNF (Disjunctive Normal Form)** matching:
 - **OR** between conditions in the list — any matching condition assigns the role.
 - **AND** within each condition — all specified groups and roles must be present.
 
-Both `groups` and `roles` produce Cedar `Group` entities; the distinction is semantic (which JWT claim they come from).
+The `groups` and `roles` fields map to different JWT claims (`groups_claim` and `roles_claim` respectively from the platform IdP ConfigMap). Both produce Cedar `Group` entities — the distinction is the JWT claim source, not the Cedar entity type. When `roles_claim` is not configured, the `roles` field has no effect (safe default-deny).
 
 ### ToolhiveAuthorizationPolicy — binds roles to MCPServers
 
@@ -539,15 +543,34 @@ permit(
 ```
 
 **Shape 2 — Restricted grant (typed resources, server-scoped):**
+
+CRD input:
+```yaml
+bindings:
+  - platformRole: writer
+    ruleRestrictions:
+      - tools: [list_issues, create_pr]
+```
+
+Compiled Cedar (list actions split from item-specific actions because list
+operations use `MCP::` as the resource, not `Tool::`):
 ```cedar
+// Item-specific action: restricted to named tools
 permit(
   principal in Role::"writer",
-  action in [Action::"call_tool", Action::"list_tools"],
+  action == Action::"call_tool",
   resource
 ) when {
   resource in MCP::"github" &&
   resource in [Tool::"list_issues", Tool::"create_pr"]
 };
+
+// List action: unrestricted on server (response filter handles per-item visibility)
+permit(
+  principal in Role::"writer",
+  action == Action::"list_tools",
+  resource in MCP::"github"
+);
 ```
 
 **Shape 3 — Role with `toolHintFilter` (annotation gate):**
@@ -567,13 +590,13 @@ permit(
 ) when { resource has readOnlyHint && resource.readOnlyHint == true };
 ```
 
-**Shape 4 — Deny rule (server-scoped):**
+**Shape 4 — Deny rule (typed, no server scoping — fail-closed):**
 ```cedar
 forbid(
   principal,
   action == Action::"call_tool",
   resource == Tool::"delete_repo"
-) when { resource in MCP::"github" };
+);
 ```
 
 **Shape 4a — Server-wide deny (no resource names):**
@@ -680,17 +703,18 @@ data:
 
 ## 6. OSS Changes
 
-Seven additive, backward-compatible changes to `pkg/authz/authorizers/cedar/`:
+Eight additive, backward-compatible changes to `pkg/authz/authorizers/cedar/`:
 
 | # | Change | Summary |
 |---|--------|---------|
-| 1 | `GroupClaim` in `ConfigOptions` | Optional `group_claim` field; empty = no group extraction |
+| 1 | `GroupClaim` + `RoleClaim` in `ConfigOptions` | Optional `group_claim` and `role_claim` fields; empty = no extraction |
 | 2 | `serverName` on `Authorizer` | Store already-passed server name; empty = current behavior |
 | 3 | Parent support in entity factory | Variadic `parents ...cedar.EntityUID` on `CreatePrincipalEntity`/`CreateResourceEntity` |
-| 4 | Group extraction + Client parents | Extract groups from JWT using `group_claim`; set as Client parent UIDs |
+| 4 | Group/role extraction + Client parents | Extract from `group_claim` and `role_claim`; union and dedup; set as Client parent UIDs |
 | 5 | MCP parent on resource entities | `Tool`/`Prompt`/`Resource` entities get `MCP::"<server>"` parent |
 | 6 | `readOnlyHint` on Tool entities | Tool annotation attribute for reader role's `call_tool` gate |
 | 7 | `MCP` entity for list operations | Use `MCP::"<server>"` instead of `FeatureType` when `serverName` is set |
+| 8 | Resource entity `uri`→`name` attribute | Rename to match Cedar schema; `uri` kept as alias for backward compatibility |
 
 ### Key implementation details
 
@@ -743,13 +767,26 @@ group_claim: "roles"
 group_claim: "https://myapp.example.com/roles"
 ```
 
-### Single-claim limitation
+### Dual-claim model
 
-Both `PrincipalCondition.Groups` and `.Roles` match against the same `group_claim`. AND conditions spanning groups and roles from different JWT claims (e.g., Entra ID `groups` vs `roles`) are not satisfiable until the `group_claims` (plural) extension is implemented.
+`PrincipalCondition.Groups` matches against `groups_claim` and
+`PrincipalCondition.Roles` matches against `roles_claim`. This enables
+cross-field AND conditions for IdPs with separate claims (e.g., Entra ID
+where `groups` contains security group GUIDs and `roles` contains app role
+names).
+
+When `roles_claim` is not configured, the `roles` field has no effect — the
+controller emits a warning if bindings reference it. Both fields produce
+Cedar `Group` entities; the distinction is the JWT claim source, not the
+Cedar entity type.
 
 ### Future: multi-claim support
 
-Adding `group_claims []string` alongside `group_claim string` is non-breaking. All listed claims are extracted and unioned. Existing single-claim configs continue to work.
+For IdPs that need more than two claim sources (e.g., Keycloak with realm
+roles, client roles, and groups simultaneously), a `group_claims []string`
+field can be added. All listed claims are extracted and unioned. The
+dual-claim model covers the common Entra ID and Okta cases without this
+complexity.
 
 ---
 
@@ -819,7 +856,7 @@ spec:
       "permit(principal in Role::\"writer\", action in [...all 6...], resource in MCP::\"github\");",
       "permit(principal in Role::\"reader\", action in [...non-call...], resource in MCP::\"github\");",
       "permit(principal in Role::\"reader\", action == Action::\"call_tool\", resource in MCP::\"github\") when { resource has readOnlyHint && resource.readOnlyHint == true };",
-      "forbid(principal, action == Action::\"call_tool\", resource == Tool::\"delete_repo\") when { resource in MCP::\"github\" };"
+      "forbid(principal, action == Action::\"call_tool\", resource == Tool::\"delete_repo\");"
     ],
     "entities_json": "[MCP::github, Role::writer, Role::reader, Group::platform-eng→Role::writer, Group::all-developers→Role::reader]",
     "group_claim": "groups"

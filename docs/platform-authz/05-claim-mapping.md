@@ -91,22 +91,25 @@ in MVP.
 }
 ```
 
-## 2. The `group_claim` Configuration
+## 2. The Claim Configuration
 
-A single string in `ConfigOptions` identifies which JWT claim to extract:
+Two string fields in `ConfigOptions` identify which JWT claims to extract:
 
 ```go
 GroupClaim string `json:"group_claim,omitempty"`
+RoleClaim  string `json:"role_claim,omitempty"`
 ```
 
-Despite the name, this field is used for **both** IdP groups and IdP roles.
-Both `PrincipalCondition.Groups` and `PrincipalCondition.Roles` (from the
-CRD) match against values from this same claim -- in Cedar, both produce
-`Group` entities (the distinction is semantic only).
+`PrincipalCondition.Groups` matches against `GroupClaim` and
+`PrincipalCondition.Roles` matches against `RoleClaim`. Both produce Cedar
+`Group` entities — the distinction is the JWT claim source, not the Cedar
+entity type. Values from both claims are unioned and deduplicated before
+being set as `Client` parent UIDs.
 
-**Implication**: When an IdP uses separate claims for groups and roles (e.g.,
-Entra ID `groups` vs `roles`), the administrator must choose one. The
-multi-claim extension (section 6) addresses this.
+When `RoleClaim` is empty (not configured), the `roles` field in
+`PrincipalCondition` has no effect. When both are configured (e.g., Entra ID
+with `groups_claim: "groups"` and `roles_claim: "roles"`), cross-field AND
+conditions work correctly.
 
 ### Dot-notation
 
@@ -198,13 +201,13 @@ declare the path format (literal vs nested) explicitly.
 
 ## 4. AND Condition Evaluation
 
-**Single-claim limitation**: Both `PrincipalCondition.Groups` and `.Roles`
-are matched against the same `group_claim` JWT claim (see section 2). AND
-conditions that span both fields (e.g., `groups: [engineering]` AND
-`roles: [team-lead]`) are only satisfiable if both values appear in that
-single claim. If your IdP uses separate claims for groups and roles (e.g.,
-Entra ID `groups` vs `roles`), cross-field AND conditions will never match
-until the `group_claims` (plural) extension is implemented (section 6).
+**Dual-claim model**: `PrincipalCondition.Groups` matches against
+`groups_claim` and `PrincipalCondition.Roles` matches against `roles_claim`
+(see section 2). Cross-field AND conditions work correctly for IdPs with
+separate claims (e.g., Entra ID where `groups` contains security group GUIDs
+and `roles` contains app role names). When `roles_claim` is not configured,
+the `roles` field has no effect — the controller emits a warning if bindings
+reference it.
 
 ### The problem
 
@@ -216,7 +219,8 @@ from:
     roles: [team-lead]    # user must have BOTH
 ```
 
-Both `engineering` and `team-lead` produce `Group` entities with the same
+Both `engineering` (from `groups_claim`) and `team-lead` (from `roles_claim`)
+produce `Group` entities with the same
 `Role` parent. But Cedar's `in` operator follows ANY path -- a user in just
 one of these groups already reaches the Role via that single path. The AND
 is not enforced by the entity hierarchy alone.
@@ -536,7 +540,7 @@ header limits (typically 8KB). Mitigations:
 | Keycloak groups not matching despite correct claim | Group mapper `full.group.path = true` | Set to `false` or use full path in CRD |
 | Keycloak realm roles missing from token | `roles` client scope removed from client | Re-add `roles` to Default Client Scopes |
 | Keycloak client roles missing | Wrong client ID in `group_claim` | Verify client ID matches `azp` claim in JWT |
-| AND condition never matches | Groups and roles from different JWT claims | Both must appear in single `group_claim`; see section 6 |
+| AND condition never matches | `roles_claim` not configured but `roles` field used | Configure `roles_claim` in IdP ConfigMap; controller emits a warning |
 | AND condition compiled but user denied | `when` clause missing in compiled Cedar | Check compiled policies for `when` clause |
 
 Enable Cedar debug logging (`TOOLHIVE_LOG_LEVEL=debug`) to see the principal

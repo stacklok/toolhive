@@ -81,10 +81,12 @@ The reconciler is intentionally minimal. It has no caches or state beyond
 what controller-runtime provides. All inputs are read from the API server
 during reconciliation.
 
-All three enterprise CRDs (`ToolhiveAuthorizationPolicy`, `ToolhiveRoleBinding`,
-`ToolhivePlatformRole`) are **namespace-scoped**. A policy can only target an
-MCPServer in the same namespace, and a binding only affects policies in the
-same namespace. Cross-namespace targeting is out of scope for MVP.
+`ToolhivePlatformRole` and `ToolhiveRoleBinding` are **cluster-scoped** — they
+define platform-wide concepts (roles, IdP group mappings) that apply uniformly
+across namespaces. `ToolhiveAuthorizationPolicy` is **namespace-scoped** — it
+targets a specific MCPServer by name within the same namespace. This follows
+the Kubernetes RBAC pattern (`ClusterRole`/`ClusterRoleBinding` +
+namespace-scoped `RoleBinding`).
 
 The controller requires **leader election** (the default for
 `ctrl.NewControllerManagedBy`). Only one instance should be actively
@@ -248,10 +250,10 @@ func (r *EnterpriseAuthzReconciler) mapRoleBindingToMCPServers(
         roleNames[b.PlatformRole] = struct{}{}
     }
 
-    // Find all policies that reference any of these roles
+    // Find all policies (across all namespaces) that reference any of these roles.
+    // Roles and bindings are cluster-scoped; policies are namespace-scoped.
     var policyList enterprisev1alpha1.ToolhiveAuthorizationPolicyList
-    if err := r.List(ctx, &policyList,
-        client.InNamespace(binding.Namespace)); err != nil {
+    if err := r.List(ctx, &policyList); err != nil {
         return nil
     }
 
@@ -290,9 +292,9 @@ func (r *EnterpriseAuthzReconciler) mapPlatformRoleToMCPServers(
 ) []reconcile.Request {
     role := obj.(*enterprisev1alpha1.ToolhivePlatformRole)
 
+    // Search across all namespaces (role is cluster-scoped, policies are namespace-scoped)
     var policyList enterprisev1alpha1.ToolhiveAuthorizationPolicyList
-    if err := r.List(ctx, &policyList,
-        client.InNamespace(role.Namespace)); err != nil {
+    if err := r.List(ctx, &policyList); err != nil {
         return nil
     }
 
@@ -379,12 +381,12 @@ func (r *EnterpriseAuthzReconciler) Reconcile(
     }
 
     // 4. Resolve all role bindings and platform roles
-    roleBindings, err := r.resolveRoleBindings(ctx, mcpServer.Namespace)
+    roleBindings, err := r.resolveRoleBindings(ctx)
     if err != nil {
         return ctrl.Result{}, fmt.Errorf("resolving role bindings: %w", err)
     }
 
-    platformRoles, err := r.resolvePlatformRoles(ctx, mcpServer.Namespace)
+    platformRoles, err := r.resolvePlatformRoles(ctx)
     if err != nil {
         return ctrl.Result{}, fmt.Errorf("resolving platform roles: %w", err)
     }

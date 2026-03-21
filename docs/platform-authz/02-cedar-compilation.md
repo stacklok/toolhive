@@ -283,16 +283,41 @@ permit(
 The action list is the role's action set. For `writer` (`actions: [*]`), all
 six actions are expanded.
 
+**Why `resource in MCP::"github"` works for both list and item actions:**
+List actions (`list_tools`, etc.) use `MCP::"github"` as the resource entity
+at runtime. Cedar's `in` operator is reflexive — `MCP::"github" in
+MCP::"github"` is true. Item-specific actions (`call_tool`, etc.) use typed
+entities (`Tool::"create_pr"`) which are children of `MCP::"github"` via the
+entity hierarchy (OSS change C-5). So `resource in MCP::"github"` matches
+both cases. This is why Shape 1 does **not** need the list/item split that
+Shape 2 requires — Shape 2's typed resource restrictions (e.g.,
+`resource == Tool::"create_pr"`) break list operations because the list
+resource is `MCP::`, not `Tool::`.
+
 ### Shape 2: Restricted grant (typed resource names)
 
 Restrictions are **typed** in the CRD — `tools`, `prompts`, and `resources`
 are separate fields. This is required because each Cedar action only applies
-to its matching resource type (e.g., `call_tool` applies to `Tool` and `MCP`,
+to its matching resource type (e.g., `call_tool` applies to `Tool` entities,
 not to `Prompt`). Using untyped resource names would produce policies that
 fail Cedar schema validation.
 
-The compiler emits **one policy per resource type**, each containing only the
-actions compatible with that type.
+**Critical: list actions use `MCP` as the resource, not typed entities.**
+When the action is `list_tools`, the resource entity is `MCP::"github"` (the
+server container), not a `Tool::` entity. This means a restriction like
+`resource == Tool::"create_pr"` never matches for `list_tools` because the
+resource types don't align. The compiler must **split list actions from
+item-specific actions** when restrictions are present:
+
+- **Item-specific actions** (`call_tool`, `get_prompt`, `read_resource`) get
+  the typed resource restriction (e.g., `resource == Tool::"create_pr"`)
+- **List actions** (`list_tools`, `list_prompts`, `list_resources`) get a
+  separate unrestricted server-scoped policy (`resource in MCP::"github"`)
+
+This is correct because list operations return all resources on the server;
+per-item visibility filtering is handled by the response filter (which checks
+`call_tool`/`get_prompt`/`read_resource` authorization per-item in the
+response).
 
 **CRD input (tools only — common case):**
 ```yaml
@@ -304,22 +329,29 @@ spec:
         - tools: [list_issues, create_pr]
 ```
 
-**Compiled Cedar:**
+**Compiled Cedar (two policies — item-specific + list):**
 ```cedar
+// Item-specific: call_tool restricted to named tools
 permit(
   principal in Role::"writer",
-  action in [Action::"call_tool", Action::"list_tools"],
+  action == Action::"call_tool",
   resource
 ) when {
   resource in MCP::"github" &&
   resource in [Tool::"list_issues", Tool::"create_pr"]
 };
+
+// List: list_tools unrestricted on server (response filter handles per-item visibility)
+permit(
+  principal in Role::"writer",
+  action == Action::"list_tools",
+  resource in MCP::"github"
+);
 ```
 
-Only `call_tool` and `list_tools` are emitted — these are the actions whose
-schema `resourceTypes` includes `Tool`. Server scoping (`resource in MCP::`)
-is always included for defense-in-depth (see
-[01-crds.md](01-crds.md#all-generated-permits-must-be-server-scoped)).
+The `call_tool` policy restricts to named tools. The `list_tools` policy
+permits listing all tools on the server — the response filter then removes
+tools the user cannot `call_tool` on from the response.
 
 **CRD input (single tool):**
 ```yaml
@@ -330,12 +362,16 @@ ruleRestrictions:
 ```cedar
 permit(
   principal in Role::"writer",
-  action in [Action::"call_tool", Action::"list_tools"],
+  action == Action::"call_tool",
   resource == Tool::"create_pr"
 ) when { resource in MCP::"github" };
-```
 
-Even with a single name, server scoping is added via a `when` clause.
+permit(
+  principal in Role::"writer",
+  action == Action::"list_tools",
+  resource in MCP::"github"
+);
+```
 
 **CRD input (mixed types):**
 ```yaml
@@ -349,37 +385,58 @@ spec:
         - resources: [config.yaml]
 ```
 
-**Compiled Cedar (one policy per type, all server-scoped):**
+**Compiled Cedar (two policies per type: item-specific + list):**
 ```cedar
+// Tools
 permit(
   principal in Role::"writer",
-  action in [Action::"call_tool", Action::"list_tools"],
+  action == Action::"call_tool",
   resource == Tool::"create_pr"
 ) when { resource in MCP::"github" };
 
 permit(
   principal in Role::"writer",
-  action in [Action::"get_prompt", Action::"list_prompts"],
+  action == Action::"list_tools",
+  resource in MCP::"github"
+);
+
+// Prompts
+permit(
+  principal in Role::"writer",
+  action == Action::"get_prompt",
   resource == Prompt::"code_review"
 ) when { resource in MCP::"github" };
 
 permit(
   principal in Role::"writer",
-  action in [Action::"read_resource", Action::"list_resources"],
+  action == Action::"list_prompts",
+  resource in MCP::"github"
+);
+
+// Resources
+permit(
+  principal in Role::"writer",
+  action == Action::"read_resource",
   resource == Resource::"config.yaml"
 ) when { resource in MCP::"github" };
+
+permit(
+  principal in Role::"writer",
+  action == Action::"list_resources",
+  resource in MCP::"github"
+);
 ```
 
 ### Action-to-resource-type mapping
 
-The compiler uses this mapping to select actions per resource type:
+The compiler uses this mapping to select item-specific actions per resource
+type. List actions are handled separately (see above).
 
-| Resource type | Compatible actions |
-|---------------|-------------------|
-| `Tool` | `call_tool`, `list_tools` |
-| `Prompt` | `get_prompt`, `list_prompts` |
-| `Resource` | `read_resource`, `list_resources` |
-| `MCP` | all (server-scoped grants only) |
+| Resource type | Item-specific action | List action (separate policy) |
+|---------------|---------------------|-------------------------------|
+| `Tool` | `call_tool` | `list_tools` |
+| `Prompt` | `get_prompt` | `list_prompts` |
+| `Resource` | `read_resource` | `list_resources` |
 
 When a role's action set does not include any compatible action for a
 restricted type, no policy is emitted for that type. For example, a custom
@@ -485,8 +542,18 @@ that are both in the restriction list AND marked read-only.
 ### Shape 4: Deny rule
 
 Deny rules use the same typed resource fields as grants (`tools`, `prompts`,
-`resources`). They are always **scoped to the target server** via a `when`
-clause to prevent cross-server interference.
+`resources`). Unlike permits, typed deny rules **omit server scoping** in the
+`when` clause to ensure they fail-closed.
+
+**Why no server scoping on typed denies**: Server scoping (`resource in
+MCP::"github"`) requires the `Tool` entity to have `MCP::"github"` as a
+parent in the entity hierarchy. If the runtime entity factory fails to set
+the parent (bug, race condition, misconfiguration), the `when` clause
+evaluates to false and the deny silently becomes inactive — fail-open
+behavior on a security-critical path. Since the resource name in the head
+(`resource == Tool::"delete_repo"`) is already specific, server scoping is
+unnecessary. In per-server deployment, the ConfigMap injection already
+provides server isolation (each server only loads its own policies).
 
 **CRD input:**
 ```yaml
@@ -503,7 +570,7 @@ forbid(
   principal,
   action == Action::"call_tool",
   resource == Tool::"delete_repo"
-) when { resource in MCP::"github" };
+);
 ```
 
 **Compiled Cedar (multiple resources):**
@@ -511,20 +578,13 @@ forbid(
 forbid(
   principal,
   action == Action::"call_tool",
-  resource
-) when {
-  resource in MCP::"github" &&
   resource in [Tool::"delete_repo", Tool::"force_push"]
-};
+);
 ```
 
 Deny rules compile to `forbid` policies. They are **unscoped on principal**
-(apply to everyone) and scoped to the target server and specific resources.
-Cedar's `forbid` always overrides `permit`.
-
-Server scoping is critical: without it, a deny on `Tool::"delete_repo"` would
-block that tool name on every MCPServer, not just the one referenced by
-`targetRef`.
+(apply to everyone) and target specific resources by name. Cedar's `forbid`
+always overrides `permit`.
 
 **Deny with multiple actions (typed):**
 ```yaml
@@ -540,13 +600,13 @@ forbid(
   principal,
   action == Action::"call_tool",
   resource == Tool::"dangerous_tool"
-) when { resource in MCP::"github" };
+);
 
 forbid(
   principal,
   action == Action::"get_prompt",
   resource == Prompt::"dangerous_prompt"
-) when { resource in MCP::"github" };
+);
 ```
 
 ### Shape 4a: Server-wide deny (no typed fields)
@@ -663,10 +723,17 @@ represented in Cedar.
 
 ```
 # Action-to-resource-type compatibility
-ACTIONS_FOR_TYPE = {
-    "Tool":     ["call_tool", "list_tools"],
-    "Prompt":   ["get_prompt", "list_prompts"],
-    "Resource": ["read_resource", "list_resources"],
+# Item-specific actions target typed entities (Tool::, Prompt::, Resource::)
+# List actions target MCP:: (server container) and are split into separate policies
+ITEM_ACTIONS_FOR_TYPE = {
+    "Tool":     ["call_tool"],
+    "Prompt":   ["get_prompt"],
+    "Resource": ["read_resource"],
+}
+LIST_ACTIONS_FOR_TYPE = {
+    "Tool":     ["list_tools"],
+    "Prompt":   ["list_prompts"],
+    "Resource": ["list_resources"],
 }
 
 policies = []
@@ -714,62 +781,81 @@ for each ToolhiveAuthorizationPolicy targeting S:
 
             else if hint_clause and binding HAS ruleRestrictions:
                 # Shape 3a: toolHintFilter with restrictions
+                # Same list/item split as Shape 2, plus hint gating on call_tool
                 for each restriction:
                     for each (type, names) in restriction.typed_fields():
-                        compatible = intersect(actions, ACTIONS_FOR_TYPE[type])
-                        if len(compatible) == 0:
-                            continue
-                        res_clause = resource_clause(type, names, S)
-                        non_call = compatible - [call_tool]
+                        # Item-specific actions (excluding call_tool, handled below)
+                        item_actions = intersect(actions, ITEM_ACTIONS_FOR_TYPE[type])
+                        non_call = item_actions - [call_tool]
                         if non_call:
+                            res_clause = resource_clause(type, names, S)
                             when = combine(cond_clause, res_clause)
                             policies.append(permit(Role, non_call, resource,
                                                    when: when))
-                        if call_tool in compatible:
+                        # call_tool with hint filter + resource restriction
+                        if call_tool in item_actions:
+                            res_clause = resource_clause(type, names, S)
                             when = combine(cond_clause, res_clause, hint_clause)
                             policies.append(permit(Role, [call_tool], resource,
+                                                   when: when))
+                        # List actions: unrestricted server-scoped
+                        list_actions = intersect(actions, LIST_ACTIONS_FOR_TYPE[type])
+                        if len(list_actions) > 0:
+                            when = cond_clause or None
+                            policies.append(permit(Role, list_actions, MCP::S,
                                                    when: when))
 
             else if binding has ruleRestrictions:
                 # Shape 2: restricted grant (server-scoped)
+                # Split list actions from item-specific actions because
+                # list operations use MCP:: as resource, not typed entities
                 for each restriction:
                     for each (type, names) in restriction.typed_fields():
-                        compatible = intersect(actions, ACTIONS_FOR_TYPE[type])
-                        if len(compatible) == 0:
-                            continue
-                        res_clause = resource_clause(type, names, S)
-                        when = combine(cond_clause, res_clause)
-                        policies.append(permit(Role, compatible, resource,
-                                               when: when))
+                        # Item-specific actions: restricted to named resources
+                        item_actions = intersect(actions, ITEM_ACTIONS_FOR_TYPE[type])
+                        if len(item_actions) > 0:
+                            res_clause = resource_clause(type, names, S)
+                            when = combine(cond_clause, res_clause)
+                            policies.append(permit(Role, item_actions, resource,
+                                                   when: when))
+                        # List actions: unrestricted server-scoped
+                        # (response filter handles per-item visibility)
+                        list_actions = intersect(actions, LIST_ACTIONS_FOR_TYPE[type])
+                        if len(list_actions) > 0:
+                            when = cond_clause or None
+                            policies.append(permit(Role, list_actions, MCP::S,
+                                                   when: when))
             else:
                 # Shape 1: unrestricted grant (server-scoped)
                 when = cond_clause or None
                 policies.append(permit(Role, actions, MCP::S,
                                        when: when))
 
-    # --- Denials (always server-scoped) ---
+    # --- Denials ---
     for each deny_rule in policy.deny:
         deny_actions = deny_rule.actions  # direct, no expansion
         typed_fields = deny_rule.typed_fields()
 
         if typed_fields is empty:
             # Shape 4a: server-wide deny (no typed resource fields)
+            # Server-scoped because there are no resource names to anchor on
             for each action in deny_actions:
                 policies.append(forbid(action, resource in MCP::S))
         else:
-            # Shape 4: typed deny
+            # Shape 4: typed deny — NO server scoping (fail-closed)
+            # The resource name in the head is specific enough.
+            # Omitting `resource in MCP::` prevents the deny from
+            # silently deactivating if entity parents are missing.
             for each (type, names) in typed_fields:
-                compatible = intersect(deny_actions, ACTIONS_FOR_TYPE[type])
+                compatible = intersect(deny_actions, ITEM_ACTIONS_FOR_TYPE[type])
                 if len(compatible) == 0:
                     continue
                 if len(names) == 1:
                     policies.append(forbid(compatible,
-                                           resource == Type::names[0],
-                                           when: resource in MCP::S))
+                                           resource == Type::names[0]))
                 else:
                     policies.append(forbid(compatible,
-                                           when: resource in MCP::S &&
-                                                 resource in names))
+                                           resource in names))
 
 # Helper: resource_clause(type, names, server)
 #   Builds "resource in MCP::S && resource in [Type::n1, Type::n2, ...]"
@@ -1150,9 +1236,11 @@ spec:
 
       "permit(principal in Role::\"reader\", action == Action::\"call_tool\", resource in MCP::\"github\") when { resource has readOnlyHint && resource.readOnlyHint == true };",
 
-      "forbid(principal, action == Action::\"call_tool\", resource == Tool::\"delete_repo\") when { resource in MCP::\"github\" };",
+      "forbid(principal, action == Action::\"call_tool\", resource == Tool::\"delete_repo\");",
 
-      "permit(principal in Role::\"writer\", action in [Action::\"call_tool\", Action::\"list_tools\"], resource == Tool::\"create_pr\") when { resource in MCP::\"github\" };"
+      "permit(principal in Role::\"writer\", action == Action::\"call_tool\", resource == Tool::\"create_pr\") when { resource in MCP::\"github\" };",
+
+      "permit(principal in Role::\"writer\", action == Action::\"list_tools\", resource in MCP::\"github\");"
     ],
     "entities_json": "[{\"uid\":{\"type\":\"MCP\",\"id\":\"github\"},\"attrs\":{},\"parents\":[]},{\"uid\":{\"type\":\"Role\",\"id\":\"writer\"},\"attrs\":{},\"parents\":[]},{\"uid\":{\"type\":\"Role\",\"id\":\"reader\"},\"attrs\":{},\"parents\":[]},{\"uid\":{\"type\":\"Group\",\"id\":\"platform-eng\"},\"attrs\":{},\"parents\":[{\"type\":\"Role\",\"id\":\"writer\"}]},{\"uid\":{\"type\":\"Group\",\"id\":\"all-developers\"},\"attrs\":{},\"parents\":[{\"type\":\"Role\",\"id\":\"reader\"}]}]",
     "group_claim": "groups"

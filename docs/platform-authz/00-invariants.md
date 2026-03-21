@@ -66,14 +66,16 @@ structure follows the existing `authz.Config` format:
   "cedar": {
     "policies": ["permit(...);", "forbid(...);"],
     "entities_json": "[{\"uid\":{\"type\":\"Role\",\"id\":\"writer\"}, ...}]",
-    "group_claim": "roles"
+    "group_claim": "groups",
+    "role_claim": "roles"
   }
 }
 ```
 
-A single `group_claim` field is sufficient for MVP. If multiple claim sources
-are needed later, a `group_claims` (plural, list) field can be added alongside
-without breaking the existing single-string field.
+The `group_claim` and `role_claim` fields map to the `groups` and `roles`
+fields in `PrincipalCondition` respectively. Both are optional; when absent,
+the corresponding `PrincipalCondition` field has no effect. For IdPs with a
+single claim (e.g., Okta with just `groups`), only `group_claim` is set.
 
 ### 1.5 ConfigMap-per-server injection pattern
 
@@ -289,7 +291,7 @@ matching `forbid` denies it.
 
 **Implication**: Adding a policy can only increase the set of permitted
 actions. Removing a policy can only decrease it. Narrowing access requires
-`forbid` (via the `deny` field or hand-written Cedar), not removal of
+`forbid` (via the `deny` field or `rawPolicies`), not removal of
 `permit` policies.
 
 The enterprise controller must emit the effective permission set per server
@@ -426,11 +428,12 @@ in entity types, invalid action references, and type mismatches that could
 cause policies to be silently skipped (Cedar's skip-on-error semantics mean a
 malformed policy is ignored, not rejected).
 
-### 3.6 The group_claim field is the only new OSS config surface
+### 3.6 The claim fields are the only new OSS config surface
 
-Adding `group_claim` to the `ConfigOptions` struct is the **only** change to
-the OSS Cedar authorizer's config surface. The field is optional — when absent,
-no group extraction happens and the principal has no parents (current behavior).
+Adding `group_claim` and `role_claim` to the `ConfigOptions` struct are the
+**only** changes to the OSS Cedar authorizer's config surface. Both fields are
+optional — when absent, no extraction happens for that claim and the principal
+has no corresponding parents (current behavior).
 
 Implementation path in the OSS repo:
 1. Add `GroupClaim string` to `ConfigOptions`
@@ -453,8 +456,9 @@ denied.
 
 Cedar evaluates `forbid` policies before `permit`. A `forbid` always wins.
 The platform authorization CRDs can generate both `permit` (from `bindings`)
-and `forbid` (from `deny`) policies. Hand-written Cedar policies can also
-be used for advanced denial rules.
+and `forbid` (from `deny`) policies. The `rawPolicies` field on
+`ToolhiveAuthorizationPolicy` provides an escape hatch for literal Cedar
+strings when the CRD abstraction is insufficient (see CRD invariant 2.5).
 
 ### 4.3 No credential material in CRDs or Cedar artifacts
 
@@ -541,10 +545,11 @@ authorization system should depend on it being populated.
 
 ### 5.4 Future multi-claim support is non-breaking
 
-The MVP uses a single `group_claim` (string) field. If multiple claim sources
-are needed later, a `group_claims` (plural, string list) field can be added
-alongside. The OSS authorizer checks `group_claims` first, falls back to
-`group_claim`. No existing config breaks.
+The MVP uses `group_claim` + `role_claim` (two string fields). For IdPs that
+need more than two claim sources (e.g., Keycloak with realm roles, client
+roles, and groups simultaneously), a `group_claims` (plural, string list) field
+can be added alongside. The OSS authorizer checks `group_claims` first, falls
+back to `group_claim` + `role_claim`. No existing config breaks.
 
 ### 5.5 Future targetSelector is non-breaking
 

@@ -16,9 +16,13 @@ for how these CRDs compile to Cedar policies and entities.
 | `ToolhiveRoleBinding` | Maps WHO (IdP groups/roles) to WHICH platform roles | `trb`, `thvrolebinding` |
 | `ToolhiveAuthorizationPolicy` | Binds roles to specific MCPServers, with optional restrictions and denials | `tap`, `authzpolicy` |
 
-All three CRDs are **namespace-scoped**. A policy can only target an MCPServer
-in the same namespace, and a binding only affects policies in the same namespace.
-Cross-namespace targeting is out of scope for MVP.
+`ToolhivePlatformRole` and `ToolhiveRoleBinding` are **cluster-scoped** — they
+define platform-wide concepts (what a role can do, which IdP groups map to
+which roles) that apply uniformly across namespaces.
+`ToolhiveAuthorizationPolicy` is **namespace-scoped** — it targets a specific
+MCPServer by name within the same namespace. This follows the Kubernetes RBAC
+pattern: `ClusterRole`/`ClusterRoleBinding` are cluster-scoped while
+`RoleBinding` is namespace-scoped.
 
 ### Naming convention
 
@@ -127,7 +131,7 @@ type ToolhivePlatformRoleStatus struct {
 ```go
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=tpr;platformrole
+// +kubebuilder:resource:scope=Cluster,shortName=tpr;platformrole
 // +kubebuilder:printcolumn:name="Actions",type="string",JSONPath=".spec.actions",description="Permitted actions"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //
@@ -156,7 +160,6 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhivePlatformRole
 metadata:
   name: security-auditor
-  namespace: default
 spec:
   description: "Can list and call tools, but cannot access prompts or resources"
   actions:
@@ -267,23 +270,34 @@ type RoleBindingEntry struct {
 // All specified fields within a condition must match (AND semantics).
 // At least one of groups or roles must be specified.
 //
-// Example: {groups: ["engineering"], roles: ["team-lead"]} means the user must
-// be in the "engineering" group AND have the "team-lead" role.
+// Example: {groups: ["engineering"], roles: ["team-lead"]} means the user
+// must have "engineering" in the groups_claim AND "team-lead" in the
+// roles_claim of their JWT token.
+//
+// Each field maps to a different JWT claim:
+//   - Groups → matched against groups_claim from the platform IdP ConfigMap
+//   - Roles  → matched against roles_claim from the platform IdP ConfigMap
+//
+// Both produce Cedar Group entities. The distinction is the JWT claim source,
+// not the Cedar entity type. When roles_claim is not configured, values in
+// the Roles field will never match (safe default-deny); the controller emits
+// a warning in this case.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.groups) && self.groups.size() > 0) || (has(self.roles) && self.roles.size() > 0)",message="at least one of groups or roles must be non-empty"
 type PrincipalCondition struct {
     // Groups is a list of IdP group names that the user must belong to.
     // When multiple groups are specified, the user must be in ALL of them (AND).
-    // Values are matched against the JWT claim identified by the group_claim
-    // configuration. Group names are case-sensitive.
+    // Values are matched against the JWT claim identified by groups_claim
+    // in the platform IdP ConfigMap. Group names are case-sensitive.
     // +optional
     Groups []string `json:"groups,omitempty"`
 
     // Roles is a list of IdP role names that the user must have.
     // When multiple roles are specified, the user must have ALL of them (AND).
-    // Values are matched against the JWT claim identified by the group_claim
-    // configuration. In Cedar, IdP roles are represented as Group entities
-    // (same as groups). The distinction is semantic only.
+    // Values are matched against the JWT claim identified by roles_claim
+    // in the platform IdP ConfigMap. In Cedar, IdP roles are represented as
+    // Group entities (same entity type as groups — the distinction is the
+    // JWT claim source, not the Cedar type).
     // +optional
     Roles []string `json:"roles,omitempty"`
 }
@@ -314,7 +328,7 @@ type ToolhiveRoleBindingStatus struct {
 ```go
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=trb;thvrolebinding
+// +kubebuilder:resource:scope=Cluster,shortName=trb;thvrolebinding
 // +kubebuilder:printcolumn:name="Roles",type="string",JSONPath=".status.resolvedRoles",description="Resolved platform roles"
 // +kubebuilder:printcolumn:name="Groups",type="integer",JSONPath=".status.groupCount",description="Mapped group count"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -350,7 +364,6 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhiveRoleBinding
 metadata:
   name: acme-roles
-  namespace: default
 spec:
   bindings:
     # Simple: anyone in platform-eng OR sre-team gets writer
@@ -358,11 +371,11 @@ spec:
       from:
         - groups: [platform-eng]
         - groups: [sre-team]
-    # AND condition: must be in engineering AND have team-lead role
+    # AND condition: must be in engineering group AND have team-lead role
     - platformRole: writer
       from:
         - groups: [engineering]
-          roles: [team-lead]  # AND: both must match
+          roles: [team-lead]  # AND: groups from groups_claim, roles from roles_claim
     # Simple: all developers get reader
     - platformRole: reader
       from:
@@ -404,12 +417,13 @@ This binding creates the following entities in `entities.json`:
 ]
 ```
 
-Both `groups` and `roles` produce `Group` entities in Cedar.
-A group can appear in multiple bindings and gain multiple Role parents
-(multi-role groups, see 02-cedar-compilation.md section 2).
+Both `groups` and `roles` produce `Group` entities in Cedar (same entity
+type; the distinction is the JWT claim source — `groups_claim` vs
+`roles_claim`). A group can appear in multiple bindings and gain multiple
+Role parents (multi-role groups, see 02-cedar-compilation.md section 2).
 
 **AND condition compilation**: When a condition has both `groups` and `roles`,
-the controller must ensure ALL specified groups/roles are present in the user's
+the controller must ensure ALL specified values are present in the user's
 JWT claims for the role assignment to apply. This is enforced at request time
 during entity hierarchy construction — the Cedar `Client` entity only gets a
 `Group` parent if the claim is present in the token, and the Cedar `permit`
@@ -439,7 +453,7 @@ server are unioned into a single Cedar policy set.
 // ToolhiveAuthorizationPolicy. A policy binds platform roles to a specific
 // MCPServer with optional restrictions and denials.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.bindings) && self.bindings.size() > 0) || (has(self.deny) && self.deny.size() > 0)",message="at least one of bindings or deny must be non-empty"
+// +kubebuilder:validation:XValidation:rule="(has(self.bindings) && self.bindings.size() > 0) || (has(self.deny) && self.deny.size() > 0) || (has(self.rawPolicies) && self.rawPolicies.size() > 0)",message="at least one of bindings, deny, or rawPolicies must be non-empty"
 type ToolhiveAuthorizationPolicySpec struct {
     // TargetRef identifies the MCPServer this policy applies to.
     // The referenced MCPServer must be in the same namespace.
@@ -453,9 +467,23 @@ type ToolhiveAuthorizationPolicySpec struct {
 
     // Deny defines explicit denial rules that compile to Cedar forbid statements.
     // Deny rules always override permits (Cedar semantics).
-    // Deny rules are always scoped to the target server.
+    // Typed deny rules (with tool/prompt/resource names) omit server scoping
+    // to ensure fail-closed behavior. Server-wide deny rules (no resource
+    // names) use server scoping via resource in MCP::"<server>".
     // +optional
     Deny []DenyRule `json:"deny,omitempty"`
+
+    // RawPolicies contains literal Cedar policy strings. Each string must be a
+    // valid complete Cedar policy statement (permit or forbid). The controller
+    // validates each string against the Cedar schema before writing the
+    // ConfigMap — validation failure sets Compiled: False and preserves the
+    // last known-good policy. The controller injects an @id annotation
+    // (rawPolicies/0, rawPolicies/1, ...) into each policy for traceability.
+    // Use this field to migrate existing hand-written Cedar policies or express
+    // authorization patterns the CRD abstraction cannot represent.
+    // +optional
+    // +kubebuilder:validation:MaxItems=10
+    RawPolicies []string `json:"rawPolicies,omitempty"`
 }
 ```
 
@@ -687,7 +715,9 @@ type ToolhiveAuthorizationPolicy struct {
 
 | Rule | Layer | Rationale |
 |------|-------|-----------|
-| At least one of `bindings` or `deny` must be non-empty | CEL on spec | Empty policy is meaningless; `has()` alone is true for `[]` |
+| At least one of `bindings`, `deny`, or `rawPolicies` must be non-empty | CEL on spec | Empty policy is meaningless; `has()` alone is true for `[]` |
+| `rawPolicies` at most 10 entries | kubebuilder MaxItems | Escape hatch, not a bulk import mechanism |
+| Each `rawPolicies` entry is a valid Cedar policy | Controller-time (Cedar schema validation) | Prevents malformed policies reaching the authorizer; failed validation sets `Compiled: False` |
 | `targetRef.kind` is `MCPServer` | kubebuilder Enum | Only supported target for MVP |
 | `targetRef.name` is non-empty | kubebuilder MinLength | Required field |
 | `platformRole` matches DNS subdomain pattern | kubebuilder Pattern | Syntactic validity |
@@ -735,16 +765,27 @@ spec:
         - prompts: [code_review]
 ```
 
-This produces three Cedar permits (one per resource type):
+This produces Cedar permits split by item-specific and list actions (list
+actions use `MCP::` as the resource, not typed entities):
 
 ```cedar
+// Item-specific: call_tool restricted to named tools
 permit(principal in Role::"writer",
-       action in [Action::"call_tool", Action::"list_tools"],
+       action == Action::"call_tool",
        resource) when { resource in [Tool::"create_pr", Tool::"list_issues"] };
-
+// List: unrestricted on server
 permit(principal in Role::"writer",
-       action in [Action::"get_prompt", Action::"list_prompts"],
+       action == Action::"list_tools",
+       resource in MCP::"github");
+
+// Item-specific: get_prompt restricted to named prompt
+permit(principal in Role::"writer",
+       action == Action::"get_prompt",
        resource == Prompt::"code_review");
+// List: unrestricted on server
+permit(principal in Role::"writer",
+       action == Action::"list_prompts",
+       resource in MCP::"github");
 ```
 
 ### Example: Deny-only policy (safety rails)
@@ -795,6 +836,52 @@ github-access         github   True       3          1        10m
 github-restricted     github   True       2          0        5m
 github-safety-rails   github   True       0          3        2m
 ```
+
+### rawPolicies: escape hatch for literal Cedar
+
+The `rawPolicies` field allows administrators to supply literal Cedar policy
+strings when the CRD abstraction cannot express the required pattern. This is
+the correct mechanism for migrating existing hand-written Cedar policies —
+**not** a separate ConfigMap or out-of-band configuration, since the enterprise
+controller owns the entire ConfigMap via SSA and overwrites it on every
+reconcile.
+
+**Semantics**:
+- Each string must be a complete, syntactically valid Cedar policy (one
+  `permit(...)` or `forbid(...)` statement)
+- The controller validates each string against the Cedar schema before writing
+  the ConfigMap; a single invalid policy sets `Compiled: False` on the whole
+  resource and preserves the last known-good policy
+- The controller injects an `@id` annotation (`rawPolicies/0`, `rawPolicies/1`,
+  ...) into each policy for traceability in Cedar evaluation diagnostics
+- Raw policies are assembled with CRD-generated policies into a single policy
+  set; Cedar's order-independent evaluation applies
+- Maximum 10 entries (`MaxItems: 10`) — this is an escape hatch, not a bulk
+  import mechanism
+
+**Example: adding a custom role policy**
+
+```yaml
+spec:
+  targetRef:
+    name: github
+  bindings:
+    - platformRole: writer
+  rawPolicies:
+    - |
+      permit(
+        principal in Role::"auditor",
+        action == Action::"list_tools",
+        resource in MCP::"github"
+      );
+```
+
+**Policy migration note**: Existing standalone Cedar policies are largely
+drop-in compatible with the enterprise entity model. The only construct that
+requires rewriting is `resource == FeatureType::"tool"` for list operations —
+replace with an action check (`action == Action::"list_tools"`). All other
+constructs — action names, `Client` principal references, `Tool`/`Prompt`
+resource names, and context fields — are unchanged.
 
 ## 5. Design Decisions
 
@@ -880,8 +967,8 @@ server-wide denials.
 Deny rules cannot reference tool hint annotations. While "forbid `call_tool`
 on all tools where `readOnlyHint=false`" is a valid Cedar pattern, it adds
 complexity to the CRD schema and controller for a niche use case.
-Administrators who need hint-based denials can use hand-written Cedar policies
-alongside CRD-generated ones.
+Administrators who need hint-based denials can use the `rawPolicies` field
+to supply literal Cedar `forbid` statements.
 
 ### Multi-domain extensibility
 
@@ -991,7 +1078,6 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhivePlatformRole
 metadata:
   name: reader
-  namespace: default
   annotations:
     toolhive.stacklok.dev/built-in: "true"
 spec:
@@ -1004,7 +1090,6 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhivePlatformRole
 metadata:
   name: writer
-  namespace: default
   annotations:
     toolhive.stacklok.dev/built-in: "true"
 spec:
@@ -1016,7 +1101,6 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhivePlatformRole
 metadata:
   name: security-auditor
-  namespace: default
 spec:
   description: "Can list everything and call read-only tools"
   actions:
@@ -1029,7 +1113,6 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: ToolhiveRoleBinding
 metadata:
   name: acme-roles
-  namespace: default
 spec:
   bindings:
     - platformRole: writer

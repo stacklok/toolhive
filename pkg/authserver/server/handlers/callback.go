@@ -73,6 +73,18 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Validate the callback was delivered to the handler that originated the authorization.
+	// UpstreamProviderName is written by AuthorizeHandler and must match this handler's
+	// upstream to prevent misrouted callbacks from associating sessions with the wrong provider.
+	if pending.UpstreamProviderName != "" && pending.UpstreamProviderName != h.upstreamName {
+		slog.Error("callback provider mismatch — possible misrouted callback",
+			"pending_provider", pending.UpstreamProviderName,
+			"handler_provider", h.upstreamName,
+		)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("authorization state mismatch"))
+		return
+	}
+
 	// Check if upstream provider is configured
 	if h.upstream == nil {
 		slog.Error("upstream provider not configured")
@@ -94,8 +106,9 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	idpTokens := result.Tokens
 	providerSubject := result.Subject
 
-	// Get provider ID
-	providerID := string(h.upstream.Type())
+	// Use the logical upstream name as the provider identifier for storage and identity lookups.
+	// This ensures write-side (StoreUpstreamTokens) and read-side (GetUpstreamTokens) keys match.
+	providerID := h.upstreamName
 
 	// Resolve or create internal user
 	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
@@ -124,7 +137,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		UpstreamSubject: providerSubject, // Upstream IDP's subject claim
 	}
 
-	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, storageTokens); err != nil {
+	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {
 		slog.Error("failed to store upstream tokens",
 			"error", err,
 		)

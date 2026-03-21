@@ -23,10 +23,10 @@ type resourceTokenSource struct {
 	httpClient *http.Client
 }
 
-// newResourceTokenSource creates a token source that includes the resource parameter
+// NewResourceTokenSource creates a token source that includes the resource parameter
 // in all token requests, including refresh requests.
 // The resource parameter must be non-empty (caller should check before calling).
-func newResourceTokenSource(config *oauth2.Config, token *oauth2.Token, resource string) oauth2.TokenSource {
+func NewResourceTokenSource(config *oauth2.Config, token *oauth2.Token, resource string) oauth2.TokenSource {
 	return &resourceTokenSource{
 		config:   config,
 		resource: resource,

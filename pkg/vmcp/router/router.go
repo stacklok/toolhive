@@ -28,6 +28,14 @@ type Router interface {
 	// Returns ErrToolNotFound if the tool doesn't exist in any backend.
 	RouteTool(ctx context.Context, toolName string) (*vmcp.BackendTarget, error)
 
+	// ResolveToolName translates a tool name (which may use the dot-convention
+	// "{workloadID}.{originalCapabilityName}") to the conflict-resolved routing
+	// table key used in the session tools list. Returns toolName unchanged when
+	// the name cannot be resolved or the router has no static routing table —
+	// pass-through semantics so callers can use the result directly without
+	// special-casing the unresolvable case.
+	ResolveToolName(ctx context.Context, toolName string) string
+
 	// RouteResource resolves a resource URI to its backend target.
 	// Returns ErrResourceNotFound if the resource doesn't exist in any backend.
 	RouteResource(ctx context.Context, uri string) (*vmcp.BackendTarget, error)

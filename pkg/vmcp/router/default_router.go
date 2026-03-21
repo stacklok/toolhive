@@ -89,6 +89,13 @@ func (*defaultRouter) RouteTool(ctx context.Context, toolName string) (*vmcp.Bac
 	)
 }
 
+// ResolveToolName returns toolName unchanged. The defaultRouter has no static
+// routing table, so dot-convention resolution is not available; the caller
+// should already be using resolved names when working with this router.
+func (*defaultRouter) ResolveToolName(_ context.Context, toolName string) string {
+	return toolName
+}
+
 // RouteResource resolves a resource URI to its backend target.
 // With lazy discovery, this method gets capabilities from the request context
 // instead of using a cached routing table.

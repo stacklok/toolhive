@@ -390,9 +390,12 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockRouter.EXPECT().ResolveToolName(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, name string) string { return name }).
+		AnyTimes()
 	mockBackend := mocks.NewMockBackendClient(ctrl)
 	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, stateStore, nil)
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, stateStore, nil, nil)
 
 	// Track execution timing to verify parallel execution
 	var executionMu sync.Mutex
@@ -740,4 +743,105 @@ func TestWorkflowEngine_WorkflowMetadataAvailableInTemplates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 	assert.Len(t, result.Steps, 2)
+}
+
+func TestWorkflowEngine_SessionEngine_CoercesTemplateStringToTypedArg(t *testing.T) {
+	t.Parallel()
+
+	// Template expansion always produces strings. When the engine is created
+	// with a bound tool list, getToolInputSchema resolves the target tool's InputSchema
+	// and the schema coercion layer converts "42" → 42 before calling the backend.
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockRouter.EXPECT().ResolveToolName(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, name string) string { return name }).
+		AnyTimes()
+	mockBackend := mocks.NewMockBackendClient(ctrl)
+
+	tools := []vmcp.Tool{
+		{
+			Name: "count_items",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{"type": "integer"},
+				},
+			},
+		},
+	}
+
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, nil, nil, tools)
+
+	target := &vmcp.BackendTarget{WorkloadID: "backend1", BaseURL: "http://backend1:8080"}
+	mockRouter.EXPECT().RouteTool(gomock.Any(), "count_items").Return(target, nil)
+
+	// Expect the backend to receive the coerced integer, not the string "42".
+	coercedArgs := map[string]any{"limit": int64(42)}
+	mockBackend.EXPECT().
+		CallTool(gomock.Any(), target, "count_items", coercedArgs, gomock.Any()).
+		Return(&vmcp.ToolCallResult{StructuredContent: map[string]any{"items": []any{}}, Content: []vmcp.Content{}}, nil)
+
+	workflow := &WorkflowDefinition{
+		Name: "coerce_test",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"n": map[string]any{"type": "string"},
+			},
+		},
+		Steps: []WorkflowStep{
+			{
+				ID:   "step1",
+				Type: StepTypeTool,
+				Tool: "count_items",
+				// Template expansion produces a string; coercion must convert it to int.
+				Arguments: map[string]any{"limit": "{{.params.n}}"},
+			},
+		},
+	}
+
+	result, err := engine.ExecuteWorkflow(context.Background(), workflow, map[string]any{"n": "42"})
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+}
+
+func TestWorkflowEngine_SessionEngine_ToolNotInList_ReturnsNilSchema(t *testing.T) {
+	t.Parallel()
+
+	// When a bound tool list is provided but the requested tool is not in it,
+	// getToolInputSchema returns nil and coercion is a no-op.
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockRouter.EXPECT().ResolveToolName(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, name string) string { return name }).
+		AnyTimes()
+	mockBackend := mocks.NewMockBackendClient(ctrl)
+
+	// Tools list does not include "other_tool".
+	tools := []vmcp.Tool{{Name: "known_tool", InputSchema: map[string]any{"type": "object"}}}
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, nil, nil, tools)
+
+	target := &vmcp.BackendTarget{WorkloadID: "backend1", BaseURL: "http://backend1:8080"}
+	mockRouter.EXPECT().RouteTool(gomock.Any(), "other_tool").Return(target, nil)
+
+	// Args pass through unmodified (string stays a string).
+	rawArgs := map[string]any{"value": "hello"}
+	mockBackend.EXPECT().
+		CallTool(gomock.Any(), target, "other_tool", rawArgs, gomock.Any()).
+		Return(&vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}, Content: []vmcp.Content{}}, nil)
+
+	workflow := &WorkflowDefinition{
+		Name: "no_schema_test",
+		Steps: []WorkflowStep{
+			{ID: "s1", Type: StepTypeTool, Tool: "other_tool", Arguments: rawArgs},
+		},
+	}
+
+	result, err := engine.ExecuteWorkflow(context.Background(), workflow, nil)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 }

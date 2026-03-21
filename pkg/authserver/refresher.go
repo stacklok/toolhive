@@ -67,7 +67,7 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	}
 
 	// Store the refreshed tokens
-	if err := r.storage.StoreUpstreamTokens(ctx, sessionID, updated); err != nil {
+	if err := r.storage.StoreUpstreamTokens(ctx, sessionID, expired.ProviderID, updated); err != nil {
 		// Log but still return the refreshed tokens — the current request can
 		// proceed even if storage fails. The next request will retry the refresh.
 		slog.Warn("failed to store refreshed upstream tokens",

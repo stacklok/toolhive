@@ -112,7 +112,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	authToken := hex.EncodeToString(tokenBytes)
 
 	// find the port of the server if it is running / exists
-	serverPort, transportType, err := getServerPortAndTransport(ctx, serverName)
+	serverPort, proxyMode, err := getServerPortAndProxyMode(ctx, serverName)
 	if err != nil {
 		return fmt.Errorf("failed to find server: %w", err)
 	}
@@ -171,18 +171,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	case <-statusChan:
 		slog.Info(fmt.Sprintf("Connected to MCP server: %s", serverName))
 
-		var suffix string
-		var transportTypeStr string
-		if transportType == types.TransportTypeSSE || transportType == types.TransportTypeStdio {
-			suffix = sseSuffix
-			transportTypeStr = sseSuffix
-		} else {
-			suffix = "mcp"
-			transportTypeStr = "streamable-http"
-		}
-		inspectorURL := fmt.Sprintf(
-			"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s&MCP_PROXY_AUTH_TOKEN=%s",
-			inspectorUIPort, transportTypeStr, serverPort, suffix, authToken)
+		inspectorURL := buildInspectorURL(inspectorUIPort, proxyMode, serverPort, authToken)
 		slog.Info(fmt.Sprintf("Inspector UI is now available at %s", inspectorURL))
 
 		return nil
@@ -195,35 +184,30 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func getServerPortAndTransport(ctx context.Context, serverName string) (int, types.TransportType, error) {
-	// Instantiate the status manager and list all workloads.
+func getServerPortAndProxyMode(ctx context.Context, serverName string) (int, types.ProxyMode, error) {
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create status manager: %w", err)
+		return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("failed to create status manager: %w", err)
 	}
 
 	workloadList, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list workloads: %w", err)
+		return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	for _, c := range workloadList {
-		name := c.Name
-
-		if name == serverName {
-			// Get port from labels
+		if c.Name == serverName {
 			port := c.Port
 			if port <= 0 {
-				return 0, types.TransportTypeSSE, fmt.Errorf("server %s does not have a valid port", serverName)
+				return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("server %s does not have a valid port", serverName)
 			}
 
-			// now get the transport type from labels
-			transportType := c.TransportType
-			return port, transportType, nil
+			// Use ProxyMode which reflects how the proxy exposes the server.
+			return port, types.ProxyMode(c.ProxyMode), nil
 		}
 	}
 
-	return 0, types.TransportTypeSSE, fmt.Errorf("server with name %s not found", serverName)
+	return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("server with name %s not found", serverName)
 }
 
 func cleanupInspectorContainer(ctx context.Context, name string) error {
@@ -252,4 +236,16 @@ func cleanupInspectorContainer(ctx context.Context, name string) error {
 	}
 
 	return nil
+}
+
+// buildInspectorURL constructs the URL for the MCP Inspector UI, encoding the
+// transport mode, server address, and authentication token as query parameters.
+func buildInspectorURL(uiPort int, proxyMode types.ProxyMode, serverPort int, authToken string) string {
+	suffix := "mcp"
+	if proxyMode == types.ProxyModeSSE {
+		suffix = sseSuffix
+	}
+	return fmt.Sprintf(
+		"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s&MCP_PROXY_AUTH_TOKEN=%s",
+		uiPort, proxyMode, serverPort, suffix, authToken)
 }

@@ -91,7 +91,7 @@ func (o *oauthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 		return fmt.Errorf("failed to create oauth2 config: %w", err)
 	}
 
-	o.tokenSource = remote.CreateTokenSourceFromCached(oauth2Cfg, refreshToken, o.oauthCfg.CachedTokenExpiry)
+	o.tokenSource = remote.CreateTokenSourceFromCached(oauth2Cfg, refreshToken, o.oauthCfg.CachedTokenExpiry, "")
 	return nil
 }
 

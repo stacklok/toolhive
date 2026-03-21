@@ -18,7 +18,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+)
+
+const (
+	// configHashAnnotation is the annotation key for the MCPRegistry spec hash on the pod template.
+	// Changes to this hash trigger a pod rollout.
+	configHashAnnotation = "toolhive.stacklok.dev/config-hash"
+
+	// podTemplateSpecHashAnnotation is the annotation key for the user-provided PodTemplateSpec hash
+	// on the Deployment metadata. Used to detect PodTemplateSpec changes without comparing
+	// full rendered templates (which include Kubernetes-defaulted fields).
+	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
 )
 
 // CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
@@ -112,9 +125,35 @@ func (m *manager) ensureDeployment(
 		return nil, fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
 	}
 
-	// TODO: Implement deployment updates when needed (e.g., when config hash changes)
-	// For now, just return the existing deployment to avoid endless reconciliation loops
-	ctxLogger.Info("Deployment already exists, skipping update", "deployment", deploymentName)
+	// Check if the deployment needs to be updated
+	if !deploymentNeedsUpdate(existing, deployment) {
+		ctxLogger.V(1).Info("Deployment already up-to-date, skipping update", "deployment", deploymentName)
+		return existing, nil
+	}
+
+	// Selective field update: update Spec.Template and metadata, preserve Spec.Replicas for HPA
+	existing.Spec.Template = deployment.Spec.Template
+	existing.Labels = deployment.Labels
+
+	// Merge annotations to preserve Kubernetes-managed annotations (e.g., deployment.kubernetes.io/revision)
+	if existing.Annotations == nil {
+		existing.Annotations = make(map[string]string)
+	}
+	for k, v := range deployment.Annotations {
+		existing.Annotations[k] = v
+	}
+
+	// Ensure owner reference is set
+	if err := controllerutil.SetControllerReference(mcpRegistry, existing, m.scheme); err != nil {
+		return nil, fmt.Errorf("failed to set controller reference for existing deployment: %w", err)
+	}
+
+	if err := m.client.Update(ctx, existing); err != nil {
+		ctxLogger.Error(err, "Failed to update deployment")
+		return nil, fmt.Errorf("failed to update deployment %s: %w", deploymentName, err)
+	}
+
+	ctxLogger.Info("Successfully updated registry-api deployment", "deployment", deploymentName)
 	return existing, nil
 }
 
@@ -144,11 +183,14 @@ func (*manager) buildRegistryAPIDeployment(
 		}
 	}
 
+	// Compute config hash from the full MCPRegistry spec to detect any spec changes
+	configHash := ctrlutil.CalculateConfigHash(mcpRegistry.Spec)
+
 	// Build list of options for PodTemplateSpec
 	opts := []PodTemplateSpecOption{
 		WithLabels(labels),
 		WithAnnotations(map[string]string{
-			"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
+			configHashAnnotation: configHash,
 		}),
 		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
 		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
@@ -174,12 +216,22 @@ func (*manager) buildRegistryAPIDeployment(
 	builder := NewPodTemplateSpecBuilderFrom(userPTS)
 	podTemplateSpec := builder.Apply(opts...).Build()
 
+	// Build deployment-level annotations with PodTemplateSpec hash for change detection
+	deploymentAnnotations := make(map[string]string)
+	if mcpRegistry.HasPodTemplateSpec() && mcpRegistry.Spec.PodTemplateSpec.Raw != nil {
+		hash, err := checksum.HashRawJSON(mcpRegistry.Spec.PodTemplateSpec.Raw)
+		if err == nil {
+			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
+		}
+	}
+
 	// Create basic deployment specification with named container
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      deploymentName,
-			Namespace: mcpRegistry.Namespace,
-			Labels:    labels,
+			Name:        deploymentName,
+			Namespace:   mcpRegistry.Namespace,
+			Labels:      labels,
+			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &[]int32{DefaultReplicas}[0], // Single replica for registry API
@@ -194,6 +246,39 @@ func (*manager) buildRegistryAPIDeployment(
 	}
 
 	return deployment
+}
+
+// deploymentNeedsUpdate checks if the existing deployment differs from the desired one
+// by comparing hash annotations. This avoids endless reconciliation loops caused by
+// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.) that
+// would always differ when comparing full specs with reflect.DeepEqual.
+func deploymentNeedsUpdate(existing, desired *appsv1.Deployment) bool {
+	if existing == nil || desired == nil {
+		return true
+	}
+
+	// Check if the config hash (derived from MCPRegistry spec) has changed
+	existingConfigHash := existing.Spec.Template.Annotations[configHashAnnotation]
+	desiredConfigHash := desired.Spec.Template.Annotations[configHashAnnotation]
+	if existingConfigHash != desiredConfigHash {
+		return true
+	}
+
+	// Check if the user-provided PodTemplateSpec has changed
+	existingPTSHash := existing.Annotations[podTemplateSpecHashAnnotation]
+	desiredPTSHash := desired.Annotations[podTemplateSpecHashAnnotation]
+	if existingPTSHash != desiredPTSHash {
+		return true
+	}
+
+	// Check if the container image has changed (e.g., from TOOLHIVE_REGISTRY_API_IMAGE env override)
+	if len(existing.Spec.Template.Spec.Containers) > 0 && len(desired.Spec.Template.Spec.Containers) > 0 {
+		if existing.Spec.Template.Spec.Containers[0].Image != desired.Spec.Template.Spec.Containers[0].Image {
+			return true
+		}
+	}
+
+	return false
 }
 
 // getRegistryAPIImage returns the registry API container image to use

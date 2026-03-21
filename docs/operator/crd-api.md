@@ -530,6 +530,21 @@ _Appears in:_
 | `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload defines per-workload timeout overrides. |  | Optional: \{\} <br /> |
 
 
+#### vmcp.config.ToolAnnotationsOverride
+
+_Underlying type:_ _[vmcp.config.struct{Title *string "json:\"title,omitempty\" yaml:\"title,omitempty\""; ReadOnlyHint *bool "json:\"readOnlyHint,omitempty\" yaml:\"readOnlyHint,omitempty\""; DestructiveHint *bool "json:\"destructiveHint,omitempty\" yaml:\"destructiveHint,omitempty\""; IdempotentHint *bool "json:\"idempotentHint,omitempty\" yaml:\"idempotentHint,omitempty\""; OpenWorldHint *bool "json:\"openWorldHint,omitempty\" yaml:\"openWorldHint,omitempty\""}](#vmcpconfigstruct{title *string "json:\"title,omitempty\" yaml:\"title,omitempty\""; readonlyhint *bool "json:\"readonlyhint,omitempty\" yaml:\"readonlyhint,omitempty\""; destructivehint *bool "json:\"destructivehint,omitempty\" yaml:\"destructivehint,omitempty\""; idempotenthint *bool "json:\"idempotenthint,omitempty\" yaml:\"idempotenthint,omitempty\""; openworldhint *bool "json:\"openworldhint,omitempty\" yaml:\"openworldhint,omitempty\""})_
+
+ToolAnnotationsOverride defines overrides for tool annotation fields.
+All fields use pointers so nil means "don't override" while zero values
+(empty string, false) mean "explicitly set to this value."
+
+
+
+_Appears in:_
+- [vmcp.config.ToolOverride](#vmcpconfigtooloverride)
+
+
+
 #### vmcp.config.ToolConfigRef
 
 
@@ -551,7 +566,7 @@ _Appears in:_
 
 
 
-ToolOverride defines tool name and description overrides.
+ToolOverride defines tool name, description, and annotation overrides.
 
 
 
@@ -562,6 +577,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the new tool name (for renaming). |  | Optional: \{\} <br /> |
 | `description` _string_ | Description is the new tool description. |  | Optional: \{\} <br /> |
+| `annotations` _[vmcp.config.ToolAnnotationsOverride](#vmcpconfigtoolannotationsoverride)_ | Annotations overrides specific tool annotation fields.<br />Only specified fields are overridden; others pass through from the backend. |  | Optional: \{\} <br /> |
 
 
 
@@ -2810,6 +2826,28 @@ _Appears in:_
 | `expiresInPath` _string_ | ExpiresInPath is the dot-notation path to the expires_in value (in seconds).<br />If not specified, defaults to "expires_in". |  | Optional: \{\} <br /> |
 
 
+#### api.v1alpha1.ToolAnnotationsOverride
+
+
+
+ToolAnnotationsOverride defines overrides for tool annotation fields.
+All fields use pointers so nil means "don't override" while zero values
+(empty string, false) mean "explicitly set to this value."
+
+
+
+_Appears in:_
+- [api.v1alpha1.ToolOverride](#apiv1alpha1tooloverride)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `title` _string_ | Title overrides the human-readable title annotation. |  | Optional: \{\} <br /> |
+| `readOnlyHint` _boolean_ | ReadOnlyHint overrides the read-only hint annotation. |  | Optional: \{\} <br /> |
+| `destructiveHint` _boolean_ | DestructiveHint overrides the destructive hint annotation. |  | Optional: \{\} <br /> |
+| `idempotentHint` _boolean_ | IdempotentHint overrides the idempotent hint annotation. |  | Optional: \{\} <br /> |
+| `openWorldHint` _boolean_ | OpenWorldHint overrides the open-world hint annotation. |  | Optional: \{\} <br /> |
+
+
 #### api.v1alpha1.ToolConfigRef
 
 
@@ -2845,6 +2883,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the redefined name of the tool |  | Optional: \{\} <br /> |
 | `description` _string_ | Description is the redefined description of the tool |  | Optional: \{\} <br /> |
+| `annotations` _[api.v1alpha1.ToolAnnotationsOverride](#apiv1alpha1toolannotationsoverride)_ | Annotations overrides specific tool annotation fields.<br />Only specified fields are overridden; others pass through from the backend. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.UpstreamProviderConfig

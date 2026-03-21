@@ -59,8 +59,8 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 					}, nil)
 			},
 			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-1", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, tokens *storage.UpstreamTokens) error {
+				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-1", "github", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _, _ string, tokens *storage.UpstreamTokens) error {
 						// Verify binding fields are preserved from expired tokens
 						assert.Equal(t, "github", tokens.ProviderID)
 						assert.Equal(t, "user-123", tokens.UserID)
@@ -101,8 +101,8 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 					}, nil)
 			},
 			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-2", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, tokens *storage.UpstreamTokens) error {
+				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-2", "github", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _, _ string, tokens *storage.UpstreamTokens) error {
 						assert.Equal(t, "old-refresh", tokens.RefreshToken)
 						return nil
 					})
@@ -164,7 +164,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 					}, nil)
 			},
 			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-6", gomock.Any()).
+				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-6", "github", gomock.Any()).
 					Return(errors.New("redis connection lost"))
 			},
 			checkResult: func(t *testing.T, result *storage.UpstreamTokens) {

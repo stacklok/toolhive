@@ -878,9 +878,20 @@ func toolOverride(name, desc string) mcpv1alpha1.ToolOverride {
 	return mcpv1alpha1.ToolOverride{Name: name, Description: desc}
 }
 
+func toolOverrideWithAnnotations(name, desc string, ann *mcpv1alpha1.ToolAnnotationsOverride) mcpv1alpha1.ToolOverride {
+	return mcpv1alpha1.ToolOverride{Name: name, Description: desc, Annotations: ann}
+}
+
 func vmcpToolOverride(name, desc string) *vmcpconfig.ToolOverride {
 	return &vmcpconfig.ToolOverride{Name: name, Description: desc}
 }
+
+func vmcpToolOverrideWithAnnotations(name, desc string, ann *vmcpconfig.ToolAnnotationsOverride) *vmcpconfig.ToolOverride {
+	return &vmcpconfig.ToolOverride{Name: name, Description: desc, Annotations: ann}
+}
+
+func stringPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool       { return &b }
 
 func TestResolveMCPToolConfig(t *testing.T) {
 	t.Parallel()
@@ -1021,6 +1032,32 @@ func TestMergeToolConfigOverrides(t *testing.T) {
 			config:   newMCPToolConfig("", "", nil, nil),
 			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
 		},
+		{
+			name:     "merge preserves annotation overrides from CRD",
+			existing: nil,
+			config: newMCPToolConfig("", "", nil, map[string]mcpv1alpha1.ToolOverride{
+				"tool1": toolOverrideWithAnnotations("renamed", "desc", &mcpv1alpha1.ToolAnnotationsOverride{
+					Title:        stringPtr("Custom Title"),
+					ReadOnlyHint: boolPtr(true),
+				}),
+			}),
+			expected: map[string]*vmcpconfig.ToolOverride{
+				"tool1": vmcpToolOverrideWithAnnotations("renamed", "desc", &vmcpconfig.ToolAnnotationsOverride{
+					Title:        stringPtr("Custom Title"),
+					ReadOnlyHint: boolPtr(true),
+				}),
+			},
+		},
+		{
+			name:     "merge preserves nil annotations",
+			existing: nil,
+			config: newMCPToolConfig("", "", nil, map[string]mcpv1alpha1.ToolOverride{
+				"tool1": toolOverride("renamed", "desc"),
+			}),
+			expected: map[string]*vmcpconfig.ToolOverride{
+				"tool1": vmcpToolOverride("renamed", "desc"),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1031,6 +1068,55 @@ func TestMergeToolConfigOverrides(t *testing.T) {
 			(&Converter{}).mergeToolConfigOverrides(wtc, tt.config)
 
 			assert.Equal(t, tt.expected, wtc.Overrides)
+		})
+	}
+}
+
+func TestConvertCRDToolOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    mcpv1alpha1.ToolOverride
+		expected *vmcpconfig.ToolOverride
+	}{
+		{
+			name:     "name and description only",
+			input:    toolOverride("renamed", "new desc"),
+			expected: vmcpToolOverride("renamed", "new desc"),
+		},
+		{
+			name: "all annotation fields converted",
+			input: toolOverrideWithAnnotations("renamed", "desc", &mcpv1alpha1.ToolAnnotationsOverride{
+				Title:           stringPtr("My Title"),
+				ReadOnlyHint:    boolPtr(true),
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  boolPtr(true),
+				OpenWorldHint:   boolPtr(false),
+			}),
+			expected: vmcpToolOverrideWithAnnotations("renamed", "desc", &vmcpconfig.ToolAnnotationsOverride{
+				Title:           stringPtr("My Title"),
+				ReadOnlyHint:    boolPtr(true),
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  boolPtr(true),
+				OpenWorldHint:   boolPtr(false),
+			}),
+		},
+		{
+			name:  "title annotation only",
+			input: toolOverrideWithAnnotations("renamed", "desc", &mcpv1alpha1.ToolAnnotationsOverride{Title: stringPtr("Just Title")}),
+			expected: vmcpToolOverrideWithAnnotations("renamed", "desc", &vmcpconfig.ToolAnnotationsOverride{
+				Title: stringPtr("Just Title"),
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := convertCRDToolOverride(&tt.input)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

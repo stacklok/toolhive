@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 )
 
 // TokenPersister is a callback function that persists OAuth refresh tokens.
@@ -89,10 +91,12 @@ func (p *PersistingTokenSource) Token() (*oauth2.Token, error) {
 // CreateTokenSourceFromCached creates an oauth2.TokenSource from a cached refresh token.
 // The returned token source will immediately refresh to get a new access token,
 // then automatically refresh when it expires.
+// If resource is non-empty, it is included in all refresh requests per RFC 8707.
 func CreateTokenSourceFromCached(
 	config *oauth2.Config,
 	refreshToken string,
 	expiry time.Time,
+	resource string,
 ) oauth2.TokenSource {
 	// Create a token with only the refresh token.
 	// The access token is intentionally empty - ReuseTokenSource will detect
@@ -105,6 +109,13 @@ func CreateTokenSourceFromCached(
 		TokenType:    "Bearer",
 	}
 
-	// ReuseTokenSource will automatically refresh the token when it expires
-	return oauth2.ReuseTokenSource(token, config.TokenSource(context.TODO(), token))
+	// Use resource-aware token source if configured (RFC 8707)
+	var base oauth2.TokenSource
+	if resource != "" {
+		base = oauth.NewResourceTokenSource(config, token, resource)
+	} else {
+		base = config.TokenSource(context.TODO(), token)
+	}
+
+	return oauth2.ReuseTokenSource(token, base)
 }

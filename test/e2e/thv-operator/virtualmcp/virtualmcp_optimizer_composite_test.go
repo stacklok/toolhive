@@ -20,10 +20,15 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-// This test exercises composite tool execution through the optimizer's call_tool.
-// Without the fix in injectOptimizerCapabilities, composite tools are registered
-// with backend routing handlers (ToSDKTools) instead of workflow execution handlers
-// (ToCompositeToolSDKTools), causing call_tool to fail with ErrToolNotFound.
+// This test exercises composite tool discovery and execution through the
+// optimizer's find_tool / call_tool interface.
+//
+// Composite tools are registered as session decorators (compositetools.Decorator)
+// before the optimizer decorator is applied, so the optimizer indexes them
+// alongside backend tools.  Workflow steps reference backend tools via the
+// "{workloadID}.{originalCapabilityName}" dot convention, which the session
+// router resolves to the correct conflict-resolved routing table entry
+// regardless of which conflict resolution strategy is in use.
 //
 // A lightweight fake embedding server replaces the heavyweight TEI image to keep
 // test setup fast while satisfying the optimizer's embedding service requirement.
@@ -65,6 +70,14 @@ var _ = Describe("VirtualMCPServer Optimizer Composite Tools", Ordered, func() {
 			"url": "{{.params.url}}",
 		}
 
+		// Workflow steps use the "{workloadID}.{originalCapabilityName}" dot
+		// convention so that the session router can resolve them regardless of
+		// conflict resolution strategy.  backendFetchToolName ("fetch") is the
+		// name the gofetch backend exposes; the aggregation override renames it
+		// to vmcpFetchToolName for clients, but the step references the
+		// original backend capability name via the dot convention.
+		fetchStepTool := backendName + "." + backendFetchToolName // "backend-opt-composite.fetch"
+
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
@@ -103,13 +116,13 @@ var _ = Describe("VirtualMCPServer Optimizer Composite Tools", Ordered, func() {
 								{
 									ID:        "first_fetch",
 									Type:      "tool",
-									Tool:      vmcpFetchToolName,
+									Tool:      fetchStepTool,
 									Arguments: thvjson.NewMap(stepArgs),
 								},
 								{
 									ID:        "second_fetch",
 									Type:      "tool",
-									Tool:      vmcpFetchToolName,
+									Tool:      fetchStepTool,
 									DependsOn: []string{"first_fetch"},
 									Arguments: thvjson.NewMap(stepArgs),
 								},

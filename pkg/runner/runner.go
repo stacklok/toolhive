@@ -759,8 +759,11 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 			clientID, clientSecret string,
 			secretExpiry time.Time,
 			regAccessToken, regClientURI string,
+			tokenEndpointAuthMethod string,
 		) error {
-			return r.persistClientCredentials(ctx, secretManager, clientID, clientSecret, secretExpiry, regAccessToken, regClientURI)
+			return r.persistClientCredentials(
+				ctx, secretManager, clientID, clientSecret,
+				secretExpiry, regAccessToken, regClientURI, tokenEndpointAuthMethod)
 		})
 	}
 
@@ -809,6 +812,7 @@ func (r *Runner) persistClientCredentials(
 	clientID, clientSecret string,
 	secretExpiry time.Time,
 	regAccessToken, regClientURI string,
+	tokenEndpointAuthMethod string,
 ) error {
 	r.Config.RemoteAuthConfig.CachedClientID = clientID
 
@@ -844,6 +848,7 @@ func (r *Runner) persistClientCredentials(
 	}
 
 	r.Config.RemoteAuthConfig.CachedRegClientURI = regClientURI
+	r.Config.RemoteAuthConfig.CachedTokenEndpointAuthMethod = tokenEndpointAuthMethod
 
 	if err := r.Config.SaveState(ctx); err != nil {
 		return fmt.Errorf("failed to save config with client credentials: %w", err)

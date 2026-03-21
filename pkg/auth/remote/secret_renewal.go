@@ -98,7 +98,7 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 		RedirectURIs:            []string{fmt.Sprintf("http://localhost:%d/callback", h.config.CallbackPort)},
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
-		TokenEndpointAuthMethod: "none",
+		TokenEndpointAuthMethod: h.config.CachedTokenEndpointAuthMethod,
 	}
 
 	reqBody, err := json.Marshal(updateReq)
@@ -198,6 +198,7 @@ func (h *Handler) persistRenewedSecret(updateResp clientUpdateResponse) error {
 		newExpiry,
 		newRegToken,
 		newRegURI,
+		h.config.CachedTokenEndpointAuthMethod,
 	); err != nil {
 		return fmt.Errorf("failed to persist renewed client secret: %w", err)
 	}

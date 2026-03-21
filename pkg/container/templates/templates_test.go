@@ -392,6 +392,133 @@ func TestGetDockerfileTemplate(t *testing.T) {
 	}
 }
 
+func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		transportType TransportType
+		runtimeConfig *RuntimeConfig
+		wantInRuntime string // string that must appear AFTER the second FROM
+	}{
+		{
+			name:          "NPX runtime stage installs extra packages",
+			transportType: TransportTypeNPX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "node:22-alpine",
+				AdditionalPackages: []string{"git", "ca-certificates", "curl"},
+			},
+			wantInRuntime: "curl",
+		},
+		{
+			name:          "UVX runtime stage installs extra packages",
+			transportType: TransportTypeUVX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "python:3.13-slim",
+				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
+			},
+			wantInRuntime: "curl",
+		},
+		{
+			name:          "GO runtime stage installs extra packages",
+			transportType: TransportTypeGO,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "golang:1.25-alpine",
+				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
+			},
+			wantInRuntime: "curl",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := TemplateData{
+				MCPPackage:    "test-package",
+				RuntimeConfig: tt.runtimeConfig,
+			}
+
+			result, err := GetDockerfileTemplate(tt.transportType, data)
+			if err != nil {
+				t.Fatalf("GetDockerfileTemplate() error = %v", err)
+			}
+
+			// Find the runtime stage (second FROM) and check that
+			// AdditionalPackages appear there, not just in the builder.
+			parts := strings.SplitN(result, "\nFROM ", 2)
+			if len(parts) < 2 {
+				t.Fatal("Dockerfile does not contain a second FROM (runtime stage)")
+			}
+			runtimeStage := parts[1]
+
+			if !strings.Contains(runtimeStage, tt.wantInRuntime) {
+				t.Errorf("runtime stage does not install %q.\nRuntime stage:\n%s", tt.wantInRuntime, runtimeStage)
+			}
+		})
+	}
+}
+
+func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		transportType TransportType
+		runtimeConfig *RuntimeConfig
+	}{
+		{
+			name:          "NPX with empty packages",
+			transportType: TransportTypeNPX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "node:22-alpine",
+				AdditionalPackages: []string{},
+			},
+		},
+		{
+			name:          "GO with empty packages",
+			transportType: TransportTypeGO,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "golang:1.25-alpine",
+				AdditionalPackages: []string{},
+			},
+		},
+		{
+			name:          "UVX with empty packages",
+			transportType: TransportTypeUVX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "python:3.13-slim",
+				AdditionalPackages: []string{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := TemplateData{
+				MCPPackage:    "test-package",
+				RuntimeConfig: tt.runtimeConfig,
+			}
+
+			result, err := GetDockerfileTemplate(tt.transportType, data)
+			if err != nil {
+				t.Fatalf("GetDockerfileTemplate() error = %v", err)
+			}
+
+			// After "apk add --no-cache" or "apt-get install -y --no-install-recommends"
+			// there must be at least one package name (a word starting with [a-z]).
+			// If the next non-whitespace character isn't a letter, no packages were rendered.
+			noPackageAfterApk := regexp.MustCompile(`apk add --no-cache\s*([^a-z]|$)`)
+			noPackageAfterApt := regexp.MustCompile(`--no-install-recommends\s*([^a-z]|$)`)
+			if noPackageAfterApk.MatchString(result) || noPackageAfterApt.MatchString(result) {
+				t.Errorf("Dockerfile contains package install command with no packages.\nFull Dockerfile:\n%s", result)
+			}
+		})
+	}
+}
+
 func TestParseTransportType(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

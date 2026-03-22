@@ -527,3 +527,61 @@ func TestDefaultElicitationHandler_SDKErrorHandling(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowEngine_ElicitationMessageTemplateExpansion(t *testing.T) {
+	t.Parallel()
+
+	te := newTestEngine(t)
+	mockSDK := mocks.NewMockSDKElicitationRequester(te.Ctrl)
+
+	// Capture the elicitation request to verify the message was expanded
+	var capturedReq mcp.ElicitationRequest
+	mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, req mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
+			capturedReq = req
+			return &mcp.ElicitationResult{
+				ElicitationResponse: mcp.ElicitationResponse{
+					Action:  mcp.ElicitationResponseActionAccept,
+					Content: map[string]any{"confirmed": true},
+				},
+			}, nil
+		},
+	)
+
+	handler := NewDefaultElicitationHandler(mockSDK)
+	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
+	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore, nil, nil)
+
+	workflow := &WorkflowDefinition{
+		Name: "template-elicit",
+		Steps: []WorkflowStep{
+			{
+				ID:   "ask",
+				Type: StepTypeElicitation,
+				Elicitation: &ElicitationConfig{
+					Message: "Deploy {{.params.repo}} to {{.params.env}}?",
+					Schema: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"confirmed": map[string]any{"type": "boolean"},
+						},
+					},
+					Timeout: 1 * time.Minute,
+				},
+			},
+		},
+	}
+
+	params := map[string]any{
+		"repo": "acme/widget",
+		"env":  "production",
+	}
+
+	result, err := engine.ExecuteWorkflow(context.Background(), workflow, params)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Verify that template placeholders were expanded in the message
+	assert.Equal(t, "Deploy acme/widget to production?", capturedReq.Params.Message,
+		"elicitation message should have template expressions expanded")
+}

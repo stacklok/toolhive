@@ -634,6 +634,21 @@ func (e *workflowEngine) executeElicitationStep(
 		return err
 	}
 
+	// Expand template expressions in elicitation message (e.g. {{.params.owner}})
+	if step.Elicitation.Message != "" {
+		wrapper := map[string]any{"message": step.Elicitation.Message}
+		expanded, expandErr := e.templateExpander.Expand(ctx, wrapper, workflowCtx)
+		if expandErr != nil {
+			err := fmt.Errorf("%w: failed to expand elicitation message for step %s: %v",
+				ErrTemplateExpansion, step.ID, expandErr)
+			workflowCtx.RecordStepFailure(step.ID, err)
+			return err
+		}
+		if msg, ok := expanded["message"].(string); ok {
+			step.Elicitation.Message = msg
+		}
+	}
+
 	// Request elicitation (synchronous - blocks until response or timeout)
 	// Per MCP 2025-06-18: SDK handles JSON-RPC ID correlation internally
 	response, err := e.elicitationHandler.RequestElicitation(ctx, workflowCtx.WorkflowID, step.ID, step.Elicitation)

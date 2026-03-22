@@ -32,6 +32,9 @@ func loadRunConfigFields(ctx context.Context, name string) (*minimalRunConfig, e
 		var config minimalRunConfig
 		decoder := json.NewDecoder(r)
 		if err := decoder.Decode(&config); err != nil {
+			if errors.Is(err, io.EOF) {
+				return &config, nil
+			}
 			return nil, err
 		}
 		return &config, nil

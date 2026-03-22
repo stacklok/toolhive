@@ -6,11 +6,12 @@ package state
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 
-	"github.com/stacklok/toolhive/pkg/workloads/types/errors"
+	werr "github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // LoadRunConfigJSON loads a run configuration from the state store and returns the raw reader
@@ -27,7 +28,7 @@ func LoadRunConfigJSON(ctx context.Context, name string) (io.ReadCloser, error) 
 		return nil, fmt.Errorf("failed to check if run configuration exists: %w", err)
 	}
 	if !exists {
-		return nil, fmt.Errorf("%w: %s", errors.ErrRunConfigNotFound, name)
+		return nil, fmt.Errorf("%w: %s", werr.ErrRunConfigNotFound, name)
 	}
 
 	// Get a reader for the state
@@ -127,6 +128,9 @@ func ReadRunConfigJSON[T any](r io.Reader) (*T, error) {
 	var config T
 	decoder := json.NewDecoder(r)
 	if err := decoder.Decode(&config); err != nil {
+		if errors.Is(err, io.EOF) {
+			return &config, nil
+		}
 		return nil, err
 	}
 	return &config, nil

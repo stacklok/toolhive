@@ -1050,6 +1050,13 @@ components:
           type: boolean
         upstream_swap_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config'
+        validating_webhooks:
+          description: ValidatingWebhooks contains the configuration for validating
+            webhook middleware.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config'
+          type: array
+          uniqueItems: false
         volumes:
           description: |-
             Volumes are the directory mounts to pass to the container
@@ -1309,6 +1316,55 @@ components:
             Currently defaults to true; this will change to false in a future release.
             +kubebuilder:default=true
             +optional
+          type: boolean
+      type: object
+    github_com_stacklok_toolhive_pkg_webhook.Config:
+      properties:
+        failure_policy:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.FailurePolicy'
+        hmac_secret_ref:
+          description: HMACSecretRef is an optional reference to an HMAC secret for
+            payload signing.
+          type: string
+        name:
+          description: Name is a unique identifier for this webhook.
+          type: string
+        timeout:
+          description: Timeout is the maximum time to wait for a webhook response.
+          type: integer
+        tls_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.TLSConfig'
+        url:
+          description: URL is the HTTPS endpoint to call.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_webhook.FailurePolicy:
+      description: FailurePolicy determines behavior when the webhook call fails.
+      enum:
+      - fail
+      - ignore
+      type: string
+      x-enum-varnames:
+      - FailurePolicyFail
+      - FailurePolicyIgnore
+    github_com_stacklok_toolhive_pkg_webhook.TLSConfig:
+      description: TLSConfig holds optional TLS configuration (CA bundles, client
+        certs).
+      properties:
+        ca_bundle_path:
+          description: CABundlePath is the path to a CA certificate bundle for server
+            verification.
+          type: string
+        client_cert_path:
+          description: ClientCertPath is the path to a client certificate for mTLS.
+          type: string
+        client_key_path:
+          description: ClientKeyPath is the path to a client key for mTLS.
+          type: string
+        insecure_skip_verify:
+          description: |-
+            InsecureSkipVerify disables server certificate verification.
+            WARNING: This should only be used for development/testing.
           type: boolean
       type: object
     ignore.Config:

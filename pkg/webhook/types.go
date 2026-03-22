@@ -62,17 +62,17 @@ type TLSConfig struct {
 // Config holds the configuration for a single webhook.
 type Config struct {
 	// Name is a unique identifier for this webhook.
-	Name string `json:"name"`
+	Name string `json:"name" yaml:"name"`
 	// URL is the HTTPS endpoint to call.
-	URL string `json:"url"`
+	URL string `json:"url" yaml:"url"`
 	// Timeout is the maximum time to wait for a webhook response.
-	Timeout time.Duration `json:"timeout"`
+	Timeout time.Duration `json:"timeout" yaml:"timeout" swaggertype:"primitive,integer"`
 	// FailurePolicy determines behavior when the webhook call fails.
-	FailurePolicy FailurePolicy `json:"failure_policy"`
+	FailurePolicy FailurePolicy `json:"failure_policy" yaml:"failure_policy"`
 	// TLSConfig holds optional TLS configuration (CA bundles, client certs).
-	TLSConfig *TLSConfig `json:"tls_config,omitempty"`
+	TLSConfig *TLSConfig `json:"tls_config,omitempty" yaml:"tls_config,omitempty"`
 	// HMACSecretRef is an optional reference to an HMAC secret for payload signing.
-	HMACSecretRef string `json:"hmac_secret_ref,omitempty"`
+	HMACSecretRef string `json:"hmac_secret_ref,omitempty" yaml:"hmac_secret_ref,omitempty"`
 }
 
 // Validate checks that the WebhookConfig has valid required fields.

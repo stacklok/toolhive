@@ -282,11 +282,13 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		}
 	}
 
-	// Create token source from cached refresh token
+	// Create token source from cached refresh token.
+	// Passes resource for RFC 8707 compliance when configured.
 	baseSource := CreateTokenSourceFromCached(
 		oauth2Config,
 		refreshToken,
 		h.config.CachedTokenExpiry,
+		h.config.Resource,
 	)
 
 	// Try to get a token to verify the cached tokens are valid

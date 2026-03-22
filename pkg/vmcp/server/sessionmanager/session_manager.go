@@ -70,18 +70,57 @@ type Manager struct {
 	backendRegistry vmcp.BackendRegistry
 }
 
-// New creates a Manager backed by the given transport manager, session factory,
-// and backend registry.
+// New creates a Manager backed by the given transport manager and backend
+// registry. It builds the decorating session factory from cfg, wiring the
+// optimizer and composite tool layers internally.
+//
+// The returned cleanup function releases any resources allocated during
+// construction (e.g. the optimizer's SQLite store). Callers must invoke it
+// on shutdown. If no cleanup is needed, a no-op function is returned.
 func New(
 	storage *transportsession.Manager,
-	factory vmcpsession.MultiSessionFactory,
+	cfg *FactoryConfig,
 	backendRegistry vmcp.BackendRegistry,
-) *Manager {
-	return &Manager{
+) (*Manager, func(context.Context) error, error) {
+	if cfg == nil || cfg.Base == nil {
+		return nil, nil, fmt.Errorf("sessionmanager.New: FactoryConfig.Base (SessionFactory) is required")
+	}
+	if len(cfg.WorkflowDefs) > 0 && cfg.ComposerFactory == nil {
+		return nil, nil, fmt.Errorf("sessionmanager.New: ComposerFactory is required when WorkflowDefs are provided")
+	}
+
+	// Resolve optimizer factory from config, applying telemetry wrapping if needed.
+	optimizerFactory, optimizerCleanup, err := resolveOptimizer(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Pre-create workflow telemetry instruments once so they are reused across
+	// all per-session executor wrappers without re-registering metrics.
+	var instruments *workflowExecutorInstruments
+	if cfg.TelemetryProvider != nil && len(cfg.WorkflowDefs) > 0 {
+		instruments, err = newWorkflowExecutorInstruments(
+			cfg.TelemetryProvider.MeterProvider(),
+			cfg.TelemetryProvider.TracerProvider(),
+		)
+		if err != nil {
+			if cleanupErr := optimizerCleanup(context.Background()); cleanupErr != nil {
+				slog.Warn("failed to clean up optimizer after instrument creation error", "error", cleanupErr)
+			}
+			return nil, nil, fmt.Errorf("failed to create workflow executor telemetry: %w", err)
+		}
+	}
+
+	// Build the Manager first so we can reference sm.Terminate directly in the
+	// factory closures, eliminating the forward-reference variable pattern.
+	sm := &Manager{
 		storage:         storage,
-		factory:         factory,
 		backendRegistry: backendRegistry,
 	}
+
+	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, instruments, sm.Terminate)
+
+	return sm, optimizerCleanup, nil
 }
 
 // Generate implements the SDK's SessionIdManager.Generate().
@@ -322,6 +361,41 @@ func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, 
 	return multiSess, ok
 }
 
+// DecorateSession retrieves the MultiSession for sessionID, applies fn to it,
+// and stores the result back. Returns an error if the session is not found or
+// has not yet been upgraded from placeholder to MultiSession.
+//
+// A re-check is performed immediately before UpsertSession to guard against a
+// race with Terminate(): if the session is deleted between GetMultiSession and
+// UpsertSession, the upsert would silently resurrect a terminated session. The
+// re-check catches that window. A narrow TOCTOU gap remains between the
+// re-check and the upsert, but its consequence is bounded: Terminate() already
+// called Close() on the underlying MultiSession before deleting it, so any
+// resurrected decorator wraps an already-closed session and will fail on first
+// use rather than leaking backend connections.
+func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiSession) sessiontypes.MultiSession) error {
+	sess, ok := sm.GetMultiSession(sessionID)
+	if !ok {
+		return fmt.Errorf("DecorateSession: session %q not found or not a multi-session", sessionID)
+	}
+	decorated := fn(sess)
+	if decorated == nil {
+		return fmt.Errorf("DecorateSession: decorator returned nil session")
+	}
+	if decorated.ID() != sessionID {
+		return fmt.Errorf("DecorateSession: decorator changed session ID from %q to %q", sessionID, decorated.ID())
+	}
+	// Re-check: guard against a race with Terminate() deleting the session
+	// between GetMultiSession (above) and UpsertSession (below).
+	if _, ok := sm.GetMultiSession(sessionID); !ok {
+		return fmt.Errorf("DecorateSession: session %q was terminated during decoration", sessionID)
+	}
+	if err := sm.storage.UpsertSession(decorated); err != nil {
+		return fmt.Errorf("DecorateSession: failed to store decorated session: %w", err)
+	}
+	return nil
+}
+
 // GetAdaptedTools returns SDK-format tools for the given session, with handlers
 // that delegate tool invocations directly to the session's CallTool() method.
 //
@@ -352,6 +426,16 @@ func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, er
 			Name:           domainTool.Name,
 			Description:    domainTool.Description,
 			RawInputSchema: schemaJSON,
+			Annotations:    conversion.ToMCPToolAnnotations(domainTool.Annotations),
+		}
+		if domainTool.OutputSchema != nil {
+			outputSchemaJSON, marshalErr := json.Marshal(domainTool.OutputSchema)
+			if marshalErr != nil {
+				slog.Warn("failed to marshal tool output schema",
+					"tool", domainTool.Name, "error", marshalErr)
+			} else {
+				tool.RawOutputSchema = outputSchemaJSON
+			}
 		}
 
 		capturedSess := multiSess

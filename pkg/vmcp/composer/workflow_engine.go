@@ -17,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 )
@@ -46,6 +45,10 @@ type workflowEngine struct {
 	// backendClient makes calls to backend MCP servers.
 	backendClient vmcp.BackendClient
 
+	// tools is the resolved tool list for the session, used by getToolInputSchema
+	// for argument type coercion. Nil means no schema-based coercion (discovery-based routing).
+	tools []vmcp.Tool
+
 	// templateExpander handles template expansion.
 	templateExpander TemplateExpander
 
@@ -67,12 +70,12 @@ type workflowEngine struct {
 
 // NewWorkflowEngine creates a new workflow execution engine.
 //
-// The elicitationHandler parameter is optional. If nil, elicitation steps will fail.
-// This allows the engine to be used without elicitation support for simple workflows.
+// tools is the resolved tool list for schema-based argument type coercion. Pass nil
+// when the engine is used for validation or discovery-based routing only.
 //
+// The elicitationHandler parameter is optional. If nil, elicitation steps will fail.
 // The stateStore parameter is optional. If nil, workflow status tracking and cancellation
 // will not be available. Use NewInMemoryStateStore() for basic state tracking.
-//
 // The auditor parameter is optional. If nil, workflow execution will not be audited.
 func NewWorkflowEngine(
 	rtr router.Router,
@@ -80,6 +83,7 @@ func NewWorkflowEngine(
 	elicitationHandler ElicitationProtocolHandler,
 	stateStore WorkflowStateStore,
 	auditor *audit.WorkflowAuditor,
+	tools []vmcp.Tool,
 ) Composer {
 	return &workflowEngine{
 		router:             rtr,
@@ -90,6 +94,7 @@ func NewWorkflowEngine(
 		dagExecutor:        newDAGExecutor(defaultMaxParallelSteps),
 		stateStore:         stateStore,
 		auditor:            auditor,
+		tools:              tools,
 	}
 }
 
@@ -1223,20 +1228,19 @@ func (e *workflowEngine) auditStepSkipped(
 	}
 }
 
-// getToolInputSchema looks up a tool's InputSchema from discovered capabilities.
-// Returns nil if the tool is not found or capabilities are not in context.
-func (*workflowEngine) getToolInputSchema(ctx context.Context, toolName string) map[string]any {
-	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-	if !ok || caps == nil {
-		return nil
+// getToolInputSchema looks up a tool's InputSchema from the session-bound tools
+// list. If toolName uses the dot convention "{workloadID}.{originalCapabilityName}",
+// ResolveToolName is called to translate it to the conflict-resolved key before
+// lookup. Returns nil if the engine has no tools list or the tool is not found.
+func (e *workflowEngine) getToolInputSchema(ctx context.Context, toolName string) map[string]any {
+	resolved := toolName
+	if e.router != nil {
+		resolved = e.router.ResolveToolName(ctx, toolName)
 	}
-
-	// Search in backend tools
-	for i := range caps.Tools {
-		if caps.Tools[i].Name == toolName {
-			return caps.Tools[i].InputSchema
+	for i := range e.tools {
+		if e.tools[i].Name == resolved {
+			return e.tools[i].InputSchema
 		}
 	}
-
 	return nil
 }

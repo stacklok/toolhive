@@ -145,6 +145,17 @@ jobs:
           mkdir -p build
           tar -czf build/thv-cli-docs.tar.gz -C docs/cli .
 
+      - name: Remove existing release assets (allows re-runs)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete existing assets so GoReleaser can re-upload when re-running a failed job
+          set +e
+          for name in $(gh release view "${{ github.ref_name }}" --json assets --jq '.assets[].name' 2>/dev/null); do
+            gh release delete-asset "${{ github.ref_name }}" "$name" -y 2>/dev/null || true
+          done
+          set -e
+
       - name: Run GoReleaser
         id: run-goreleaser
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7

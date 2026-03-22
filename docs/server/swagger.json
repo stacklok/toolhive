@@ -336,6 +336,10 @@
                     "header_strategy": {
                         "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
                         "type": "string"
+                    },
+                    "provider_name": {
+                        "description": "ProviderName identifies which upstream provider's tokens to retrieve for injection.\nThis is required and must match a configured upstream provider name.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -850,6 +854,28 @@
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig": {
+                "description": "AuthConfig contains the non-secret OAuth configuration when auth is configured.\nNil when auth_status is \"none\".",
+                "properties": {
+                    "audience": {
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_runner.HeaderForwardConfig": {
                 "description": "HeaderForward contains configuration for injecting headers into requests to remote servers.",
                 "properties": {
@@ -1005,6 +1031,9 @@
                     "runtime_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
+                    "scaling_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig"
+                    },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema",
                         "type": "string"
@@ -1074,6 +1103,20 @@
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.ScalingConfig": {
+                "description": "ScalingConfig contains configuration for horizontal scaling of the proxy runner.\nOnly applicable when running in Kubernetes with the ToolHive operator.\nWhen nil, no scaling configuration is applied (single-replica default behavior).",
+                "properties": {
+                    "backend_replicas": {
+                        "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
+                        "type": "integer"
+                    },
+                    "session_cache_size": {
+                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nWhen nil, consuming code applies a sensible default (e.g. 1000).",
+                        "type": "integer"
                     }
                 },
                 "type": "object"
@@ -1455,6 +1498,32 @@
                     "RegistryTypeDefault"
                 ]
             },
+            "pkg_api_v1.UpdateRegistryAuthRequest": {
+                "description": "OAuth authentication configuration (optional)",
+                "properties": {
+                    "audience": {
+                        "description": "OAuth audience (optional)",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "OAuth client ID",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "OIDC issuer URL",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "OAuth scopes (optional)",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.UpdateRegistryRequest": {
                 "description": "Request containing registry configuration updates",
                 "properties": {
@@ -1465,6 +1534,9 @@
                     "api_url": {
                         "description": "MCP Registry API URL",
                         "type": "string"
+                    },
+                    "auth": {
+                        "$ref": "#/components/schemas/pkg_api_v1.UpdateRegistryAuthRequest"
                     },
                     "local_path": {
                         "description": "Local registry file path",
@@ -1765,6 +1837,17 @@
             "pkg_api_v1.getRegistryResponse": {
                 "description": "Response containing registry details",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty — see registryInfo for rationale.",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty — see registryInfo for rationale.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"
@@ -2015,6 +2098,17 @@
             "pkg_api_v1.registryInfo": {
                 "description": "Basic information about a registry",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty so clients always receive the field,\neven when the value is \"none\" (the zero-value equivalent).",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty so clients can distinguish \"no auth\nconfigured\" (empty string) from \"field missing\" without extra logic.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"
@@ -3468,6 +3562,94 @@
                     }
                 },
                 "summary": "Add a registry",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
+        "/api/v1beta/registry/auth/login": {
+            "post": {
+                "description": "Trigger an interactive OAuth flow to authenticate with the configured registry. Only available in serve mode.",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Authenticated successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request - Registry OAuth not configured"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Registry login",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
+        "/api/v1beta/registry/auth/logout": {
+            "post": {
+                "description": "Clear cached OAuth tokens for the configured registry. Only available in serve mode.",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Logged out successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request - Registry OAuth not configured"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Registry logout",
                 "tags": [
                     "registry"
                 ]

@@ -69,7 +69,7 @@ func TestMetaPreservation_CallTool(t *testing.T) {
 	// Verify content is also correct
 	assert.NotNil(t, result.Content)
 	assert.Len(t, result.Content, 1)
-	assert.Equal(t, "text", result.Content[0].Type)
+	assert.Equal(t, vmcp.ContentTypeText, result.Content[0].Type)
 	assert.Equal(t, "Response from test tool", result.Content[0].Text)
 }
 
@@ -111,7 +111,7 @@ func TestMetaPreservation_CallTool_NoMeta(t *testing.T) {
 	// Verify content is still correct
 	assert.NotNil(t, result.Content)
 	assert.Len(t, result.Content, 1)
-	assert.Equal(t, "text", result.Content[0].Type)
+	assert.Equal(t, vmcp.ContentTypeText, result.Content[0].Type)
 }
 
 // TestMetaPreservation_CallTool_Error tests that _meta fields are preserved even when tool returns IsError=true.

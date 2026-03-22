@@ -205,6 +205,30 @@ func TestIntegration_RealBackend_ToolCall(t *testing.T) {
 	assert.Equal(t, "hello from backend", rpc.Result.Content[0].Text)
 }
 
+// TestIntegration_NonSSEGetRejectedWithNotAcceptable verifies that a GET request
+// without Accept: text/event-stream is rejected by the vMCP server with 406.
+// This confirms that headerValidatingMiddleware fires before the SSE stream is
+// opened, and that the write-timeout middleware does not interfere with the
+// rejection path.
+func TestIntegration_RealBackend_NonSSEGetRejectedWithNotAcceptable(t *testing.T) {
+	t.Parallel()
+
+	// The request is rejected by headerValidatingMiddleware with 406 before any
+	// backend interaction, so no real MCP backend is needed.
+	ts := newRealTestServer(t, "http://127.0.0.1:0")
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/mcp", nil)
+	require.NoError(t, err)
+	// No Accept header — not a qualifying SSE request.
+
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotAcceptable, resp.StatusCode,
+		"GET without Accept: text/event-stream must be rejected with 406")
+}
+
 // TestIntegration_RealBackend_Termination verifies the session termination path
 // against a real backend: a DELETE request closes the backend connection, and
 // subsequent requests with the terminated session ID are rejected.

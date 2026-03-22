@@ -65,14 +65,16 @@ func TestValidateConfig(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name:    "empty config (defaults)",
+			name:    "empty config missing provider name",
 			cfg:     &Config{},
-			wantErr: false,
+			wantErr: true,
+			errMsg:  "provider_name is required",
 		},
 		{
 			name: "valid replace strategy",
 			cfg: &Config{
 				HeaderStrategy: HeaderStrategyReplace,
+				ProviderName:   "default",
 			},
 			wantErr: false,
 		},
@@ -81,6 +83,7 @@ func TestValidateConfig(t *testing.T) {
 			cfg: &Config{
 				HeaderStrategy:   HeaderStrategyCustom,
 				CustomHeaderName: "X-Upstream-Token",
+				ProviderName:     "default",
 			},
 			wantErr: false,
 		},
@@ -88,6 +91,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "invalid header strategy",
 			cfg: &Config{
 				HeaderStrategy: "invalid",
+				ProviderName:   "default",
 			},
 			wantErr: true,
 			errMsg:  "invalid header_strategy",
@@ -96,6 +100,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "custom strategy without header name",
 			cfg: &Config{
 				HeaderStrategy: HeaderStrategyCustom,
+				ProviderName:   "default",
 			},
 			wantErr: true,
 			errMsg:  "custom_header_name must be specified",
@@ -119,7 +124,7 @@ func TestValidateConfig(t *testing.T) {
 func TestMiddleware_NoIdentity(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, nilServiceGetter())
 
 	var nextCalled bool
@@ -141,7 +146,7 @@ func TestMiddleware_NoIdentity(t *testing.T) {
 func TestMiddleware_NoTsidClaim(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, nilServiceGetter())
 
 	var nextCalled bool
@@ -172,7 +177,7 @@ func TestMiddleware_NoTsidClaim(t *testing.T) {
 func TestMiddleware_ServiceUnavailable_FailsClosed(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, nilServiceGetter())
 
 	var nextCalled bool
@@ -200,21 +205,21 @@ func TestMiddleware_ClientAttributableErrors_Returns401(t *testing.T) {
 		{
 			name: "not found",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-123").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-123", "default").
 					Return(nil, storage.ErrNotFound)
 			},
 		},
 		{
 			name: "expired with nil tokens",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-123").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-123", "default").
 					Return(nil, storage.ErrExpired)
 			},
 		},
 		{
 			name: "invalid binding",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-123").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-123", "default").
 					Return(nil, storage.ErrInvalidBinding)
 			},
 		},
@@ -230,7 +235,7 @@ func TestMiddleware_ClientAttributableErrors_Returns401(t *testing.T) {
 			mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 			tt.setupStorage(mockStorage)
 
-			cfg := &Config{}
+			cfg := &Config{ProviderName: "default"}
 			middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
 			var nextCalled bool
@@ -259,10 +264,10 @@ func TestMiddleware_StorageError(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(nil, errors.New("database error"))
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
 	var nextCalled bool
@@ -294,11 +299,12 @@ func TestMiddleware_SuccessfulSwap_AccessToken(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(tokens, nil)
 
 	cfg := &Config{
 		HeaderStrategy: HeaderStrategyReplace,
+		ProviderName:   "default",
 	}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
@@ -329,12 +335,13 @@ func TestMiddleware_CustomHeader(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(tokens, nil)
 
 	cfg := &Config{
 		HeaderStrategy:   HeaderStrategyCustom,
 		CustomHeaderName: "X-Upstream-Token",
+		ProviderName:     "default",
 	}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
@@ -371,10 +378,10 @@ func TestMiddleware_ExpiredTokens_Returns401(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(tokens, nil)
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
 	var nextCalled bool
@@ -408,10 +415,10 @@ func TestMiddleware_EmptySelectedToken_FailsClosed(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(tokens, nil)
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
 	var nextCalled bool
@@ -482,10 +489,10 @@ func TestMiddlewareWithContext(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-ctx").
+		GetUpstreamTokens(gomock.Any(), "session-ctx", "default").
 		Return(tokens, nil)
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
 	// Test that context is properly passed through
@@ -522,22 +529,25 @@ func TestCreateMiddleware(t *testing.T) {
 			params: MiddlewareParams{
 				Config: &Config{
 					HeaderStrategy: HeaderStrategyReplace,
+					ProviderName:   "default",
 				},
 			},
 			expectError:         false,
 			expectAddMiddleware: true,
 		},
 		{
-			name:                "nil config uses defaults",
+			name:                "nil config missing provider name",
 			params:              MiddlewareParams{Config: nil},
-			expectError:         false,
-			expectAddMiddleware: true,
+			expectError:         true,
+			errorMsg:            "invalid upstream swap configuration",
+			expectAddMiddleware: false,
 		},
 		{
-			name:                "empty params uses defaults",
+			name:                "empty params missing provider name",
 			params:              MiddlewareParams{},
-			expectError:         false,
-			expectAddMiddleware: true,
+			expectError:         true,
+			errorMsg:            "invalid upstream swap configuration",
+			expectAddMiddleware: false,
 		},
 		{
 			name: "custom header strategy with header name",
@@ -545,6 +555,7 @@ func TestCreateMiddleware(t *testing.T) {
 				Config: &Config{
 					HeaderStrategy:   HeaderStrategyCustom,
 					CustomHeaderName: "X-Upstream-Token",
+					ProviderName:     "default",
 				},
 			},
 			expectError:         false,
@@ -555,6 +566,7 @@ func TestCreateMiddleware(t *testing.T) {
 			params: MiddlewareParams{
 				Config: &Config{
 					HeaderStrategy: HeaderStrategyCustom,
+					ProviderName:   "default",
 					// Missing CustomHeaderName
 				},
 			},
@@ -567,6 +579,7 @@ func TestCreateMiddleware(t *testing.T) {
 			params: MiddlewareParams{
 				Config: &Config{
 					HeaderStrategy: "invalid_strategy",
+					ProviderName:   "default",
 				},
 			},
 			expectError:         true,
@@ -640,7 +653,7 @@ func TestCreateMiddleware_InvalidJSON(t *testing.T) {
 func TestMiddleware_TsidClaimWrongType(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, nilServiceGetter())
 
 	var nextCalled bool
@@ -688,7 +701,7 @@ func TestMiddleware_ExpiredTokens_RefreshSuccess(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(expiredTokens, storage.ErrExpired)
 
 	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
@@ -696,7 +709,7 @@ func TestMiddleware_ExpiredTokens_RefreshSuccess(t *testing.T) {
 		RefreshAndStore(gomock.Any(), "session-123", expiredTokens).
 		Return(refreshedTokens, nil)
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, mockRefresher))
 
 	var nextCalled bool
@@ -730,7 +743,7 @@ func TestMiddleware_ExpiredTokens_RefreshFails(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(expiredTokens, storage.ErrExpired)
 
 	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
@@ -738,7 +751,7 @@ func TestMiddleware_ExpiredTokens_RefreshFails(t *testing.T) {
 		RefreshAndStore(gomock.Any(), "session-123", expiredTokens).
 		Return(nil, errors.New("refresh failed"))
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, mockRefresher))
 
 	var nextCalled bool
@@ -771,10 +784,10 @@ func TestMiddleware_ExpiredTokens_NoRefreshToken(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(expiredTokens, storage.ErrExpired)
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, nil))
 
 	var nextCalled bool
@@ -814,7 +827,7 @@ func TestMiddleware_DefenseInDepth_ExpiredButNoError_RefreshSuccess(t *testing.T
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
+		GetUpstreamTokens(gomock.Any(), "session-123", "default").
 		Return(expiredTokens, nil) // No error, but token is expired
 
 	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
@@ -822,7 +835,7 @@ func TestMiddleware_DefenseInDepth_ExpiredButNoError_RefreshSuccess(t *testing.T
 		RefreshAndStore(gomock.Any(), "session-123", expiredTokens).
 		Return(refreshedTokens, nil)
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetterFromMocks(mockStorage, mockRefresher))
 
 	var nextCalled bool
@@ -887,7 +900,7 @@ func TestSingleFlightRefresh_ConcurrentRequests(t *testing.T) {
 	svc := upstreamtoken.NewInProcessService(stor, refresher)
 	serviceGetter := func() upstreamtoken.Service { return svc }
 
-	cfg := &Config{}
+	cfg := &Config{ProviderName: "default"}
 	middleware := createMiddlewareFunc(cfg, serviceGetter)
 
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
@@ -949,7 +962,7 @@ type fakeTokenStorage struct {
 	gate    chan struct{}   // if set, blocks until closed
 }
 
-func (f *fakeTokenStorage) GetUpstreamTokens(_ context.Context, _ string) (*storage.UpstreamTokens, error) {
+func (f *fakeTokenStorage) GetUpstreamTokens(_ context.Context, _, _ string) (*storage.UpstreamTokens, error) {
 	if f.barrier != nil {
 		f.barrier.Done()
 	}
@@ -959,7 +972,11 @@ func (f *fakeTokenStorage) GetUpstreamTokens(_ context.Context, _ string) (*stor
 	return f.tokens, f.err
 }
 
-func (*fakeTokenStorage) StoreUpstreamTokens(_ context.Context, _ string, _ *storage.UpstreamTokens) error {
+func (*fakeTokenStorage) GetAllUpstreamTokens(_ context.Context, _ string) (map[string]*storage.UpstreamTokens, error) {
+	return nil, nil
+}
+
+func (*fakeTokenStorage) StoreUpstreamTokens(_ context.Context, _, _ string, _ *storage.UpstreamTokens) error {
 	return nil
 }
 

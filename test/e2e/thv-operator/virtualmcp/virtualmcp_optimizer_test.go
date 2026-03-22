@@ -69,6 +69,13 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 			"url": "{{.params.url}}",
 		}
 
+		// Workflow steps use the "{workloadID}.{originalCapabilityName}" dot
+		// convention so the session router resolves them regardless of conflict
+		// resolution strategy.  backendFetchToolName ("fetch") is the original
+		// backend capability; the aggregation override renames it to
+		// vmcpFetchToolName for clients, but steps must reference the original.
+		fetchStepTool := backendName + "." + backendFetchToolName // "backend-optimizer-fetch.fetch"
+
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
@@ -110,13 +117,13 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 								{
 									ID:        "first_fetch",
 									Type:      "tool",
-									Tool:      vmcpFetchToolName,
+									Tool:      fetchStepTool,
 									Arguments: thvjson.NewMap(stepArgs),
 								},
 								{
 									ID:        "second_fetch",
 									Type:      "tool",
-									Tool:      vmcpFetchToolName,
+									Tool:      fetchStepTool,
 									DependsOn: []string{"first_fetch"},
 									Arguments: thvjson.NewMap(stepArgs),
 								},

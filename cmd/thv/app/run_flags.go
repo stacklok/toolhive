@@ -407,12 +407,17 @@ func handleImageRetrieval(
 	error,
 ) {
 
-	// Build runtime config override from flags (if any)
+	// Build runtime config override from flags (if any).
+	// Validation here is intentionally duplicated with configureRuntimeOptions
+	// so that invalid input is caught early before registry lookups.
 	var runtimeOverride *templates.RuntimeConfig
 	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 {
 		runtimeOverride = &templates.RuntimeConfig{
 			BuilderImage:       runFlags.RuntimeImage,
 			AdditionalPackages: runFlags.RuntimeAddPackages,
+		}
+		if err := runtimeOverride.Validate(); err != nil {
+			return "", nil, fmt.Errorf("invalid runtime configuration: %w", err)
 		}
 	}
 
@@ -521,17 +526,22 @@ func configureRemoteHeaderOptions(runFlags *RunFlags) ([]runner.RunConfigBuilder
 	return opts, nil
 }
 
-// configureRuntimeOptions configures runtime image and package options
-func configureRuntimeOptions(runFlags *RunFlags) []runner.RunConfigBuilderOption {
+// configureRuntimeOptions configures runtime image and package options.
+// It validates the configuration to prevent shell injection when values
+// are interpolated into Dockerfile templates.
+func configureRuntimeOptions(runFlags *RunFlags) ([]runner.RunConfigBuilderOption, error) {
 	if runFlags.RuntimeImage == "" && len(runFlags.RuntimeAddPackages) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	runtimeConfig := &templates.RuntimeConfig{
 		BuilderImage:       runFlags.RuntimeImage,
 		AdditionalPackages: runFlags.RuntimeAddPackages,
 	}
-	return []runner.RunConfigBuilderOption{runner.WithRuntimeConfig(runtimeConfig)}
+	if err := runtimeConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid runtime configuration: %w", err)
+	}
+	return []runner.RunConfigBuilderOption{runner.WithRuntimeConfig(runtimeConfig)}, nil
 }
 
 // buildRunnerConfig creates the final RunnerConfig using the builder pattern
@@ -617,7 +627,10 @@ func buildRunnerConfig(
 	}
 
 	// Configure runtime options
-	runtimeOpts := configureRuntimeOptions(runFlags)
+	runtimeOpts, err := configureRuntimeOptions(runFlags)
+	if err != nil {
+		return nil, err
+	}
 	opts = append(opts, runtimeOpts...)
 
 	// Configure middleware and additional options

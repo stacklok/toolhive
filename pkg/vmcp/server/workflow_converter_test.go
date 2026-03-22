@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -123,95 +122,6 @@ func TestConvertConfigToWorkflowDefinitions(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestConvertWorkflowDefsToTools(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input map[string]*composer.WorkflowDefinition
-		want  int
-	}{
-		{name: "nil", input: nil, want: 0},
-		{name: "empty", input: map[string]*composer.WorkflowDefinition{}, want: 0},
-		{
-			name:  "single",
-			input: map[string]*composer.WorkflowDefinition{"w1": {Name: "w1", Description: "Test"}},
-			want:  1,
-		},
-		{
-			name: "multiple",
-			input: map[string]*composer.WorkflowDefinition{
-				"w1": {Name: "w1"},
-				"w2": {Name: "w2"},
-			},
-			want: 2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			result := convertWorkflowDefsToTools(tt.input)
-
-			if tt.want == 0 {
-				assert.Nil(t, result)
-			} else {
-				require.Len(t, result, tt.want)
-				for _, tool := range result {
-					assert.NotEmpty(t, tool.Name)
-				}
-			}
-		})
-	}
-}
-
-func TestValidateNoToolConflicts(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		backend   []string
-		composite []string
-		wantError bool
-		contains  string
-	}{
-		{name: "no conflicts", backend: []string{"b1", "b2"}, composite: []string{"c1", "c2"}},
-		{name: "empty backend", backend: []string{}, composite: []string{"c1"}},
-		{name: "empty composite", backend: []string{"b1"}, composite: []string{}},
-		{name: "single conflict", backend: []string{"shared"}, composite: []string{"shared"}, wantError: true, contains: "shared"},
-		{name: "multiple conflicts", backend: []string{"t1", "t2"}, composite: []string{"t1", "t2"}, wantError: true, contains: "t1"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			backend := makeTools(tt.backend)
-			composite := makeTools(tt.composite)
-
-			err := validateNoToolConflicts(backend, composite)
-
-			if tt.wantError {
-				require.Error(t, err)
-				if tt.contains != "" {
-					assert.Contains(t, err.Error(), tt.contains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func makeTools(names []string) []vmcp.Tool {
-	tools := make([]vmcp.Tool, len(names))
-	for i, name := range names {
-		tools[i] = vmcp.Tool{Name: name}
-	}
-	return tools
 }
 
 func TestConvertSteps_ComplexWorkflow(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	mobyclient "github.com/moby/moby/client"
 )
 
 // RegistryImageManager implements the ImageManager interface using go-containerregistry
@@ -30,15 +31,29 @@ import (
 type RegistryImageManager struct {
 	keychain     authn.Keychain
 	platform     *v1.Platform
-	dockerClient *client.Client
+	dockerClient *client.Client // Used for building images from Dockerfiles
+	daemonClient daemon.Client  // Used for daemon.Image/daemon.Write (go-containerregistry)
 }
 
 // NewRegistryImageManager creates a new RegistryImageManager instance
 func NewRegistryImageManager(dockerClient *client.Client) *RegistryImageManager {
+	// Create a moby/moby client that satisfies the daemon.Client interface
+	// required by go-containerregistry, using the same host and HTTP client
+	// as the docker client.
+	mobyClient, err := mobyclient.New(
+		mobyclient.WithHost(dockerClient.DaemonHost()),
+		mobyclient.WithHTTPClient(dockerClient.HTTPClient()),
+	)
+	if err != nil {
+		// Fall back: this should not happen since we already have a working docker client
+		slog.Warn("failed to create moby client for daemon operations, daemon image operations may fail", "error", err)
+	}
+
 	return &RegistryImageManager{
 		keychain:     NewCompositeKeychain(), // Use composite keychain (env vars + default)
 		platform:     getDefaultPlatform(),   // Use a default platform based on host architecture
 		dockerClient: dockerClient,           // Used solely for building images from Dockerfiles
+		daemonClient: mobyClient,             // Used for go-containerregistry daemon operations
 	}
 }
 
@@ -60,7 +75,7 @@ func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) 
 	}
 
 	// First check if image exists locally in daemon
-	if _, err := daemon.Image(ref, daemon.WithClient(r.dockerClient)); err != nil {
+	if _, err := daemon.Image(ref, daemon.WithClient(r.daemonClient)); err != nil {
 		// Image does not exist locally
 		return false, nil
 	}
@@ -106,7 +121,7 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 	}
 
 	// Save the image to the local daemon
-	response, err := daemon.Write(tag, img, daemon.WithClient(r.dockerClient))
+	response, err := daemon.Write(tag, img, daemon.WithClient(r.daemonClient))
 	if err != nil {
 		return fmt.Errorf("failed to write image to daemon: %w", err)
 	}

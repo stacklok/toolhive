@@ -84,6 +84,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		InternalState:        secrets.State,
 		UpstreamPKCEVerifier: secrets.PKCEVerifier,
 		UpstreamNonce:        secrets.Nonce,
+		UpstreamProviderName: h.upstreamName,
 		CreatedAt:            time.Now(),
 	}
 

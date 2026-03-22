@@ -5,6 +5,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -60,6 +61,14 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 		// Try to list servers with a small limit to verify API functionality
 		_, err = client.ListServers(ctx, &api.ListOptions{Limit: 1})
 		if err != nil {
+			if errors.Is(err, api.ErrRegistryUnauthorized) {
+				return nil, fmt.Errorf(
+					"registry at %s returned 401 Unauthorized\n\n"+
+						"If this registry requires authentication, configure it with:\n"+
+						"  thv config set-registry-auth --issuer <issuer-url> --client-id <client-id>: %w",
+					apiURL, auth.ErrRegistryAuthRequired,
+				)
+			}
 			return nil, fmt.Errorf("API endpoint not functional: %w", err)
 		}
 	}
@@ -77,6 +86,16 @@ func (p *APIRegistryProvider) GetRegistry() (*types.Registry, error) {
 	// Fetch all servers from the API
 	servers, err := p.client.ListServers(ctx, nil)
 	if err != nil {
+		// Propagate auth errors so API handlers can return structured responses.
+		// ErrRegistryAuthRequired: no token available locally (never tried the registry).
+		// ErrRegistryUnauthorized: token was sent but rejected by the registry (401/403).
+		// Both are wrapped with ErrRegistryAuthRequired so the API layer returns 503.
+		if errors.Is(err, auth.ErrRegistryAuthRequired) {
+			return nil, fmt.Errorf("no registry credentials available: %w", err)
+		}
+		if errors.Is(err, api.ErrRegistryUnauthorized) {
+			return nil, fmt.Errorf("registry rejected credentials: %w", auth.ErrRegistryAuthRequired)
+		}
 		return nil, fmt.Errorf("failed to list servers from API: %w", err)
 	}
 

@@ -37,6 +37,10 @@ func SignPayload(secret []byte, timestamp int64, payload []byte) string {
 // VerifySignature verifies an HMAC-SHA256 signature against the given timestamp
 // and payload. The signature should be in the format "sha256=<hex-encoded-signature>".
 // Comparison is done in constant time to prevent timing attacks.
+//
+// Note: This function only verifies cryptographic correctness. Callers should
+// independently verify that the timestamp is recent (e.g., within 5 minutes)
+// to prevent replay attacks.
 func VerifySignature(secret []byte, timestamp int64, payload []byte, signature string) bool {
 	if !strings.HasPrefix(signature, signaturePrefix) {
 		return false

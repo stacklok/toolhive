@@ -42,7 +42,7 @@ func TestWebhookErrors(t *testing.T) {
 		},
 		{
 			name:           "InvalidResponseError",
-			err:            NewInvalidResponseError("my-webhook", underlyingErr),
+			err:            NewInvalidResponseError("my-webhook", underlyingErr, 0),
 			expectedMsg:    `webhook "my-webhook": invalid response: connection refused`,
 			isInvalidResp:  true,
 			unwrapsToInner: true,

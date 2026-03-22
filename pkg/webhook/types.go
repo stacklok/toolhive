@@ -81,8 +81,14 @@ func (c *Config) Validate() error {
 	if c.URL == "" {
 		return fmt.Errorf("webhook URL is required")
 	}
-	if _, err := url.ParseRequestURI(c.URL); err != nil {
+	parsed, err := url.ParseRequestURI(c.URL)
+	if err != nil {
 		return fmt.Errorf("webhook URL is invalid: %w", err)
+	}
+	// Enforce HTTPS unless InsecureSkipVerify is explicitly set (for in-cluster HTTP endpoints).
+	insecureHTTPAllowed := c.TLSConfig != nil && c.TLSConfig.InsecureSkipVerify
+	if parsed.Scheme != "https" && !insecureHTTPAllowed {
+		return fmt.Errorf("webhook URL must use HTTPS (set insecure_skip_verify to allow HTTP for development/in-cluster use)")
 	}
 	if c.FailurePolicy != FailurePolicyFail && c.FailurePolicy != FailurePolicyIgnore {
 		return fmt.Errorf("webhook failure_policy must be %q or %q, got %q",
@@ -128,8 +134,9 @@ type Principal struct {
 	Name string `json:"name,omitempty"`
 	// Groups is a list of groups the user belongs to.
 	Groups []string `json:"groups,omitempty"`
-	// Claims contains additional identity claims.
-	Claims map[string]string `json:"claims,omitempty"`
+	// Claims contains additional identity claims. Using map[string]any to support
+	// real-world JWT claims which may carry non-string values (arrays, numbers, booleans).
+	Claims map[string]any `json:"claims,omitempty"`
 }
 
 // RequestContext provides metadata about the request origin and environment.

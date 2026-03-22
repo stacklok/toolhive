@@ -48,10 +48,16 @@ func (e *NetworkError) Error() string {
 // InvalidResponseError indicates that a webhook returned an unparsable or invalid response.
 type InvalidResponseError struct {
 	WebhookError
+	// StatusCode is the HTTP status code returned by the webhook, if applicable.
+	// A value of 0 means no HTTP response was received (e.g., JSON decode error).
+	StatusCode int
 }
 
 // Error implements the error interface.
 func (e *InvalidResponseError) Error() string {
+	if e.StatusCode != 0 {
+		return fmt.Sprintf("webhook %q: invalid response (HTTP %d): %v", e.WebhookName, e.StatusCode, e.Err)
+	}
 	return fmt.Sprintf("webhook %q: invalid response: %v", e.WebhookName, e.Err)
 }
 
@@ -76,11 +82,13 @@ func NewNetworkError(webhookName string, err error) *NetworkError {
 }
 
 // NewInvalidResponseError creates a new InvalidResponseError.
-func NewInvalidResponseError(webhookName string, err error) *InvalidResponseError {
+// statusCode is the HTTP status code from the webhook response (0 if not applicable).
+func NewInvalidResponseError(webhookName string, err error, statusCode int) *InvalidResponseError {
 	return &InvalidResponseError{
 		WebhookError: WebhookError{
 			WebhookName: webhookName,
 			Err:         err,
 		},
+		StatusCode: statusCode,
 	}
 }

@@ -4,7 +4,6 @@
 package webhook
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -193,7 +192,7 @@ func TestClientCallValidating(t *testing.T) {
 				},
 			}
 
-			resp, err := client.Call(context.Background(), req)
+			resp, err := client.Call(t.Context(), req)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -255,7 +254,7 @@ func TestClientCallMutating(t *testing.T) {
 		},
 	}
 
-	resp, err := client.CallMutating(context.Background(), req)
+	resp, err := client.CallMutating(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -302,7 +301,7 @@ func TestClientHMACSigningHeaders(t *testing.T) {
 		},
 	}
 
-	resp, err := client.Call(context.Background(), req)
+	resp, err := client.Call(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -349,7 +348,7 @@ func TestClientNoHMACHeadersWithoutSecret(t *testing.T) {
 		},
 	}
 
-	resp, err := client.Call(context.Background(), req)
+	resp, err := client.Call(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -383,7 +382,7 @@ func TestClientTimeout(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	_, err := client.Call(context.Background(), req)
+	_, err := client.Call(t.Context(), req)
 	require.Error(t, err)
 
 	var timeoutErr *TimeoutError
@@ -416,7 +415,7 @@ func TestClientResponseSizeLimit(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	_, err := client.Call(context.Background(), req)
+	_, err := client.Call(t.Context(), req)
 	require.Error(t, err)
 
 	var invalidErr *InvalidResponseError
@@ -472,7 +471,7 @@ func TestClientRequestContentType(t *testing.T) {
 		},
 	}
 
-	resp, err := client.Call(context.Background(), req)
+	resp, err := client.Call(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -606,7 +605,7 @@ func TestClientCallErrors(t *testing.T) {
 
 	t.Run("request creation failure", func(t *testing.T) {
 		t.Parallel()
-		_, err := client.Call(context.Background(), &Request{})
+		_, err := client.Call(t.Context(), &Request{})
 		assert.Error(t, err)
 		var networkErr *NetworkError
 		assert.True(t, errors.As(err, &networkErr))
@@ -626,7 +625,7 @@ func TestClientCallErrors(t *testing.T) {
 			FailurePolicy: FailurePolicyFail,
 		}, TypeValidating, nil)
 
-		_, err := testClient.Call(context.Background(), &Request{})
+		_, err := testClient.Call(t.Context(), &Request{})
 		assert.Error(t, err)
 		var invalidErr *InvalidResponseError
 		assert.True(t, errors.As(err, &invalidErr))
@@ -646,7 +645,7 @@ func TestClientCallErrors(t *testing.T) {
 			FailurePolicy: FailurePolicyFail,
 		}, TypeMutating, nil)
 
-		_, err := testClient.CallMutating(context.Background(), &Request{})
+		_, err := testClient.CallMutating(t.Context(), &Request{})
 		assert.Error(t, err)
 		var invalidErr *InvalidResponseError
 		assert.True(t, errors.As(err, &invalidErr))
@@ -659,7 +658,7 @@ func TestClientCallErrors(t *testing.T) {
 			URL:           "http://invalid-address.local",
 			FailurePolicy: FailurePolicyFail,
 		}, TypeMutating, nil)
-		_, err := testClient.CallMutating(context.Background(), &Request{})
+		_, err := testClient.CallMutating(t.Context(), &Request{})
 		assert.Error(t, err)
 	})
 }
@@ -674,18 +673,10 @@ func (*errorReader) Close() error { return nil }
 func TestDoHTTPCallReadError(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// This handler won't be reached because we're testing doHTTPCall error path
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	// We need a server that returns a body that fails on Read
+	// Use a real httptest server URL as the base config URL (won't actually be called
+	// since we swap the transport below).
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Length", "10")
 		w.WriteHeader(http.StatusOK)
-		// We can't easily force Read to fail from net/http handler,
-		// but we can mock the http client or its transport.
 	}))
 	defer ts.Close()
 
@@ -694,8 +685,8 @@ func TestDoHTTPCallReadError(t *testing.T) {
 		URL:           ts.URL,
 		FailurePolicy: FailurePolicyFail,
 	}
-	client, err := NewClient(cfg, TypeValidating, nil)
-	require.NoError(t, err)
+	// Use newTestClient (bypasses HTTPS validation, appropriate for httptest HTTP URLs).
+	client := newTestClient(cfg, TypeValidating, nil)
 
 	// Mock the RoundTripper to return a body that fails on Read
 	rt := &mockRoundTripper{
@@ -706,7 +697,7 @@ func TestDoHTTPCallReadError(t *testing.T) {
 	}
 	client.httpClient.Transport = rt
 
-	_, err = client.Call(context.Background(), &Request{})
+	_, err := client.Call(t.Context(), &Request{})
 	assert.Error(t, err)
 	var networkErr *NetworkError
 	assert.True(t, errors.As(err, &networkErr))

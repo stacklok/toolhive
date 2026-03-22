@@ -23,9 +23,11 @@ import (
 
 // Client is an HTTP client for calling webhook endpoints.
 type Client struct {
-	httpClient  *http.Client
-	config      Config
-	hmacSecret  []byte
+	httpClient *http.Client
+	config     Config
+	hmacSecret []byte
+	// TODO: webhookType will be used by a future Send() method that dispatches
+	// to Call or CallMutating based on type. For now callers pick the method directly.
 	webhookType Type
 }
 
@@ -62,7 +64,7 @@ func NewClient(cfg Config, webhookType Type, hmacSecret []byte) (*Client, error)
 func (c *Client) Call(ctx context.Context, req *Request) (*Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err))
+		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err), 0)
 	}
 
 	respBody, err := c.doHTTPCall(ctx, body)
@@ -72,7 +74,7 @@ func (c *Client) Call(ctx context.Context, req *Request) (*Response, error) {
 
 	var resp Response
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to unmarshal response: %w", err))
+		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to unmarshal response: %w", err), 0)
 	}
 
 	return &resp, nil
@@ -82,7 +84,7 @@ func (c *Client) Call(ctx context.Context, req *Request) (*Response, error) {
 func (c *Client) CallMutating(ctx context.Context, req *Request) (*MutatingResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err))
+		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err), 0)
 	}
 
 	respBody, err := c.doHTTPCall(ctx, body)
@@ -92,7 +94,7 @@ func (c *Client) CallMutating(ctx context.Context, req *Request) (*MutatingRespo
 
 	var resp MutatingResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to unmarshal mutating response: %w", err))
+		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to unmarshal mutating response: %w", err), 0)
 	}
 
 	return &resp, nil
@@ -132,7 +134,7 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 	}
 	if int64(len(respBody)) > MaxResponseSize {
 		return nil, NewInvalidResponseError(c.config.Name,
-			fmt.Errorf("response body exceeds maximum size of %d bytes", MaxResponseSize))
+			fmt.Errorf("response body exceeds maximum size of %d bytes", MaxResponseSize), 0)
 	}
 
 	// 5xx errors indicate webhook operational failures.
@@ -142,16 +144,19 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 	}
 
 	// Non-200 responses (excluding 5xx handled above) are treated as invalid.
+	// The StatusCode is surfaced so callers can distinguish HTTP 422 (RFC always-deny)
+	// from other non-2xx codes that may follow the failure policy.
 	if resp.StatusCode != http.StatusOK {
 		return nil, NewInvalidResponseError(c.config.Name,
-			fmt.Errorf("webhook returned HTTP %d: %s", resp.StatusCode, truncateBody(respBody)))
+			fmt.Errorf("webhook returned HTTP %d: %s", resp.StatusCode, truncateBody(respBody)),
+			resp.StatusCode)
 	}
 
 	return respBody, nil
 }
 
 // buildTransport creates an http.RoundTripper with the specified TLS configuration,
-// wrapped in a ValidatingTransport for security.
+// always wrapped in ValidatingTransport for SSRF protection.
 func buildTransport(tlsCfg *TLSConfig) (http.RoundTripper, error) {
 	transport := &http.Transport{
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -161,52 +166,59 @@ func buildTransport(tlsCfg *TLSConfig) (http.RoundTripper, error) {
 		IdleConnTimeout:       90 * time.Second,
 	}
 
-	if tlsCfg == nil {
-		return transport, nil
-	}
+	// allowHTTP is true when InsecureSkipVerify is set, which also covers in-cluster
+	allowHTTP := tlsCfg != nil && tlsCfg.InsecureSkipVerify
 
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-
-	// Load CA bundle if provided.
-	if tlsCfg.CABundlePath != "" {
-		caCert, err := os.ReadFile(tlsCfg.CABundlePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read CA bundle: %w", err)
+	if tlsCfg != nil {
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
 		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA certificate bundle")
+
+		// Load CA bundle if provided.
+		if tlsCfg.CABundlePath != "" {
+			caCert, err := os.ReadFile(tlsCfg.CABundlePath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read CA bundle: %w", err)
+			}
+			caCertPool := x509.NewCertPool()
+			if !caCertPool.AppendCertsFromPEM(caCert) {
+				return nil, fmt.Errorf("failed to parse CA certificate bundle")
+			}
+			tlsConfig.RootCAs = caCertPool
 		}
-		tlsConfig.RootCAs = caCertPool
-	}
 
-	// Load client certificate for mTLS if provided.
-	if tlsCfg.ClientCertPath != "" && tlsCfg.ClientKeyPath != "" {
-		cert, err := tls.LoadX509KeyPair(tlsCfg.ClientCertPath, tlsCfg.ClientKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		// Load client certificate for mTLS if provided.
+		if tlsCfg.ClientCertPath != "" && tlsCfg.ClientKeyPath != "" {
+			cert, err := tls.LoadX509KeyPair(tlsCfg.ClientCertPath, tlsCfg.ClientKeyPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load client certificate: %w", err)
+			}
+			tlsConfig.Certificates = []tls.Certificate{cert}
 		}
-		tlsConfig.Certificates = []tls.Certificate{cert}
+
+		if tlsCfg.InsecureSkipVerify {
+			//#nosec G402 -- InsecureSkipVerify is intentionally user-configurable for development/testing only.
+			tlsConfig.InsecureSkipVerify = true
+		}
+
+		transport.TLSClientConfig = tlsConfig
 	}
 
-	if tlsCfg.InsecureSkipVerify {
-		//#nosec G402 -- InsecureSkipVerify is intentionally user-configurable for development/testing only.
-		tlsConfig.InsecureSkipVerify = true
-	}
-
-	transport.TLSClientConfig = tlsConfig
+	// Always wrap in ValidatingTransport for SSRF protection, even without TLS config.
 	return &networking.ValidatingTransport{
 		Transport:         transport,
-		InsecureAllowHTTP: false,
+		InsecureAllowHTTP: allowHTTP,
 	}, nil
 }
 
 // classifyError examines an HTTP client error and returns an appropriately
 // typed webhook error (TimeoutError or NetworkError).
 func classifyError(webhookName string, err error) error {
-	// Check for timeout errors (context deadline, net.Error timeout).
+	// Check for context cancellation/deadline first, as these may not wrap net.Error.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return NewTimeoutError(webhookName, err)
+	}
+	// Check for timeout errors via net.Error interface (e.g., dial timeout).
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return NewTimeoutError(webhookName, err)

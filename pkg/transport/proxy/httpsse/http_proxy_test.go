@@ -28,7 +28,7 @@ const testClientID = "eeeeeeee-0001-0001-0001-000000000001"
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestNewHTTPSSEProxy(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	assert.NotNil(t, proxy)
 	assert.Equal(t, "localhost", proxy.host)
@@ -43,7 +43,7 @@ func TestNewHTTPSSEProxy(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestGetMessageChannel(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	ch := proxy.GetMessageChannel()
 	assert.NotNil(t, ch)
@@ -54,7 +54,7 @@ func TestGetMessageChannel(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create a test message
 	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -77,7 +77,7 @@ func TestSendMessageToDestination(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination_ChannelFull(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Fill the channel
 	for i := 0; i < 100; i++ {
@@ -96,7 +96,7 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestRemoveClient(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create a client session
 	clientID := "eeeeeeee-0002-0002-0002-000000000002"
@@ -133,7 +133,7 @@ func TestRemoveClient(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestConcurrentClientRemoval(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create multiple client sessions
 	numClients := 100
@@ -182,7 +182,7 @@ func TestConcurrentClientRemoval(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestForwardResponseToClients(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 	ctx := context.Background()
 
 	// Create a client session
@@ -220,7 +220,7 @@ func TestForwardResponseToClients(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestForwardResponseToClients_NoClients(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 	ctx := context.Background()
 
 	// Create a test response
@@ -241,7 +241,7 @@ func TestForwardResponseToClients_NoClients(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendSSEEvent_ChannelFull(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create a client session with a small buffer
 	clientID := testClientID
@@ -277,7 +277,7 @@ func TestSendSSEEvent_ChannelFull(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProcessPendingMessages(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Add pending messages
 	for i := 0; i < 5; i++ {
@@ -307,7 +307,7 @@ func TestProcessPendingMessages(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProcessPendingMessages_ChannelFull(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Add 10 pending messages
 	for i := 0; i < 10; i++ {
@@ -347,7 +347,7 @@ func TestProcessPendingMessages_ChannelFull(t *testing.T) {
 //
 //nolint:paralleltest // Test uses HTTP test server
 func TestHandleSSEConnection(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -374,7 +374,7 @@ func TestHandleSSEConnection(t *testing.T) {
 //
 //nolint:paralleltest // Test uses HTTP test server
 func TestHandleSSEConnection_WithTrustProxyHeaders(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, true, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, true, nil, nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.handleSSEConnection(w, r)
@@ -410,7 +410,7 @@ func TestHandleSSEConnection_WithTrustProxyHeaders(t *testing.T) {
 //
 //nolint:paralleltest // Test uses HTTP test server
 func TestHandleSSEConnection_WithoutTrustProxyHeaders(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.handleSSEConnection(w, r)
@@ -446,7 +446,7 @@ func TestHandleSSEConnection_WithoutTrustProxyHeaders(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestHandlePostRequest(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create a client session
 	sessionID := "eeeeeeee-0003-0003-0003-000000000003"
@@ -490,7 +490,7 @@ func TestHandlePostRequest(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestHandlePostRequest_NoSessionID(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create a test request without session_id
 	req := httptest.NewRequest("POST", "/messages", nil)
@@ -508,7 +508,7 @@ func TestHandlePostRequest_NoSessionID(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestHandlePostRequest_InvalidSession(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Create a test request with non-existent session_id
 	req := httptest.NewRequest("POST", "/messages?session_id=invalid", nil)
@@ -526,7 +526,7 @@ func TestHandlePostRequest_InvalidSession(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestRWMutexUsage(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Add multiple client sessions
 	for i := 0; i < 10; i++ {
@@ -566,7 +566,7 @@ func TestRWMutexUsage(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestClosedClientsCleanup(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
 	// Add many closed client sessions to trigger cleanup
 	for i := 0; i < 1100; i++ {
@@ -594,11 +594,20 @@ func TestClosedClientsCleanup(t *testing.T) {
 	assert.Less(t, numClosed, 1000)
 }
 
+// TestNewHTTPSSEProxyWithSessionStorage tests that WithSessionStorage option injects a custom storage backend.
+func TestNewHTTPSSEProxyWithSessionStorage(t *testing.T) {
+	t.Parallel()
+	storage := session.NewLocalStorage()
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil, WithSessionStorage(storage))
+	require.NotNil(t, proxy)
+	require.NotNil(t, proxy.sessionManager)
+}
+
 // TestStartStop tests starting and stopping the proxy
 //
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 0, false, nil) // Use port 0 for auto-assignment
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil) // Use port 0 for auto-assignment
 	ctx := context.Background()
 
 	// Start the proxy

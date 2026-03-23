@@ -193,7 +193,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 			t.proxyPort,
 			t.trustProxyHeaders,
 			t.prometheusHandler,
-			t.middlewares...,
+			t.middlewares,
 		)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err

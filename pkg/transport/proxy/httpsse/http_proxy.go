@@ -89,13 +89,29 @@ type HTTPSSEProxy struct {
 	closedClientsMutex sync.Mutex
 }
 
+// Option configures an HTTPSSEProxy.
+type Option func(*HTTPSSEProxy)
+
+// WithSessionStorage injects a custom storage backend into the session manager.
+// When not provided, the proxy uses in-memory LocalStorage (single-replica default).
+func WithSessionStorage(storage session.Storage) Option {
+	return func(p *HTTPSSEProxy) {
+		if p.sessionManager != nil {
+			_ = p.sessionManager.Stop()
+		}
+		sseFactory := func(id string) session.Session { return session.NewSSESession(id) }
+		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sseFactory, storage)
+	}
+}
+
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
 func NewHTTPSSEProxy(
 	host string,
 	port int,
 	trustProxyHeaders bool,
 	prometheusHandler http.Handler,
-	middlewares ...types.NamedMiddleware,
+	middlewares []types.NamedMiddleware,
+	opts ...Option,
 ) *HTTPSSEProxy {
 	// Create a factory for SSE sessions
 	sseFactory := func(id string) session.Session {
@@ -113,6 +129,10 @@ func NewHTTPSSEProxy(
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
 		closedClients:     make(map[string]bool),
+	}
+
+	for _, opt := range opts {
+		opt(proxy)
 	}
 
 	// Create MCP pinger and health checker

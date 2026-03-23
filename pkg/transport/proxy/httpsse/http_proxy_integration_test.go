@@ -25,7 +25,7 @@ func TestIntegrationSSEProxyStressTest(t *testing.T) {
 	t.Parallel()
 
 	// Create proxy with a random port
-	proxy := NewHTTPSSEProxy("localhost", 0, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -172,7 +172,7 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 	t.Parallel()
 
 	// Create and start proxy
-	proxy := NewHTTPSSEProxy("localhost", 0, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -317,7 +317,7 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 // TestIntegrationMemoryLeakPrevention tests that the closedClients map doesn't grow unbounded
 func TestIntegrationMemoryLeakPrevention(t *testing.T) {
 	t.Parallel()
-	proxy := NewHTTPSSEProxy("localhost", 0, false, nil)
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
 	ctx := context.Background()
 
 	err := proxy.Start(ctx)

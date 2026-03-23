@@ -290,6 +290,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if r.Config.RemoteURL == "" {
 		// For local workloads, deploy the container using runtime.Setup first
+		var scalingConfig *rt.ScalingConfig
+		if r.Config.ScalingConfig != nil {
+			scalingConfig = &rt.ScalingConfig{
+				BackendReplicas: r.Config.ScalingConfig.BackendReplicas,
+			}
+		}
 		result, err := runtime.Setup(
 			ctx,
 			r.Config.Transport,
@@ -306,6 +312,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.Host,
 			r.Config.TargetPort,
 			r.Config.TargetHost,
+			scalingConfig,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to set up workload: %w", err)

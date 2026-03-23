@@ -35,19 +35,6 @@ type Storage interface {
 	// This is used by the cleanup routine to remove stale sessions.
 	DeleteExpired(ctx context.Context, before time.Time) error
 
-	// Touch refreshes the backend's eviction TTL for the given session ID without
-	// loading or modifying the session data. All implementations return an error for
-	// an empty id. Backends with no TTL (e.g. LocalStorage) otherwise return nil.
-	// Backends with a native TTL (e.g. RedisStorage) return ErrSessionNotFound when
-	// the key no longer exists, allowing callers to detect and evict stale local-cache
-	// entries.
-	//
-	// RoutingStorage calls Touch on the remote backend for every local-cache hit.
-	// If Touch returns ErrSessionNotFound the local entry is evicted and
-	// ErrSessionNotFound is propagated to the caller, preventing stale sessions from
-	// being served after the remote TTL has expired.
-	Touch(ctx context.Context, id string) error
-
 	// Close performs cleanup of the storage backend.
 	// For local storage, this clears all sessions. For remote storage, it closes connections.
 	Close() error

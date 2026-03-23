@@ -199,24 +199,6 @@ func (*RedisStorage) DeleteExpired(_ context.Context, _ time.Time) error {
 	return nil
 }
 
-// Touch refreshes the Redis TTL for the given session ID without loading the
-// session data. Uses EXPIRE which is O(1) and far cheaper than GETEX.
-// Returns ErrSessionNotFound when the key does not exist (EXPIRE returns false),
-// so that RoutingStorage can detect and evict stale local-cache entries.
-func (s *RedisStorage) Touch(ctx context.Context, id string) error {
-	if id == "" {
-		return fmt.Errorf("cannot touch session with empty ID")
-	}
-	existed, err := s.client.Expire(ctx, s.key(id), s.ttl).Result()
-	if err != nil {
-		return fmt.Errorf("failed to touch session: %w", err)
-	}
-	if !existed {
-		return ErrSessionNotFound
-	}
-	return nil
-}
-
 // Close closes the underlying Redis client connection.
 func (s *RedisStorage) Close() error {
 	return s.client.Close()

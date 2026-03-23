@@ -91,7 +91,6 @@ func (alwaysFailStorage) Load(_ context.Context, _ string) (transportsession.Ses
 }
 func (alwaysFailStorage) Delete(_ context.Context, _ string) error           { return nil }
 func (alwaysFailStorage) DeleteExpired(_ context.Context, _ time.Time) error { return nil }
-func (alwaysFailStorage) Touch(_ context.Context, _ string) error            { return nil }
 func (alwaysFailStorage) Close() error                                       { return nil }
 
 // configurableFailStorage wraps a real storage and allows injecting failures

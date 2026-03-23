@@ -128,14 +128,6 @@ func (s *LocalStorage) DeleteExpired(ctx context.Context, before time.Time) erro
 	return nil
 }
 
-// Touch is a no-op for local storage because there is no TTL to refresh.
-func (*LocalStorage) Touch(_ context.Context, id string) error {
-	if id == "" {
-		return fmt.Errorf("cannot touch session with empty ID")
-	}
-	return nil
-}
-
 // Close clears all sessions from local storage.
 func (s *LocalStorage) Close() error {
 	// Collect keys first to avoid modifying map during iteration

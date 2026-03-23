@@ -28,17 +28,17 @@ func TestShouldAllowAnonymous_EdgeCases(t *testing.T) {
 		},
 		{
 			name:     "non-nil identity with token",
-			identity: &auth.Identity{Subject: "user", Token: "token"},
+			identity: &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "token"},
 			want:     false,
 		},
 		{
 			name:     "non-nil identity with empty token",
-			identity: &auth.Identity{Subject: "user", Token: ""},
+			identity: &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""},
 			want:     true, // Empty token is treated as anonymous
 		},
 		{
 			name:     "non-nil identity with empty subject",
-			identity: &auth.Identity{Subject: "", Token: "token"},
+			identity: &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: ""}, Token: "token"},
 			want:     false,
 		},
 	}

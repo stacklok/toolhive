@@ -320,7 +320,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
 			// Create a context with JWT claims
-			identity := &auth.Identity{Subject: "test-user", Claims: tc.claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "test-user", Claims: tc.claims}}
 			claimsCtx := auth.WithIdentity(ctx, identity)
 
 			// Test authorization
@@ -376,7 +376,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 					"name": "John Doe",
 					"role": "user",
 				}
-				identity := &auth.Identity{Subject: "", Claims: claims}
+				identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "", Claims: claims}}
 				return auth.WithIdentity(ctx, identity)
 			},
 			feature:     authorizers.MCPFeatureTool,
@@ -395,7 +395,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 					"name": "John Doe",
 					"role": "user",
 				}
-				identity := &auth.Identity{Subject: "", Claims: claims}
+				identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "", Claims: claims}}
 				return auth.WithIdentity(ctx, identity)
 			},
 			feature:     authorizers.MCPFeatureTool,
@@ -414,7 +414,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 					"name": "John Doe",
 					"role": "user",
 				}
-				identity := &auth.Identity{Subject: "user123", Claims: claims}
+				identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Claims: claims}}
 				return auth.WithIdentity(ctx, identity)
 			},
 			feature:     "invalid_feature",

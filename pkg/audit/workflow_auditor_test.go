@@ -151,8 +151,10 @@ func TestWorkflowAuditor_LogWorkflowStarted(t *testing.T) {
 			},
 			timeout: 30 * time.Second,
 			contextIdentity: &auth.Identity{
-				Subject: "user-123",
-				Email:   "user@example.com",
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user-123",
+					Email:   "user@example.com",
+				},
 			},
 			wantLogged:         true,
 			wantIncludeData:    true,
@@ -169,7 +171,9 @@ func TestWorkflowAuditor_LogWorkflowStarted(t *testing.T) {
 			parameters:   nil,
 			timeout:      1 * time.Minute,
 			contextIdentity: &auth.Identity{
-				Subject: "user-456",
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user-456",
+				},
 			},
 			wantLogged:         true,
 			wantIncludeData:    false,
@@ -516,12 +520,14 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 		{
 			name: "complete_identity",
 			identity: &auth.Identity{
-				Subject: "auth0|user-123",
-				Name:    "John Doe",
-				Email:   "john@example.com",
-				Claims: map[string]any{
-					"client_name":    "my-app",
-					"client_version": "1.2.3",
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "auth0|user-123",
+					Name:    "John Doe",
+					Email:   "john@example.com",
+					Claims: map[string]any{
+						"client_name":    "my-app",
+						"client_version": "1.2.3",
+					},
 				},
 			},
 			wantSubjects: map[string]string{
@@ -534,8 +540,10 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 		{
 			name: "email_fallback",
 			identity: &auth.Identity{
-				Subject: "user-456",
-				Email:   "user@example.com",
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user-456",
+					Email:   "user@example.com",
+				},
 			},
 			wantSubjects: map[string]string{
 				SubjectKeyUserID: "user-456",
@@ -545,9 +553,11 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 		{
 			name: "preferred_username_fallback",
 			identity: &auth.Identity{
-				Subject: "user-789",
-				Claims: map[string]any{
-					"preferred_username": "johndoe",
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user-789",
+					Claims: map[string]any{
+						"preferred_username": "johndoe",
+					},
 				},
 			},
 			wantSubjects: map[string]string{
@@ -657,9 +667,11 @@ func TestWorkflowAuditor_WritesValidJSONToFile(t *testing.T) {
 
 		// Create context with identity
 		ctx := auth.WithIdentity(context.Background(), &auth.Identity{
-			Subject: "test-user-123",
-			Email:   "workflow@example.com",
-			Name:    "Workflow Test User",
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "test-user-123",
+				Email:   "workflow@example.com",
+				Name:    "Workflow Test User",
+			},
 		})
 
 		// Log a workflow lifecycle

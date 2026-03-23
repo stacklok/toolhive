@@ -27,8 +27,8 @@ const testClientID = "test-client"
 
 func createTestIdentity(subject, token string) *auth.Identity {
 	return &auth.Identity{
-		Subject: subject,
-		Token:   token,
+		PrincipalInfo: auth.PrincipalInfo{Subject: subject},
+		Token:         token,
 	}
 }
 

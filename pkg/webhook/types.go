@@ -119,7 +119,8 @@ type Request struct {
 	// Timestamp is when the request was created.
 	Timestamp time.Time `json:"timestamp"`
 	// Principal contains the authenticated user's identity information.
-	Principal *auth.Identity `json:"principal"`
+	// Uses PrincipalInfo (not Identity) so credentials never enter the webhook payload.
+	Principal *auth.PrincipalInfo `json:"principal"`
 	// MCPRequest is the raw MCP JSON-RPC request.
 	MCPRequest json.RawMessage `json:"mcp_request"`
 	// Context provides additional metadata about the request origin.

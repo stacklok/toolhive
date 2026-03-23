@@ -233,8 +233,8 @@ func TestSessionFactory_Integration_MultipleBackends(t *testing.T) {
 func TestTokenBinding_CallerRejection(t *testing.T) {
 	t.Parallel()
 
-	identity := &auth.Identity{Subject: "alice", Token: "alice-token"}
-	wrongCaller := &auth.Identity{Subject: "bob", Token: "wrong-token"}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: "alice-token"}
+	wrongCaller := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "bob"}, Token: "wrong-token"}
 
 	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
 	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
@@ -286,7 +286,7 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 	}
 
 	const rawToken = "alice-real-token"
-	identity := &auth.Identity{Subject: "alice", Token: rawToken}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: rawToken}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
 	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, []*vmcp.Backend{backend})
@@ -318,7 +318,7 @@ func TestTokenBinding_DifferentSecretsProduceDifferentHashes(t *testing.T) {
 	t.Parallel()
 
 	const rawToken = "shared-token-same-for-both"
-	identity := &auth.Identity{Subject: "user", Token: rawToken}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: rawToken}
 
 	factoryA := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-A-exactly-32-bytes-long!!")))
 	factoryB := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-B-exactly-32-bytes-long!!")))
@@ -347,7 +347,7 @@ func TestTokenBinding_DifferentSecretsProduceDifferentHashes(t *testing.T) {
 func TestTokenBinding_MetadataEncoding(t *testing.T) {
 	t.Parallel()
 
-	identity := &auth.Identity{Subject: "user", Token: "test-token-123"}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token-123"}
 
 	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
 	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)

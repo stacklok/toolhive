@@ -185,7 +185,7 @@ func TestClientCallValidating(t *testing.T) {
 				Version:   APIVersion,
 				UID:       "test-uid",
 				Timestamp: time.Now(),
-				Principal: &auth.Identity{Subject: "user1"},
+				Principal: &auth.PrincipalInfo{Subject: "user1"},
 				Context: &RequestContext{
 					ServerName: "test-server",
 					SourceIP:   "127.0.0.1",
@@ -247,7 +247,7 @@ func TestClientCallMutating(t *testing.T) {
 		Version:   APIVersion,
 		UID:       "test-uid",
 		Timestamp: time.Now(),
-		Principal: &auth.Identity{Subject: "user1"},
+		Principal: &auth.PrincipalInfo{Subject: "user1"},
 		Context: &RequestContext{
 			ServerName: "test-server",
 			SourceIP:   "127.0.0.1",
@@ -294,7 +294,7 @@ func TestClientHMACSigningHeaders(t *testing.T) {
 		Version:   APIVersion,
 		UID:       "test-uid",
 		Timestamp: time.Now(),
-		Principal: &auth.Identity{Subject: "user1"},
+		Principal: &auth.PrincipalInfo{Subject: "user1"},
 		Context: &RequestContext{
 			ServerName: "test-server",
 			SourceIP:   "127.0.0.1",
@@ -341,7 +341,7 @@ func TestClientNoHMACHeadersWithoutSecret(t *testing.T) {
 		Version:   APIVersion,
 		UID:       "test-uid",
 		Timestamp: time.Now(),
-		Principal: &auth.Identity{Subject: "user1"},
+		Principal: &auth.PrincipalInfo{Subject: "user1"},
 		Context: &RequestContext{
 			ServerName: "test-server",
 			SourceIP:   "127.0.0.1",
@@ -464,7 +464,7 @@ func TestClientRequestContentType(t *testing.T) {
 		Version:   APIVersion,
 		UID:       "test-uid",
 		Timestamp: time.Now(),
-		Principal: &auth.Identity{Subject: "user1"},
+		Principal: &auth.PrincipalInfo{Subject: "user1"},
 		Context: &RequestContext{
 			ServerName: "test-server",
 			SourceIP:   "127.0.0.1",

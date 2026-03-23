@@ -384,7 +384,7 @@ func TestMiddleware(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			// Add claims to the request context
-			identity := &auth.Identity{Subject: "test-user", Claims: tc.claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "test-user", Claims: tc.claims}}
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
@@ -797,11 +797,11 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 			opts = append(opts, testkit.WithMiddlewares(
 				func(h http.Handler) http.Handler {
 					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						identity := &auth.Identity{
+						identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 							Subject: claims["sub"].(string),
 							Name:    claims["name"].(string),
 							Claims:  claims,
-						}
+						}}
 						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
 						h.ServeHTTP(w, r)
 					})
@@ -967,11 +967,11 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 			opts = append(opts, testkit.WithMiddlewares(
 				func(h http.Handler) http.Handler {
 					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						identity := &auth.Identity{
+						identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 							Subject: claims["sub"].(string),
 							Name:    claims["name"].(string),
 							Claims:  claims,
-						}
+						}}
 						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
 						h.ServeHTTP(w, r)
 					})

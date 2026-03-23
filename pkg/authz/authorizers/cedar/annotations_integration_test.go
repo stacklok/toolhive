@@ -107,7 +107,7 @@ func TestAuthorizeWithToolAnnotations(t *testing.T) {
 				"sub":  "user123",
 				"name": "Test User",
 			}
-			identity := &auth.Identity{Subject: "user123", Claims: claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Claims: claims}}
 			ctx = auth.WithIdentity(ctx, identity)
 
 			// Add annotations to context if provided

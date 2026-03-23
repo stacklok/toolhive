@@ -56,7 +56,7 @@ type RunConfig struct {
 
 	// Upstreams configures connections to upstream Identity Providers.
 	// At least one upstream is required - the server delegates authentication to these providers.
-	// Currently only a single upstream is supported.
+	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -318,7 +318,7 @@ type Config struct {
 
 	// Upstreams contains configurations for connecting to upstream IDPs.
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
-	// Currently only a single upstream is supported.
+	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -389,10 +389,6 @@ func (c *Config) validateUpstreams() error {
 	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("at least one upstream is required")
 	}
-	if len(c.Upstreams) > 1 {
-		return fmt.Errorf("multiple upstreams not yet supported (found %d)", len(c.Upstreams))
-	}
-
 	// Track names for uniqueness checking
 	seenNames := make(map[string]bool)
 

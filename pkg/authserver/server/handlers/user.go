@@ -98,7 +98,7 @@ func (r *UserResolver) createUserWithIdentity(
 		return nil, fmt.Errorf("failed to link provider identity: %w", err)
 	}
 
-	slog.Info("created new user with provider identity",
+	slog.Debug("created new user with provider identity",
 		"user_id", user.ID,
 		"provider_id", providerID,
 	)

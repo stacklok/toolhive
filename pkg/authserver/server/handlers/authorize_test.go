@@ -156,29 +156,14 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
-func TestAuthorizeHandler_NoIDPProvider(t *testing.T) {
+func TestNewHandler_ErrorsOnEmptyUpstreams(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := handlerTestSetup(t)
-	// Remove upstream provider
-	handler.upstream = nil
 
-	params := url.Values{
-		"client_id":             {testAuthClientID},
-		"redirect_uri":          {testAuthRedirectURI},
-		"response_type":         {"code"},
-		"state":                 {"test-state"},
-		"code_challenge":        {"challenge123"},
-		"code_challenge_method": {"S256"},
-	}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
-	rec := httptest.NewRecorder()
+	_, err := NewHandler(nil, nil, nil, nil)
+	require.Error(t, err, "NewHandler should error when upstreams is nil")
 
-	handler.AuthorizeHandler(rec, req)
-
-	// fosite uses 303 See Other for error redirects per RFC 6749
-	assert.Equal(t, http.StatusSeeOther, rec.Code)
-	location := rec.Header().Get("Location")
-	assert.Contains(t, location, "error=server_error")
+	_, err = NewHandler(nil, nil, nil, []NamedUpstream{})
+	require.Error(t, err, "NewHandler should error when upstreams is empty slice")
 }
 
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {

@@ -857,6 +857,94 @@ func TestMCPRemoteProxyValidateCABundleRef(t *testing.T) {
 			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefValid,
 		},
 		{
+			name: "CABundleRef with nil ConfigMapRef",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nil-cmref-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: nil,
+							},
+						},
+					},
+				},
+			},
+			expectCondition: false,
+		},
+		{
+			name: "CABundleRef with empty ConfigMap name fails validation",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-name-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+									Key:                  "ca.crt",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectCondition: true,
+			expectedStatus:  metav1.ConditionFalse,
+			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefInvalid,
+		},
+		{
+			name: "valid CABundleRef with default key",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-key-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle-default"},
+									Key:                  "",
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ca-bundle-default",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"ca.crt": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+				},
+			},
+			expectCondition: true,
+			expectedStatus:  metav1.ConditionTrue,
+			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefValid,
+		},
+		{
 			name: "CABundleRef referencing non-existent ConfigMap",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{

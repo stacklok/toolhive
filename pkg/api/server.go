@@ -32,13 +32,16 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
@@ -251,7 +254,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			_ = store.Close()
 			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
 		}
-		registry, regErr := ociskills.NewRegistry()
+		ociRegistry, regErr := newOCIRegistryClient()
 		if regErr != nil {
 			_ = store.Close()
 			// ociStore is directory-backed with no open handles; no cleanup needed.
@@ -259,13 +262,17 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		}
 		packager := ociskills.NewPackager(ociStore)
 
-		b.skillManager = skillsvc.New(store,
+		skillOpts := []skillsvc.Option{
 			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
 			skillsvc.WithOCIStore(ociStore),
 			skillsvc.WithPackager(packager),
-			skillsvc.WithRegistryClient(registry),
+			skillsvc.WithRegistryClient(ociRegistry),
 			skillsvc.WithGroupManager(b.groupManager),
-		)
+		}
+
+		skillOpts = append(skillOpts, skillsvc.WithSkillLookup(lazySkillLookup{}))
+
+		b.skillManager = skillsvc.New(store, skillOpts...)
 	}
 
 	return nil
@@ -593,6 +600,31 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 	}
 
 	return listener, addrType, nil
+}
+
+// newOCIRegistryClient creates an OCI registry client. In dev mode
+// (TOOLHIVE_DEV=true), plain HTTP is enabled for local test registries.
+func newOCIRegistryClient() (ociskills.RegistryClient, error) {
+	var opts []ociskills.RegistryOption
+	if os.Getenv("TOOLHIVE_DEV") == "true" {
+		opts = append(opts, ociskills.WithPlainHTTP(true))
+	}
+	return ociskills.NewRegistry(opts...)
+}
+
+// lazySkillLookup implements skillsvc.SkillLookup by resolving the registry
+// provider on each call. This ensures that registry config changes (via
+// thv config set-registry or the API) are picked up without restarting
+// the server, because ResetDefaultProvider clears the cached provider and
+// the next GetDefaultProviderWithConfig call creates a fresh one.
+type lazySkillLookup struct{}
+
+func (lazySkillLookup) SearchSkills(query string) ([]regtypes.Skill, error) {
+	provider, err := registry.GetDefaultProviderWithConfig(config.NewDefaultProvider())
+	if err != nil {
+		return nil, err
+	}
+	return provider.SearchSkills(query)
 }
 
 // clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.

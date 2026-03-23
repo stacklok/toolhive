@@ -78,6 +78,14 @@ var _ = Describe("Skills CLI", Label("api", "cli", "skills", "e2e"), func() {
 		It("should install a skill and list it", func() {
 			skillName := fmt.Sprintf("cli-install-%d", GinkgoRandomSeed())
 
+			By("Creating and building the skill")
+			parentDir := GinkgoT().TempDir()
+			skillDir := filepath.Join(parentDir, skillName)
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+			skillMD := fmt.Sprintf("---\nname: %s\ndescription: CLI install test\nversion: 1.0.0\n---\n# %s\n", skillName, skillName)
+			Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0o644)).To(Succeed())
+			thvSkillCmd("build", skillDir).ExpectSuccess()
+
 			By("Installing the skill")
 			thvSkillCmd("install", skillName).ExpectSuccess()
 
@@ -96,6 +104,14 @@ var _ = Describe("Skills CLI", Label("api", "cli", "skills", "e2e"), func() {
 	Describe("thv skill info", func() {
 		It("should show info for an installed skill", func() {
 			skillName := fmt.Sprintf("cli-info-%d", GinkgoRandomSeed())
+
+			By("Creating and building the skill")
+			parentDir := GinkgoT().TempDir()
+			skillDir := filepath.Join(parentDir, skillName)
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+			skillMD := fmt.Sprintf("---\nname: %s\ndescription: CLI info test\nversion: 1.0.0\n---\n# %s\n", skillName, skillName)
+			Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0o644)).To(Succeed())
+			thvSkillCmd("build", skillDir).ExpectSuccess()
 
 			By("Installing the skill")
 			thvSkillCmd("install", skillName).ExpectSuccess()
@@ -118,6 +134,14 @@ var _ = Describe("Skills CLI", Label("api", "cli", "skills", "e2e"), func() {
 	Describe("thv skill uninstall", func() {
 		It("should uninstall an installed skill", func() {
 			skillName := fmt.Sprintf("cli-uninstall-%d", GinkgoRandomSeed())
+
+			By("Creating and building the skill")
+			parentDir := GinkgoT().TempDir()
+			skillDir := filepath.Join(parentDir, skillName)
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+			skillMD := fmt.Sprintf("---\nname: %s\ndescription: CLI uninstall test\nversion: 1.0.0\n---\n# %s\n", skillName, skillName)
+			Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0o644)).To(Succeed())
+			thvSkillCmd("build", skillDir).ExpectSuccess()
 
 			By("Installing the skill")
 			thvSkillCmd("install", skillName).ExpectSuccess()
@@ -167,7 +191,7 @@ A test skill for the full CLI lifecycle.
 			By("Building the skill")
 			thvSkillCmd("build", skillDir).ExpectSuccess()
 
-			By("Installing the skill by name (pending)")
+			By("Installing the skill by name (from local store)")
 			thvSkillCmd("install", skillName).ExpectSuccess()
 
 			By("Listing skills — should contain the skill")

@@ -117,6 +117,67 @@ func TestRewriteFallsBackToStaticTargetWhenNoBackendURL(t *testing.T) {
 	assert.True(t, defaultHit.Load(), "request should have been forwarded to the static defaultBackend")
 }
 
+// TestRoundTripReturns400ForUnknownSession verifies that a non-initialize
+// request with an unrecognized session ID is rejected with HTTP 400.
+func TestRoundTripReturns400ForUnknownSession(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	tt := &tracingTransport{base: http.DefaultTransport, p: NewTransparentProxyWithOptions(
+		"localhost", 0, backend.URL,
+		nil, nil, nil,
+		false, false, "sse",
+		nil, nil, "", false,
+		nil,
+	)}
+
+	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
+		strings.NewReader(`{"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown
+
+	resp, err := tt.RoundTrip(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	_ = resp.Body.Close()
+}
+
+// TestRoundTripAllowsInitializeWithUnknownSession verifies that an initialize
+// call is forwarded even when its Mcp-Session-Id is not yet in the session store.
+func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Mcp-Session-Id", uuid.New().String())
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	tt := &tracingTransport{base: http.DefaultTransport, p: NewTransparentProxyWithOptions(
+		"localhost", 0, backend.URL,
+		nil, nil, nil,
+		false, false, "sse",
+		nil, nil, "", false,
+		nil,
+	)}
+
+	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
+		strings.NewReader(`{"method":"initialize"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown but initialize
+
+	resp, err := tt.RoundTrip(req)
+	require.NoError(t, err)
+	require.NotEqual(t, http.StatusBadRequest, resp.StatusCode)
+	_ = resp.Body.Close()
+}
+
 // TestRoundTripStoresBackendURLOnInitialize verifies that when an initialize
 // response returns Mcp-Session-Id, the created session's backend_url = p.targetURI.
 func TestRoundTripStoresBackendURLOnInitialize(t *testing.T) {

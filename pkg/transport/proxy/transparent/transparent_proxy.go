@@ -402,6 +402,25 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		sawInitialize = t.detectInitialize(reqBody)
 	}
 
+	// Guard: reject non-initialize requests with unknown session IDs.
+	// When multiple proxyrunner replicas share a Redis session store,
+	// a valid session will always be found. If it isn't, the session
+	// has expired or the request carries a stale/forged session ID.
+	if sid := req.Header.Get("Mcp-Session-Id"); sid != "" {
+		if _, ok := t.p.sessionManager.Get(normalizeSessionID(sid)); !ok && !sawInitialize {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Proto:      "HTTP/1.1",
+				ProtoMajor: 1,
+				ProtoMinor: 1,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unknown session\n")),
+				Request:    req,
+			}, nil
+		}
+	}
+
 	resp, err := t.forward(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

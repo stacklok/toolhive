@@ -64,7 +64,7 @@ func TestMCPRemoteProxyValidateCABundleRefStatusUpdateError(t *testing.T) {
 		WithRuntimeObjects(proxy, caBundleCM).
 		WithStatusSubresource(proxy).
 		WithInterceptorFuncs(interceptor.Funcs{
-			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object, _ ...client.SubResourceUpdateOption) error {
 				// Fail status updates to exercise the error path in updateCABundleStatusForProxy
 				return fmt.Errorf("simulated status update failure")
 			},

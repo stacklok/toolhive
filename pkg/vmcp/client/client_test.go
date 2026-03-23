@@ -8,11 +8,13 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/propagation"
@@ -782,6 +784,73 @@ func TestResolveAuthStrategy(t *testing.T) {
 				if tt.checkStrategy != nil {
 					tt.checkStrategy(t, strategy)
 				}
+			}
+		})
+	}
+}
+
+// TestWrapBackendError verifies that wrapBackendError maps mcp-go transport sentinel
+// errors to the correct vmcp sentinel errors for downstream health monitoring.
+func TestWrapBackendError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		err             error
+		wantSentinel    error
+		wantMsgContains string
+	}{
+		{
+			name:         "nil error returns nil",
+			err:          nil,
+			wantSentinel: nil,
+		},
+		{
+			// mcp-go returns ErrUnauthorized for 401 on initialize POST.
+			// Must map to ErrAuthenticationFailed so health monitors classify
+			// the backend as BackendUnauthenticated, not BackendUnhealthy.
+			name:         "ErrUnauthorized maps to ErrAuthenticationFailed",
+			err:          transport.ErrUnauthorized,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// errors.Is traverses the error chain, so wrapping ErrUnauthorized
+			// in another error must still produce ErrAuthenticationFailed.
+			name:         "wrapped ErrUnauthorized maps to ErrAuthenticationFailed",
+			err:          fmt.Errorf("transport layer: %w", transport.ErrUnauthorized),
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// mcp-go returns ErrLegacySSEServer for non-401 4xx on initialize POST
+			// (e.g. 403, 404, 405). Classified as backend unavailable so the health
+			// monitor can recover if the backend is later corrected.
+			name:            "ErrLegacySSEServer maps to ErrBackendUnavailable",
+			err:             transport.ErrLegacySSEServer,
+			wantSentinel:    vmcp.ErrBackendUnavailable,
+			wantMsgContains: "legacy SSE",
+		},
+		{
+			name:         "context.DeadlineExceeded maps to ErrTimeout",
+			err:          context.DeadlineExceeded,
+			wantSentinel: vmcp.ErrTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := wrapBackendError(tt.err, "test-backend", "initialize")
+
+			if tt.err == nil {
+				assert.NoError(t, result)
+				return
+			}
+
+			require.Error(t, result)
+			assert.ErrorIs(t, result, tt.wantSentinel)
+			if tt.wantMsgContains != "" {
+				assert.Contains(t, result.Error(), tt.wantMsgContains)
 			}
 		})
 	}

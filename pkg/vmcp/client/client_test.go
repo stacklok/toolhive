@@ -89,6 +89,21 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 	})
 }
 
+// TestNewBackendTransport_IsolatesFromDefault verifies that newBackendTransport never
+// returns http.DefaultTransport itself, preventing stale keep-alive connections on one
+// backend from affecting requests to other backends or future calls.
+func TestNewBackendTransport_IsolatesFromDefault(t *testing.T) {
+	t.Parallel()
+
+	t1 := newBackendTransport()
+	t2 := newBackendTransport()
+
+	// Each call must return a distinct transport — not the shared DefaultTransport.
+	assert.NotSame(t, http.DefaultTransport, t1, "newBackendTransport must not return http.DefaultTransport")
+	assert.NotSame(t, http.DefaultTransport, t2, "newBackendTransport must not return http.DefaultTransport")
+	assert.NotSame(t, t1, t2, "each call must return a distinct *http.Transport")
+}
+
 func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
 	t.Parallel()
 

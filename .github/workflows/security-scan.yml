@@ -32,7 +32,7 @@ jobs:
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8 # v4
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}

@@ -445,7 +445,9 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			slog.Debug("detected Mcp-Session-Id header", "session_id", ct)
 			internalID := normalizeSessionID(ct)
 			if _, ok := t.p.sessionManager.Get(internalID); !ok {
-				if err := t.p.sessionManager.AddWithID(internalID); err != nil {
+				sess := session.NewProxySession(internalID)
+				sess.SetMetadata("backend_url", t.p.targetURI)
+				if err := t.p.sessionManager.AddSession(sess); err != nil {
 					//nolint:gosec // G706: session ID from HTTP response header
 					slog.Error("failed to create session from header",
 						"session_id", ct, "error", err)
@@ -523,6 +525,21 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
 			pr.SetXForwarded()
+
+			// Route to the originating backend pod when session metadata contains backend_url.
+			// Falls back to static targetURL when the session doesn't exist or has no backend_url.
+			if sid := pr.In.Header.Get("Mcp-Session-Id"); sid != "" {
+				if sess, ok := p.sessionManager.Get(normalizeSessionID(sid)); ok {
+					if backendURLStr := sess.GetMetadata()["backend_url"]; backendURLStr != "" {
+						if parsed, err := url.Parse(backendURLStr); err == nil {
+							pr.Out.URL = parsed
+						} else {
+							slog.Debug("failed to parse backend_url from session metadata, using static target",
+								"backend_url", backendURLStr, "error", err)
+						}
+					}
+				}
+			}
 
 			// Stash the original inbound request in the outbound request's
 			// context so that ModifyResponse (SSE response processor) can

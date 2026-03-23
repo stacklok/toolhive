@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -1922,4 +1923,19 @@ func TestTransparentProxy_ServerHasIdleTimeout(t *testing.T) {
 	require.NotNil(t, proxy.server)
 	assert.Equal(t, 120*time.Second, proxy.server.IdleTimeout,
 		"HTTP server should have IdleTimeout set to 120s")
+}
+
+func TestWithSessionStorage(t *testing.T) {
+	t.Parallel()
+	storage := session.NewLocalStorage()
+	proxy := NewTransparentProxyWithOptions(
+		"localhost", 0, "http://localhost:9090",
+		nil, nil, nil,
+		false, false, "sse",
+		nil, nil, "", false,
+		nil,
+		WithSessionStorage(storage),
+	)
+	require.NotNil(t, proxy)
+	require.NotNil(t, proxy.sessionManager)
 }

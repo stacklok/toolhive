@@ -218,6 +218,23 @@ func withShutdownTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithSessionStorage injects a custom storage backend into the session manager.
+// When not provided, the proxy uses in-memory LocalStorage (single-replica default).
+// Provide a Redis-backed storage for multi-replica deployments so all replicas
+// share the same session store.
+func WithSessionStorage(storage session.Storage) Option {
+	return func(p *TransparentProxy) {
+		if p.sessionManager != nil {
+			_ = p.sessionManager.Stop()
+		}
+		p.sessionManager = session.NewManagerWithStorage(
+			session.DefaultSessionTTL,
+			func(id string) session.Session { return session.NewProxySession(id) },
+			storage,
+		)
+	}
+}
+
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
 // The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.

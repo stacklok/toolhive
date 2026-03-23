@@ -19,7 +19,7 @@ func TestDeleteSessionCleanup(t *testing.T) {
 	tests := []struct {
 		name             string
 		seedSession      bool   // whether to pre-populate a session in the manager
-		sessionID        string // the session ID to seed and/or reference
+		sessionID        string // the session ID to seed and/or reference (must be a valid UUID)
 		deleteHeader     string // value of Mcp-Session-Id header on the DELETE request ("" = omit header)
 		deleteStatusCode int    // status code the upstream returns for the DELETE
 		expectSession    bool   // whether the session should exist after the DELETE
@@ -27,31 +27,31 @@ func TestDeleteSessionCleanup(t *testing.T) {
 		{
 			name:             "DELETE with 200 removes session",
 			seedSession:      true,
-			sessionID:        "sess-delete-200",
-			deleteHeader:     "sess-delete-200",
+			sessionID:        "cccccccc-0001-0001-0001-000000000001",
+			deleteHeader:     "cccccccc-0001-0001-0001-000000000001",
 			deleteStatusCode: http.StatusOK,
 			expectSession:    false,
 		},
 		{
 			name:             "DELETE with 404 removes session",
 			seedSession:      true,
-			sessionID:        "sess-delete-404",
-			deleteHeader:     "sess-delete-404",
+			sessionID:        "cccccccc-0002-0002-0002-000000000002",
+			deleteHeader:     "cccccccc-0002-0002-0002-000000000002",
 			deleteStatusCode: http.StatusNotFound,
 			expectSession:    false,
 		},
 		{
 			name:             "DELETE with 500 does not remove session",
 			seedSession:      true,
-			sessionID:        "sess-delete-500",
-			deleteHeader:     "sess-delete-500",
+			sessionID:        "cccccccc-0003-0003-0003-000000000003",
+			deleteHeader:     "cccccccc-0003-0003-0003-000000000003",
 			deleteStatusCode: http.StatusInternalServerError,
 			expectSession:    true,
 		},
 		{
 			name:             "DELETE without Mcp-Session-Id header does nothing",
 			seedSession:      true,
-			sessionID:        "sess-no-header",
+			sessionID:        "cccccccc-0004-0004-0004-000000000004",
 			deleteHeader:     "",
 			deleteStatusCode: http.StatusOK,
 			expectSession:    true,
@@ -59,8 +59,8 @@ func TestDeleteSessionCleanup(t *testing.T) {
 		{
 			name:             "DELETE for non-existent session does not error",
 			seedSession:      false,
-			sessionID:        "sess-nonexistent",
-			deleteHeader:     "sess-nonexistent",
+			sessionID:        "cccccccc-0005-0005-0005-000000000005",
+			deleteHeader:     "cccccccc-0005-0005-0005-000000000005",
 			deleteStatusCode: http.StatusOK,
 			expectSession:    false,
 		},

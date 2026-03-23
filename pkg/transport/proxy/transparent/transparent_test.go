@@ -65,7 +65,7 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 
 	// side-effect: proxy should have seen session
 	assert.True(t, proxy.serverInitialized(), "server should have been initialized")
-	_, ok := proxy.sessionManager.Get("ABC123")
+	_, ok := proxy.sessionManager.Get(normalizeSessionID("ABC123"))
 	assert.True(t, ok, "sessionManager should have stored ABC123")
 }
 
@@ -130,7 +130,7 @@ func TestHeaderBasedSessionInitialization(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 
 	assert.True(t, p.serverInitialized(), "server should not be initialized for application/json")
-	_, ok := p.sessionManager.Get("XYZ789")
+	_, ok := p.sessionManager.Get(normalizeSessionID("XYZ789"))
 	assert.True(t, ok, "no session should be added")
 }
 
@@ -869,7 +869,7 @@ func TestSSEEndpointRewriting(t *testing.T) {
 	assert.Contains(t, bodyLines, "event: endpoint")
 
 	// Session should still be tracked
-	_, ok := proxy.sessionManager.Get("ABC123")
+	_, ok := proxy.sessionManager.Get(normalizeSessionID("ABC123"))
 	assert.True(t, ok, "sessionManager should have stored ABC123")
 }
 

@@ -413,7 +413,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if req.Method == http.MethodDelete &&
 		(resp.StatusCode >= 200 && resp.StatusCode < 300 || resp.StatusCode == http.StatusNotFound) {
 		if sid := req.Header.Get("Mcp-Session-Id"); sid != "" {
-			if err := t.p.sessionManager.Delete(sid); err != nil {
+			if err := t.p.sessionManager.Delete(normalizeSessionID(sid)); err != nil {
 				slog.Debug("failed to delete session from transparent proxy",
 					"session_id", sid, "error", err)
 			}
@@ -426,8 +426,9 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if ct != "" {
 			//nolint:gosec // G706: logging session ID from HTTP response header
 			slog.Debug("detected Mcp-Session-Id header", "session_id", ct)
-			if _, ok := t.p.sessionManager.Get(ct); !ok {
-				if err := t.p.sessionManager.AddWithID(ct); err != nil {
+			internalID := normalizeSessionID(ct)
+			if _, ok := t.p.sessionManager.Get(internalID); !ok {
+				if err := t.p.sessionManager.AddWithID(internalID); err != nil {
 					//nolint:gosec // G706: session ID from HTTP response header
 					slog.Error("failed to create session from header",
 						"session_id", ct, "error", err)

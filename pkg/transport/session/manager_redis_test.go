@@ -4,6 +4,7 @@
 package session
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(time.Hour, proxyFactory, RedisConfig{
+		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr:      mr.Addr(),
 			KeyPrefix: "test:mgr:",
 		})
@@ -37,7 +38,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 	t.Run("invalid config returns error", func(t *testing.T) {
 		t.Parallel()
 		// Missing KeyPrefix → validateRedisConfig fails before Ping
-		m, err := NewManagerWithRedis(time.Hour, proxyFactory, RedisConfig{
+		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr: "localhost:6379",
 		})
 		require.Error(t, err)
@@ -46,7 +47,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 
 	t.Run("invalid TLS CA cert returns error", func(t *testing.T) {
 		t.Parallel()
-		m, err := NewManagerWithRedis(time.Hour, proxyFactory, RedisConfig{
+		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr:      "localhost:6379",
 			KeyPrefix: "test:mgr:",
 			TLS:       &RedisTLSConfig{CACert: []byte("not-valid-pem")},
@@ -60,18 +61,19 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(time.Hour, proxyFactory, RedisConfig{
+		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr:      mr.Addr(),
 			KeyPrefix: "test:mgr:",
 		})
 		require.NoError(t, err)
 		defer m.Stop()
 
-		require.NoError(t, m.AddWithID("rt-session"))
+		const rtSessionID = "bbbbbbbb-0001-0001-0001-000000000001"
+		require.NoError(t, m.AddWithID(rtSessionID))
 
-		sess, ok := m.Get("rt-session")
+		sess, ok := m.Get(rtSessionID)
 		require.True(t, ok)
-		assert.Equal(t, "rt-session", sess.ID())
+		assert.Equal(t, rtSessionID, sess.ID())
 	})
 
 	t.Run("Stop closes Redis client", func(t *testing.T) {
@@ -79,17 +81,17 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(time.Hour, proxyFactory, RedisConfig{
+		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr:      mr.Addr(),
 			KeyPrefix: "test:mgr:",
 		})
 		require.NoError(t, err)
 
-		require.NoError(t, m.AddWithID("pre-stop"))
+		require.NoError(t, m.AddWithID("bbbbbbbb-0002-0001-0001-000000000002"))
 		require.NoError(t, m.Stop())
 
-		// After Stop, storage is closed; further operations should fail
-		err = m.AddWithID("post-stop")
+		// After Stop, storage is closed; further operations should fail with a Redis error.
+		err = m.AddWithID("bbbbbbbb-0003-0001-0001-000000000003")
 		assert.Error(t, err)
 	})
 }

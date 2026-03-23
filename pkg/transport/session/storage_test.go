@@ -619,21 +619,23 @@ func TestManagerWithStorage(t *testing.T) {
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
+		const localMgrID = "aaaaaaaa-1001-1001-1001-000000000001"
+
 		// Add a session
-		err := manager.AddWithID("test-session-1")
+		err := manager.AddWithID(localMgrID)
 		require.NoError(t, err)
 
 		// Get the session
-		session, found := manager.Get("test-session-1")
+		session, found := manager.Get(localMgrID)
 		assert.True(t, found)
 		assert.NotNil(t, session)
-		assert.Equal(t, "test-session-1", session.ID())
+		assert.Equal(t, localMgrID, session.ID())
 
 		// Delete the session
-		manager.Delete("test-session-1")
+		manager.Delete(localMgrID)
 
 		// Should not be found
-		session, found = manager.Get("test-session-1")
+		session, found = manager.Get(localMgrID)
 		assert.False(t, found)
 		assert.Nil(t, session)
 	})
@@ -649,12 +651,14 @@ func TestManagerWithStorage(t *testing.T) {
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
+		const sseMgrID = "aaaaaaaa-1002-1002-1002-000000000002"
+
 		// Add a session
-		err := manager.AddWithID("sse-session-1")
+		err := manager.AddWithID(sseMgrID)
 		require.NoError(t, err)
 
 		// Get the session
-		session, found := manager.Get("sse-session-1")
+		session, found := manager.Get(sseMgrID)
 		assert.True(t, found)
 		assert.NotNil(t, session)
 		assert.Equal(t, SessionTypeSSE, session.Type())
@@ -670,8 +674,10 @@ func TestManagerWithStorage(t *testing.T) {
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
+		const customMgrID = "aaaaaaaa-1003-1003-1003-000000000003"
+
 		// Create a custom session
-		customSession := NewTypedProxySession("custom-1", SessionTypeStreamable)
+		customSession := NewTypedProxySession(customMgrID, SessionTypeStreamable)
 		customSession.SetMetadata("custom", "metadata")
 
 		// Add the custom session
@@ -679,7 +685,7 @@ func TestManagerWithStorage(t *testing.T) {
 		require.NoError(t, err)
 
 		// Get the session
-		session, found := manager.Get("custom-1")
+		session, found := manager.Get(customMgrID)
 		assert.True(t, found)
 		assert.NotNil(t, session)
 		assert.Equal(t, SessionTypeStreamable, session.Type())
@@ -701,9 +707,15 @@ func TestManagerWithStorage(t *testing.T) {
 		// Initially empty
 		assert.Equal(t, 0, manager.Count())
 
+		countIDs := []string{
+			"aaaaaaaa-1004-1004-1004-000000000001",
+			"aaaaaaaa-1004-1004-1004-000000000002",
+			"aaaaaaaa-1004-1004-1004-000000000003",
+		}
+
 		// Add sessions
-		for i := 0; i < 3; i++ {
-			err := manager.AddWithID(fmt.Sprintf("session-%d", i))
+		for _, id := range countIDs {
+			err := manager.AddWithID(id)
 			require.NoError(t, err)
 		}
 
@@ -722,7 +734,11 @@ func TestManagerWithStorage(t *testing.T) {
 		defer manager.Stop()
 
 		// Add sessions
-		ids := []string{"one", "two", "three"}
+		ids := []string{
+			"aaaaaaaa-1005-1005-1005-000000000001",
+			"aaaaaaaa-1005-1005-1005-000000000002",
+			"aaaaaaaa-1005-1005-1005-000000000003",
+		}
 		for _, id := range ids {
 			err := manager.AddWithID(id)
 			require.NoError(t, err)

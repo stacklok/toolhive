@@ -56,7 +56,7 @@ type RunConfig struct {
 
 	// Upstreams configures connections to upstream Identity Providers.
 	// At least one upstream is required - the server delegates authentication to these providers.
-	// Currently only a single upstream is supported.
+	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -318,7 +318,7 @@ type Config struct {
 
 	// Upstreams contains configurations for connecting to upstream IDPs.
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
-	// Currently only a single upstream is supported.
+	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -337,16 +337,6 @@ type Config struct {
 	// When empty, any request with a "resource" parameter will be rejected with
 	// "invalid_target". Configure this for proper MCP specification compliance.
 	AllowedAudiences []string
-}
-
-// GetUpstream returns the primary upstream configuration.
-// For current single-upstream deployments, this returns the only configured upstream.
-// Returns nil if no upstreams are configured (call Validate first).
-func (c *Config) GetUpstream() *UpstreamConfig {
-	if len(c.Upstreams) == 0 {
-		return nil
-	}
-	return &c.Upstreams[0]
 }
 
 // Validate checks that the Config is valid.
@@ -389,19 +379,25 @@ func (c *Config) validateUpstreams() error {
 	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("at least one upstream is required")
 	}
-	if len(c.Upstreams) > 1 {
-		return fmt.Errorf("multiple upstreams not yet supported (found %d)", len(c.Upstreams))
-	}
-
 	// Track names for uniqueness checking
 	seenNames := make(map[string]bool)
 
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
 
-		// Default empty name to "default"
-		if up.Name == "" {
-			up.Name = "default"
+		// For single upstream, default empty name to "default".
+		// For multi-upstream, require explicit non-"default" names.
+		if len(c.Upstreams) == 1 {
+			if up.Name == "" {
+				up.Name = "default"
+			}
+		} else {
+			if up.Name == "" {
+				return fmt.Errorf("upstream[%d]: name must be explicitly set when multiple upstreams are configured", i)
+			}
+			if up.Name == "default" {
+				return fmt.Errorf("upstream[%d]: name %q is reserved for single-upstream configs; use a descriptive name", i, up.Name)
+			}
 		}
 
 		// Check for duplicate names

@@ -784,11 +784,6 @@ type MiddlewareRunner interface {
 
     // GetConfig returns a config interface for middleware to access runner configuration
     GetConfig() RunnerConfig
-
-    // GetUpstreamTokenService returns a lazy accessor for the upstream token service.
-    // Returns a function that provides the service at request time.
-    // Used by upstream swap middleware to get valid upstream tokens (with transparent refresh).
-    GetUpstreamTokenService() func() upstreamtoken.Service
 }
 ```
 

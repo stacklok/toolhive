@@ -1139,6 +1139,9 @@ type storedPendingAuthorization struct {
 	UpstreamNonce        string   `json:"upstream_nonce"`
 	UpstreamProviderName string   `json:"upstream_provider_name,omitempty"`
 	SessionID            string   `json:"session_id,omitempty"`
+	ResolvedUserID       string   `json:"resolved_user_id,omitempty"`
+	ResolvedUserName     string   `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail    string   `json:"resolved_user_email,omitempty"`
 	CreatedAt            int64    `json:"created_at"`
 }
 
@@ -1165,6 +1168,9 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		UpstreamNonce:        pending.UpstreamNonce,
 		UpstreamProviderName: pending.UpstreamProviderName,
 		SessionID:            pending.SessionID,
+		ResolvedUserID:       pending.ResolvedUserID,
+		ResolvedUserName:     pending.ResolvedUserName,
+		ResolvedUserEmail:    pending.ResolvedUserEmail,
 		CreatedAt:            pending.CreatedAt.Unix(),
 	}
 
@@ -1212,6 +1218,9 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 		UpstreamNonce:        stored.UpstreamNonce,
 		UpstreamProviderName: stored.UpstreamProviderName,
 		SessionID:            stored.SessionID,
+		ResolvedUserID:       stored.ResolvedUserID,
+		ResolvedUserName:     stored.ResolvedUserName,
+		ResolvedUserEmail:    stored.ResolvedUserEmail,
 		CreatedAt:            createdAt,
 	}, nil
 }

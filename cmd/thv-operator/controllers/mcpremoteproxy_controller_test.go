@@ -699,6 +699,42 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			expectedCondStatus: metav1.ConditionFalse,
 			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 		},
+		{
+			name: "embedded auth server with multiple upstreams accepted",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-upstream-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "multi-upstream-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-upstream-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+							{Name: "github", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id1"}},
+							{Name: "google", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://accounts.google.com", ClientID: "id2"}},
+						},
+					},
+				},
+				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
+			},
+			expectError:        false,
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+		},
 	}
 
 	for _, tt := range tests {

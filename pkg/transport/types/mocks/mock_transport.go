@@ -123,18 +123,18 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetConfig))
 }
 
-// GetUpstreamTokenService mocks base method.
-func (m *MockMiddlewareRunner) GetUpstreamTokenService() func() upstreamtoken.Service {
+// GetUpstreamTokenReader mocks base method.
+func (m *MockMiddlewareRunner) GetUpstreamTokenReader() upstreamtoken.UpstreamTokenReader {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUpstreamTokenService")
-	ret0, _ := ret[0].(func() upstreamtoken.Service)
+	ret := m.ctrl.Call(m, "GetUpstreamTokenReader")
+	ret0, _ := ret[0].(upstreamtoken.UpstreamTokenReader)
 	return ret0
 }
 
-// GetUpstreamTokenService indicates an expected call of GetUpstreamTokenService.
-func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenService() *gomock.Call {
+// GetUpstreamTokenReader indicates an expected call of GetUpstreamTokenReader.
+func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenReader() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenService", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenService))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenReader", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenReader))
 }
 
 // SetAuthInfoHandler mocks base method.

@@ -42,6 +42,13 @@ type Identity struct {
 
 	// Metadata stores additional identity information.
 	Metadata map[string]string
+
+	// UpstreamTokens maps upstream provider names to their access tokens.
+	// This is populated by the auth middleware when an embedded auth server
+	// is active and the JWT contains a token session ID (tsid claim).
+	// Redacted in MarshalJSON() to prevent token leakage.
+	// MUST NOT be mutated after the Identity is placed in the request context.
+	UpstreamTokens map[string]string
 }
 
 // String returns a string representation of the Identity with sensitive fields redacted.
@@ -63,14 +70,15 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 
 	// Create a safe representation with lowercase field names and redacted token
 	type SafeIdentity struct {
-		Subject   string            `json:"subject"`
-		Name      string            `json:"name"`
-		Email     string            `json:"email"`
-		Groups    []string          `json:"groups"`
-		Claims    map[string]any    `json:"claims"`
-		Token     string            `json:"token"`
-		TokenType string            `json:"tokenType"`
-		Metadata  map[string]string `json:"metadata"`
+		Subject        string            `json:"subject"`
+		Name           string            `json:"name"`
+		Email          string            `json:"email"`
+		Groups         []string          `json:"groups"`
+		Claims         map[string]any    `json:"claims"`
+		Token          string            `json:"token"`
+		TokenType      string            `json:"tokenType"`
+		Metadata       map[string]string `json:"metadata"`
+		UpstreamTokens map[string]string `json:"upstreamTokens,omitempty"`
 	}
 
 	token := i.Token
@@ -78,14 +86,30 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		token = "REDACTED"
 	}
 
+	// Redact upstream tokens: preserve keys, replace non-empty values
+	var redactedUpstreamTokens map[string]string
+	// Guard with len() > 0 (not != nil) so that both nil and empty maps
+	// produce a nil redactedUpstreamTokens, which omitempty then omits.
+	if len(i.UpstreamTokens) > 0 {
+		redactedUpstreamTokens = make(map[string]string, len(i.UpstreamTokens))
+		for k, v := range i.UpstreamTokens {
+			if v != "" {
+				redactedUpstreamTokens[k] = "REDACTED"
+			} else {
+				redactedUpstreamTokens[k] = ""
+			}
+		}
+	}
+
 	return json.Marshal(&SafeIdentity{
-		Subject:   i.Subject,
-		Name:      i.Name,
-		Email:     i.Email,
-		Groups:    i.Groups,
-		Claims:    i.Claims,
-		Token:     token,
-		TokenType: i.TokenType,
-		Metadata:  i.Metadata,
+		Subject:        i.Subject,
+		Name:           i.Name,
+		Email:          i.Email,
+		Groups:         i.Groups,
+		Claims:         i.Claims,
+		Token:          token,
+		TokenType:      i.TokenType,
+		Metadata:       i.Metadata,
+		UpstreamTokens: redactedUpstreamTokens,
 	})
 }

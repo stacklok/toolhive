@@ -291,6 +291,40 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			},
 			wantAppended: true,
 		},
+		{
+			name: "multi-upstream selects last upstream as provider name",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: &authserver.RunConfig{
+					SchemaVersion: authserver.CurrentSchemaVersion,
+					Issuer:        "http://localhost:8080",
+					Upstreams: []authserver.UpstreamRunConfig{
+						{
+							Name: "okta",
+							Type: authserver.UpstreamProviderTypeOAuth2,
+							OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+								AuthorizationEndpoint: "https://okta.example.com/authorize",
+								TokenEndpoint:         "https://okta.example.com/token",
+								ClientID:              "okta-client-id",
+								RedirectURI:           "http://localhost:8080/oauth/callback",
+							},
+						},
+						{
+							Name: "github",
+							Type: authserver.UpstreamProviderTypeOAuth2,
+							OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+								AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+								TokenEndpoint:         "https://github.com/login/oauth/access_token",
+								ClientID:              "github-client-id",
+								RedirectURI:           "http://localhost:8080/oauth/callback",
+							},
+						},
+					},
+					AllowedAudiences: []string{"https://mcp.example.com"},
+				},
+				UpstreamSwapConfig: nil,
+			},
+			wantAppended: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,6 +357,12 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			} else {
 				// Should use defaults (empty config is valid)
 				require.NotNil(t, params.Config)
+			}
+
+			// For multi-upstream test, verify last upstream is selected
+			if tt.name == "multi-upstream selects last upstream as provider name" {
+				assert.Equal(t, "github", params.Config.ProviderName,
+					"should select last upstream name as provider")
 			}
 		})
 	}

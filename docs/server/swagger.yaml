@@ -467,7 +467,7 @@ components:
           description: |-
             Upstreams configures connections to upstream Identity Providers.
             At least one upstream is required - the server delegates authentication to these providers.
-            Currently only a single upstream is supported.
+            Multiple upstreams are supported for sequential authorization chains.
           items:
             $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig'
           type: array

@@ -25,6 +25,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -367,6 +368,10 @@ type TokenValidator struct {
 	registry          *Registry    // Token introspection providers
 	insecureAllowHTTP bool         // Allow HTTP (non-HTTPS) OIDC issuers for development/testing
 
+	// upstreamTokenReader loads upstream provider tokens for identity enrichment.
+	// nil means no enrichment (no embedded auth server).
+	upstreamTokenReader upstreamtoken.UpstreamTokenReader
+
 	// Lazy JWKS registration
 	jwksRegistered      bool
 	jwksRegistrationMu  sync.Mutex
@@ -540,7 +545,8 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 
 // tokenValidatorOptions holds optional dependencies for NewTokenValidator.
 type tokenValidatorOptions struct {
-	envReader env.Reader
+	envReader           env.Reader
+	upstreamTokenReader upstreamtoken.UpstreamTokenReader
 }
 
 // TokenValidatorOption is a functional option for NewTokenValidator.
@@ -551,6 +557,16 @@ type TokenValidatorOption func(*tokenValidatorOptions)
 func WithEnvReader(reader env.Reader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.envReader = reader
+	}
+}
+
+// WithUpstreamTokenReader configures the token validator to enrich Identity
+// with upstream provider tokens. When set, the Middleware extracts the token
+// session ID (tsid) from JWT claims and loads all upstream tokens into
+// Identity.UpstreamTokens before placing the Identity in the request context.
+func WithUpstreamTokenReader(reader upstreamtoken.UpstreamTokenReader) TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.upstreamTokenReader = reader
 	}
 }
 
@@ -638,18 +654,19 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 
 	validator := &TokenValidator{
-		issuer:            config.Issuer,
-		audience:          config.Audience,
-		jwksURL:           jwksURL,
-		introspectURL:     config.IntrospectionURL,
-		clientID:          config.ClientID,
-		clientSecret:      clientSecret,
-		jwksClient:        cache,
-		client:            config.httpClient,
-		resourceURL:       config.ResourceURL,
-		scopes:            config.Scopes,
-		registry:          registry,
-		insecureAllowHTTP: config.InsecureAllowHTTP,
+		issuer:              config.Issuer,
+		audience:            config.Audience,
+		jwksURL:             jwksURL,
+		introspectURL:       config.IntrospectionURL,
+		clientID:            config.ClientID,
+		clientSecret:        clientSecret,
+		jwksClient:          cache,
+		client:              config.httpClient,
+		resourceURL:         config.ResourceURL,
+		scopes:              config.Scopes,
+		registry:            registry,
+		insecureAllowHTTP:   config.InsecureAllowHTTP,
+		upstreamTokenReader: o.upstreamTokenReader,
 	}
 
 	return validator, nil
@@ -1064,6 +1081,27 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string, statu
 	_, _ = w.Write(body)
 }
 
+// loadUpstreamTokens extracts the token session ID from claims and loads
+// all upstream provider tokens for that session. Returns nil if no tsid
+// claim exists or if loading fails (non-fatal -- logged at WARN).
+func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) map[string]string {
+	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+	if !ok || tsid == "" {
+		return nil
+	}
+
+	tokens, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
+	if err != nil {
+		slog.WarnContext(ctx, "failed to load upstream tokens for identity enrichment",
+			"tsid", tsid,
+			"error", err,
+		)
+		return nil
+	}
+
+	return tokens
+}
+
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1090,6 +1128,12 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
 			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims", http.StatusUnauthorized)
 			return
+		}
+
+		// Enrich Identity with upstream provider tokens when an embedded
+		// auth server is active (reader configured via WithUpstreamTokenReader).
+		if v.upstreamTokenReader != nil {
+			identity.UpstreamTokens = v.loadUpstreamTokens(r.Context(), claims)
 		}
 
 		// Add the Identity to the request context

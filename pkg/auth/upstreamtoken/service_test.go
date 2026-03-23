@@ -233,3 +233,218 @@ func TestInProcessService_NilRefresher(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNoRefreshToken)
 	assert.Nil(t, cred)
 }
+
+func TestInProcessService_GetAllValidTokens(t *testing.T) {
+	t.Parallel()
+
+	freshTokens := &storage.UpstreamTokens{
+		ProviderID:  "github",
+		AccessToken: "github-access-token",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+	}
+	freshTokens2 := &storage.UpstreamTokens{
+		ProviderID:  "atlassian",
+		AccessToken: "atlassian-access-token",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+	}
+	expiredTokens := &storage.UpstreamTokens{
+		ProviderID:   "github",
+		AccessToken:  "expired-github-token",
+		RefreshToken: "github-refresh-token",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}
+	refreshedTokens := &storage.UpstreamTokens{
+		ProviderID:  "github",
+		AccessToken: "new-github-token",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+	}
+
+	tests := []struct {
+		name           string
+		sessionID      string
+		setupStorage   func(*storagemocks.MockUpstreamTokenStorage)
+		setupRefresher func(*storagemocks.MockUpstreamTokenRefresher)
+		wantResult     map[string]string
+		wantErr        bool
+	}{
+		{
+			name:      "all fresh tokens returned directly",
+			sessionID: "session-1",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
+					Return(map[string]*storage.UpstreamTokens{
+						"github":    freshTokens,
+						"atlassian": freshTokens2,
+					}, nil)
+			},
+			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
+			wantResult: map[string]string{
+				"github":    "github-access-token",
+				"atlassian": "atlassian-access-token",
+			},
+		},
+		{
+			name:      "mixed fresh and expired with successful refresh",
+			sessionID: "session-2",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-2").
+					Return(map[string]*storage.UpstreamTokens{
+						"atlassian": freshTokens2,
+						"github":    expiredTokens,
+					}, nil)
+			},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-2", expiredTokens).
+					Return(refreshedTokens, nil)
+			},
+			wantResult: map[string]string{
+				"atlassian": "atlassian-access-token",
+				"github":    "new-github-token",
+			},
+		},
+		{
+			name:      "expired refresh fails uses expired token",
+			sessionID: "session-3",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-3").
+					Return(map[string]*storage.UpstreamTokens{
+						"github": expiredTokens,
+					}, nil)
+			},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-3", expiredTokens).
+					Return(nil, errors.New("upstream IDP unavailable"))
+			},
+			wantResult: map[string]string{
+				"github": "expired-github-token",
+			},
+		},
+		{
+			name:      "empty session returns empty map",
+			sessionID: "session-4",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-4").
+					Return(map[string]*storage.UpstreamTokens{}, nil)
+			},
+			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
+			wantResult:     map[string]string{},
+		},
+		{
+			name:      "storage error propagated",
+			sessionID: "session-5",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-5").
+					Return(nil, errors.New("redis connection lost"))
+			},
+			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
+			wantErr:        true,
+		},
+		{
+			name:      "nil tokens entry skipped",
+			sessionID: "session-6",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-6").
+					Return(map[string]*storage.UpstreamTokens{
+						"github":    freshTokens,
+						"atlassian": nil,
+					}, nil)
+			},
+			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
+			wantResult: map[string]string{
+				"github": "github-access-token",
+			},
+		},
+		{
+			name:      "expired with no refresh token uses expired token",
+			sessionID: "session-7",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-7").
+					Return(map[string]*storage.UpstreamTokens{
+						"github": {
+							ProviderID:   "github",
+							AccessToken:  "expired-no-refresh",
+							ExpiresAt:    time.Now().Add(-1 * time.Hour),
+							RefreshToken: "",
+						},
+					}, nil)
+			},
+			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
+			wantResult: map[string]string{
+				"github": "expired-no-refresh",
+			},
+		},
+		{
+			name:      "zero ExpiresAt treated as non-expiring",
+			sessionID: "session-8",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-8").
+					Return(map[string]*storage.UpstreamTokens{
+						"github": {
+							ProviderID:  "github",
+							AccessToken: "no-expiry-token",
+							ExpiresAt:   time.Time{},
+						},
+					}, nil)
+			},
+			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
+			wantResult: map[string]string{
+				"github": "no-expiry-token",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+
+			tt.setupStorage(mockStorage)
+			tt.setupRefresher(mockRefresher)
+
+			svc := NewInProcessService(mockStorage, mockRefresher)
+
+			result, err := svc.GetAllValidTokens(context.Background(), tt.sessionID)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantResult, result)
+		})
+	}
+}
+
+// TestInProcessService_GetAllValidTokens_NilRefresher verifies that when the
+// refresher is nil, expired tokens in the bulk path are included as-is
+// (fallback) rather than causing a panic.
+func TestInProcessService_GetAllValidTokens_NilRefresher(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().
+		GetAllUpstreamTokens(gomock.Any(), "session-1").
+		Return(map[string]*storage.UpstreamTokens{
+			"github": {
+				ProviderID:   "github",
+				AccessToken:  "expired-token",
+				RefreshToken: "has-refresh",
+				ExpiresAt:    time.Now().Add(-1 * time.Hour),
+			},
+		}, nil)
+
+	svc := NewInProcessService(mockStorage, nil)
+
+	result, err := svc.GetAllValidTokens(context.Background(), "session-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"github": "expired-token"}, result)
+}

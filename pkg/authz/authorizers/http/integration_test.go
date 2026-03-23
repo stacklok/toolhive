@@ -131,9 +131,9 @@ func TestClaimMapperIntegration(t *testing.T) {
 			}()
 
 			// Create a context with identity
-			identity := &auth.Identity{
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 				Claims: tt.jwtClaims,
-			}
+			}}
 			ctx := auth.WithIdentity(context.Background(), identity)
 
 			// Call the authorizer

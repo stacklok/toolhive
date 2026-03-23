@@ -99,7 +99,7 @@ func TestCompositeToolsDecorator_CallTool(t *testing.T) {
 			Return(expectedResult, nil)
 
 		dec := compositetools.NewDecorator(base, nil, nil)
-		result, err := dec.CallTool(context.Background(), &auth.Identity{}, "backend_tool", nil, nil)
+		result, err := dec.CallTool(context.Background(), &auth.Identity{}, "backend_tool", nil, nil) //nolint:exhaustruct // empty identity is intentional for test
 
 		require.NoError(t, err)
 		assert.Equal(t, expectedResult, result)

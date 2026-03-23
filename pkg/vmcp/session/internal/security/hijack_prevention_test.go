@@ -78,7 +78,7 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 			name:           "anonymous session rejects caller with token",
 			allowAnonymous: true,
 			boundTokenHash: "",
-			caller:         &auth.Identity{Subject: "user", Token: "token"},
+			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "token"},
 			wantErr:        sessiontypes.ErrUnauthorizedCaller, // Prevent session upgrade attack
 		},
 		{
@@ -92,35 +92,35 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 			name:           "bound session with matching token",
 			allowAnonymous: false,
 			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: "correct-token"},
+			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "correct-token"},
 			wantErr:        nil, // Should succeed
 		},
 		{
 			name:           "bound session with wrong token",
 			allowAnonymous: false,
 			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: "wrong-token"},
+			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "wrong-token"},
 			wantErr:        sessiontypes.ErrUnauthorizedCaller,
 		},
 		{
 			name:           "bound session with empty token in identity",
 			allowAnonymous: false,
 			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{Subject: "user", Token: ""},
+			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""},
 			wantErr:        sessiontypes.ErrUnauthorizedCaller,
 		},
 		{
 			name:           "anonymous session accepts caller with empty token",
 			allowAnonymous: true,
 			boundTokenHash: "",
-			caller:         &auth.Identity{Subject: "user", Token: ""},
+			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""},
 			wantErr:        nil, // Empty token is equivalent to no token
 		},
 		{
 			name:           "misconfigured bound session with empty hash rejects empty token",
 			allowAnonymous: false,
 			boundTokenHash: "", // Misconfiguration: bound but no hash
-			caller:         &auth.Identity{Subject: "user", Token: ""},
+			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""},
 			wantErr:        sessiontypes.ErrSessionOwnerUnknown, // Fail closed
 		},
 		{
@@ -178,7 +178,7 @@ func TestValidateCaller_EdgeCases(t *testing.T) {
 func TestPreventSessionHijacking_NilSession(t *testing.T) {
 	t.Parallel()
 
-	decorated, err := PreventSessionHijacking(nil, testSecret, &auth.Identity{Subject: "user", Token: "test-token"})
+	decorated, err := PreventSessionHijacking(nil, testSecret, &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"})
 	require.Error(t, err)
 	assert.Nil(t, decorated)
 }
@@ -191,7 +191,7 @@ func TestPreventSessionHijacking_BasicFunctionality(t *testing.T) {
 		t.Parallel()
 
 		baseSession := newMockSession("test-session")
-		identity := &auth.Identity{Subject: "user", Token: "test-token"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
 
 		decorated, err := PreventSessionHijacking(baseSession, testSecret, identity)
 		require.NoError(t, err)

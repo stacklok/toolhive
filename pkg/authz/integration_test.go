@@ -242,7 +242,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(requestJSON))
 			require.NoError(t, err, "Failed to create HTTP request")
 			req.Header.Set("Content-Type", "application/json")
-			identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: claims["sub"].(string), Claims: claims}}
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
@@ -410,7 +410,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(requestJSON))
 			require.NoError(t, err, "Failed to create HTTP request")
 			req.Header.Set("Content-Type", "application/json")
-			identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: claims["sub"].(string), Claims: claims}}
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder

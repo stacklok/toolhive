@@ -26,7 +26,7 @@ type IdentityContextKey struct{}
 //
 // Example:
 //
-//	identity := &Identity{Subject: "user123", Name: "Alice"}
+//	identity := &Identity{PrincipalInfo: PrincipalInfo{Subject: "user123", Name: "Alice"}}
 //	ctx = WithIdentity(ctx, identity)
 func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 	if identity == nil {
@@ -68,8 +68,10 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 	}
 
 	identity := &Identity{
-		Subject:   sub,
-		Claims:    claims,
+		PrincipalInfo: PrincipalInfo{
+			Subject: sub,
+			Claims:  claims,
+		},
 		Token:     token,
 		TokenType: "Bearer",
 	}

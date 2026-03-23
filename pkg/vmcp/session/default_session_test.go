@@ -867,7 +867,7 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 		{
 			name:           "sets identity subject and backend IDs",
 			connector:      successConnector,
-			identity:       &auth.Identity{Subject: "user-123"},
+			identity:       &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-123"}},
 			backends:       []*vmcp.Backend{backend1},
 			wantSubject:    "user-123",
 			wantBackendIDs: "b1",
@@ -882,7 +882,7 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 		{
 			name:           "omits subject when subject is empty",
 			connector:      successConnector,
-			identity:       &auth.Identity{Subject: ""},
+			identity:       &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: ""}},
 			backends:       []*vmcp.Backend{backend1},
 			wantBackendIDs: "b1",
 		},

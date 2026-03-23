@@ -144,14 +144,14 @@ func TestMiddlewareFunc_RejectsUnauthenticated(t *testing.T) {
 		{
 			name: "identity with nil claims",
 			setupFn: func(r *http.Request) *http.Request {
-				identity := &auth.Identity{Subject: "user123", Claims: nil}
+				identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Claims: nil}}
 				return r.WithContext(auth.WithIdentity(r.Context(), identity))
 			},
 		},
 		{
 			name: "no bearer token",
 			setupFn: func(r *http.Request) *http.Request {
-				identity := &auth.Identity{Subject: "user123", Claims: map[string]interface{}{"sub": "user123"}}
+				identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Claims: map[string]interface{}{"sub": "user123"}}}
 				return r.WithContext(auth.WithIdentity(r.Context(), identity))
 			},
 		},
@@ -278,7 +278,7 @@ func TestMiddlewareFunc_EndToEnd(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, tt.requestURL, bodyReader)
 			req.Header.Set("Authorization", "Bearer test-jwt-token")
-			identity := &auth.Identity{Subject: "user123", Claims: map[string]interface{}{"sub": "user123"}}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Claims: map[string]interface{}{"sub": "user123"}}}
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			rec := httptest.NewRecorder()
@@ -333,10 +333,12 @@ func TestMiddlewareFunc_RoleMapperFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req.Header.Set("Authorization", "Bearer test-jwt-token")
 	identity := &auth.Identity{
-		Subject: "user123",
-		Claims: map[string]interface{}{
-			"sub":    "user123",
-			"groups": []interface{}{"developers"}, // Does not match "admins"
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user123",
+			Claims: map[string]interface{}{
+				"sub":    "user123",
+				"groups": []interface{}{"developers"}, // Does not match "admins"
+			},
 		},
 	}
 	req = req.WithContext(auth.WithIdentity(req.Context(), identity))

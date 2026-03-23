@@ -137,9 +137,11 @@ func TestIdentity_String(t *testing.T) {
 		{
 			name: "normal_identity",
 			identity: &Identity{
-				Subject: "user123",
-				Name:    "Alice",
-				Token:   "secret-token",
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+					Name:    "Alice",
+				},
+				Token: "secret-token",
 			},
 			want: `Identity{Subject:"user123"}`,
 		},
@@ -160,6 +162,70 @@ func TestIdentity_String(t *testing.T) {
 	}
 }
 
+func TestIdentity_GetPrincipalInfo(t *testing.T) {
+	t.Parallel()
+
+	t.Run("projects_non_sensitive_fields", func(t *testing.T) {
+		t.Parallel()
+
+		identity := &Identity{
+			PrincipalInfo: PrincipalInfo{
+				Subject: "user123",
+				Name:    "Alice",
+				Email:   "alice@example.com",
+				Groups:  []string{"admins"},
+				Claims:  map[string]any{"org_id": "org456"},
+			},
+			Token:     "secret-token",
+			TokenType: "Bearer",
+			Metadata:  map[string]string{"source": "oidc"},
+		}
+
+		pi := identity.GetPrincipalInfo()
+
+		require.NotNil(t, pi)
+		assert.Equal(t, "user123", pi.Subject)
+		assert.Equal(t, "Alice", pi.Name)
+		assert.Equal(t, "alice@example.com", pi.Email)
+		assert.Equal(t, []string{"admins"}, pi.Groups)
+		assert.Equal(t, map[string]any{"org_id": "org456"}, pi.Claims)
+
+		// Verify token/tokenType/metadata are structurally absent.
+		data, err := json.Marshal(pi)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "token")
+		assert.NotContains(t, string(data), "tokenType")
+		assert.NotContains(t, string(data), "metadata")
+		assert.NotContains(t, string(data), "secret-token")
+	})
+
+	t.Run("nil_identity", func(t *testing.T) {
+		t.Parallel()
+
+		var identity *Identity
+		pi := identity.GetPrincipalInfo()
+		assert.Nil(t, pi)
+	})
+
+	t.Run("minimal_identity", func(t *testing.T) {
+		t.Parallel()
+
+		identity := &Identity{PrincipalInfo: PrincipalInfo{Subject: "user1"}}
+		pi := identity.GetPrincipalInfo()
+
+		require.NotNil(t, pi)
+		assert.Equal(t, "user1", pi.Subject)
+
+		// Verify omitempty: empty fields should not appear in JSON.
+		data, err := json.Marshal(pi)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "name")
+		assert.NotContains(t, string(data), "email")
+		assert.NotContains(t, string(data), "groups")
+		assert.NotContains(t, string(data), "claims")
+	})
+}
+
 func TestIdentity_MarshalJSON(t *testing.T) {
 	t.Parallel()
 
@@ -172,14 +238,16 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 		{
 			name: "redacts_token",
 			identity: &Identity{
-				Subject:   "user123",
-				Name:      "Alice",
-				Email:     "alice@example.com",
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+					Name:    "Alice",
+					Email:   "alice@example.com",
+					Claims: map[string]any{
+						"org_id": "org456",
+					},
+				},
 				Token:     "secret-token",
 				TokenType: "Bearer",
-				Claims: map[string]any{
-					"org_id": "org456",
-				},
 			},
 			wantErr: false,
 			checkFunc: func(t *testing.T, data []byte) {
@@ -200,8 +268,10 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 		{
 			name: "empty_token_not_redacted",
 			identity: &Identity{
-				Subject: "user123",
-				Token:   "",
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+				},
+				Token: "",
 			},
 			wantErr: false,
 			checkFunc: func(t *testing.T, data []byte) {

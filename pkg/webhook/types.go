@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/url"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // APIVersion is the version of the webhook API protocol.
@@ -117,26 +119,12 @@ type Request struct {
 	// Timestamp is when the request was created.
 	Timestamp time.Time `json:"timestamp"`
 	// Principal contains the authenticated user's identity information.
-	Principal *Principal `json:"principal"`
+	// Uses PrincipalInfo (not Identity) so credentials never enter the webhook payload.
+	Principal *auth.PrincipalInfo `json:"principal"`
 	// MCPRequest is the raw MCP JSON-RPC request.
 	MCPRequest json.RawMessage `json:"mcp_request"`
 	// Context provides additional metadata about the request origin.
 	Context *RequestContext `json:"context"`
-}
-
-// Principal contains the authenticated user's identity information.
-type Principal struct {
-	// Sub is the subject identifier (user ID).
-	Sub string `json:"sub"`
-	// Email is the user's email address.
-	Email string `json:"email,omitempty"`
-	// Name is the user's display name.
-	Name string `json:"name,omitempty"`
-	// Groups is a list of groups the user belongs to.
-	Groups []string `json:"groups,omitempty"`
-	// Claims contains additional identity claims. Using map[string]any to support
-	// real-world JWT claims which may carry non-string values (arrays, numbers, booleans).
-	Claims map[string]any `json:"claims,omitempty"`
 }
 
 // RequestContext provides metadata about the request origin and environment.

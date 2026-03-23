@@ -295,7 +295,7 @@ func TestCreateMiddleware(t *testing.T) {
 		"sub":  "user123",
 		"name": "John Doe",
 	}
-	identity := &auth.Identity{Subject: "user123", Claims: claims}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Claims: claims}}
 	ctx := auth.WithIdentity(req.Context(), identity)
 	req = req.WithContext(ctx)
 

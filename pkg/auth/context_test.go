@@ -18,12 +18,14 @@ func TestIdentityContext_StoreAndRetrieve(t *testing.T) {
 
 	// Create a test identity
 	identity := &Identity{
-		Subject: "user123",
-		Name:    "Alice Smith",
-		Email:   "alice@example.com",
-		Groups:  []string{"admins", "developers"},
-		Claims: map[string]any{
-			"org_id": "org456",
+		PrincipalInfo: PrincipalInfo{
+			Subject: "user123",
+			Name:    "Alice Smith",
+			Email:   "alice@example.com",
+			Groups:  []string{"admins", "developers"},
+			Claims: map[string]any{
+				"org_id": "org456",
+			},
 		},
 		Token:     "test-token",
 		TokenType: "Bearer",
@@ -100,11 +102,11 @@ func TestIdentityContext_Overwrite(t *testing.T) {
 	ctx := context.Background()
 
 	// Store first identity
-	identity1 := &Identity{Subject: "user1"}
+	identity1 := &Identity{PrincipalInfo: PrincipalInfo{Subject: "user1"}}
 	ctx = WithIdentity(ctx, identity1)
 
 	// Store second identity (overwrites first)
-	identity2 := &Identity{Subject: "user2"}
+	identity2 := &Identity{PrincipalInfo: PrincipalInfo{Subject: "user2"}}
 	ctx = WithIdentity(ctx, identity2)
 
 	// Retrieve identity

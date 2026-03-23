@@ -92,6 +92,73 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 		// Note: "missing OIDC config" test removed - OIDCConfig is now a required value type
 		// with kubebuilder:validation:Required, so the API server prevents resources without it
 		{
+			name: "valid spec with Kubernetes OIDC config",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "k8s-oidc-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							Issuer:   "https://kubernetes.default.svc",
+							Audience: "toolhive",
+							JWKSURL:  "https://kubernetes.default.svc/openid/v1/jwks",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "Kubernetes OIDC with HTTP issuer rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "k8s-http-issuer",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							Issuer:   "http://kubernetes.default.svc",
+							Audience: "toolhive",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errContains: "HTTP scheme",
+		},
+		{
+			name: "Kubernetes OIDC with invalid JWKS URL rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "k8s-bad-jwks",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							Issuer:   "https://kubernetes.default.svc",
+							Audience: "toolhive",
+							JWKSURL:  "not-a-valid-url",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errContains: "JWKS URL",
+		},
+		{
 			name: "with valid external auth config",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1098,6 +1165,29 @@ func TestServiceNameGeneration(t *testing.T) {
 			assert.Equal(t, tt.expectedURL, serviceURL)
 		})
 	}
+}
+
+// TestServiceAccountNameForRemoteProxy tests service account name resolution
+func TestServiceAccountNameForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default service account", func(t *testing.T) {
+		t.Parallel()
+		proxy := &mcpv1alpha1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-proxy"},
+		}
+		assert.Equal(t, "my-proxy-remote-proxy-runner", serviceAccountNameForRemoteProxy(proxy))
+	})
+
+	t.Run("custom service account", func(t *testing.T) {
+		t.Parallel()
+		customSA := "my-custom-sa"
+		proxy := &mcpv1alpha1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-proxy"},
+			Spec:       mcpv1alpha1.MCPRemoteProxySpec{ServiceAccount: &customSA},
+		}
+		assert.Equal(t, "my-custom-sa", serviceAccountNameForRemoteProxy(proxy))
+	})
 }
 
 // TestEnsureRBACResources tests RBAC resource creation

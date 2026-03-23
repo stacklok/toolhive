@@ -27,6 +27,12 @@ Surface the 2-5 most important questions the reviewer should be asking about thi
 
 - **Justification**: Is the problem this solves clear? Is this the right time/place to solve it?
 - **Approach fit**: Could this be solved more simply? Are there obvious alternative approaches with better tradeoffs? If so, briefly sketch them.
+- **Abstraction integrity**: All consumers of an interface should be able to treat implementations as fungible — no consumer should need to know or care which implementation is behind the interface. Check for these leaky abstraction signals:
+  - An interface method that only works correctly for one implementation (e.g., silently no-ops or panics for others)
+  - Type assertions or casts on the interface to access implementation-specific behavior
+  - Consumers behaving differently based on which implementation they have
+  - A new interface method added solely to serve one new implementation
+- **Mutation of shared state**: Flag code that mutates long-lived or shared data structures (config objects, request structs, step definitions, cached values) rather than constructing new values. In-place mutation is a significant source of subtle bugs — the original data may be read again downstream, used concurrently, or assumed immutable by other callers. Prefer constructing a new value and passing it forward. When mutation is flagged, suggest the immutable alternative.
 - **Complexity cost**: Does this change add abstractions, indirection, new dependencies, or conceptual overhead that may not be justified? Flag anything that makes the codebase harder to reason about.
 - **Boundary concerns**: Does this change respect existing module/service boundaries, or does it blur them?
 - **Necessity**: Is this the simplest approach that solves the problem? If the change introduces new interfaces, modifies stable interfaces, adds caches, or creates new abstraction layers — challenge it. A stable interface being modified to accommodate one implementation is a sign that concerns are leaking across boundaries. Ask: can this be solved internally to the component that needs it? Is there evidence (profiling, incidents) justifying the added complexity, or should we start simpler?
@@ -71,6 +77,21 @@ When reviewing multiple PRs in a session, maintain a local file (`review-session
    - Propose concrete updates to this skill, the vmcp-review skill, or `.claude/rules/` files based on what was learned
 
 The goal is continuous improvement: each review session should make the next one more efficient.
+
+## Comment Format
+
+When drafting review comments, use [conventional comments](https://conventionalcomments.org/) format. Prefix every comment with a label that communicates severity:
+
+- **`blocker:`** — Must be resolved before merge. Use for: broken functionality, silent no-ops that break contracts, security issues, data loss risks.
+- **`suggestion:`** — Non-blocking recommendation. Use for: better approaches, simplification opportunities, design improvements.
+- **`nitpick:`** — Trivial, take-it-or-leave-it. Use for: naming, minor style, const extraction.
+- **`question:`** — Seeking clarification, not requesting a change.
+
+Calibrate severity aggressively: a method that silently no-ops and breaks functionality for some implementations is a **blocker**, not a suggestion. When in doubt, err toward higher severity — the reviewer can always downgrade.
+
+## Code Suggestions
+
+When suggesting code changes in review comments, check `.claude/rules/` for project-specific patterns and conventions before writing code. Suggestions should follow the project's established style (e.g., the immediately-invoked function pattern for immutable assignment in Go). When requesting changes from external contributors, always provide concrete code examples showing the expected structure — don't just describe what you want in prose.
 
 ## Principles
 

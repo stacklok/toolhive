@@ -449,6 +449,200 @@ func TestMCPRemoteProxyValidateJWKSURL(t *testing.T) {
 	}
 }
 
+// TestHandleToolConfigStatusUpdateErrors tests error paths when Status().Update fails
+// in handleToolConfig for both the hash-clearing and hash-update code paths.
+func TestHandleToolConfigStatusUpdateErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		proxy       *mcpv1alpha1.MCPRemoteProxy
+		toolConfig  *mcpv1alpha1.MCPToolConfig
+		errContains string
+	}{
+		{
+			name: "status update error when clearing tool config hash",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "clear-hash-err",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					// No ToolConfigRef — triggers the clearing path
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ToolConfigHash: "stale-hash",
+				},
+			},
+			errContains: "failed to clear MCPToolConfig hash",
+		},
+		{
+			name: "status update error when updating tool config hash",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "update-hash-err",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+						Name: "tc",
+					},
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ToolConfigHash: "old-hash",
+				},
+			},
+			toolConfig: &mcpv1alpha1.MCPToolConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "tc",
+					Namespace: "default",
+				},
+				Status: mcpv1alpha1.MCPToolConfigStatus{
+					ConfigHash: "new-hash",
+				},
+			},
+			errContains: "failed to update MCPToolConfig hash",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := createRunConfigTestScheme()
+			objects := []runtime.Object{tt.proxy}
+			if tt.toolConfig != nil {
+				objects = append(objects, tt.toolConfig)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objects...).
+				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+						return fmt.Errorf("simulated status update failure")
+					},
+				}).
+				Build()
+
+			reconciler := &MCPRemoteProxyReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			err := reconciler.handleToolConfig(context.TODO(), tt.proxy)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
+}
+
+// TestHandleExternalAuthConfigStatusUpdateErrors tests error paths when Status().Update fails
+// in handleExternalAuthConfig for both the hash-clearing and hash-update code paths.
+func TestHandleExternalAuthConfigStatusUpdateErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		proxy        *mcpv1alpha1.MCPRemoteProxy
+		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		errContains  string
+	}{
+		{
+			name: "status update error when clearing external auth hash",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "clear-auth-err",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					// No ExternalAuthConfigRef — triggers the clearing path
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ExternalAuthConfigHash: "stale-hash",
+				},
+			},
+			errContains: "failed to clear MCPExternalAuthConfig hash",
+		},
+		{
+			name: "status update error when updating external auth hash",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "update-auth-err",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "eac",
+					},
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ExternalAuthConfigHash: "old-hash",
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "eac",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://keycloak.com/token",
+						ClientID: "client-id",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "secret",
+							Key:  "key",
+						},
+						Audience: "api",
+					},
+				},
+				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+					ConfigHash: "new-hash",
+				},
+			},
+			errContains: "failed to update MCPExternalAuthConfig hash",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := createRunConfigTestScheme()
+			objects := []runtime.Object{tt.proxy}
+			if tt.externalAuth != nil {
+				objects = append(objects, tt.externalAuth)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objects...).
+				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+						return fmt.Errorf("simulated status update failure")
+					},
+				}).
+				Build()
+
+			reconciler := &MCPRemoteProxyReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			err := reconciler.handleExternalAuthConfig(context.TODO(), tt.proxy)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
+}
+
 // TestMCPRemoteProxyValidateK8sRefs tests K8s reference validation in detail.
 func TestMCPRemoteProxyValidateK8sRefs(t *testing.T) {
 	t.Parallel()

@@ -314,8 +314,9 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 	}
 }
 
-// TestIntegrationMemoryLeakPrevention tests that the closedClients map doesn't grow unbounded
-func TestIntegrationMemoryLeakPrevention(t *testing.T) {
+// TestIntegrationLiveSessionsCleanup verifies that liveSSESessions entries are
+// removed after clients disconnect, so the map does not grow unbounded.
+func TestIntegrationLiveSessionsCleanup(t *testing.T) {
 	t.Parallel()
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
 	ctx := context.Background()
@@ -330,43 +331,28 @@ func TestIntegrationMemoryLeakPrevention(t *testing.T) {
 
 	proxyURL := fmt.Sprintf("http://%s", proxy.server.Addr)
 
-	// Create and remove many clients to trigger cleanup
-	for i := 0; i < 1500; i++ {
-		// Quick connect and disconnect
+	// Connect and immediately disconnect several clients.
+	for i := 0; i < 20; i++ {
 		resp, err := http.Get(proxyURL + "/sse")
 		if err != nil {
 			continue
 		}
-
-		// Extract session ID and immediately close
-		sessionID, _ := extractSessionID(resp.Body)
 		resp.Body.Close()
-
-		// The disconnection should trigger removeClient
-		if sessionID != "" {
-			// Give time for the disconnect to be processed
-			time.Sleep(1 * time.Millisecond)
-		}
-
-		// Check closedClients size periodically
-		if i%100 == 0 {
-			proxy.closedClientsMutex.Lock()
-			size := len(proxy.closedClients)
-			proxy.closedClientsMutex.Unlock()
-
-			// Should have been reset when it hit 1000
-			assert.Less(t, size, 1100, "closedClients map should be cleaned up")
-			t.Logf("After %d clients, closedClients size: %d", i, size)
-		}
 	}
 
-	// Final check
-	proxy.closedClientsMutex.Lock()
-	finalSize := len(proxy.closedClients)
-	proxy.closedClientsMutex.Unlock()
-
-	assert.Less(t, finalSize, 1000, "Final closedClients size should be less than 1000")
-	t.Logf("Final closedClients size: %d", finalSize)
+	// Poll until liveSSESessions drains or the deadline is reached.
+	// Disconnect propagation is asynchronous (the server goroutine must observe
+	// the client disconnect and call removeClient), so a fixed sleep is fragile
+	// on loaded CI runners.
+	require.Eventually(t, func() bool {
+		var liveCount int
+		proxy.liveSSESessions.Range(func(_, _ interface{}) bool {
+			liveCount++
+			return true
+		})
+		return liveCount == 0
+	}, 5*time.Second, 10*time.Millisecond,
+		"liveSSESessions should be empty after all clients disconnect")
 }
 
 // Helper function to extract session ID from SSE response

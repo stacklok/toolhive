@@ -75,6 +75,9 @@ type Option func(*HTTPProxy)
 // When not provided, the proxy uses in-memory LocalStorage (single-replica default).
 func WithSessionStorage(storage session.Storage) Option {
 	return func(p *HTTPProxy) {
+		if storage == nil {
+			return
+		}
 		if p.sessionManager != nil {
 			_ = p.sessionManager.Stop()
 		}
@@ -160,17 +163,11 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 	p.stopOnce.Do(func() {
 		close(p.shutdownCh)
 
-		// Stop session manager cleanup and disconnect sessions
+		// Stop session manager cleanup; active sessions expire via TTL
 		if p.sessionManager != nil {
 			if err := p.sessionManager.Stop(); err != nil {
 				slog.Error("failed to stop session manager", "error", err)
 			}
-			p.sessionManager.Range(func(_, value interface{}) bool {
-				if ss, ok := value.(*session.StreamableSession); ok {
-					ss.Disconnect()
-				}
-				return true
-			})
 		}
 
 		if p.server != nil {

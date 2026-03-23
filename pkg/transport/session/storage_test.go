@@ -650,7 +650,7 @@ func TestManagerWithStorage(t *testing.T) {
 		assert.Equal(t, 3, manager.Count())
 	})
 
-	t.Run("Manager Range with LocalStorage", func(t *testing.T) {
+	t.Run("LocalStorage Range", func(t *testing.T) {
 		t.Parallel()
 		storage := NewLocalStorage()
 		factory := func(id string) Session {
@@ -671,9 +671,9 @@ func TestManagerWithStorage(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		// Use Range to collect all IDs
+		// Use LocalStorage.Range directly to collect all IDs
 		var collected []string
-		manager.Range(func(key, _ interface{}) bool {
+		storage.Range(func(key, _ interface{}) bool {
 			if id, ok := key.(string); ok {
 				collected = append(collected, id)
 			}

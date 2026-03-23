@@ -35,7 +35,6 @@ func TestNewHTTPSSEProxy(t *testing.T) {
 	assert.Equal(t, 8080, proxy.port)
 	assert.NotNil(t, proxy.messageCh)
 	assert.NotNil(t, proxy.sessionManager)
-	assert.NotNil(t, proxy.closedClients)
 	assert.NotNil(t, proxy.healthChecker)
 }
 
@@ -105,10 +104,11 @@ func TestRemoveClient(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	// Add session to manager
+	// Add session to manager and live map
 	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
 	err := proxy.sessionManager.AddSession(sseSession)
 	require.NoError(t, err)
+	proxy.liveSSESessions.Store(clientID, sseSession)
 
 	// Remove the client once
 	proxy.removeClient(clientID)
@@ -117,11 +117,9 @@ func TestRemoveClient(t *testing.T) {
 	_, exists := proxy.sessionManager.Get(clientID)
 	assert.False(t, exists)
 
-	// Verify client is marked as closed
-	proxy.closedClientsMutex.Lock()
-	closed := proxy.closedClients[clientID]
-	proxy.closedClientsMutex.Unlock()
-	assert.True(t, closed)
+	// Verify client was removed from live sessions
+	_, live := proxy.liveSSESessions.Load(clientID)
+	assert.False(t, live)
 
 	// Try to remove the same client again (should not panic)
 	assert.NotPanics(t, func() {
@@ -193,10 +191,11 @@ func TestForwardResponseToClients(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	// Add session to manager
+	// Add session to manager and live-connection registry
 	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
 	err := proxy.sessionManager.AddSession(sseSession)
 	require.NoError(t, err)
+	proxy.liveSSESessions.Store(clientID, sseSession)
 
 	// Create a test response
 	response, err := jsonrpc2.NewResponse(jsonrpc2.StringID("test"), "test result", nil)
@@ -251,10 +250,11 @@ func TestSendSSEEvent_ChannelFull(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	// Add session to manager
+	// Add session to manager and live-connection registry
 	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
 	err := proxy.sessionManager.AddSession(sseSession)
 	require.NoError(t, err)
+	proxy.liveSSESessions.Store(clientID, sseSession)
 
 	// Fill the channel
 	messageCh <- "blocking message"
@@ -455,10 +455,11 @@ func TestHandlePostRequest(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	// Add session to manager
+	// Add session to manager and to the live registry (mirrors what handleSSEConnection does)
 	sseSession := session.NewSSESessionWithClient(sessionID, clientInfo)
 	err := proxy.sessionManager.AddSession(sseSession)
 	require.NoError(t, err)
+	proxy.liveSSESessions.Store(sessionID, sseSession)
 
 	// Create a valid JSON-RPC message
 	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -562,36 +563,34 @@ func TestRWMutexUsage(t *testing.T) {
 	assert.Less(t, elapsed, 200*time.Millisecond)
 }
 
-// TestClosedClientsCleanup tests the cleanup of closedClients map
+// TestRemoveClientCleansLiveSessions verifies that removeClient removes entries
+// from liveSSESessions so it does not grow unbounded.
 //
 //nolint:paralleltest // Test modifies shared proxy state
-func TestClosedClientsCleanup(t *testing.T) {
+func TestRemoveClientCleansLiveSessions(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
-	// Add many closed client sessions to trigger cleanup
-	for i := 0; i < 1100; i++ {
+	for i := 0; i < 100; i++ {
 		clientID := uuid.New().String()
 		clientInfo := &ssecommon.SSEClient{
 			MessageCh: make(chan string, 1),
 			CreatedAt: time.Now(),
 		}
 
-		// Add session to manager
 		sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
 		err := proxy.sessionManager.AddSession(sseSession)
 		require.NoError(t, err)
+		proxy.liveSSESessions.Store(clientID, sseSession)
 
-		// Remove the client
 		proxy.removeClient(clientID)
 	}
 
-	// Check that the closedClients map was reset
-	proxy.closedClientsMutex.Lock()
-	numClosed := len(proxy.closedClients)
-	proxy.closedClientsMutex.Unlock()
-
-	// Should be less than 1000 due to cleanup
-	assert.Less(t, numClosed, 1000)
+	var liveCount int
+	proxy.liveSSESessions.Range(func(_, _ interface{}) bool {
+		liveCount++
+		return true
+	})
+	assert.Equal(t, 0, liveCount, "liveSSESessions should be empty after all clients are removed")
 }
 
 // TestNewHTTPSSEProxyWithSessionStorage tests that WithSessionStorage option injects a custom storage backend.

@@ -384,8 +384,14 @@ func TestDefaultSession_Close(t *testing.T) {
 			[]vmcp.Tool{{Name: "slow"}}, nil, nil,
 		)
 
+		// callGoroutineDone is closed when the goroutine that called CallTool
+		// has fully exited (i.e. after callDone.Store). This is needed because
+		// Close() only waits for done() (wg.Done) inside CallTool, not for
+		// the calling goroutine to proceed past the call.
+		callGoroutineDone := make(chan struct{})
 		var callDone atomic.Bool
 		go func() {
+			defer close(callGoroutineDone)
 			_, _ = sess.CallTool(context.Background(), nil, "slow", nil, nil)
 			callDone.Store(true)
 		}()
@@ -408,6 +414,8 @@ func TestDefaultSession_Close(t *testing.T) {
 
 		close(callRelease) // let the call finish
 		require.NoError(t, <-closeDone)
+		// Wait for the goroutine to exit so callDone.Store has run.
+		<-callGoroutineDone
 		assert.True(t, callDone.Load())
 		assert.True(t, mock.closeCalled.Load())
 	})

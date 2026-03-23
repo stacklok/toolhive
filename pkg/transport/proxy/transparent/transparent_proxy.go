@@ -148,6 +148,11 @@ const (
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	// This is primarily useful for testing with shorter intervals.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
+
+	// sessionMetadataBackendURL is the session metadata key that stores the backend pod URL.
+	// It is written on initialize and read in the Rewrite closure to route follow-up requests
+	// to the same backend pod that handled the session's initialize request.
+	sessionMetadataBackendURL = "backend_url"
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -224,6 +229,9 @@ func withShutdownTimeout(timeout time.Duration) Option {
 // share the same session store.
 func WithSessionStorage(storage session.Storage) Option {
 	return func(p *TransparentProxy) {
+		if storage == nil {
+			return
+		}
 		if p.sessionManager != nil {
 			_ = p.sessionManager.Stop()
 		}
@@ -406,16 +414,26 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// When multiple proxyrunner replicas share a Redis session store,
 	// a valid session will always be found. If it isn't, the session
 	// has expired or the request carries a stale/forged session ID.
-	if sid := req.Header.Get("Mcp-Session-Id"); sid != "" {
-		if _, ok := t.p.sessionManager.Get(normalizeSessionID(sid)); !ok && !sawInitialize {
+	if sid := req.Header.Get("Mcp-Session-Id"); sid != "" && !sawInitialize {
+		if _, err := t.p.sessionManager.GetWithError(normalizeSessionID(sid)); err != nil {
+			status := http.StatusBadRequest
+			body := "unknown session\n"
+			if !errors.Is(err, session.ErrSessionNotFound) {
+				// Storage error (e.g. Redis timeout) — client should retry.
+				status = http.StatusServiceUnavailable
+				body = "session store unavailable\n"
+				slog.Error("session store lookup failed", "error", err)
+			}
+			hdr := make(http.Header)
+			hdr.Set("Content-Type", "text/plain; charset=utf-8")
 			return &http.Response{
-				StatusCode: http.StatusBadRequest,
-				Status:     "400 Bad Request",
+				StatusCode: status,
+				Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
 				Proto:      "HTTP/1.1",
 				ProtoMajor: 1,
 				ProtoMinor: 1,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader("unknown session\n")),
+				Header:     hdr,
+				Body:       io.NopCloser(strings.NewReader(body)),
 				Request:    req,
 			}, nil
 		}
@@ -465,7 +483,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			internalID := normalizeSessionID(ct)
 			if _, ok := t.p.sessionManager.Get(internalID); !ok {
 				sess := session.NewProxySession(internalID)
-				sess.SetMetadata("backend_url", t.p.targetURI)
+				// Store targetURI as the default backend_url for this session.
+				// In single-replica deployments targetURI is already the pod address,
+				// so no override is needed. In multi-replica deployments the
+				// vMCP/operator layer is responsible for setting backend_url to the
+				// actual pod DNS name (e.g. http://mcp-server-0.mcp-server.default.svc:8080)
+				// before the request reaches this proxy; the Rewrite closure then reads
+				// that value and routes follow-up requests to the correct pod.
+				sess.SetMetadata(sessionMetadataBackendURL, t.p.targetURI)
 				if err := t.p.sessionManager.AddSession(sess); err != nil {
 					//nolint:gosec // G706: session ID from HTTP response header
 					slog.Error("failed to create session from header",
@@ -500,17 +525,33 @@ func readRequestBody(req *http.Request) []byte {
 }
 
 func (t *tracingTransport) detectInitialize(body []byte) bool {
-	var rpc struct {
+	type rpcMethod struct {
 		Method string `json:"method"`
 	}
-	if err := json.Unmarshal(body, &rpc); err != nil {
+
+	// Single JSON-RPC object.
+	var single rpcMethod
+	if err := json.Unmarshal(body, &single); err == nil {
+		if single.Method == "initialize" {
+			//nolint:gosec // G706: logging target URI from config
+			slog.Debug("detected initialize method call", "target", t.p.targetURI)
+			return true
+		}
+		return false
+	}
+
+	// JSON-RPC batch: array of objects. Return true if any member is initialize.
+	var batch []rpcMethod
+	if err := json.Unmarshal(body, &batch); err != nil {
 		slog.Debug("failed to parse JSON-RPC body", "error", err)
 		return false
 	}
-	if rpc.Method == "initialize" {
-		//nolint:gosec // G706: logging target URI from config
-		slog.Debug("detected initialize method call", "target", t.p.targetURI)
-		return true
+	for _, rpc := range batch {
+		if rpc.Method == "initialize" {
+			//nolint:gosec // G706: logging target URI from config
+			slog.Debug("detected initialize method call in batch", "target", t.p.targetURI)
+			return true
+		}
 	}
 	return false
 }
@@ -549,12 +590,18 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 			// Falls back to static targetURL when the session doesn't exist or has no backend_url.
 			if sid := pr.In.Header.Get("Mcp-Session-Id"); sid != "" {
 				if sess, ok := p.sessionManager.Get(normalizeSessionID(sid)); ok {
-					if backendURLStr := sess.GetMetadata()["backend_url"]; backendURLStr != "" {
-						if parsed, err := url.Parse(backendURLStr); err == nil {
-							pr.Out.URL = parsed
-						} else {
-							slog.Debug("failed to parse backend_url from session metadata, using static target",
-								"backend_url", backendURLStr, "error", err)
+					if backendURLStr, exists := sess.GetMetadataValue(sessionMetadataBackendURL); exists && backendURLStr != "" {
+						parsed, parseErr := url.Parse(backendURLStr)
+						switch {
+						case parseErr != nil:
+							slog.Debug("failed to parse backend_url from session metadata; using static target",
+								sessionMetadataBackendURL, backendURLStr, "error", parseErr)
+						case parsed.Scheme == "" || parsed.Host == "":
+							slog.Debug("backend_url from session metadata is not an absolute URL; using static target",
+								sessionMetadataBackendURL, backendURLStr)
+						default:
+							pr.Out.URL.Scheme = parsed.Scheme
+							pr.Out.URL.Host = parsed.Host
 						}
 					}
 				}
@@ -882,6 +929,14 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 		}
 		//nolint:gosec // G706: logging target URI from config
 		slog.Debug("server stopped successfully", "target", p.targetURI)
+	}
+
+	// Stop the session manager to terminate its cleanup goroutine and close any
+	// underlying storage connections (e.g. Redis client) opened via WithSessionStorage.
+	if p.sessionManager != nil {
+		if err := p.sessionManager.Stop(); err != nil {
+			slog.Warn("error stopping session manager", "error", err)
+		}
 	}
 
 	return nil

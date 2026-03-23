@@ -31,6 +31,28 @@ func TestMCPRemoteProxyValidateSpecExtended(t *testing.T) {
 		errContains string
 	}{
 		{
+			name: "inline OIDC with unsupported scheme issuer rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "inline-ftp-issuer",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "ftp://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errContains: "unsupported scheme",
+		},
+		{
 			name: "inline OIDC with HTTP issuer rejected",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -160,6 +182,142 @@ func TestMCPRemoteProxyValidateSpecExtended(t *testing.T) {
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
 				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestMCPRemoteProxyValidateOIDCIssuerURL tests validateOIDCIssuerURL edge cases
+// where the OIDC config struct fields are nil, exercising fallthrough to return nil.
+func TestMCPRemoteProxyValidateOIDCIssuerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		proxy       *mcpv1alpha1.MCPRemoteProxy
+		expectError bool
+	}{
+		{
+			name: "inline type with nil Inline struct",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type:   mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: nil,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "kubernetes type with nil Kubernetes struct",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type:       mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: nil,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "kubernetes type with empty issuer",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							Issuer: "",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "unknown OIDC config type",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: "unknown",
+					},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	r := &MCPRemoteProxyReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := r.validateOIDCIssuerURL(tt.proxy)
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestMCPRemoteProxyValidateJWKSURL tests validateJWKSURL edge cases
+// where the OIDC config struct fields are nil, exercising fallthrough to return nil.
+func TestMCPRemoteProxyValidateJWKSURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		proxy       *mcpv1alpha1.MCPRemoteProxy
+		expectError bool
+	}{
+		{
+			name: "inline type with nil Inline struct",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type:   mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: nil,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "kubernetes type with nil Kubernetes struct",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type:       mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: nil,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "unknown OIDC config type",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: "unknown",
+					},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	r := &MCPRemoteProxyReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := r.validateJWKSURL(tt.proxy)
+			if tt.expectError {
+				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}

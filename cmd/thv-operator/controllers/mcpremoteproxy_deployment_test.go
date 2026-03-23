@@ -738,6 +738,33 @@ func TestEnsureService(t *testing.T) {
 			existingService: nil,
 			expectRequeue:   true,
 		},
+		{
+			name: "update existing service with drifted session affinity",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "update-svc-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+				},
+			},
+			existingService: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      createProxyServiceName("update-svc-proxy"),
+					Namespace: "default",
+					Labels:    labelsForMCPRemoteProxy("update-svc-proxy"),
+				},
+				Spec: corev1.ServiceSpec{
+					SessionAffinity: corev1.ServiceAffinityNone,
+					Ports: []corev1.ServicePort{{
+						Port: 8080,
+					}},
+				},
+			},
+			expectRequeue: true,
+		},
 	}
 
 	for _, tt := range tests {

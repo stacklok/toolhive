@@ -17,6 +17,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +44,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
@@ -55,6 +58,7 @@ const (
 	middlewareTimeout  = 60 * time.Second
 	readHeaderTimeout  = 10 * time.Second
 	shutdownTimeout    = 30 * time.Second
+	nonceBytes         = 16
 	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
 	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
@@ -65,6 +69,7 @@ type ServerBuilder struct {
 	isUnixSocket     bool
 	debugMode        bool
 	enableDocs       bool
+	nonce            string
 	oidcConfig       *auth.TokenValidatorConfig
 	middlewares      []func(http.Handler) http.Handler
 	customRoutes     map[string]http.Handler
@@ -105,6 +110,14 @@ func (b *ServerBuilder) WithDebugMode(debugMode bool) *ServerBuilder {
 // WithDocs enables or disables OpenAPI documentation
 func (b *ServerBuilder) WithDocs(enableDocs bool) *ServerBuilder {
 	b.enableDocs = enableDocs
+	return b
+}
+
+// WithNonce sets the server instance nonce used for discovery verification.
+// When non-empty, the server writes a discovery file on startup and returns
+// the nonce in the X-Toolhive-Nonce health check header.
+func (b *ServerBuilder) WithNonce(nonce string) *ServerBuilder {
+	b.nonce = nonce
 	return b
 }
 
@@ -297,7 +310,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 
 	// All other routes get standard timeout
 	standardRouters := map[string]http.Handler{
-		"/health":               v1.HealthcheckRouter(b.containerRuntime),
+		"/health":               v1.HealthcheckRouter(b.containerRuntime, b.nonce),
 		"/api/v1beta/version":   v1.VersionRouter(),
 		"/api/v1beta/registry":  v1.RegistryRouter(true),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
@@ -504,6 +517,7 @@ type Server struct {
 	address      string
 	isUnixSocket bool
 	addrType     string
+	nonce        string
 	storeCloser  io.Closer
 }
 
@@ -532,13 +546,28 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		address:      builder.address,
 		isUnixSocket: builder.isUnixSocket,
 		addrType:     addrType,
+		nonce:        builder.nonce,
 		storeCloser:  builder.skillStoreCloser,
 	}, nil
+}
+
+// ListenURL returns the URL where the server is listening, using the actual
+// bound address from the listener (important when binding to port 0).
+func (s *Server) ListenURL() string {
+	if s.isUnixSocket {
+		return fmt.Sprintf("unix://%s", s.address)
+	}
+	return fmt.Sprintf("http://%s", s.listener.Addr().String())
 }
 
 // Start starts the server and blocks until the context is cancelled
 func (s *Server) Start(ctx context.Context) error {
 	slog.Info("starting server", "type", s.addrType, "address", s.address)
+
+	// Write server discovery file so clients can find this instance.
+	if err := s.writeDiscoveryFile(ctx); err != nil {
+		return err
+	}
 
 	// Start server in a goroutine
 	serverErr := make(chan error, 1)
@@ -562,6 +591,50 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
+// writeDiscoveryFile writes the server discovery file if a nonce is configured.
+// It checks for an existing healthy server first to prevent silent orphaning.
+func (s *Server) writeDiscoveryFile(ctx context.Context) error {
+	if s.nonce == "" {
+		return nil
+	}
+
+	// Guard against overwriting another server's discovery file.
+	result, err := discovery.Discover(ctx)
+	if err != nil {
+		slog.Debug("discovery check failed, proceeding with startup", "error", err)
+	} else {
+		switch result.State {
+		case discovery.StateRunning:
+			return fmt.Errorf("another ToolHive server is already running at %s (PID %d)", result.Info.URL, result.Info.PID)
+		case discovery.StateStale:
+			slog.Debug("cleaning up stale discovery file", "pid", result.Info.PID)
+			if err := discovery.CleanupStale(); err != nil {
+				slog.Warn("failed to clean up stale discovery file", "error", err)
+			}
+		case discovery.StateUnhealthy:
+			// The process is alive but not responding to health checks.
+			// This can happen after a crash-restart where the old process
+			// is hung. We intentionally overwrite the discovery file so
+			// this new server becomes discoverable.
+			slog.Warn("existing server is unhealthy, overwriting discovery file", "pid", result.Info.PID)
+		case discovery.StateNotFound:
+			// No existing server, proceed normally.
+		}
+	}
+
+	info := &discovery.ServerInfo{
+		URL:       s.ListenURL(),
+		PID:       os.Getpid(),
+		Nonce:     s.nonce,
+		StartedAt: time.Now().UTC(),
+	}
+	if err := discovery.WriteServerInfo(info); err != nil {
+		return fmt.Errorf("failed to write discovery file: %w", err)
+	}
+	slog.Debug("wrote discovery file", "url", info.URL, "pid", info.PID)
+	return nil
+}
+
 // shutdown gracefully shuts down the server
 func (s *Server) shutdown() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -579,6 +652,11 @@ func (s *Server) shutdown() error {
 
 // cleanup performs cleanup operations
 func (s *Server) cleanup() {
+	if s.nonce != "" {
+		if err := discovery.RemoveServerInfo(); err != nil {
+			slog.Warn("failed to remove discovery file", "error", err)
+		}
+	}
 	if s.storeCloser != nil {
 		if err := s.storeCloser.Close(); err != nil {
 			slog.Warn("failed to close skill store", "error", err)
@@ -653,6 +731,16 @@ func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 	return result
 }
 
+// generateNonce creates a cryptographically random nonce for server instance
+// identification. It returns a 32-character hex string (16 random bytes).
+func generateNonce() (string, error) {
+	b := make([]byte, nonceBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate server nonce: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // Serve starts the server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
@@ -666,11 +754,17 @@ func Serve(
 	oidcConfig *auth.TokenValidatorConfig,
 	middlewares ...func(http.Handler) http.Handler,
 ) error {
+	nonce, err := generateNonce()
+	if err != nil {
+		return err
+	}
+
 	builder := NewServerBuilder().
 		WithAddress(address).
 		WithUnixSocket(isUnixSocket).
 		WithDebugMode(debugMode).
 		WithDocs(enableDocs).
+		WithNonce(nonce).
 		WithOIDCConfig(oidcConfig).
 		WithMiddleware(middlewares...)
 

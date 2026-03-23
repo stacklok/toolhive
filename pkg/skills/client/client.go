@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
@@ -74,19 +77,80 @@ func NewClient(baseURL string, opts ...Option) *Client {
 	return c
 }
 
-// NewDefaultClient creates a Skills API client using the TOOLHIVE_API_URL
-// environment variable, falling back to http://127.0.0.1:8080.
+// NewDefaultClient creates a Skills API client by trying, in order:
+//  1. The TOOLHIVE_API_URL environment variable (explicit override)
+//  2. The server discovery file (auto-detected running server)
+//  3. The default URL http://127.0.0.1:8080
 func NewDefaultClient(opts ...Option) *Client {
 	return newDefaultClientWithEnv(&env.OSReader{}, opts...)
 }
 
 // newDefaultClientWithEnv is the testable core of NewDefaultClient.
 func newDefaultClientWithEnv(envReader env.Reader, opts ...Option) *Client {
-	base := envReader.Getenv(envAPIURL)
-	if base == "" {
-		base = defaultBaseURL
+	// 1. Explicit env var override always wins.
+	if base := envReader.Getenv(envAPIURL); base != "" {
+		return NewClient(base, opts...)
 	}
-	return NewClient(base, opts...)
+
+	// 2. Try server discovery.
+	if base, httpOpts := resolveViaDiscovery(); base != "" {
+		merged := make([]Option, 0, len(httpOpts)+len(opts))
+		merged = append(merged, httpOpts...)
+		merged = append(merged, opts...)
+		return NewClient(base, merged...)
+	}
+
+	// 3. Fall back to the default URL.
+	return NewClient(defaultBaseURL, opts...)
+}
+
+// resolveViaDiscovery attempts to find a running server via the discovery file.
+// It returns the base URL and any additional options (e.g. a Unix socket transport).
+// On failure it returns empty values and the caller falls back to the default.
+func resolveViaDiscovery() (string, []Option) {
+	result, err := discovery.Discover(context.Background())
+	if err != nil {
+		slog.Debug("server discovery failed", "error", err)
+		return "", nil
+	}
+	if result.State != discovery.StateRunning {
+		return "", nil
+	}
+
+	serverURL := result.Info.URL
+
+	// Validate and configure transport based on URL scheme.
+	switch {
+	case strings.HasPrefix(serverURL, "unix://"):
+		socketPath, err := discovery.ParseUnixSocketPath(serverURL)
+		if err != nil {
+			slog.Debug("invalid unix socket path in discovery file", "error", err)
+			return "", nil
+		}
+		// For Unix sockets, the base URL is http://localhost (the dialer handles routing)
+		// and we override the HTTP transport to dial the socket.
+		transport := &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		}
+		opt := WithHTTPClient(&http.Client{
+			Timeout:   defaultTimeout,
+			Transport: transport,
+		})
+		return "http://localhost", []Option{opt}
+
+	case strings.HasPrefix(serverURL, "http://"):
+		if err := discovery.ValidateLoopbackURL(serverURL); err != nil {
+			slog.Debug("discovery URL is not a loopback address", "url", serverURL, "error", err)
+			return "", nil
+		}
+		return serverURL, nil
+
+	default:
+		slog.Debug("unsupported URL scheme in discovery file", "url", serverURL)
+		return "", nil
+	}
 }
 
 // --- SkillService implementation ---

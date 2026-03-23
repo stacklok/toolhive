@@ -98,9 +98,12 @@ func IsAuthenticationError(err error) bool {
 		return true
 	}
 
-	// Check for HTTP 401/403 status codes with context
-	// Match patterns like "401 Unauthorized", "HTTP 401", "status code 401"
+	// Check for HTTP 401/403 status codes with context.
+	// Match patterns like "401 Unauthorized", "HTTP 401", "status code 401".
+	// Also match mcp-go's ErrUnauthorized = "unauthorized (401)" which uses
+	// reversed order compared to the "401 unauthorized" pattern above.
 	if strings.Contains(errLower, "401 unauthorized") ||
+		strings.Contains(errLower, "unauthorized (401)") ||
 		strings.Contains(errLower, "403 forbidden") ||
 		strings.Contains(errLower, "http 401") ||
 		strings.Contains(errLower, "http 403") ||

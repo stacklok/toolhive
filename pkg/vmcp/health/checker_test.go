@@ -334,6 +334,9 @@ func TestIsAuthenticationError(t *testing.T) {
 		{name: "request unauthorized", err: errors.New("request unauthorized"), expectErr: true},
 		{name: "access denied", err: errors.New("access denied"), expectErr: true},
 
+		// mcp-go ErrUnauthorized format: "unauthorized (401)" (reversed order vs "401 unauthorized")
+		{name: "unauthorized (401) - mcp-go ErrUnauthorized format", err: errors.New("unauthorized (401)"), expectErr: true},
+
 		// Negative cases - should NOT be detected as auth errors
 		{name: "connection refused", err: errors.New("connection refused"), expectErr: false},
 		{name: "timeout", err: errors.New("request timeout"), expectErr: false},
@@ -514,6 +517,13 @@ func TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated(t *tes
 		{
 			name: "wrapped sentinel auth error",
 			err:  fmt.Errorf("client credentials grant failed: %w", vmcp.ErrAuthenticationFailed),
+		},
+		{
+			// transport.ErrUnauthorized is wrapped with ErrAuthenticationFailed in wrapBackendError,
+			// so a 401 from the mcp-go transport layer reaches health monitoring as
+			// BackendUnauthenticated instead of BackendUnhealthy.
+			name: "mcp-go ErrUnauthorized wrapped as ErrAuthenticationFailed by wrapBackendError",
+			err:  fmt.Errorf("%w: failed to initialize for backend my-backend: unauthorized (401)", vmcp.ErrAuthenticationFailed),
 		},
 	}
 

@@ -321,7 +321,23 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrTimeout, operation, backendID, err)
 	}
 
-	// 4. String-based detection: Fall back to pattern matching for cases where
+	// 4. mcp-go transport sentinel errors: check before string-based fallbacks
+	// to ensure accurate classification of protocol-level errors.
+	if errors.Is(err, transport.ErrUnauthorized) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
+	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
+	// We cannot distinguish auth failures from routing errors without the raw status code,
+	// so we surface a clear message and classify as backend unavailable to allow recovery.
+	if errors.Is(err, transport.ErrLegacySSEServer) {
+		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
+		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
+			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
+	}
+
+	// 5. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {

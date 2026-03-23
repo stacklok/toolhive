@@ -269,7 +269,7 @@ func createUpstreamRegistryWithSkill(skillName, ociReference string) string {
 
 // Test suite
 
-var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), func() {
+var _ = Describe("Skills API", Label("api", "api-registry", "skills", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
 		apiServer *e2e.Server
@@ -1021,6 +1021,13 @@ var _ = Describe("Skills API", Label("api", "api-clients", "skills", "e2e"), fun
 			})
 			defer updateResp.Body.Close()
 			Expect(updateResp.StatusCode).To(Equal(http.StatusOK))
+
+			// Reset registry to default after this test to avoid polluting
+			// the shared config directory used by other E2E tests.
+			DeferCleanup(func() {
+				resetResp := updateRegistry(apiServer, "default", map[string]interface{}{})
+				resetResp.Body.Close()
+			})
 
 			By("Installing by plain skill name — should resolve from registry")
 			installResp := installSkill(apiServer, installSkillRequest{Name: skillName})

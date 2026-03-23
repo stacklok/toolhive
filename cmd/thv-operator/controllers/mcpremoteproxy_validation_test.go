@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -18,6 +19,129 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
+
+// TestMCPRemoteProxyValidateCABundleRefStatusUpdateError tests that
+// validateCABundleRef handles Status().Update errors gracefully.
+func TestMCPRemoteProxyValidateCABundleRefStatusUpdateError(t *testing.T) {
+	t.Parallel()
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ca-status-error",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://mcp.example.com",
+			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+				Type: mcpv1alpha1.OIDCConfigTypeInline,
+				Inline: &mcpv1alpha1.InlineOIDCConfig{
+					Issuer:   "https://auth.example.com",
+					Audience: "mcp-proxy",
+					CABundleRef: &mcpv1alpha1.CABundleSource{
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle"},
+							Key:                  "ca.crt",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	caBundleCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ca-bundle",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			"ca.crt": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+		},
+	}
+
+	scheme := createRunConfigTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(proxy, caBundleCM).
+		WithStatusSubresource(proxy).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				// Fail status updates to exercise the error path in updateCABundleStatusForProxy
+				return fmt.Errorf("simulated status update failure")
+			},
+		}).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Should not panic even when status update fails
+	reconciler.validateCABundleRef(context.TODO(), proxy)
+
+	// The condition should still be set in-memory despite the status update failure
+	cond := findCondition(proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated)
+	assert.NotNil(t, cond, "CABundleRefValidated condition should be set in-memory")
+}
+
+// TestMCPRemoteProxyDeploymentMetadataMapIsSubset tests that deploymentMetadataNeedsUpdate
+// uses subset checking for annotations (not exact equality).
+func TestMCPRemoteProxyDeploymentMetadataMapIsSubset(t *testing.T) {
+	t.Parallel()
+
+	r := &MCPRemoteProxyReconciler{}
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "subset-test",
+			Namespace: "default",
+		},
+	}
+
+	expectedLabels := labelsForMCPRemoteProxy(proxy.Name)
+
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		needsUpdate bool
+	}{
+		{
+			name:        "extra annotations should not trigger update",
+			annotations: map[string]string{"extra-key": "extra-value"},
+			needsUpdate: false,
+		},
+		{
+			name:        "no annotations should not trigger update",
+			annotations: map[string]string{},
+			needsUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      expectedLabels,
+					Annotations: tt.annotations,
+				},
+			}
+			result := r.deploymentMetadataNeedsUpdate(deployment, proxy)
+			assert.Equal(t, tt.needsUpdate, result)
+		})
+	}
+}
+
+// findCondition is a helper to find a condition by type
+func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
 
 // TestMCPRemoteProxyValidateSpecExtended covers additional validateSpec branches
 // not exercised by TestMCPRemoteProxyValidateSpec in mcpremoteproxy_controller_test.go.

@@ -69,10 +69,12 @@ spec:
             properties:
               authServerConfig:
                 description: |-
-                  AuthServerConfig configures an embedded OAuth authorization server (Mode B).
+                  AuthServerConfig configures an embedded OAuth authorization server.
                   When set, the vMCP server acts as an OIDC issuer, drives users through
-                  upstream IDPs, and issues ToolHive JWTs. When nil (Mode A), behavior is unchanged.
-                  The operator converts this to an authserver.RunConfig at deployment time.
+                  upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
+                  IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig
+                  so that tokens it issues are accepted by the vMCP's incoming auth middleware.
+                  When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
                   hmacSecretRefs:
                     description: |-

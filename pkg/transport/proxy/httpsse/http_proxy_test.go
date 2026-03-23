@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -21,7 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
-const testClientID = "test-client"
+const testClientID = "eeeeeeee-0001-0001-0001-000000000001"
 
 // TestNewHTTPSSEProxy tests the creation of a new HTTP SSE proxy
 //
@@ -98,7 +99,7 @@ func TestRemoveClient(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
 
 	// Create a client session
-	clientID := "test-client-1"
+	clientID := "eeeeeeee-0002-0002-0002-000000000002"
 	clientInfo := &ssecommon.SSEClient{
 		MessageCh: make(chan string, 10),
 		CreatedAt: time.Now(),
@@ -136,15 +137,16 @@ func TestConcurrentClientRemoval(t *testing.T) {
 
 	// Create multiple client sessions
 	numClients := 100
+	clientIDs := make([]string, numClients)
 	for i := 0; i < numClients; i++ {
-		clientID := fmt.Sprintf("client-%d", i)
+		clientIDs[i] = uuid.New().String()
 		clientInfo := &ssecommon.SSEClient{
 			MessageCh: make(chan string, 10),
 			CreatedAt: time.Now(),
 		}
 
 		// Add session to manager
-		sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+		sseSession := session.NewSSESessionWithClient(clientIDs[i], clientInfo)
 		err := proxy.sessionManager.AddSession(sseSession)
 		require.NoError(t, err)
 	}
@@ -153,7 +155,7 @@ func TestConcurrentClientRemoval(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < numClients; i++ {
 		wg.Add(2) // Two goroutines trying to remove the same client
-		clientID := fmt.Sprintf("client-%d", i)
+		clientID := clientIDs[i]
 
 		go func(id string) {
 			defer wg.Done()
@@ -447,7 +449,7 @@ func TestHandlePostRequest(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil)
 
 	// Create a client session
-	sessionID := "test-session"
+	sessionID := "eeeeeeee-0003-0003-0003-000000000003"
 	clientInfo := &ssecommon.SSEClient{
 		MessageCh: make(chan string, 10),
 		CreatedAt: time.Now(),
@@ -528,14 +530,13 @@ func TestRWMutexUsage(t *testing.T) {
 
 	// Add multiple client sessions
 	for i := 0; i < 10; i++ {
-		clientID := fmt.Sprintf("client-%d", i)
 		clientInfo := &ssecommon.SSEClient{
 			MessageCh: make(chan string, 10),
 			CreatedAt: time.Now(),
 		}
 
 		// Add session to manager
-		sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+		sseSession := session.NewSSESessionWithClient(uuid.New().String(), clientInfo)
 		err := proxy.sessionManager.AddSession(sseSession)
 		require.NoError(t, err)
 	}
@@ -569,7 +570,7 @@ func TestClosedClientsCleanup(t *testing.T) {
 
 	// Add many closed client sessions to trigger cleanup
 	for i := 0; i < 1100; i++ {
-		clientID := fmt.Sprintf("client-%d", i)
+		clientID := uuid.New().String()
 		clientInfo := &ssecommon.SSEClient{
 			MessageCh: make(chan string, 1),
 			CreatedAt: time.Now(),

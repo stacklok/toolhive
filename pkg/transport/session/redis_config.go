@@ -21,8 +21,14 @@ type RedisConfig struct {
 	// SentinelConfig, when non-nil, activates Sentinel mode. Mutually exclusive with Addr.
 	SentinelConfig *SentinelConfig
 
-	// Password is the Redis AUTH password.
-	Password string
+	// Username is the Redis ACL username (Redis 6.0+). When non-empty, both
+	// Username and Password are sent as ACL credentials (AUTH username password).
+	// Leave empty to authenticate as the default user (legacy AUTH password).
+	Username string
+
+	// Password is the Redis AUTH password. Used with Username for ACL auth,
+	// or alone for legacy AUTH with the default user.
+	Password string //nolint:gosec // G101: not a hardcoded credential
 
 	// DB is the Redis database index.
 	DB int

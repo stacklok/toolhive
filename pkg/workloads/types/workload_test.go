@@ -99,7 +99,7 @@ func TestWorkloadFromContainerInfo(t *testing.T) {
 				Labels:  tt.containerLabels,
 			}
 
-			workload, err := WorkloadFromContainerInfo(container)
+			workload, err := WorkloadFromContainerInfo(container, store)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.expectedTransport, workload.TransportType, "Transport type should match expected")

@@ -6,8 +6,6 @@ package types
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
@@ -15,7 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	werr "github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // minimalRunConfig represents just the fields we need from a run configuration
@@ -25,30 +22,33 @@ type minimalRunConfig struct {
 }
 
 // loadRunConfigFields attempts to load specific fields from the runconfig
-// Returns empty struct if runconfig doesn't exist
-func loadRunConfigFields(ctx context.Context, name string) (*minimalRunConfig, error) {
-	// Try to load the runconfig
-	runConfig, err := state.LoadRunConfig(ctx, name, func(r io.Reader) (*minimalRunConfig, error) {
-		var config minimalRunConfig
-		decoder := json.NewDecoder(r)
-		if err := decoder.Decode(&config); err != nil {
-			return nil, err
-		}
-		return &config, nil
-	})
+// using the provided store. Returns empty struct if runconfig doesn't exist.
+func loadRunConfigFields(ctx context.Context, store state.Store, name string) (*minimalRunConfig, error) {
+	exists, err := store.Exists(ctx, name)
 	if err != nil {
-		if errors.Is(err, werr.ErrRunConfigNotFound) {
-			return &minimalRunConfig{}, nil
-		}
 		return nil, err
 	}
+	if !exists {
+		return &minimalRunConfig{}, nil
+	}
 
-	// Return the runconfig
-	return runConfig, nil
+	reader, err := store.GetReader(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	var config minimalRunConfig
+	if err := json.NewDecoder(reader).Decode(&config); err != nil {
+		return nil, err
+	}
+	return &config, nil
 }
 
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.
-func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload, error) {
+// The runConfigStore is used to load run configuration fields (proxy mode, group)
+// without hitting the real filesystem, enabling proper dependency injection for tests.
+func WorkloadFromContainerInfo(container *runtime.ContainerInfo, runConfigStore state.Store) (core.Workload, error) {
 	// Get workload name (base name) from labels for user-facing display
 	name := labels.GetContainerBaseName(container.Labels)
 	if name == "" {
@@ -76,7 +76,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	}
 
 	ctx := context.Background()
-	runConfig, err := loadRunConfigFields(ctx, name)
+	runConfig, err := loadRunConfigFields(ctx, runConfigStore, name)
 	if err != nil {
 		return core.Workload{}, err
 	}

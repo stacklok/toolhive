@@ -102,9 +102,10 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -135,9 +136,10 @@ func TestFileStatusManager_GetWorkloadSlashes(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "` + testWorkloadWithSlash + `", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "` + testWorkloadWithSlash + `", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
@@ -224,9 +226,10 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "running-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "running-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "running-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "running-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "running-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status file and set it to running
 	err := manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, "")
@@ -834,9 +837,10 @@ func TestFileStatusManager_GetWorkload_UnhealthyDetection(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// First, set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
@@ -905,9 +909,10 @@ func TestFileStatusManager_GetWorkload_HealthyRunningWorkload(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
@@ -953,9 +958,10 @@ func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "proxy-down-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "proxy-down-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "proxy-down-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// First, create a status file manually to ensure file is found
 	statusFile := workloadStatusFile{
@@ -1029,9 +1035,10 @@ func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-with-proxy").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "healthy-with-proxy", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-with-proxy").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-with-proxy").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "healthy-with-proxy", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "healthy-with-proxy", rt.WorkloadStatusRunning, "container started")
@@ -1080,13 +1087,10 @@ func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "runtime-mismatch").Return(true, nil).AnyTimes()
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "proxy-down").Return(true, nil).AnyTimes()
 
-	// Create mock readers that return non-remote configuration data
-	mockReader1 := io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`))
-	mockReader2 := io.NopCloser(strings.NewReader(`{"name": "runtime-mismatch", "transport": "sse"}`))
-	mockReader3 := io.NopCloser(strings.NewReader(`{"name": "proxy-down", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").Return(mockReader1, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "runtime-mismatch").Return(mockReader2, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down").Return(mockReader3, nil).AnyTimes()
+	// Create mock readers that return non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, name string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(fmt.Sprintf(`{"name": "%s", "transport": "sse"}`, name))), nil
+	}).AnyTimes()
 
 	// Create file workloads - one healthy running, one with runtime mismatch, one with proxy down
 	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
@@ -1183,9 +1187,10 @@ func TestFileStatusManager_GetWorkload_vs_ListWorkloads_Consistency(t *testing.T
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status file
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -1227,9 +1232,10 @@ func TestFileStatusManager_ListWorkloads_CorruptedFile(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "good-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "good-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "good-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "good-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "good-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a valid workload first
 	err := manager.SetWorkloadStatus(ctx, "good-workload", rt.WorkloadStatusStarting, "")

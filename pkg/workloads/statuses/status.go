@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive-core/env"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -47,10 +48,15 @@ type StatusManager interface {
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
-func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
-	return &runtimeStatusManager{
-		runtime: runtime,
+func NewStatusManagerFromRuntime(runtime rt.Runtime) (StatusManager, error) {
+	runConfigStore, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create run config store: %w", err)
 	}
+	return &runtimeStatusManager{
+		runtime:        runtime,
+		runConfigStore: runConfigStore,
+	}, nil
 }
 
 // NewStatusManager creates a new status manager instance using the appropriate implementation
@@ -64,7 +70,7 @@ func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
 // This allows for dependency injection of environment variable access for testing.
 func NewStatusManagerWithEnv(runtime rt.Runtime, envReader env.Reader) (StatusManager, error) {
 	if rt.IsKubernetesRuntimeWithEnv(envReader) {
-		return NewStatusManagerFromRuntime(runtime), nil
+		return NewStatusManagerFromRuntime(runtime)
 	}
 	return NewFileStatusManager(runtime)
 }
@@ -73,7 +79,8 @@ func NewStatusManagerWithEnv(runtime rt.Runtime, envReader env.Reader) (StatusMa
 // returned by the underlying runtime. This reflects the existing behaviour of
 // ToolHive at the time of writing.
 type runtimeStatusManager struct {
-	runtime rt.Runtime
+	runtime        rt.Runtime
+	runConfigStore state.Store
 }
 
 func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
@@ -87,7 +94,7 @@ func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName str
 		return core.Workload{}, err
 	}
 
-	return types.WorkloadFromContainerInfo(&info)
+	return types.WorkloadFromContainerInfo(&info, r.runConfigStore)
 }
 
 func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
@@ -108,7 +115,7 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 	for _, c := range containers {
 		// If the caller did not set `listAll` to true, only include running containers.
 		if c.IsRunning() || listAll {
-			workload, err := types.WorkloadFromContainerInfo(&c)
+			workload, err := types.WorkloadFromContainerInfo(&c, r.runConfigStore)
 			if err != nil {
 				return nil, err
 			}

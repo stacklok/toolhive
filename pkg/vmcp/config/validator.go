@@ -595,7 +595,6 @@ func warnDuplicateUpstreamInjectProviders(strategies map[string]*authtypes.Backe
 	}
 }
 
-
 // hasAuthServerWithOIDCIncoming returns true when both the auth server and
 // incoming OIDC auth are configured, enabling cross-cutting validation.
 func hasAuthServerWithOIDCIncoming(cfg *Config, rc *authserver.RunConfig) bool {
@@ -645,4 +644,3 @@ func upstreamExists(rc *authserver.RunConfig, providerName string) bool {
 	}
 	return false
 }
-

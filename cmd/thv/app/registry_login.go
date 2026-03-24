@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -76,5 +76,5 @@ func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error
 	if err != nil {
 		return nil, fmt.Errorf("getting secrets provider type: %w", err)
 	}
-	return secrets.CreateSecretProvider(providerType)
+	return secrets.CreateScopedSecretProvider(providerType, secrets.ScopeRegistry)
 }

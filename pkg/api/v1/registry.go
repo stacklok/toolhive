@@ -26,9 +26,10 @@ import (
 // Desktop clients (Studio) match on this value to display the correct UI.
 const RegistryAuthRequiredCode = "registry_auth_required"
 
-// registryAuthErrorResponse is the JSON body for HTTP 503 auth-required errors.
-// Studio uses the "code" field to detect this specific condition and prompt the user.
-type registryAuthErrorResponse struct {
+// registryErrorResponse is the JSON body for structured HTTP 503 error responses.
+// The "code" field allows clients (e.g. Studio) to distinguish between
+// "registry_auth_required" and "registry_unavailable" conditions.
+type registryErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
@@ -38,7 +39,7 @@ type registryAuthErrorResponse struct {
 // but thv serve itself lacks a valid registry credential. This is a server-side dependency
 // issue, not a client auth failure (which would be 401).
 func writeRegistryAuthRequiredError(w http.ResponseWriter) {
-	body := registryAuthErrorResponse{
+	body := registryErrorResponse{
 		Code:    RegistryAuthRequiredCode,
 		Message: "Registry authentication required. Run 'thv registry login' to authenticate.",
 	}
@@ -54,7 +55,7 @@ const RegistryUnavailableCode = "registry_unavailable"
 // writeRegistryUnavailableError writes a structured JSON 503 response when the
 // upstream registry cannot be reached or returns an unexpected error (e.g. 404).
 func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.UnavailableError) {
-	body := registryAuthErrorResponse{
+	body := registryErrorResponse{
 		Code:    RegistryUnavailableCode,
 		Message: unavailableErr.Error(),
 	}

@@ -126,7 +126,7 @@ func TestRegistryAPI_GetEndpoint_UnavailableUpstream(t *testing.T) {
 			assert.Equal(t, http.StatusServiceUnavailable, w.Code,
 				"Expected 503 Service Unavailable for unreachable upstream registry")
 
-			var body registryAuthErrorResponse
+			var body registryErrorResponse
 			err := json.NewDecoder(w.Body).Decode(&body)
 			require.NoError(t, err, "Response should be valid JSON")
 			assert.Equal(t, RegistryUnavailableCode, body.Code,

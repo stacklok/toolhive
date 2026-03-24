@@ -450,11 +450,22 @@ type ResourceReadResult struct {
 	Meta map[string]any
 }
 
+// PromptMessage represents a single message in a prompt response,
+// preserving the role and content structure from the backend.
+type PromptMessage struct {
+	// Role is the message role. The MCP spec defines "user" and "assistant";
+	// backends may also send other values which are relayed as-is.
+	Role string
+	// Content is the message content, supporting all MCP content types.
+	Content Content
+}
+
 // PromptGetResult wraps a prompt response with metadata.
 // This preserves both the prompt messages AND the _meta field from the backend MCP server.
 type PromptGetResult struct {
-	// Messages is the concatenated prompt text from all messages.
-	Messages string
+	// Messages preserves individual prompt messages with their roles
+	// and full content structure (text, images, audio, resources).
+	Messages []PromptMessage
 
 	// Description is an optional description of the prompt.
 	Description string

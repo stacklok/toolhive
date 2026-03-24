@@ -772,7 +772,7 @@ func (h *httpBackendClient) GetPrompt(
 	}
 
 	return &vmcp.PromptGetResult{
-		Messages:    conversion.ConvertPromptMessages(result.Messages),
+		Messages:    conversion.ConvertMCPPromptMessages(result.Messages),
 		Description: result.Description,
 		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil

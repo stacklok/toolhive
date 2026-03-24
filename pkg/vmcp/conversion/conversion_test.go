@@ -73,50 +73,175 @@ func TestConvertToolInputSchema(t *testing.T) {
 	}
 }
 
-func TestConvertPromptMessages(t *testing.T) {
+func TestConvertMCPPromptMessages(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		messages []mcp.PromptMessage
-		want     string
+		want     []vmcp.PromptMessage
 	}{
 		{
-			name:     "empty messages",
+			name:     "nil messages returns empty slice",
 			messages: nil,
-			want:     "",
+			want:     []vmcp.PromptMessage{},
 		},
 		{
-			name: "single message with role",
+			name:     "empty messages returns empty slice",
+			messages: []mcp.PromptMessage{},
+			want:     []vmcp.PromptMessage{},
+		},
+		{
+			name: "single text message preserves role and content",
 			messages: []mcp.PromptMessage{
 				{Role: "user", Content: mcp.NewTextContent("Hello")},
 			},
-			want: "[user] Hello\n",
-		},
-		{
-			name: "message without role omits prefix",
-			messages: []mcp.PromptMessage{
-				{Role: "", Content: mcp.NewTextContent("No role")},
+			want: []vmcp.PromptMessage{
+				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello"}},
 			},
-			want: "No role\n",
 		},
 		{
-			name: "multiple messages concatenated",
+			name: "multiple messages with different roles",
 			messages: []mcp.PromptMessage{
 				{Role: "system", Content: mcp.NewTextContent("You are helpful")},
 				{Role: "user", Content: mcp.NewTextContent("Hi")},
 				{Role: "assistant", Content: mcp.NewTextContent("Hello!")},
 			},
-			want: "[system] You are helpful\n[user] Hi\n[assistant] Hello!\n",
+			want: []vmcp.PromptMessage{
+				{Role: "system", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "You are helpful"}},
+				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hi"}},
+				{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello!"}},
+			},
+		},
+		{
+			name: "message with image content is preserved",
+			messages: []mcp.PromptMessage{
+				{Role: "user", Content: mcp.NewImageContent("base64imgdata", "image/png")},
+			},
+			want: []vmcp.PromptMessage{
+				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeImage, Data: "base64imgdata", MimeType: "image/png"}},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, conversion.ConvertPromptMessages(tt.messages))
+			got := conversion.ConvertMCPPromptMessages(tt.messages)
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestToMCPPromptMessages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		messages []vmcp.PromptMessage
+		wantLen  int
+		check    func(*testing.T, []mcp.PromptMessage)
+	}{
+		{
+			name:     "nil messages returns empty slice",
+			messages: nil,
+			wantLen:  0,
+		},
+		{
+			name:     "empty messages returns empty slice",
+			messages: []vmcp.PromptMessage{},
+			wantLen:  0,
+		},
+		{
+			name: "single text message preserves role and content",
+			messages: []vmcp.PromptMessage{
+				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello"}},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, result []mcp.PromptMessage) {
+				t.Helper()
+				assert.Equal(t, mcp.Role("user"), result[0].Role)
+				text, ok := mcp.AsTextContent(result[0].Content)
+				require.True(t, ok)
+				assert.Equal(t, "Hello", text.Text)
+			},
+		},
+		{
+			name: "multiple messages with different roles",
+			messages: []vmcp.PromptMessage{
+				{Role: "system", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Be helpful"}},
+				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hi"}},
+				{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello!"}},
+			},
+			wantLen: 3,
+			check: func(t *testing.T, result []mcp.PromptMessage) {
+				t.Helper()
+				assert.Equal(t, mcp.Role("system"), result[0].Role)
+				assert.Equal(t, mcp.Role("user"), result[1].Role)
+				assert.Equal(t, mcp.Role("assistant"), result[2].Role)
+			},
+		},
+		{
+			name: "image content is preserved",
+			messages: []vmcp.PromptMessage{
+				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeImage, Data: "imgdata", MimeType: "image/png"}},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, result []mcp.PromptMessage) {
+				t.Helper()
+				img, ok := result[0].Content.(mcp.ImageContent)
+				require.True(t, ok)
+				assert.Equal(t, "imgdata", img.Data)
+				assert.Equal(t, "image/png", img.MIMEType)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := conversion.ToMCPPromptMessages(tt.messages)
+			assert.Len(t, got, tt.wantLen)
+			if tt.check != nil {
+				tt.check(t, got)
+			}
+		})
+	}
+}
+
+func TestPromptMessagesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := []mcp.PromptMessage{
+		{Role: "system", Content: mcp.NewTextContent("You are helpful")},
+		{Role: "user", Content: mcp.NewImageContent("base64data", "image/png")},
+		{Role: "assistant", Content: mcp.NewTextContent("I see an image")},
+	}
+
+	// mcp -> vmcp -> mcp
+	intermediate := conversion.ConvertMCPPromptMessages(original)
+	roundTripped := conversion.ToMCPPromptMessages(intermediate)
+
+	require.Len(t, roundTripped, len(original))
+	for i, orig := range original {
+		assert.Equal(t, orig.Role, roundTripped[i].Role, "role at index %d", i)
+	}
+
+	// Verify text content preserved
+	text0, ok := mcp.AsTextContent(roundTripped[0].Content)
+	require.True(t, ok)
+	assert.Equal(t, "You are helpful", text0.Text)
+
+	// Verify image content preserved
+	img1, ok := roundTripped[1].Content.(mcp.ImageContent)
+	require.True(t, ok)
+	assert.Equal(t, "base64data", img1.Data)
+	assert.Equal(t, "image/png", img1.MIMEType)
+
+	// Verify second text content preserved
+	text2, ok := mcp.AsTextContent(roundTripped[2].Content)
+	require.True(t, ok)
+	assert.Equal(t, "I see an image", text2.Text)
 }
 
 func TestConvertPromptArguments(t *testing.T) {

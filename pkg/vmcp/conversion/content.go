@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -162,22 +161,29 @@ func ConvertToolInputSchema(schema mcp.ToolInputSchema) map[string]any {
 	return result
 }
 
-// ConvertPromptMessages flattens MCP prompt messages into a single string with
-// the format "[role] text\n". Messages without a role omit the prefix. Only
-// text content is included; non-text content is silently discarded (Phase 1
-// limitation — vmcp.PromptGetResult carries a flat string, not structured messages).
-func ConvertPromptMessages(messages []mcp.PromptMessage) string {
-	var sb strings.Builder
+// ConvertMCPPromptMessages converts []mcp.PromptMessage to []vmcp.PromptMessage,
+// preserving individual message roles and content types.
+func ConvertMCPPromptMessages(messages []mcp.PromptMessage) []vmcp.PromptMessage {
+	result := make([]vmcp.PromptMessage, 0, len(messages))
 	for _, msg := range messages {
-		if msg.Role != "" {
-			fmt.Fprintf(&sb, "[%s] ", msg.Role)
-		}
-		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
-			sb.WriteString(textContent.Text)
-			sb.WriteByte('\n')
-		}
+		result = append(result, vmcp.PromptMessage{
+			Role:    string(msg.Role),
+			Content: ConvertMCPContent(msg.Content),
+		})
 	}
-	return sb.String()
+	return result
+}
+
+// ToMCPPromptMessages converts []vmcp.PromptMessage to []mcp.PromptMessage.
+func ToMCPPromptMessages(messages []vmcp.PromptMessage) []mcp.PromptMessage {
+	result := make([]mcp.PromptMessage, 0, len(messages))
+	for _, msg := range messages {
+		result = append(result, mcp.PromptMessage{
+			Role:    mcp.Role(msg.Role),
+			Content: ToMCPContent(msg.Content),
+		})
+	}
+	return result
 }
 
 // ConvertPromptArguments converts map[string]any to map[string]string by

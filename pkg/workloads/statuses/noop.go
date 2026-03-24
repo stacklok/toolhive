@@ -49,6 +49,11 @@ func (*NoopStatusManager) ResetWorkloadPID(_ context.Context, _ string) error {
 	return nil
 }
 
+// ResetWorkloadPIDIfMatch does nothing and returns nil.
+func (*NoopStatusManager) ResetWorkloadPIDIfMatch(_ context.Context, _ string, _ int) error {
+	return nil
+}
+
 // GetWorkloadPID returns 0 and nil error.
 func (*NoopStatusManager) GetWorkloadPID(_ context.Context, _ string) (int, error) {
 	return 0, nil

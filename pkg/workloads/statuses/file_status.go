@@ -464,6 +464,45 @@ func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName s
 	return f.SetWorkloadPID(ctx, workloadName, 0)
 }
 
+// ResetWorkloadPIDIfMatch resets the PID of a workload to 0 only if the
+// current PID in the status file matches expectedPID. This prevents a dying
+// process from clobbering a PID written by a replacement process.
+func (f *fileStatusManager) ResetWorkloadPIDIfMatch(ctx context.Context, workloadName string, expectedPID int) error {
+	// As a side effect, get rid of the PID file if any exists
+	if err := removePIDFile(workloadName); err != nil {
+		slog.Debug("no PID for workload was removed", "workload", workloadName)
+	}
+
+	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
+		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
+		}
+
+		statusFile, err := f.readStatusFile(statusFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read status for workload %s: %w", workloadName, err)
+		}
+
+		if statusFile.ProcessID != expectedPID {
+			slog.Debug("skipping PID reset: current PID does not match",
+				"workload", workloadName,
+				"current_pid", statusFile.ProcessID,
+				"expected_pid", expectedPID)
+			return nil
+		}
+
+		statusFile.ProcessID = 0
+		statusFile.UpdatedAt = time.Now()
+		return f.writeStatusFile(statusFilePath, *statusFile)
+	})
+	if err != nil {
+		slog.Error("error resetting workload PID", "workload", workloadName, "error", err)
+	}
+	return err
+}
+
 // GetWorkloadPID retrieves the PID of a workload from its status file.
 func (f *fileStatusManager) GetWorkloadPID(ctx context.Context, workloadName string) (int, error) {
 	var pid int

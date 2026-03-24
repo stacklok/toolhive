@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -33,8 +34,8 @@ var serveCmd = &cobra.Command{
 	Short: "Start the ToolHive API server",
 	Long:  `Starts the ToolHive API server and listen for HTTP requests.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		// Ensure server is shutdown gracefully on Ctrl+C.
-		ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
+		// Ensure server is shutdown gracefully on Ctrl+C or SIGTERM.
+		ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 
 		// Get debug mode flag

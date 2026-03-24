@@ -291,7 +291,8 @@ func (mts *MonitoredTokenSource) resetTimer(d time.Duration) {
 
 // getRetryBackOff returns the backoff to use for transient-error retries.
 // Uses mts.newRetryBackOff if set (e.g. in tests); otherwise returns a default
-// exponential backoff with no MaxElapsedTime (context cancellation is the stop signal).
+// exponential backoff. The caller (retryTransientRefresh) applies WithMaxTries
+// and WithMaxElapsedTime to bound the overall retry loop.
 func (mts *MonitoredTokenSource) getRetryBackOff() backoff.BackOff {
 	if mts.newRetryBackOff != nil {
 		return mts.newRetryBackOff()
@@ -299,7 +300,6 @@ func (mts *MonitoredTokenSource) getRetryBackOff() backoff.BackOff {
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = resolveTokenRefreshInitialRetryInterval()
 	eb.MaxInterval = resolveTokenRefreshMaxRetryInterval()
-	// No MaxElapsedTime — context cancellation is the stop signal.
 	eb.Reset()
 	return eb
 }

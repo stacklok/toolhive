@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -363,7 +363,7 @@ func getSecretsManager() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	manager, err := secrets.CreateUserSecretProvider(providerType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
 	}

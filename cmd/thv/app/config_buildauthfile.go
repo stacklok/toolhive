@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var (
@@ -135,7 +136,7 @@ func setBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get the secrets manager to store the content securely
-	manager, err := getSecretsManager()
+	manager, err := getScopedWorkloadsSecretsManager()
 	if err != nil {
 		return fmt.Errorf("failed to get secrets manager: %w (run 'thv secret setup' first)", err)
 	}
@@ -195,7 +196,7 @@ func getBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 
 		// Get content from secrets if requested
 		if showAuthFileContent {
-			manager, err := getSecretsManager()
+			manager, err := getScopedWorkloadsSecretsManager()
 			if err != nil {
 				return fmt.Errorf("failed to get secrets manager: %w", err)
 			}
@@ -224,7 +225,7 @@ func getBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 	fmt.Println("Configured build auth files:")
 	for _, name := range configuredFiles {
 		if showAuthFileContent {
-			manager, err := getSecretsManager()
+			manager, err := getScopedWorkloadsSecretsManager()
 			if err != nil {
 				fmt.Printf("  %s: configured -> %s (unable to retrieve content: %v)\n",
 					name, config.SupportedAuthFiles[name], err)
@@ -259,7 +260,7 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 
 		// Try to get secrets manager to delete secrets (but don't fail if unavailable)
-		manager, err := getSecretsManager()
+		manager, err := getScopedWorkloadsSecretsManager()
 		if err == nil {
 			for _, name := range configuredFiles {
 				secretName := config.BuildAuthFileSecretName(name)
@@ -286,7 +287,7 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Try to delete the secret (but don't fail if secrets manager unavailable)
-	manager, err := getSecretsManager()
+	manager, err := getScopedWorkloadsSecretsManager()
 	if err == nil {
 		secretName := config.BuildAuthFileSecretName(name)
 		_ = manager.DeleteSecret(ctx, secretName)
@@ -297,4 +298,22 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// getScopedWorkloadsSecretsManager creates a scoped secrets provider for build auth file operations.
+// Build auth file secrets are system-owned and stored under the workloads scope namespace.
+func getScopedWorkloadsSecretsManager() (secrets.Provider, error) {
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
+
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+
+	return secrets.CreateScopedSecretProvider(providerType, secrets.ScopeWorkloads)
 }

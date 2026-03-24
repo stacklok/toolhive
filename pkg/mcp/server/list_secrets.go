@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package server
@@ -46,7 +46,7 @@ func (h *Handler) ListSecrets(ctx context.Context, _ mcp.CallToolRequest) (*mcp.
 	}
 
 	// Create the secrets provider
-	secretsProvider, err := secrets.CreateSecretProvider(providerType)
+	secretsProvider, err := secrets.CreateUserSecretProvider(providerType)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to create secrets provider: %v", err)), nil
 	}

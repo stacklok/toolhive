@@ -524,7 +524,7 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 			tc.config.Secrets = tc.secrets
 
 			// Call the function
-			result, err := tc.config.WithSecrets(context.Background(), secretManager)
+			result, err := tc.config.WithSecrets(context.Background(), secretManager, secretManager)
 
 			if tc.expectError {
 				assert.Error(t, err, "WithSecrets should return an error")

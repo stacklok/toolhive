@@ -6,6 +6,12 @@ package types
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+
+	"github.com/stacklok/toolhive-core/httperr"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
@@ -24,23 +30,29 @@ type minimalRunConfig struct {
 // loadRunConfigFields attempts to load specific fields from the runconfig
 // using the provided store. Returns empty struct if runconfig doesn't exist.
 func loadRunConfigFields(ctx context.Context, store state.Store, name string) (*minimalRunConfig, error) {
-	exists, err := store.Exists(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return &minimalRunConfig{}, nil
-	}
-
 	reader, err := store.GetReader(ctx, name)
 	if err != nil {
-		return nil, err
+		// If the run config doesn't exist, return empty config (not an error).
+		// This also handles the race where a workload is deleted between listing
+		// and reading its config.
+		if httperr.Code(err) == http.StatusNotFound {
+			return &minimalRunConfig{}, nil
+		}
+		return nil, fmt.Errorf("failed to read run config for workload %q: %w", name, err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			slog.Warn("failed to close run config reader", "workload", name, "error", err)
+		}
+	}()
 
 	var config minimalRunConfig
 	if err := json.NewDecoder(reader).Decode(&config); err != nil {
-		return nil, err
+		// EOF from an empty reader (e.g. KubernetesStore) means no config exists
+		if err == io.EOF {
+			return &minimalRunConfig{}, nil
+		}
+		return nil, fmt.Errorf("failed to decode run config for workload %q: %w", name, err)
 	}
 	return &config, nil
 }

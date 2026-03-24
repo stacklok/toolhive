@@ -6,6 +6,7 @@ package statuses
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive-core/httperr"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
@@ -115,7 +117,8 @@ func TestRuntimeStatusManager_GetWorkload(t *testing.T) {
 			mockStore := stateMocks.NewMockStore(ctrl)
 			// For the successful case, the store is queried for the workload's run config
 			if tt.expectedError == "" {
-				mockStore.EXPECT().Exists(gomock.Any(), tt.workloadName).Return(false, nil)
+				mockStore.EXPECT().GetReader(gomock.Any(), tt.workloadName).
+					Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound))
 			}
 
 			manager := &runtimeStatusManager{runtime: mockRuntime, runConfigStore: mockStore}
@@ -249,7 +252,8 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 			mockStore := stateMocks.NewMockStore(ctrl)
 			// For successful list cases, the store is queried for each workload's run config
 			if tt.expectedError == "" {
-				mockStore.EXPECT().Exists(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+				mockStore.EXPECT().GetReader(gomock.Any(), gomock.Any()).
+					Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound)).AnyTimes()
 			}
 
 			manager := &runtimeStatusManager{runtime: mockRuntime, runConfigStore: mockStore}

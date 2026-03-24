@@ -38,6 +38,8 @@ import (
 	storemocks "github.com/stacklok/toolhive/pkg/storage/mocks"
 )
 
+const testCommitHash = "abcdef1234567890abcdef1234567890abcdef12"
+
 func makeLayerData(t *testing.T) []byte {
 	t.Helper()
 	files := []ociskills.FileEntry{
@@ -2129,7 +2131,7 @@ func TestInstallFromRegistry(t *testing.T) {
 func TestInstallFromGit(t *testing.T) {
 	t.Parallel()
 
-	commitHash := "abcdef1234567890abcdef1234567890abcdef12"
+	commitHash := testCommitHash
 
 	tests := []struct {
 		name        string
@@ -2360,7 +2362,7 @@ func TestInstallFromGit(t *testing.T) {
 func TestInstallFromGitGroupRegistrationRollback(t *testing.T) {
 	t.Parallel()
 
-	commitHash := "abcdef1234567890abcdef1234567890abcdef12"
+	commitHash := testCommitHash
 
 	ctrl := gomock.NewController(t)
 
@@ -2403,7 +2405,7 @@ func TestInstallFromGitGroupRegistrationRollback(t *testing.T) {
 func TestInstallFromRegistryGitFallback(t *testing.T) {
 	t.Parallel()
 
-	commitHash := "abcdef1234567890abcdef1234567890abcdef12"
+	commitHash := testCommitHash
 
 	tests := []struct {
 		name     string

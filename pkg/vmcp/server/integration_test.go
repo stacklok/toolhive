@@ -438,8 +438,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	mockBackendClient.EXPECT().
 		ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ResourceReadResult{
-			Contents: []byte(`{"temp": 72, "condition": "sunny"}`),
-			MimeType: "application/json",
+			Contents: []vmcp.ResourceContent{
+				{URI: "weather://data", MimeType: "application/json", Text: `{"temp": 72, "condition": "sunny"}`},
+			},
 		}, nil).
 		AnyTimes()
 

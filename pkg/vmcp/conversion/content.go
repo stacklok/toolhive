@@ -6,7 +6,6 @@
 package conversion
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -113,36 +112,50 @@ func ToMCPContents(contents []vmcp.Content) []mcp.Content {
 	return result
 }
 
-// ConcatenateResourceContents concatenates all MCP resource content items into a
-// single byte slice and returns the MIME type of the first item.
-//
-// MCP resources may return multiple content chunks (text or blob). Text chunks
-// are appended as UTF-8 bytes; blob chunks are base64-decoded per the MCP spec.
-// If base64 decoding fails, the malformed chunk is skipped and a warning is logged
-// (appending raw base64 bytes would produce corrupted binary data).
-// The MIME type is taken from the first content item; subsequent items are
-// expected to share the same type (the MCP spec does not define per-chunk types).
-func ConcatenateResourceContents(contents []mcp.ResourceContents) (data []byte, mimeType string) {
-	for i, content := range contents {
-		if textContent, ok := mcp.AsTextResourceContents(content); ok {
-			data = append(data, []byte(textContent.Text)...)
-			if i == 0 && textContent.MIMEType != "" {
-				mimeType = textContent.MIMEType
-			}
-		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
-			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
-			if err != nil {
-				slog.Warn("Skipping malformed base64 blob resource chunk; this chunk's data is lost",
-					"uri", blobContent.URI, "error", err)
-				continue
-			}
-			data = append(data, decoded...)
-			if i == 0 && blobContent.MIMEType != "" {
-				mimeType = blobContent.MIMEType
-			}
+// ConvertMCPResourceContents converts []mcp.ResourceContents to []vmcp.ResourceContent,
+// preserving the text vs blob distinction and per-item metadata.
+func ConvertMCPResourceContents(contents []mcp.ResourceContents) []vmcp.ResourceContent {
+	result := make([]vmcp.ResourceContent, 0, len(contents))
+	for _, c := range contents {
+		if textRes, ok := mcp.AsTextResourceContents(c); ok {
+			result = append(result, vmcp.ResourceContent{
+				URI:      textRes.URI,
+				MimeType: textRes.MIMEType,
+				Text:     textRes.Text,
+			})
+		} else if blobRes, ok := mcp.AsBlobResourceContents(c); ok {
+			result = append(result, vmcp.ResourceContent{
+				URI:      blobRes.URI,
+				MimeType: blobRes.MIMEType,
+				Blob:     blobRes.Blob,
+			})
+		} else {
+			slog.Debug("Skipping unknown resource contents type", "type", fmt.Sprintf("%T", c))
 		}
 	}
-	return data, mimeType
+	return result
+}
+
+// ToMCPResourceContents converts []vmcp.ResourceContent to []mcp.ResourceContents,
+// reconstructing the text vs blob distinction.
+func ToMCPResourceContents(contents []vmcp.ResourceContent) []mcp.ResourceContents {
+	result := make([]mcp.ResourceContents, 0, len(contents))
+	for _, c := range contents {
+		if c.Blob != "" {
+			result = append(result, mcp.BlobResourceContents{
+				URI:      c.URI,
+				MIMEType: c.MimeType,
+				Blob:     c.Blob,
+			})
+		} else {
+			result = append(result, mcp.TextResourceContents{
+				URI:      c.URI,
+				MIMEType: c.MimeType,
+				Text:     c.Text,
+			})
+		}
+	}
+	return result
 }
 
 // ConvertToolInputSchema converts a mcp.ToolInputSchema to map[string]any via a

@@ -431,17 +431,25 @@ type ToolCallResult struct {
 	Meta map[string]any
 }
 
+// ResourceContent represents a single resource content item,
+// preserving the text vs blob distinction from the MCP protocol.
+type ResourceContent struct {
+	// URI is the resource URI.
+	URI string
+	// MimeType is the content type of this resource item.
+	MimeType string
+	// Text is the text content (non-empty for text resources).
+	Text string
+	// Blob is the base64-encoded binary content (non-empty for blob resources).
+	Blob string
+}
+
 // ResourceReadResult wraps a resource read response with metadata.
 // This preserves both the resource data AND the _meta field from the backend MCP server.
 type ResourceReadResult struct {
-	// Contents is the concatenated resource data.
-	// When a resource has multiple contents (text or blob), they are concatenated
-	// directly without separators. Text contents are converted to bytes, blob contents
-	// are base64-decoded before concatenation.
-	Contents []byte
-
-	// MimeType is the content type of the resource.
-	MimeType string
+	// Contents preserves individual resource content items with their
+	// per-item URIs, MIME types, and text/blob distinction.
+	Contents []ResourceContent
 
 	// Meta contains protocol-level metadata from the backend (_meta field).
 	// NOTE: Due to MCP SDK limitations, resources/read handlers cannot forward _meta

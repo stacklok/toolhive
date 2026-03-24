@@ -154,11 +154,8 @@ func (c *mcpSession) ReadResource(
 		return nil, fmt.Errorf("resource %q read failed on backend %s: %w", uri, c.target.WorkloadID, err)
 	}
 
-	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
-
 	return &vmcp.ResourceReadResult{
-		Contents: data,
-		MimeType: mimeType,
+		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     conversion.FromMCPMeta(result.Meta),
 	}, nil
 }

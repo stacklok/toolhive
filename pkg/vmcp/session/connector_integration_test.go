@@ -172,7 +172,8 @@ func TestSessionFactory_Integration_ReadResource(t *testing.T) {
 	result, err := sess.ReadResource(context.Background(), nil, "test://data")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Equal(t, "hello", string(result.Contents))
+	require.NotEmpty(t, result.Contents)
+	assert.Equal(t, "hello", result.Contents[0].Text)
 }
 
 func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
@@ -301,7 +302,8 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 		result, err := sess.ReadResource(context.Background(), identity, "test://data")
 		require.NoError(t, err)
 		require.NotNil(t, result)
-		assert.Equal(t, "hello", string(result.Contents))
+		require.NotEmpty(t, result.Contents)
+		assert.Equal(t, "hello", result.Contents[0].Text)
 	})
 
 	t.Run("allows GetPrompt with correct token", func(t *testing.T) {

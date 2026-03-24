@@ -114,8 +114,6 @@ func TestEnvVarPrefix(t *testing.T) { //nolint:paralleltest
 }
 
 func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
-	ctx := context.Background()
-
 	t.Run("environment provider returns user provider", func(t *testing.T) { //nolint:paralleltest
 		provider, err := secrets.CreateUserSecretProvider(secrets.EnvironmentType)
 		require.NoError(t, err)
@@ -131,7 +129,7 @@ func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
 		provider, err := secrets.CreateUserSecretProvider(secrets.EnvironmentType)
 		require.NoError(t, err)
 
-		_, err = provider.GetSecret(ctx, "__thv_registry_foo")
+		_, err = provider.GetSecret(t.Context(), "__thv_registry_foo")
 		require.ErrorIs(t, err, secrets.ErrReservedKeyName)
 	})
 
@@ -140,7 +138,7 @@ func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
 		require.NoError(t, err)
 
 		// A regular key should not be blocked (may return not-found, but not ErrReservedKeyName)
-		_, err = provider.GetSecret(ctx, "my-api-key")
+		_, err = provider.GetSecret(t.Context(), "my-api-key")
 		require.NotErrorIs(t, err, secrets.ErrReservedKeyName)
 	})
 
@@ -152,8 +150,6 @@ func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
 }
 
 func TestCreateScopedSecretProvider(t *testing.T) { //nolint:paralleltest
-	ctx := context.Background()
-
 	t.Run("environment provider returns scoped provider", func(t *testing.T) { //nolint:paralleltest
 		provider, err := secrets.CreateScopedSecretProvider(secrets.EnvironmentType, secrets.ScopeRegistry)
 		require.NoError(t, err)
@@ -170,7 +166,7 @@ func TestCreateScopedSecretProvider(t *testing.T) { //nolint:paralleltest
 		require.NoError(t, err)
 
 		// Any get on an environment provider will return not-found; the key must not be blocked
-		_, err = provider.GetSecret(ctx, "my-token")
+		_, err = provider.GetSecret(t.Context(), "my-token")
 		require.NotErrorIs(t, err, secrets.ErrReservedKeyName)
 	})
 

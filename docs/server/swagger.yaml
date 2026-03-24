@@ -1063,11 +1063,6 @@ components:
             When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
             When set (including 0), the value is an explicit replica count.
           type: integer
-        session_cache_size:
-          description: |-
-            SessionCacheSize is the maximum number of sessions held in the local LRU cache.
-            When nil, consuming code applies a sensible default (e.g. 1000).
-          type: integer
       type: object
     github_com_stacklok_toolhive_pkg_runner.ToolOverride:
       properties:

@@ -1120,10 +1120,6 @@ const docTemplate = `{
                     "backend_replicas": {
                         "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
                         "type": "integer"
-                    },
-                    "session_cache_size": {
-                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nWhen nil, consuming code applies a sensible default (e.g. 1000).",
-                        "type": "integer"
                     }
                 },
                 "type": "object"

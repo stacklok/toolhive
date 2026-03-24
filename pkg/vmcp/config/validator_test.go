@@ -1013,37 +1013,6 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			errMsg:  "embedded auth server requires OIDC incoming auth",
 		},
 		{
-			name: "v10_duplicate_upstream_inject_providers_warns",
-			cfg: &Config{
-				IncomingAuth: &IncomingAuthConfig{
-					Type: IncomingAuthTypeOIDC,
-					OIDC: &OIDCConfig{
-						Issuer:   "http://localhost:9090",
-						Audience: "https://my-vmcp",
-					},
-				},
-				OutgoingAuth: &OutgoingAuthConfig{
-					Source: "inline",
-					Backends: map[string]*authtypes.BackendAuthStrategy{
-						"backend-a": {
-							Type: authtypes.StrategyTypeUpstreamInject,
-							UpstreamInject: &authtypes.UpstreamInjectConfig{
-								ProviderName: "github",
-							},
-						},
-						"backend-b": {
-							Type: authtypes.StrategyTypeUpstreamInject,
-							UpstreamInject: &authtypes.UpstreamInjectConfig{
-								ProviderName: "github",
-							},
-						},
-					},
-				},
-			},
-			rc:      validASRunConfig("http://localhost:9090", "github"),
-			wantErr: false, // V-10 is warning-only
-		},
-		{
 			name: "v13_empty_allowed_audiences",
 			cfg: &Config{
 				IncomingAuth: &IncomingAuthConfig{

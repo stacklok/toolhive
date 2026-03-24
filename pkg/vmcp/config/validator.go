@@ -5,7 +5,6 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -483,9 +482,6 @@ func ValidateAuthServerIntegration(cfg *Config, rc *authserver.RunConfig) error 
 		return err
 	}
 
-	// Warn about duplicate upstream_inject provider names.
-	warnDuplicateUpstreamInjectProviders(strategies)
-
 	return nil
 }
 
@@ -581,27 +577,6 @@ func validateAuthServerRequiresOIDC(cfg *Config) error {
 		return fmt.Errorf("embedded auth server requires OIDC incoming auth")
 	}
 	return nil
-}
-
-// warnDuplicateUpstreamInjectProviders warns when multiple upstream_inject
-// backends reference the same provider name.
-func warnDuplicateUpstreamInjectProviders(strategies map[string]*authtypes.BackendAuthStrategy) {
-	seen := make(map[string]string) // providerName -> first backend name
-	for name, strategy := range strategies {
-		if strategy.Type != authtypes.StrategyTypeUpstreamInject || strategy.UpstreamInject == nil {
-			continue
-		}
-		pn := authserver.ResolveUpstreamName(strategy.UpstreamInject.ProviderName)
-		if first, ok := seen[pn]; ok {
-			slog.Warn("multiple upstream_inject backends reference the same provider; likely a copy-paste error",
-				"providerName", pn,
-				"backend1", first,
-				"backend2", name,
-			)
-		} else {
-			seen[pn] = name
-		}
-	}
 }
 
 // hasAuthServerWithOIDCIncoming returns true when both the auth server and

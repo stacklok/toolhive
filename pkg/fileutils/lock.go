@@ -6,6 +6,7 @@ package fileutils
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/lockfile"
@@ -19,9 +20,31 @@ const (
 	defaultLockRetryInterval = 100 * time.Millisecond
 )
 
-// WithFileLock executes fn while holding an OS-level advisory file lock on path + ".lock".
-// It uses a 1-second timeout with 100ms retry interval.
+// processLocks provides per-path in-process mutual exclusion.
+// flock(2) does NOT provide mutual exclusion between different file descriptors
+// within the same process — only between different processes. Since each call to
+// WithFileLock opens a new file descriptor, concurrent goroutines can all acquire
+// the flock simultaneously. This in-process mutex ensures serialization within a
+// single process, while the flock continues to protect cross-process access.
+var processLocks sync.Map
+
+// getProcessLock returns the in-process mutex for the given path,
+// creating one if it does not already exist.
+func getProcessLock(path string) *sync.Mutex {
+	val, _ := processLocks.LoadOrStore(path, &sync.Mutex{})
+	return val.(*sync.Mutex)
+}
+
+// WithFileLock executes fn while holding both an in-process mutex and an
+// OS-level advisory file lock on path + ".lock".
+// The in-process mutex serializes goroutines within the same process (where
+// flock is ineffective), and the file lock serializes across processes.
 func WithFileLock(path string, fn func() error) error {
+	// Acquire in-process lock first to serialize goroutines.
+	mu := getProcessLock(path)
+	mu.Lock()
+	defer mu.Unlock()
+
 	lockPath := path + ".lock"
 	fileLock := lockfile.NewTrackedLock(lockPath)
 

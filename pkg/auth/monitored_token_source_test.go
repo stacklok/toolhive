@@ -429,6 +429,98 @@ func TestMonitoredTokenSource_MultipleCallsToToken(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// TestMonitoredTokenSource_SingleflightDeduplicatesConcurrentRetries verifies that
+// concurrent Token() calls during a transient network error are funnelled through
+// a single retry loop via singleflight, so the underlying token source is not
+// hammered by independent retry loops ("thundering herd").
+func TestMonitoredTokenSource_SingleflightDeduplicatesConcurrentRetries(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	const numCallers = 10
+
+	statusUpdater, _ := newMockStatusUpdater(ctrl)
+	tokenSource := newMockTokenSource()
+
+	// Gate that blocks the retry loop until all callers have entered Token().
+	allEntered := make(chan struct{})
+	var enteredCount sync.WaitGroup
+	enteredCount.Add(numCallers)
+
+	// First numCallers calls (the initial Token() attempt per caller) return a
+	// transient error so every caller falls into the singleflight retry path.
+	// The singleflight-selected caller's retry (call numCallers+1) blocks on allEntered,
+	// then succeeds.
+	transientErr := &net.OpError{
+		Op: "dial", Net: "tcp",
+		Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
+	}
+	recoveredToken := &oauth2.Token{
+		AccessToken: "recovered-token",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+
+	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
+		if tokenSource.callCount <= numCallers {
+			// Signal that one more caller has entered Token().
+			enteredCount.Done()
+			return nil, transientErr
+		}
+		// Singleflight retry: wait for all callers to be blocked, then succeed.
+		<-allEntered
+		return recoveredToken, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats.newRetryBackOff = fastBackOff
+
+	// Launch numCallers goroutines that all call Token() concurrently.
+	var wg sync.WaitGroup
+	tokens := make([]*oauth2.Token, numCallers)
+	errs := make([]error, numCallers)
+	for i := range numCallers {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			tokens[idx], errs[idx] = ats.Token()
+		}(i)
+	}
+
+	// Wait for all callers to have made their initial Token() call and fallen
+	// into the singleflight path, then unblock the retry.
+	enteredCount.Wait()
+	close(allEntered)
+	wg.Wait()
+
+	// All callers must succeed with the same recovered token.
+	for i := range numCallers {
+		if errs[i] != nil {
+			t.Errorf("caller %d: unexpected error: %v", i, errs[i])
+		}
+		if tokens[i] == nil || tokens[i].AccessToken != "recovered-token" {
+			t.Errorf("caller %d: expected recovered-token, got %v", i, tokens[i])
+		}
+	}
+
+	// KEY ASSERTION: the underlying tokenSource should have been called at most
+	// numCallers (initial attempts) + a small number of singleflight retries,
+	// NOT numCallers * retries. With singleflight only one caller retries.
+	tokenSource.mu.Lock()
+	calls := tokenSource.callCount
+	tokenSource.mu.Unlock()
+	// numCallers initial + 1 successful retry = numCallers+1 in the ideal case.
+	// Allow a small margin for timing but it must be well below numCallers*2
+	// (which would indicate independent retry loops).
+	maxExpected := numCallers + 3 // small margin for race between initial calls and singleflight coalescing
+	if calls > maxExpected {
+		t.Errorf("expected at most %d tokenSource.Token() calls, got %d — singleflight may not be deduplicating", maxExpected, calls)
+	}
+}
+
 // --- helpers for new tests ---
 
 // timeoutNetError is a minimal net.Error with Timeout() == true.

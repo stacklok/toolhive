@@ -17,6 +17,7 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -138,6 +139,10 @@ type MonitoredTokenSource struct {
 	// It is nil by default (production path) and overridable in tests for fast execution.
 	newRetryBackOff func() backoff.BackOff
 
+	// refreshGroup deduplicates concurrent Token() calls so that only one
+	// retry loop runs at a time during transient network failures.
+	refreshGroup singleflight.Group
+
 	// stopped is closed when monitorLoop exits, regardless of the reason.
 	stopped chan struct{}
 
@@ -172,6 +177,9 @@ func (mts *MonitoredTokenSource) Stopped() <-chan struct{} {
 // errors (DNS failures, TCP errors). On non-transient errors (OAuth 4xx, TLS failures)
 // it marks the workload as unauthenticated and returns immediately. Context cancellation
 // (workload removal) stops the retry without marking the workload as unauthenticated.
+//
+// Concurrent callers are deduplicated via singleflight so that only one retry
+// loop runs at a time during transient failures.
 func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 	tok, err := mts.tokenSource.Token()
 	if err == nil {
@@ -183,11 +191,23 @@ func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 
-	// Transient network error (e.g. VPN disconnected, DNS unavailable).
-	// Retry with exponential backoff until the network recovers or monitoring stops.
+	// Transient network error — funnel all concurrent callers through a
+	// single retry loop so we don't hammer the token endpoint.
+	v, err, _ := mts.refreshGroup.Do("token-refresh", func() (interface{}, error) {
+		return mts.retryTransientRefresh(err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*oauth2.Token), nil
+}
+
+// retryTransientRefresh retries the token refresh with exponential backoff
+// for transient network errors. It is called at most once at a time via singleflight.
+func (mts *MonitoredTokenSource) retryTransientRefresh(origErr error) (*oauth2.Token, error) {
 	slog.Warn("token refresh failed due to transient network error, retrying with backoff",
 		"workload", mts.workloadName,
-		"error", err,
+		"error", origErr,
 	)
 
 	b := mts.getRetryBackOff()
@@ -216,7 +236,6 @@ func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 
 	if retryErr != nil {
 		if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
-			// Context cancelled (workload removed) — don't mark as unauthenticated.
 			return nil, retryErr
 		}
 		mts.markAsUnauthenticated(fmt.Sprintf("Token refresh failed after retries: %v", retryErr))

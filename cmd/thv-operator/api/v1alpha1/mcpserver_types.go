@@ -632,18 +632,18 @@ type ConfigMapAuthzRef struct {
 	Key string `json:"key,omitempty"`
 }
 
-// ToolConfigRef defines a reference to a MCPToolConfig resource.
-// The referenced MCPToolConfig must be in the same namespace as the MCPServer.
-type ToolConfigRef struct {
-	// Name is the name of the MCPToolConfig resource in the same namespace
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-}
-
 // ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
 // The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
 type ExternalAuthConfigRef struct {
 	// Name is the name of the MCPExternalAuthConfig resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
+// ToolConfigRef defines a reference to a MCPToolConfig resource.
+// The referenced MCPToolConfig must be in the same namespace as the MCPServer.
+type ToolConfigRef struct {
+	// Name is the name of the MCPToolConfig resource in the same namespace
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }

@@ -22,11 +22,13 @@ var packageNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+\-]*$`)
 
 // RuntimeConfig defines the base images and versions for a specific runtime
 type RuntimeConfig struct {
-	// BuilderImage is the full image reference for the builder stage
+	// BuilderImage is the full image reference for the builder stage.
+	// An empty string signals "use the default for this transport type" during config merging.
 	// Examples: "golang:1.25-alpine", "node:22-alpine", "python:3.13-slim"
 	BuilderImage string `json:"builder_image" yaml:"builder_image"`
 
-	// AdditionalPackages lists extra packages to install in builder stage
+	// AdditionalPackages lists extra packages to install in the builder and
+	// runtime stages.
 	// Examples for Alpine: ["git", "make", "gcc"]
 	// Examples for Debian: ["git", "build-essential"]
 	AdditionalPackages []string `json:"additional_packages,omitempty" yaml:"additional_packages,omitempty"`

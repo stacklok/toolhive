@@ -373,6 +373,16 @@ func TestMergeRuntimeConfig(t *testing.T) {
 			wantImage:    "golang:1.25-alpine",
 			wantPackages: []string{"ca-certificates", "git", "make"},
 		},
+		{
+			name:      "uvx transport — defaults apply",
+			transport: templates.TransportTypeUVX,
+			override: &templates.RuntimeConfig{
+				BuilderImage:       "",
+				AdditionalPackages: []string{"curl"},
+			},
+			wantImage:    "python:3.13-slim",
+			wantPackages: []string{"ca-certificates", "git", "curl"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -415,43 +425,6 @@ func TestLoadRuntimeConfigMergesOverrideWithDefaults(t *testing.T) {
 	}
 	if got.BuilderImage != "node:22-alpine" {
 		t.Errorf("BuilderImage = %q, want %q", got.BuilderImage, "node:22-alpine")
-	}
-}
-
-func TestMergeRuntimeConfigPreservesDefaultPackages(t *testing.T) {
-	t.Parallel()
-
-	// Simulates a user config that only lists [git], omitting ca-certificates.
-	// mergeRuntimeConfig must ensure default packages are not lost.
-	tests := []struct {
-		name      string
-		transport templates.TransportType
-	}{
-		{"NPX", templates.TransportTypeNPX},
-		{"GO", templates.TransportTypeGO},
-		{"UVX", templates.TransportTypeUVX},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			partial := &templates.RuntimeConfig{
-				AdditionalPackages: []string{"git"},
-			}
-			got := mergeRuntimeConfig(tt.transport, partial)
-
-			hasCA := false
-			for _, pkg := range got.AdditionalPackages {
-				if pkg == "ca-certificates" {
-					hasCA = true
-					break
-				}
-			}
-			if !hasCA {
-				t.Errorf("mergeRuntimeConfig() lost default ca-certificates, got %v", got.AdditionalPackages)
-			}
-		})
 	}
 }
 

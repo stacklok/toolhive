@@ -491,6 +491,30 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 				AdditionalPackages: []string{},
 			},
 		},
+		{
+			name:          "NPX with nil packages",
+			transportType: TransportTypeNPX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "node:22-alpine",
+				AdditionalPackages: nil,
+			},
+		},
+		{
+			name:          "GO with nil packages",
+			transportType: TransportTypeGO,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "golang:1.25-alpine",
+				AdditionalPackages: nil,
+			},
+		},
+		{
+			name:          "UVX with nil packages",
+			transportType: TransportTypeUVX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage:       "python:3.13-slim",
+				AdditionalPackages: nil,
+			},
+		},
 	}
 
 	for _, tt := range tests {

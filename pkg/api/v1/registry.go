@@ -53,7 +53,7 @@ const RegistryUnavailableCode = "registry_unavailable"
 
 // writeRegistryUnavailableError writes a structured JSON 503 response when the
 // upstream registry cannot be reached or returns an unexpected error (e.g. 404).
-func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.RegistryUnavailableError) {
+func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.UnavailableError) {
 	body := registryAuthErrorResponse{
 		Code:    RegistryUnavailableCode,
 		Message: unavailableErr.Error(),
@@ -260,7 +260,7 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 			writeRegistryAuthRequiredError(w)
 			return nil, false
 		}
-		var unavailableErr *regpkg.RegistryUnavailableError
+		var unavailableErr *regpkg.UnavailableError
 		if errors.As(err, &unavailableErr) {
 			slog.Error("upstream registry unavailable", "error", err)
 			writeRegistryUnavailableError(w, unavailableErr)
@@ -364,7 +364,7 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 			writeRegistryAuthRequiredError(w)
 			return
 		}
-		var unavailableErr *regpkg.RegistryUnavailableError
+		var unavailableErr *regpkg.UnavailableError
 		if errors.As(err, &unavailableErr) {
 			slog.Error("upstream registry unavailable", "error", err)
 			writeRegistryUnavailableError(w, unavailableErr)
@@ -445,7 +445,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 			writeRegistryAuthRequiredError(w)
 			return
 		}
-		var unavailableErr *regpkg.RegistryUnavailableError
+		var unavailableErr *regpkg.UnavailableError
 		if errors.As(err, &unavailableErr) {
 			slog.Error("upstream registry unavailable", "error", err)
 			writeRegistryUnavailableError(w, unavailableErr)
@@ -694,7 +694,7 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 			writeRegistryAuthRequiredError(w)
 			return
 		}
-		var unavailableErr *regpkg.RegistryUnavailableError
+		var unavailableErr *regpkg.UnavailableError
 		if errors.As(err, &unavailableErr) {
 			slog.Error("upstream registry unavailable", "error", err)
 			writeRegistryUnavailableError(w, unavailableErr)

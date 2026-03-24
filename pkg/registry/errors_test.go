@@ -12,17 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRegistryUnavailableError_Error(t *testing.T) {
+func TestUnavailableError_Error(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		err      *RegistryUnavailableError
+		err      *UnavailableError
 		expected string
 	}{
 		{
 			name: "with URL",
-			err: &RegistryUnavailableError{
+			err: &UnavailableError{
 				URL: "https://example.com/registry",
 				Err: fmt.Errorf("connection refused"),
 			},
@@ -30,7 +30,7 @@ func TestRegistryUnavailableError_Error(t *testing.T) {
 		},
 		{
 			name: "without URL",
-			err: &RegistryUnavailableError{
+			err: &UnavailableError{
 				Err: fmt.Errorf("timeout"),
 			},
 			expected: "upstream registry is unavailable: timeout",
@@ -45,23 +45,23 @@ func TestRegistryUnavailableError_Error(t *testing.T) {
 	}
 }
 
-func TestRegistryUnavailableError_Unwrap(t *testing.T) {
+func TestUnavailableError_Unwrap(t *testing.T) {
 	t.Parallel()
 
 	inner := fmt.Errorf("registry API returned status 404")
-	err := &RegistryUnavailableError{URL: "https://example.com", Err: inner}
+	err := &UnavailableError{URL: "https://example.com", Err: inner}
 
 	assert.Equal(t, inner, errors.Unwrap(err))
 }
 
-func TestRegistryUnavailableError_ErrorsAs(t *testing.T) {
+func TestUnavailableError_ErrorsAs(t *testing.T) {
 	t.Parallel()
 
 	inner := fmt.Errorf("registry API returned status 404")
-	original := &RegistryUnavailableError{URL: "https://example.com", Err: inner}
+	original := &UnavailableError{URL: "https://example.com", Err: inner}
 	wrapped := fmt.Errorf("failed to create provider: %w", original)
 
-	var target *RegistryUnavailableError
+	var target *UnavailableError
 	require.True(t, errors.As(wrapped, &target))
 	assert.Equal(t, "https://example.com", target.URL)
 	assert.Equal(t, inner, target.Err)

@@ -69,7 +69,7 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 					apiURL, auth.ErrRegistryAuthRequired,
 				)
 			}
-			return nil, &RegistryUnavailableError{URL: apiURL, Err: err}
+			return nil, &UnavailableError{URL: apiURL, Err: err}
 		}
 	}
 
@@ -96,7 +96,7 @@ func (p *APIRegistryProvider) GetRegistry() (*types.Registry, error) {
 		if errors.Is(err, api.ErrRegistryUnauthorized) {
 			return nil, fmt.Errorf("registry rejected credentials: %w", auth.ErrRegistryAuthRequired)
 		}
-		return nil, &RegistryUnavailableError{URL: p.apiURL, Err: err}
+		return nil, &UnavailableError{URL: p.apiURL, Err: err}
 	}
 
 	// Convert servers to ToolHive format

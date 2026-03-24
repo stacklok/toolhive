@@ -79,11 +79,11 @@ func TestRegistryAPI_GetEndpoint_UnavailableUpstream(t *testing.T) {
 	}
 
 	endpoints := []struct {
-		name       string
-		method     string
-		path       string
-		handler    http.HandlerFunc
-		urlParams  map[string]string
+		name      string
+		method    string
+		path      string
+		handler   http.HandlerFunc
+		urlParams map[string]string
 	}{
 		{
 			name:    "listRegistries",
@@ -92,17 +92,17 @@ func TestRegistryAPI_GetEndpoint_UnavailableUpstream(t *testing.T) {
 			handler: routes.listRegistries,
 		},
 		{
-			name:    "getRegistry",
-			method:  http.MethodGet,
-			path:    "/default",
-			handler: routes.getRegistry,
+			name:      "getRegistry",
+			method:    http.MethodGet,
+			path:      "/default",
+			handler:   routes.getRegistry,
 			urlParams: map[string]string{"name": "default"},
 		},
 		{
-			name:    "listServers",
-			method:  http.MethodGet,
-			path:    "/default/servers",
-			handler: routes.listServers,
+			name:      "listServers",
+			method:    http.MethodGet,
+			path:      "/default/servers",
+			handler:   routes.listServers,
 			urlParams: map[string]string{"name": "default"},
 		},
 	}

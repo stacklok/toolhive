@@ -329,7 +329,7 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       The embedded auth server delegates authentication to these providers.
-                      Currently only a single upstream provider is supported (validated at runtime).
+                      MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: UpstreamProviderConfig defines configuration for
                         an upstream Identity Provider.
@@ -338,7 +338,10 @@ spec:
                           description: |-
                             Name uniquely identifies this upstream provider.
                             Used for routing decisions and session binding in multi-upstream scenarios.
+                            Must be lowercase alphanumeric with hyphens (DNS-label-like).
+                          maxLength: 63
                           minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                           type: string
                         oauth2Config:
                           description: |-

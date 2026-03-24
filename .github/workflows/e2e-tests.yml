@@ -133,6 +133,5 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            test/e2e/ginkgo-report.xml
             test/e2e/junit-report.xml
           retention-days: 7

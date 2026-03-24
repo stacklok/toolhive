@@ -743,7 +743,9 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					WorkloadName: "Backend 1",
 				}
 
-				promptText := "Write tests for Go code about testing"
+				promptMessages := []vmcp.PromptMessage{
+					{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Write tests for Go code about testing"}},
+				}
 
 				expectedArgs := map[string]any{
 					"topic":    "testing",
@@ -756,7 +758,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
-					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptMessages, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -774,7 +776,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 				require.NotNil(t, result)
 				assert.Contains(t, result.Description, "test_prompt")
 				require.Len(t, result.Messages, 1)
-				assert.Equal(t, "assistant", string(result.Messages[0].Role))
+				assert.Equal(t, "user", string(result.Messages[0].Role))
 				assert.Equal(t, "Write tests for Go code about testing", result.Messages[0].Content.(mcp.TextContent).Text)
 			},
 		},
@@ -896,7 +898,9 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					OriginalCapabilityName: "summarize",
 				}
 
-				promptText := "Summary of test content"
+				promptMessages := []vmcp.PromptMessage{
+					{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Summary of test content"}},
+				}
 				expectedArgs := map[string]any{"text": "test content"}
 
 				mockRouter.EXPECT().
@@ -905,7 +909,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "summarize", expectedArgs).
-					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptMessages, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -918,6 +922,8 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				require.NotNil(t, result)
+				require.Len(t, result.Messages, 1)
+				assert.Equal(t, "assistant", string(result.Messages[0].Role))
 				assert.Equal(t, "Summary of test content", result.Messages[0].Content.(mcp.TextContent).Text)
 			},
 		},
@@ -929,7 +935,9 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					WorkloadID: "backend1",
 				}
 
-				promptText := "Simple prompt response"
+				promptMessages := []vmcp.PromptMessage{
+					{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Simple prompt response"}},
+				}
 				emptyArgs := map[string]any{}
 
 				mockRouter.EXPECT().
@@ -938,7 +946,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "simple_prompt", emptyArgs).
-					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptMessages, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{

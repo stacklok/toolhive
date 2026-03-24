@@ -241,12 +241,7 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 				Meta: conversion.ToMCPMeta(result.Meta),
 			},
 			Description: description,
-			Messages: []mcp.PromptMessage{
-				{
-					Role:    "assistant",
-					Content: mcp.NewTextContent(result.Messages),
-				},
-			},
+			Messages:    conversion.ToMCPPromptMessages(result.Messages),
 		}
 
 		return mcpResult, nil

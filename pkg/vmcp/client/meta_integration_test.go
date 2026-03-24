@@ -204,8 +204,10 @@ func TestMetaPreservation_GetPrompt(t *testing.T) {
 	assert.Equal(t, "prompt-token-456", result.Meta["progressToken"])
 	assert.Equal(t, "prompt-trace-id", result.Meta["traceId"])
 
-	// Verify prompt content
-	assert.Contains(t, result.Messages, "Hello, World!")
+	// Verify prompt content preserves message structure
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "user", result.Messages[0].Role)
+	assert.Equal(t, "Hello, World!", result.Messages[0].Content.Text)
 }
 
 // TestMetaPreservation_ReadResource documents the SDK limitation for resource _meta.

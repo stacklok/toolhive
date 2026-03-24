@@ -21,6 +21,12 @@ const (
 	IncomingAuthTypeAnonymous = "anonymous"
 )
 
+// defaultStrategyKey is the synthetic map key used for the default outgoing auth
+// strategy in collectAllBackendStrategies. It is deliberately different from
+// authserver.DefaultUpstreamName ("default") to avoid confusion with upstream
+// provider names and to prevent key collisions with user-defined backend names.
+const defaultStrategyKey = "<default-strategy>"
+
 // DefaultValidator implements comprehensive configuration validation.
 type DefaultValidator struct{}
 
@@ -595,7 +601,7 @@ func collectAllBackendStrategies(cfg *Config) map[string]*authtypes.BackendAuthS
 		return result
 	}
 	if cfg.OutgoingAuth.Default != nil {
-		result["(default)"] = cfg.OutgoingAuth.Default
+		result[defaultStrategyKey] = cfg.OutgoingAuth.Default
 	}
 	for name, strategy := range cfg.OutgoingAuth.Backends {
 		result[name] = strategy

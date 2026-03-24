@@ -377,6 +377,11 @@ func TestToMCPAnnotations(t *testing.T) {
 			want:  nil,
 		},
 		{
+			name:  "empty non-nil input returns nil",
+			input: &vmcp.ContentAnnotations{},
+			want:  nil,
+		},
+		{
 			name: "fully populated",
 			input: &vmcp.ContentAnnotations{
 				Audience:     []string{"user", "assistant"},
@@ -459,9 +464,17 @@ func TestContentAnnotationsRoundTrip_AllTypes(t *testing.T) {
 			}(),
 		},
 		{
-			name: "embedded resource",
+			name: "text embedded resource",
 			content: func() mcp.Content {
 				er := mcp.NewEmbeddedResource(mcp.TextResourceContents{URI: "file://x", Text: "txt"})
+				er.Annotated = mcp.Annotated{Annotations: ann}
+				return er
+			}(),
+		},
+		{
+			name: "blob embedded resource",
+			content: func() mcp.Content {
+				er := mcp.NewEmbeddedResource(mcp.BlobResourceContents{URI: "file://y", Blob: "YmluYXJ5", MIMEType: "application/octet-stream"})
 				er.Annotated = mcp.Annotated{Annotations: ann}
 				return er
 			}(),

@@ -33,15 +33,20 @@ func ConvertMCPAnnotations(ann *mcp.Annotations) *vmcp.ContentAnnotations {
 	if len(audience) == 0 && ann.Priority == nil && ann.LastModified == "" {
 		return nil
 	}
+	var priority *float64
+	if ann.Priority != nil {
+		p := *ann.Priority
+		priority = &p
+	}
 	return &vmcp.ContentAnnotations{
 		Audience:     audience,
-		Priority:     ann.Priority,
+		Priority:     priority,
 		LastModified: ann.LastModified,
 	}
 }
 
 // ToMCPAnnotations converts vmcp.ContentAnnotations to mcp.Annotations.
-// Returns nil if the input is nil.
+// Returns nil if the input is nil or all fields are zero-valued.
 func ToMCPAnnotations(ann *vmcp.ContentAnnotations) *mcp.Annotations {
 	if ann == nil {
 		return nil
@@ -53,9 +58,17 @@ func ToMCPAnnotations(ann *vmcp.ContentAnnotations) *mcp.Annotations {
 			audience[i] = mcp.Role(a)
 		}
 	}
+	if len(audience) == 0 && ann.Priority == nil && ann.LastModified == "" {
+		return nil
+	}
+	var priority *float64
+	if ann.Priority != nil {
+		p := *ann.Priority
+		priority = &p
+	}
 	return &mcp.Annotations{
 		Audience:     audience,
-		Priority:     ann.Priority,
+		Priority:     priority,
 		LastModified: ann.LastModified,
 	}
 }

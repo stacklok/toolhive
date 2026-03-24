@@ -384,9 +384,11 @@ const (
 // These are the vmcp-domain equivalents of mcp.Annotations, following the
 // Anti-Corruption Layer pattern (vmcp types are decoupled from mcp-go).
 type ContentAnnotations struct {
-	// Audience describes who the content is intended for (e.g., "user", "assistant").
+	// Audience describes who the content is intended for.
+	// Valid values are the mcp.Role constants: "user" and "assistant".
 	Audience []string `json:"audience,omitempty"`
-	// Priority is a hint for display ordering (0.0 = least important, 1.0 = most important).
+	// Priority is a hint for display ordering in the closed interval [0.0, 1.0]
+	// per the MCP spec, where 0.0 is least important and 1.0 is most important.
 	// Nil means no priority hint was provided.
 	Priority *float64 `json:"priority,omitempty"`
 	// LastModified is an ISO 8601 timestamp (e.g., "2025-01-12T15:00:58Z").

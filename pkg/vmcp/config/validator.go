@@ -531,15 +531,24 @@ func validateUpstreamInjectProviders(
 	return nil
 }
 
-// validateAuthServerIncomingAuthConsistency checks issuer and audience consistency
-// between the auth server and incoming OIDC auth.
+// validateAuthServerIncomingAuthConsistency checks that the embedded auth server
+// and the incoming OIDC middleware agree on issuer and audience.
+//
+// This is a general consistency check that applies whenever both the embedded AS
+// and OIDC incoming auth are configured, regardless of which outgoing backend
+// strategies (upstream_inject, token_exchange, etc.) are in use.
+//
+// The embedded AS issues tokens that the OIDC incoming auth middleware validates.
+// If these two components disagree on issuer or audience, the middleware will
+// reject every token the AS issues, and no authenticated request will succeed.
 func validateAuthServerIncomingAuthConsistency(cfg *Config, rc *authserver.RunConfig) error {
 	if !hasAuthServerWithOIDCIncoming(cfg, rc) {
 		return nil
 	}
 	oidc := cfg.IncomingAuth.OIDC
 
-	// Issuer mismatch.
+	// The OIDC middleware validates the "iss" claim against incomingAuth.oidc.issuer.
+	// If the AS uses a different issuer, every token it issues will fail validation.
 	if rc.Issuer != oidc.Issuer {
 		return fmt.Errorf(
 			"auth server issuer mismatch: auth server issuer %q != incomingAuth.oidc.issuer %q",

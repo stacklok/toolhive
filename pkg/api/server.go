@@ -41,6 +41,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -593,46 +594,50 @@ func (s *Server) Start(ctx context.Context) error {
 
 // writeDiscoveryFile writes the server discovery file if a nonce is configured.
 // It checks for an existing healthy server first to prevent silent orphaning.
+// The entire check-then-write sequence is wrapped in a file lock to prevent
+// TOCTOU races when two servers start simultaneously.
 func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 	if s.nonce == "" {
 		return nil
 	}
 
-	// Guard against overwriting another server's discovery file.
-	result, err := discovery.Discover(ctx)
-	if err != nil {
-		slog.Debug("discovery check failed, proceeding with startup", "error", err)
-	} else {
-		switch result.State {
-		case discovery.StateRunning:
-			return fmt.Errorf("another ToolHive server is already running at %s (PID %d)", result.Info.URL, result.Info.PID)
-		case discovery.StateStale:
-			slog.Debug("cleaning up stale discovery file", "pid", result.Info.PID)
-			if err := discovery.CleanupStale(); err != nil {
-				slog.Warn("failed to clean up stale discovery file", "error", err)
+	return fileutils.WithFileLock(discovery.FilePath(), func() error {
+		// Guard against overwriting another server's discovery file.
+		result, err := discovery.Discover(ctx)
+		if err != nil {
+			slog.Debug("discovery check failed, proceeding with startup", "error", err)
+		} else {
+			switch result.State {
+			case discovery.StateRunning:
+				return fmt.Errorf("another ToolHive server is already running at %s (PID %d)", result.Info.URL, result.Info.PID)
+			case discovery.StateStale:
+				slog.Debug("cleaning up stale discovery file", "pid", result.Info.PID)
+				if err := discovery.CleanupStale(); err != nil {
+					slog.Warn("failed to clean up stale discovery file", "error", err)
+				}
+			case discovery.StateUnhealthy:
+				// The process is alive but not responding to health checks.
+				// This can happen after a crash-restart where the old process
+				// is hung. We intentionally overwrite the discovery file so
+				// this new server becomes discoverable.
+				slog.Warn("existing server is unhealthy, overwriting discovery file", "pid", result.Info.PID)
+			case discovery.StateNotFound:
+				// No existing server, proceed normally.
 			}
-		case discovery.StateUnhealthy:
-			// The process is alive but not responding to health checks.
-			// This can happen after a crash-restart where the old process
-			// is hung. We intentionally overwrite the discovery file so
-			// this new server becomes discoverable.
-			slog.Warn("existing server is unhealthy, overwriting discovery file", "pid", result.Info.PID)
-		case discovery.StateNotFound:
-			// No existing server, proceed normally.
 		}
-	}
 
-	info := &discovery.ServerInfo{
-		URL:       s.ListenURL(),
-		PID:       os.Getpid(),
-		Nonce:     s.nonce,
-		StartedAt: time.Now().UTC(),
-	}
-	if err := discovery.WriteServerInfo(info); err != nil {
-		return fmt.Errorf("failed to write discovery file: %w", err)
-	}
-	slog.Debug("wrote discovery file", "url", info.URL, "pid", info.PID)
-	return nil
+		info := &discovery.ServerInfo{
+			URL:       s.ListenURL(),
+			PID:       os.Getpid(),
+			Nonce:     s.nonce,
+			StartedAt: time.Now().UTC(),
+		}
+		if err := discovery.WriteServerInfo(info); err != nil {
+			return fmt.Errorf("failed to write discovery file: %w", err)
+		}
+		slog.Debug("wrote discovery file", "url", info.URL, "pid", info.PID)
+		return nil
+	})
 }
 
 // shutdown gracefully shuts down the server

@@ -39,33 +39,50 @@ func TestGenerateNonce(t *testing.T) {
 	})
 }
 
-func TestListenURL_TCP(t *testing.T) {
+func TestListenURL(t *testing.T) {
 	t.Parallel()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer listener.Close()
-
-	s := &Server{
-		listener:     listener,
-		isUnixSocket: false,
-		address:      "127.0.0.1:0",
+	tests := []struct {
+		name     string
+		server   func(t *testing.T) *Server
+		expected func(s *Server) string
+	}{
+		{
+			name: "TCP returns http URL with actual port",
+			server: func(t *testing.T) *Server {
+				t.Helper()
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				require.NoError(t, err)
+				t.Cleanup(func() { listener.Close() })
+				return &Server{
+					listener:     listener,
+					isUnixSocket: false,
+					address:      "127.0.0.1:0",
+				}
+			},
+			expected: func(s *Server) string {
+				return fmt.Sprintf("http://%s", s.listener.Addr().String())
+			},
+		},
+		{
+			name: "Unix socket returns unix URL",
+			server: func(_ *testing.T) *Server {
+				return &Server{
+					isUnixSocket: true,
+					address:      "/tmp/test.sock",
+				}
+			},
+			expected: func(_ *Server) string {
+				return "unix:///tmp/test.sock"
+			},
+		},
 	}
 
-	got := s.ListenURL()
-	expected := fmt.Sprintf("http://%s", listener.Addr().String())
-	assert.Equal(t, expected, got)
-}
-
-func TestListenURL_UnixSocket(t *testing.T) {
-	t.Parallel()
-
-	const sockPath = "/tmp/test.sock"
-	s := &Server{
-		isUnixSocket: true,
-		address:      sockPath,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := tt.server(t)
+			assert.Equal(t, tt.expected(s), s.ListenURL())
+		})
 	}
-
-	got := s.ListenURL()
-	assert.Equal(t, "unix:///tmp/test.sock", got)
 }

@@ -6,6 +6,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 
 	"github.com/stacklok/toolhive/pkg/process"
@@ -74,7 +75,7 @@ func discover(ctx context.Context, dir string) (*DiscoverResult, error) {
 	// Health check failed — check if the process is still alive
 	alive, err := process.FindProcess(info.PID)
 	if err != nil {
-		// Can't determine process state; treat as stale
+		slog.Debug("cannot determine process state, treating as stale", "pid", info.PID, "error", err)
 		return &DiscoverResult{State: StateStale, Info: info}, nil
 	}
 

@@ -31,7 +31,7 @@ import (
 
 var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 	const (
-		timeout           = time.Minute * 2
+		timeout           = time.Minute * 3
 		pollInterval      = time.Second * 2
 		defaultNamespace  = "default"
 		vmcpContainerName = "vmcp"

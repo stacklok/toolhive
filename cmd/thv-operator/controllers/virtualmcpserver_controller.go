@@ -322,16 +322,65 @@ func (r *VirtualMCPServerReconciler) runValidations(
 	}
 
 	// Validate inline AuthServerConfig (when specified).
-	// Structural validation is handled by CRD Validate() — just set the success condition.
 	if vmcp.Spec.AuthServerConfig != nil {
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1alpha1.ConditionReasonAuthServerConfigValid,
-			"AuthServerConfig is valid",
-			metav1.ConditionTrue,
-		)
+		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
+			}
+			return false, nil
+		}
+	} else {
+		// Remove stale condition if AuthServerConfig was previously set then removed.
+		statusManager.RemoveConditionsWithPrefix(mcpv1alpha1.ConditionTypeAuthServerConfigValidated, []string{})
 	}
 
 	return true, nil
+}
+
+// validateAuthServerConfig validates inline AuthServerConfig and sets the
+// AuthServerConfigValidated condition. Returns an error when validation fails
+// (caller should NOT requeue — user must fix the spec).
+func (r *VirtualMCPServerReconciler) validateAuthServerConfig(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	cfg := vmcp.Spec.AuthServerConfig
+
+	if cfg.Issuer == "" {
+		message := "spec.authServerConfig.issuer is required"
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return fmt.Errorf("%s", message)
+	}
+
+	if len(cfg.UpstreamProviders) == 0 {
+		message := "spec.authServerConfig.upstreamProviders is required"
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return fmt.Errorf("%s", message)
+	}
+
+	// AuthServerConfig is valid
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1alpha1.ConditionReasonAuthServerConfigValid,
+		"AuthServerConfig is valid",
+		metav1.ConditionTrue,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return nil
 }
 
 // validateGroupRef validates that the referenced MCPGroup exists and is ready

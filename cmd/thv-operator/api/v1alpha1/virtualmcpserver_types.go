@@ -411,10 +411,8 @@ func (r *VirtualMCPServer) Validate() error {
 		}
 	}
 
-	// Validate AuthServerConfig (inline embedded auth server)
-	if err := r.validateAuthServerConfig(); err != nil {
-		return err
-	}
+	// Note: AuthServerConfig validation is handled by the reconciler (validateAuthServerConfig)
+	// so it can set the AuthServerConfigValidated condition on failure.
 
 	// Validate EmbeddingServer / EmbeddingServerRef
 	return r.validateEmbeddingServer()

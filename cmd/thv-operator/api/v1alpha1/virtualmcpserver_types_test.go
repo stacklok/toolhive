@@ -553,7 +553,7 @@ func TestValidateAuthServerConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := tt.server.Validate()
+			err := tt.server.validateAuthServerConfig()
 			if tt.expectError {
 				require.Error(t, err)
 				if tt.errContains != "" {

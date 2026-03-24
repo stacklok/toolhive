@@ -130,7 +130,10 @@ func ConvertMCPResourceContents(contents []mcp.ResourceContents) []vmcp.Resource
 				Blob:     blobRes.Blob,
 			})
 		} else {
-			slog.Debug("Skipping unknown resource contents type", "type", fmt.Sprintf("%T", c))
+			// Warn rather than debug: an unrecognized resource type likely
+			// indicates a protocol change or bug, and silently dropping data
+			// should be visible to operators.
+			slog.Warn("Skipping unknown resource contents type", "type", fmt.Sprintf("%T", c))
 		}
 	}
 	return result
@@ -141,6 +144,8 @@ func ConvertMCPResourceContents(contents []mcp.ResourceContents) []vmcp.Resource
 func ToMCPResourceContents(contents []vmcp.ResourceContent) []mcp.ResourceContents {
 	result := make([]mcp.ResourceContents, 0, len(contents))
 	for _, c := range contents {
+		// Blob takes precedence: a non-empty Blob field means this is a blob resource.
+		// If both Text and Blob are set the Text field is ignored.
 		if c.Blob != "" {
 			result = append(result, mcp.BlobResourceContents{
 				URI:      c.URI,

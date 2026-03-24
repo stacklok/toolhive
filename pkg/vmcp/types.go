@@ -441,6 +441,7 @@ type ResourceContent struct {
 	// Text is the text content (non-empty for text resources).
 	Text string
 	// Blob is the base64-encoded binary content (non-empty for blob resources).
+	// Exactly one of Text or Blob should be set; Blob takes precedence in ToMCPResourceContents.
 	Blob string
 }
 

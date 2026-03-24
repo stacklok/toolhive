@@ -119,6 +119,18 @@ const (
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
 )
 
+// DefaultUpstreamName is the name assigned to a single unnamed upstream.
+const DefaultUpstreamName = "default"
+
+// ResolveUpstreamName returns the canonical name for an upstream.
+// An empty name is resolved to DefaultUpstreamName ("default").
+func ResolveUpstreamName(name string) string {
+	if name == "" {
+		return DefaultUpstreamName
+	}
+	return name
+}
+
 // upstreamNameRegex validates upstream provider names.
 // Names must be DNS-label-like to prevent delimiter injection in storage keys.
 var upstreamNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
@@ -414,14 +426,14 @@ func (c *Config) validateUpstreams() error {
 func (c *Config) validateUpstreamName(i int, up *UpstreamConfig) error {
 	if len(c.Upstreams) == 1 {
 		if up.Name == "" {
-			up.Name = "default"
+			up.Name = DefaultUpstreamName
 		}
 	} else {
 		if up.Name == "" {
 			return fmt.Errorf(
 				"upstream[%d]: name must be explicitly set when multiple upstreams are configured", i)
 		}
-		if up.Name == "default" {
+		if up.Name == DefaultUpstreamName {
 			return fmt.Errorf(
 				"upstream[%d]: name %q is reserved for single-upstream configs; use a descriptive name",
 				i, up.Name)

@@ -13,7 +13,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-func boolPtr(b bool) *bool { return &b }
+func boolPtr(b bool) *bool     { return &b }
+func float64Ptr(f float64) *float64 { return &f }
 
 func TestConvertToolAnnotations(t *testing.T) {
 	t.Parallel()
@@ -282,4 +283,229 @@ func TestAnnotationsRoundTrip(t *testing.T) {
 			assert.Equal(t, tt.input.OpenWorldHint, result.OpenWorldHint)
 		})
 	}
+}
+
+func TestConvertMCPAnnotations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input *mcp.Annotations
+		want  *vmcp.ContentAnnotations
+	}{
+		{
+			name:  "nil input returns nil",
+			input: nil,
+			want:  nil,
+		},
+		{
+			name:  "empty annotations returns nil",
+			input: &mcp.Annotations{},
+			want:  nil,
+		},
+		{
+			name: "fully populated",
+			input: &mcp.Annotations{
+				Audience:     []mcp.Role{mcp.RoleUser, mcp.RoleAssistant},
+				Priority:     float64Ptr(0.8),
+				LastModified: "2025-01-12T15:00:58Z",
+			},
+			want: &vmcp.ContentAnnotations{
+				Audience:     []string{"user", "assistant"},
+				Priority:     float64Ptr(0.8),
+				LastModified: "2025-01-12T15:00:58Z",
+			},
+		},
+		{
+			name: "only audience",
+			input: &mcp.Annotations{
+				Audience: []mcp.Role{mcp.RoleUser},
+			},
+			want: &vmcp.ContentAnnotations{
+				Audience: []string{"user"},
+			},
+		},
+		{
+			name: "only priority",
+			input: &mcp.Annotations{
+				Priority: float64Ptr(0.5),
+			},
+			want: &vmcp.ContentAnnotations{
+				Priority: float64Ptr(0.5),
+			},
+		},
+		{
+			name: "only lastModified",
+			input: &mcp.Annotations{
+				LastModified: "2025-06-01T00:00:00Z",
+			},
+			want: &vmcp.ContentAnnotations{
+				LastModified: "2025-06-01T00:00:00Z",
+			},
+		},
+		{
+			name: "priority zero is preserved (not collapsed to nil)",
+			input: &mcp.Annotations{
+				Priority: float64Ptr(0.0),
+			},
+			want: &vmcp.ContentAnnotations{
+				Priority: float64Ptr(0.0),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ConvertMCPAnnotations(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestToMCPAnnotations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input *vmcp.ContentAnnotations
+		want  *mcp.Annotations
+	}{
+		{
+			name:  "nil input returns nil",
+			input: nil,
+			want:  nil,
+		},
+		{
+			name: "fully populated",
+			input: &vmcp.ContentAnnotations{
+				Audience:     []string{"user", "assistant"},
+				Priority:     float64Ptr(0.8),
+				LastModified: "2025-01-12T15:00:58Z",
+			},
+			want: &mcp.Annotations{
+				Audience:     []mcp.Role{mcp.RoleUser, mcp.RoleAssistant},
+				Priority:     float64Ptr(0.8),
+				LastModified: "2025-01-12T15:00:58Z",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ToMCPAnnotations(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestContentAnnotationsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ann := &mcp.Annotations{
+		Audience:     []mcp.Role{mcp.RoleUser},
+		Priority:     float64Ptr(0.9),
+		LastModified: "2025-03-24T10:00:00Z",
+	}
+
+	// Create annotated text content
+	tc := mcp.NewTextContent("hello")
+	tc.Annotated = mcp.Annotated{Annotations: ann}
+
+	// mcp -> vmcp -> mcp round trip
+	vmcpContent := ConvertMCPContent(tc)
+	require.NotNil(t, vmcpContent.Annotations)
+	assert.Equal(t, []string{"user"}, vmcpContent.Annotations.Audience)
+	assert.Equal(t, float64Ptr(0.9), vmcpContent.Annotations.Priority)
+	assert.Equal(t, "2025-03-24T10:00:00Z", vmcpContent.Annotations.LastModified)
+
+	mcpContent := ToMCPContent(vmcpContent)
+	text, ok := mcp.AsTextContent(mcpContent)
+	require.True(t, ok)
+	assert.Equal(t, "hello", text.Text)
+	require.NotNil(t, text.Annotations)
+	assert.Equal(t, ann.Audience, text.Annotations.Audience)
+	assert.Equal(t, ann.Priority, text.Annotations.Priority)
+	assert.Equal(t, ann.LastModified, text.Annotations.LastModified)
+}
+
+func TestContentAnnotationsRoundTrip_AllTypes(t *testing.T) {
+	t.Parallel()
+
+	ann := &mcp.Annotations{
+		Audience: []mcp.Role{mcp.RoleAssistant},
+		Priority: float64Ptr(0.5),
+	}
+
+	tests := []struct {
+		name    string
+		content mcp.Content
+	}{
+		{
+			name: "image content",
+			content: func() mcp.Content {
+				ic := mcp.NewImageContent("base64data", "image/png")
+				ic.Annotated = mcp.Annotated{Annotations: ann}
+				return ic
+			}(),
+		},
+		{
+			name: "audio content",
+			content: func() mcp.Content {
+				ac := mcp.NewAudioContent("base64audio", "audio/wav")
+				ac.Annotated = mcp.Annotated{Annotations: ann}
+				return ac
+			}(),
+		},
+		{
+			name: "embedded resource",
+			content: func() mcp.Content {
+				er := mcp.NewEmbeddedResource(mcp.TextResourceContents{URI: "file://x", Text: "txt"})
+				er.Annotated = mcp.Annotated{Annotations: ann}
+				return er
+			}(),
+		},
+		{
+			name: "resource link",
+			content: func() mcp.Content {
+				rl := mcp.NewResourceLink("file://x", "name", "desc", "text/plain")
+				rl.Annotated = mcp.Annotated{Annotations: ann}
+				return rl
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcpC := ConvertMCPContent(tt.content)
+			require.NotNil(t, vmcpC.Annotations, "annotations should be preserved")
+			assert.Equal(t, []string{"assistant"}, vmcpC.Annotations.Audience)
+			assert.Equal(t, float64Ptr(0.5), vmcpC.Annotations.Priority)
+
+			mcpC := ToMCPContent(vmcpC)
+			// Verify type is preserved (not degraded to unknown/empty text)
+			assert.Equal(t, vmcpC.Type, ConvertMCPContent(mcpC).Type)
+			// Verify annotations survived the round trip
+			roundTripped := ConvertMCPContent(mcpC)
+			require.NotNil(t, roundTripped.Annotations)
+			assert.Equal(t, vmcpC.Annotations, roundTripped.Annotations)
+		})
+	}
+}
+
+func TestContentWithoutAnnotations(t *testing.T) {
+	t.Parallel()
+
+	// Content without annotations should have nil Annotations field
+	tc := mcp.NewTextContent("no annotations")
+	vmcpC := ConvertMCPContent(tc)
+	assert.Nil(t, vmcpC.Annotations)
+
+	// Round-trip should preserve nil
+	mcpC := ToMCPContent(vmcpC)
+	text, ok := mcp.AsTextContent(mcpC)
+	require.True(t, ok)
+	assert.Nil(t, text.Annotations)
 }

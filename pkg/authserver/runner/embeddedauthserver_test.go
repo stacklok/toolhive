@@ -1104,6 +1104,33 @@ func (*stubServer) IDPTokenStorage() storage.UpstreamTokenStorage          { ret
 func (*stubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
 func (*stubServer) Close() error                                           { return nil }
 
+func TestRoutes(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubServer{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	eas := &EmbeddedAuthServer{server: stub}
+
+	routes := eas.Routes()
+
+	expectedKeys := []string{
+		"/.well-known/openid-configuration",
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/jwks.json",
+		"/oauth/",
+	}
+
+	require.Len(t, routes, len(expectedKeys), "Routes() should return exactly %d entries", len(expectedKeys))
+	for _, key := range expectedKeys {
+		handler, ok := routes[key]
+		assert.True(t, ok, "Routes() should contain key %q", key)
+		assert.NotNil(t, handler, "handler for %q should not be nil", key)
+	}
+}
+
 func TestRegisterHandlers(t *testing.T) {
 	t.Parallel()
 

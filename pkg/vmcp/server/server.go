@@ -125,9 +125,8 @@ type Config struct {
 	AuthInfoHandler http.Handler
 
 	// AuthServer is the optional embedded authorization server.
-	// When non-nil, its HTTP routes (/.well-known/openid-configuration,
-	// /.well-known/oauth-authorization-server, /.well-known/jwks.json, /oauth/)
-	// are registered on the mux alongside the protected resource metadata endpoint.
+	// When non-nil, the routes returned by Routes() are registered on the mux
+	// alongside the protected resource metadata endpoint.
 	AuthServer *asrunner.EmbeddedAuthServer
 
 	// TelemetryProvider is the optional telemetry provider.

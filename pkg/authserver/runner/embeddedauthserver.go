@@ -141,7 +141,7 @@ func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefre
 	return e.server.UpstreamTokenRefresher()
 }
 
-// RegisterHandlers registers the authorization server's HTTP routes on the given mux.
+// Routes returns the authorization server's HTTP route map.
 //
 // The /.well-known/ paths are registered explicitly because that namespace is shared:
 // the vMCP server owns /.well-known/oauth-protected-resource (RFC 9728) on the same
@@ -149,12 +149,21 @@ func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefre
 //
 // The /oauth/ subtree is registered as a prefix, so new /oauth/* endpoints added to
 // the chi router are picked up automatically without changes to this method.
-func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
+func (e *EmbeddedAuthServer) Routes() map[string]http.Handler {
 	handler := e.Handler()
-	mux.Handle("/.well-known/openid-configuration", handler)
-	mux.Handle("/.well-known/oauth-authorization-server", handler)
-	mux.Handle("/.well-known/jwks.json", handler)
-	mux.Handle("/oauth/", handler)
+	return map[string]http.Handler{
+		"/.well-known/openid-configuration":       handler,
+		"/.well-known/oauth-authorization-server": handler,
+		"/.well-known/jwks.json":                  handler,
+		"/oauth/":                                 handler,
+	}
+}
+
+// RegisterHandlers registers the authorization server's HTTP routes on the given mux.
+func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
+	for pattern, handler := range e.Routes() {
+		mux.Handle(pattern, handler)
+	}
 }
 
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.

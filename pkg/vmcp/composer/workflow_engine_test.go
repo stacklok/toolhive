@@ -525,16 +525,17 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 	// Verify all steps executed
 	assert.Len(t, result.Steps, 3, "all 3 steps should have results")
 
-	// Verify parallel execution performance
-	// Sequential would be: 50+50+30 = 130ms
-	// Parallel should be: max(50,50)+30 = 80ms expected
-	// Use 200ms timeout (2.5x expected time) to account for race detector instrumentation overhead
-	assert.Less(t, totalDuration, 200*time.Millisecond,
-		"parallel execution should be faster than sequential")
-
-	// Verify concurrency - at least 2 steps should run concurrently
+	// Verify parallel execution via concurrency tracking rather than wall-clock
+	// thresholds, which are inherently flaky on CI runners with variable load.
+	// The maxConcurrent counter directly proves that steps ran in parallel.
 	assert.GreaterOrEqual(t, int(maxConcurrent), 2,
 		"at least 2 steps should run concurrently")
+
+	// Sanity-check: total time should be well under the sequential sum
+	// (50+50+30 = 130ms). Use a generous 2s ceiling so this only catches
+	// a broken scheduler, not slow CI.
+	assert.Less(t, totalDuration, 2*time.Second,
+		"workflow took unreasonably long (%v), parallelism may be broken", totalDuration)
 
 	// Verify both fetch steps completed before report using sequence numbers
 	require.Len(t, startSeq, 3, "all steps should have start sequences")

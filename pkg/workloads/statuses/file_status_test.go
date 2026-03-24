@@ -1682,6 +1682,76 @@ func TestFileStatusManager_ResetWorkloadPID_WithSlashes(t *testing.T) {
 	assert.Equal(t, 0, statusFileData.ProcessID) // PID should be reset to 0
 }
 
+func TestFileStatusManager_ResetWorkloadPIDIfMatch_MatchingPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create a workload and set its PID
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	// Reset with matching PID — should reset to 0
+	err = manager.ResetWorkloadPIDIfMatch(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+	assert.Equal(t, 0, statusFileData.ProcessID)
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+}
+
+func TestFileStatusManager_ResetWorkloadPIDIfMatch_NonMatchingPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create a workload and set its PID to simulate the new process
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, "test-workload", 99999)
+	require.NoError(t, err)
+
+	// Reset with a different (old) PID — should be a no-op
+	err = manager.ResetWorkloadPIDIfMatch(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+	assert.Equal(t, 99999, statusFileData.ProcessID) // PID unchanged
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+}
+
+func TestFileStatusManager_ResetWorkloadPIDIfMatch_NonExistentWorkload(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Reset for non-existent workload — should be a no-op
+	err := manager.ResetWorkloadPIDIfMatch(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.NoFileExists(t, statusFile)
+}
+
 // TestFileStatusManager_GetWorkload_PIDMigration tests PID migration from legacy PID files to status files
 func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 	t.Parallel()

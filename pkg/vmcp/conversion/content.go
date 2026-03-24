@@ -80,18 +80,30 @@ func ConvertMCPContent(content mcp.Content) vmcp.Content {
 		return vmcp.Content{Type: vmcp.ContentTypeText, Text: text.Text, Annotations: ConvertMCPAnnotations(text.Annotations)}
 	}
 	if img, ok := mcp.AsImageContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeImage, Data: img.Data, MimeType: img.MIMEType, Annotations: ConvertMCPAnnotations(img.Annotations)}
+		return vmcp.Content{
+			Type: vmcp.ContentTypeImage, Data: img.Data,
+			MimeType: img.MIMEType, Annotations: ConvertMCPAnnotations(img.Annotations),
+		}
 	}
 	if audio, ok := mcp.AsAudioContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeAudio, Data: audio.Data, MimeType: audio.MIMEType, Annotations: ConvertMCPAnnotations(audio.Annotations)}
+		return vmcp.Content{
+			Type: vmcp.ContentTypeAudio, Data: audio.Data,
+			MimeType: audio.MIMEType, Annotations: ConvertMCPAnnotations(audio.Annotations),
+		}
 	}
 	if res, ok := mcp.AsEmbeddedResource(content); ok {
 		ann := ConvertMCPAnnotations(res.Annotations)
 		if textRes, ok := mcp.AsTextResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: vmcp.ContentTypeResource, Text: textRes.Text, URI: textRes.URI, MimeType: textRes.MIMEType, Annotations: ann}
+			return vmcp.Content{
+				Type: vmcp.ContentTypeResource, Text: textRes.Text,
+				URI: textRes.URI, MimeType: textRes.MIMEType, Annotations: ann,
+			}
 		}
 		if blobRes, ok := mcp.AsBlobResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: vmcp.ContentTypeResource, Data: blobRes.Blob, URI: blobRes.URI, MimeType: blobRes.MIMEType, Annotations: ann}
+			return vmcp.Content{
+				Type: vmcp.ContentTypeResource, Data: blobRes.Blob,
+				URI: blobRes.URI, MimeType: blobRes.MIMEType, Annotations: ann,
+			}
 		}
 		slog.Debug("Embedded resource has unknown resource contents type", "type", fmt.Sprintf("%T", res.Resource))
 		return vmcp.Content{Type: vmcp.ContentTypeResource, Annotations: ann}

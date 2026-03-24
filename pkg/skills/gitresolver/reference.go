@@ -6,6 +6,7 @@ package gitresolver
 import (
 	"fmt"
 	"net"
+	"os"
 	"path"
 	"strings"
 
@@ -93,8 +94,12 @@ func ParseGitReference(raw string) (*GitReference, error) {
 		return nil, fmt.Errorf("invalid git reference: %w", err)
 	}
 
-	// Build HTTPS clone URL
-	cloneURL := "https://" + host + "/" + repoPath
+	// Build clone URL. In dev mode, use HTTP to support local test servers.
+	scheme := "https"
+	if isDevMode() {
+		scheme = "http"
+	}
+	cloneURL := scheme + "://" + host + "/" + repoPath
 
 	return &GitReference{
 		URL:  cloneURL,
@@ -132,15 +137,19 @@ func validateHost(host string) error {
 		hostname = h
 	}
 
-	// Reject localhost variants using the shared networking utility.
-	if networking.IsLocalhost(hostname) {
-		return fmt.Errorf("host %q is not allowed: localhost is rejected for SSRF prevention", host)
-	}
+	// In dev mode, allow localhost/private IPs for testing. This mirrors
+	// the OCI plain-HTTP dev mode enabled by TOOLHIVE_DEV=true.
+	if !isDevMode() {
+		// Reject localhost variants using the shared networking utility.
+		if networking.IsLocalhost(hostname) {
+			return fmt.Errorf("host %q is not allowed: localhost is rejected for SSRF prevention", host)
+		}
 
-	// Reject private/loopback IPs using the shared networking utility.
-	ip := net.ParseIP(hostname)
-	if ip != nil && networking.IsPrivateIP(ip) {
-		return fmt.Errorf("host %q is not allowed: private/loopback IPs are rejected for SSRF prevention", host)
+		// Reject private/loopback IPs using the shared networking utility.
+		ip := net.ParseIP(hostname)
+		if ip != nil && networking.IsPrivateIP(ip) {
+			return fmt.Errorf("host %q is not allowed: private/loopback IPs are rejected for SSRF prevention", host)
+		}
 	}
 
 	return nil
@@ -190,4 +199,11 @@ func validateSkillPath(p string) error {
 		}
 	}
 	return nil
+}
+
+// isDevMode returns true when TOOLHIVE_DEV=true. In dev mode, SSRF checks
+// for localhost and private IPs are relaxed to enable E2E testing with local
+// git HTTP servers.
+func isDevMode() bool {
+	return strings.EqualFold(os.Getenv("TOOLHIVE_DEV"), "true")
 }

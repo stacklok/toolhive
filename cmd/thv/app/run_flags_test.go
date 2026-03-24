@@ -528,6 +528,74 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	assert.Equal(t, true, finalMetricsEnabled, "MetricsEnabled should use CLI default when not set via CLI or config")
 }
 
+func TestCreateTelemetryConfig_DisabledSignals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                        string
+		endpoint                    string
+		tracingEnabled              bool
+		metricsEnabled              bool
+		enablePrometheusMetricsPath bool
+		expectNil                   bool
+	}{
+		{
+			name:           "both disabled with endpoint returns nil",
+			endpoint:       "https://otel.example.com",
+			tracingEnabled: false,
+			metricsEnabled: false,
+			expectNil:      true,
+		},
+		{
+			name:           "tracing enabled returns config",
+			endpoint:       "https://otel.example.com",
+			tracingEnabled: true,
+			metricsEnabled: false,
+			expectNil:      false,
+		},
+		{
+			name:           "metrics enabled returns config",
+			endpoint:       "https://otel.example.com",
+			tracingEnabled: false,
+			metricsEnabled: true,
+			expectNil:      false,
+		},
+		{
+			name:                        "both disabled but prometheus enabled returns config",
+			endpoint:                    "https://otel.example.com",
+			tracingEnabled:              false,
+			metricsEnabled:              false,
+			enablePrometheusMetricsPath: true,
+			expectNil:                   false,
+		},
+		{
+			name:           "no endpoint and both disabled returns nil",
+			endpoint:       "",
+			tracingEnabled: false,
+			metricsEnabled: false,
+			expectNil:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := createTelemetryConfig(
+				tt.endpoint, tt.enablePrometheusMetricsPath,
+				"test-service", tt.tracingEnabled, tt.metricsEnabled,
+				1.0, nil, false, nil, "", true,
+			)
+
+			if tt.expectNil {
+				assert.Nil(t, result, "expected nil telemetry config")
+			} else {
+				assert.NotNil(t, result, "expected non-nil telemetry config")
+			}
+		})
+	}
+}
+
 func TestResolveTransportType(t *testing.T) {
 	t.Parallel()
 

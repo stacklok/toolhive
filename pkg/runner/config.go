@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package runner provides functionality for running MCP servers
@@ -471,9 +471,9 @@ func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunCon
 }
 
 // ValidateSecrets checks if the secrets can be parsed and are valid
-func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
+func (c *RunConfig) ValidateSecrets(ctx context.Context, userProvider secrets.Provider) error {
 	if len(c.Secrets) > 0 {
-		_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		_, err := environment.ParseSecretParameters(ctx, c.Secrets, userProvider)
 		if err != nil {
 			return fmt.Errorf("failed to get secrets: %w", err)
 		}
@@ -488,11 +488,17 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 	return nil
 }
 
-// WithSecrets processes secrets and adds them to environment variables
-func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
-	// Process regular secrets if provided
+// WithSecrets processes secrets and adds them to environment variables.
+// systemProvider is used for system-managed secrets (auth tokens, registry credentials).
+// userProvider is used for user-managed secrets (--secret flags, header secrets).
+func (c *RunConfig) WithSecrets(
+	ctx context.Context,
+	systemProvider secrets.Provider,
+	userProvider secrets.Provider,
+) (*RunConfig, error) {
+	// Process regular secrets if provided — these are user-managed (from --secret flags)
 	if len(c.Secrets) > 0 {
-		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, userProvider)
 		if err != nil {
 			return c, fmt.Errorf("failed to get secrets: %w", err)
 		}
@@ -508,12 +514,12 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		}
 	}
 
-	// Process RemoteAuthConfig.ClientSecret if it's in CLI format
+	// Process RemoteAuthConfig.ClientSecret if it's in CLI format — system-managed secret
 	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
 		// Check if it's in CLI format (contains ",target=")
 		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret); err == nil {
 			// It's in CLI format, resolve the actual secret value
-			actualSecret, err := secretManager.GetSecret(ctx, secretParam.Name)
+			actualSecret, err := systemProvider.GetSecret(ctx, secretParam.Name)
 			if err != nil {
 				return c, fmt.Errorf("failed to resolve OAuth client secret '%s': %w", secretParam.Name, err)
 			}
@@ -523,12 +529,12 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		// If it's not in CLI format (plain text), leave it as is
 	}
 
-	// Process RemoteAuthConfig.BearerToken if it's in CLI format
+	// Process RemoteAuthConfig.BearerToken if it's in CLI format — system-managed secret
 	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.BearerToken != "" {
 		// Check if it's in CLI format (contains ",target=")
 		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.BearerToken); err == nil {
 			// It's in CLI format, resolve the actual token value
-			actualToken, err := secretManager.GetSecret(ctx, secretParam.Name)
+			actualToken, err := systemProvider.GetSecret(ctx, secretParam.Name)
 			if err != nil {
 				return c, fmt.Errorf("failed to resolve bearer token '%s': %w", secretParam.Name, err)
 			}
@@ -538,8 +544,8 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		// If it's not in CLI format (plain text), leave it as is
 	}
 
-	// Process HeaderForward.AddHeadersFromSecret
-	if err := c.resolveHeaderForwardSecrets(ctx, secretManager); err != nil {
+	// Process HeaderForward.AddHeadersFromSecret — user-managed secrets
+	if err := c.resolveHeaderForwardSecrets(ctx, userProvider); err != nil {
 		return c, err
 	}
 
@@ -550,7 +556,7 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 // and builds the merged resolvedHeaders map for middleware consumption.
 // Only the secret references are persisted to disk; actual values exist only in memory
 // via the non-serialized resolvedHeaders field.
-func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, secretManager secrets.Provider) error {
+func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, userProvider secrets.Provider) error {
 	if c.HeaderForward == nil || len(c.HeaderForward.AddHeadersFromSecret) == 0 {
 		return nil
 	}
@@ -560,7 +566,7 @@ func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, secretManag
 		merged[k] = v
 	}
 	for headerName, secretName := range c.HeaderForward.AddHeadersFromSecret {
-		actualValue, err := secretManager.GetSecret(ctx, secretName)
+		actualValue, err := userProvider.GetSecret(ctx, secretName)
 		if err != nil {
 			return fmt.Errorf("failed to resolve header secret %q: %w", secretName, err)
 		}

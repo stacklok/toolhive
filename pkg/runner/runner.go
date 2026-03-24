@@ -252,13 +252,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
-		handler := r.embeddedAuthServer.Handler()
-		transportConfig.PrefixHandlers = map[string]http.Handler{
-			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
-			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
-			"/.well-known/openid-configuration":       handler, // OIDC Discovery
-			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
-		}
+		transportConfig.PrefixHandlers = r.embeddedAuthServer.Routes()
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.

@@ -57,13 +57,7 @@ func TestRunner_EmbeddedAuthServerIntegration(t *testing.T) {
 			_ = embeddedAuthServer.Close()
 		}()
 
-		handler := embeddedAuthServer.Handler()
-		transportConfig.PrefixHandlers = map[string]http.Handler{
-			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
-			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
-			"/.well-known/openid-configuration":       handler, // OIDC Discovery
-			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
-		}
+		transportConfig.PrefixHandlers = embeddedAuthServer.Routes()
 
 		// Verify all expected prefixes are present
 		for _, prefix := range expectedPrefixes {

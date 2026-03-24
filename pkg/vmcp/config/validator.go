@@ -575,11 +575,18 @@ func validateAuthServerIncomingAuthConsistency(cfg *Config, rc *authserver.RunCo
 	return nil
 }
 
+// hasOIDCIncoming reports whether the config has OIDC incoming auth fully configured.
+func hasOIDCIncoming(cfg *Config) bool {
+	return cfg.IncomingAuth != nil &&
+		cfg.IncomingAuth.Type == IncomingAuthTypeOIDC &&
+		cfg.IncomingAuth.OIDC != nil
+}
+
 // validateAuthServerRequiresOIDC checks that when the auth server is configured,
 // incomingAuth is OIDC. The AS issues tokens that the OIDC middleware
 // validates; without OIDC incoming auth the entire OAuth flow is pointless.
 func validateAuthServerRequiresOIDC(cfg *Config) error {
-	if cfg.IncomingAuth == nil || cfg.IncomingAuth.Type != IncomingAuthTypeOIDC || cfg.IncomingAuth.OIDC == nil {
+	if !hasOIDCIncoming(cfg) {
 		return fmt.Errorf("embedded auth server requires OIDC incoming auth")
 	}
 	return nil
@@ -588,10 +595,7 @@ func validateAuthServerRequiresOIDC(cfg *Config) error {
 // hasAuthServerWithOIDCIncoming returns true when both the auth server and
 // incoming OIDC auth are configured, enabling cross-cutting validation.
 func hasAuthServerWithOIDCIncoming(cfg *Config, rc *authserver.RunConfig) bool {
-	return rc != nil &&
-		cfg.IncomingAuth != nil &&
-		cfg.IncomingAuth.Type == IncomingAuthTypeOIDC &&
-		cfg.IncomingAuth.OIDC != nil
+	return rc != nil && hasOIDCIncoming(cfg)
 }
 
 // collectAllBackendStrategies returns all backend auth strategies from the config.

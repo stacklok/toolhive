@@ -559,8 +559,16 @@ func (*KubernetesProvider) SetRuntimeConfig(_ string, _ *templates.RuntimeConfig
 	return nil
 }
 
-// NewProvider creates the appropriate config provider based on the runtime environment
+// NewProvider creates the appropriate config provider based on the runtime environment.
+// If a custom ProviderFactory has been registered via RegisterProviderFactory and it
+// returns a non-nil Provider, that provider is used. Otherwise, the built-in selection
+// logic applies.
 func NewProvider() Provider {
+	if registeredFactory != nil {
+		if p := registeredFactory(); p != nil {
+			return p
+		}
+	}
 	if runtime.IsKubernetesRuntime() {
 		return NewKubernetesProvider()
 	}

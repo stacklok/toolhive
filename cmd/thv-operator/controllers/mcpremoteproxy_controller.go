@@ -652,6 +652,23 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		return fmt.Errorf("failed to fetch MCPExternalAuthConfig: %w", err)
 	}
 
+	// MCPRemoteProxy supports only single-upstream embedded auth server configs.
+	// Multi-upstream requires VirtualMCPServer.
+	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream,
+			Message: fmt.Sprintf(
+				"MCPRemoteProxy supports only one upstream provider (found %d); "+
+					"use VirtualMCPServer for multi-upstream",
+				len(embeddedCfg.UpstreamProviders)),
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("MCPRemoteProxy %s/%s: embedded auth server has %d upstream providers, but only 1 is supported",
+			proxy.Namespace, proxy.Name, len(embeddedCfg.UpstreamProviders))
+	}
+
 	// ExternalAuthConfig found and valid
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,

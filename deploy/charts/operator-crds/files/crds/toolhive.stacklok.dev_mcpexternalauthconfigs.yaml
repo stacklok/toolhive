@@ -437,7 +437,7 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       The embedded auth server delegates authentication to these providers.
-                      Multiple upstream providers are supported for sequential authorization chains.
+                      MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: UpstreamProviderConfig defines configuration for
                         an upstream Identity Provider.

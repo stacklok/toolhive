@@ -176,7 +176,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			expectHashCleared: true,
 		},
 		{
-			name: "embedded auth server with multiple upstreams accepted",
+			name: "embedded auth server with multiple upstreams rejected",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -207,8 +207,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 				},
 				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
 			},
-			expectError: false,
-			expectHash:  "multi-hash",
+			expectError: true,
 		},
 	}
 

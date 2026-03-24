@@ -1807,11 +1807,13 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 			},
 		},
 		{
-			name: "group registration error propagates",
+			name: "group registration error rolls back DB record",
 			opts: skills.InstallOptions{Name: "my-skill", Group: "badgroup", LayerData: layerData, Digest: "sha256:abc"},
 			setupStoreMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
 				s.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+				// Rollback: installAndRegister removes the DB record on group failure.
+				s.EXPECT().Delete(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(nil)
 			},
 			setupPR: func(pr *skillsmocks.MockPathResolver) {
 				pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
@@ -1821,7 +1823,7 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 				gm.EXPECT().Get(gomock.Any(), "badgroup").
 					Return(nil, fmt.Errorf("group not found"))
 			},
-			wantErr: "getting group",
+			wantErr: "registering skill in group",
 		},
 	}
 
@@ -2355,6 +2357,49 @@ func TestInstallFromGit(t *testing.T) {
 	}
 }
 
+func TestInstallFromGitGroupRegistrationRollback(t *testing.T) {
+	t.Parallel()
+
+	commitHash := "abcdef1234567890abcdef1234567890abcdef12"
+
+	ctrl := gomock.NewController(t)
+
+	gr := gitmocks.NewMockResolver(ctrl)
+	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&gitresolver.ResolveResult{
+		SkillConfig: &skills.ParseResult{Name: "my-skill", Version: "1.0.0"},
+		Files: []gitresolver.FileEntry{
+			{Path: "SKILL.md", Content: []byte("---\nname: my-skill\n---\n# Skill"), Mode: 0644},
+		},
+		CommitHash: commitHash,
+	}, nil)
+
+	installBase := filepath.Join(tempDir(t), "installed")
+	require.NoError(t, os.MkdirAll(installBase, 0o755))
+
+	store := storemocks.NewMockSkillStore(ctrl)
+	store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+	store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+	// Rollback: DB record is removed when group registration fails.
+	store.EXPECT().Delete(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(nil)
+
+	pr := skillsmocks.NewMockPathResolver(ctrl)
+	pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(installBase, "my-skill"), nil)
+	pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
+
+	gm := groupmocks.NewMockManager(ctrl)
+	gm.EXPECT().Get(gomock.Any(), "badgroup").Return(nil, fmt.Errorf("group not found"))
+
+	svc := New(store, WithGitResolver(gr), WithPathResolver(pr), WithGroupManager(gm))
+
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:  "git://github.com/test/my-skill@v1.0.0",
+		Group: "badgroup",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registering skill in group")
+	assert.Contains(t, err.Error(), "group not found")
+}
+
 func TestInstallFromRegistryGitFallback(t *testing.T) {
 	t.Parallel()
 
@@ -2592,6 +2637,73 @@ func TestValidateOCITagOrReference(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestBuildGitReferenceFromRegistryURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		rawURL  string
+		want    string
+		wantErr string
+	}{
+		{
+			name:   "https URL converts to git scheme",
+			rawURL: "https://github.com/org/repo",
+			want:   "git://github.com/org/repo",
+		},
+		{
+			name:   "http URL silently promoted to git scheme",
+			rawURL: "http://github.com/org/repo",
+			want:   "git://github.com/org/repo",
+		},
+		{
+			name:   "git URL passes through unchanged",
+			rawURL: "git://github.com/org/repo",
+			want:   "git://github.com/org/repo",
+		},
+		{
+			name:   "https URL with nested path",
+			rawURL: "https://github.com/org/repo@v1.0#skills/foo",
+			want:   "git://github.com/org/repo@v1.0#skills/foo",
+		},
+		{
+			name:    "empty git reference",
+			rawURL:  "git://",
+			wantErr: "invalid git reference",
+		},
+		{
+			name:    "unsupported ftp scheme",
+			rawURL:  "ftp://github.com/org/repo",
+			wantErr: "unsupported URL scheme",
+		},
+		{
+			name:    "bare string no scheme",
+			rawURL:  "noscheme/org/repo",
+			wantErr: "unsupported URL scheme",
+		},
+		{
+			name:    "https URL missing repo path",
+			rawURL:  "https://github.com",
+			wantErr: "no repository path after host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := buildGitReferenceFromRegistryURL(tt.rawURL)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

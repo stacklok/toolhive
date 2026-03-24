@@ -222,7 +222,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		if err != nil {
 			return nil, err
 		}
-		return result, s.registerSkillInGroup(ctx, opts.Group, result.Skill.Metadata.Name)
+		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
 	}
 
 	ref, isOCI, err := parseOCIReference(opts.Name)
@@ -237,7 +237,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		if err != nil {
 			return nil, err
 		}
-		return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+		return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 	}
 
 	// Plain skill name — validate and proceed with existing flow.
@@ -292,7 +292,7 @@ func (s *service) installByName(
 	if err != nil {
 		return nil, err
 	}
-	return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+	return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 }
 
 // installFromRegistryLookup resolves a plain skill name via the registry and
@@ -315,7 +315,7 @@ func (s *service) installFromRegistryLookup(
 			if ociErr != nil {
 				return nil, ociErr
 			}
-			return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 		case resolved.GitURL != "":
 			slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
 			opts.Name = resolved.GitURL
@@ -323,7 +323,7 @@ func (s *service) installFromRegistryLookup(
 			if gitErr != nil {
 				return nil, gitErr
 			}
-			return result, s.registerSkillInGroup(ctx, opts.Group, result.Skill.Metadata.Name)
+			return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
 		}
 	}
 
@@ -1238,4 +1238,26 @@ func (s *service) registerSkillInGroup(ctx context.Context, groupName string, sk
 		groupName = groups.DefaultGroup
 	}
 	return groups.AddSkillToGroup(ctx, s.groupManager, groupName, skillName)
+}
+
+// installAndRegister registers the just-installed skill in the target group.
+// If group registration fails, the DB record is rolled back so that a retry
+// starts fresh rather than leaving the system in an inconsistent state (skill
+// installed but not in the expected group).
+func (s *service) installAndRegister(
+	ctx context.Context,
+	result *skills.InstallResult,
+	groupName string,
+	skillName string,
+	scope skills.Scope,
+	projectRoot string,
+) (*skills.InstallResult, error) {
+	if err := s.registerSkillInGroup(ctx, groupName, skillName); err != nil {
+		// Best-effort rollback: remove the DB record so retries start fresh.
+		// Files on disk are left in place; a fresh install will detect them
+		// and either overwrite (force) or return a conflict.
+		_ = s.store.Delete(ctx, skillName, scope, projectRoot)
+		return nil, fmt.Errorf("registering skill in group: %w", err)
+	}
+	return result, nil
 }

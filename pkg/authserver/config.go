@@ -390,24 +390,8 @@ func (c *Config) validateUpstreams() error {
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
 
-		// For single upstream, default empty name to "default".
-		// For multi-upstream, require explicit non-"default" names.
-		if len(c.Upstreams) == 1 {
-			if up.Name == "" {
-				up.Name = "default"
-			}
-		} else {
-			if up.Name == "" {
-				return fmt.Errorf("upstream[%d]: name must be explicitly set when multiple upstreams are configured", i)
-			}
-			if up.Name == "default" {
-				return fmt.Errorf("upstream[%d]: name %q is reserved for single-upstream configs; use a descriptive name", i, up.Name)
-			}
-		}
-
-		// Validate name format (DNS-label-like) to prevent storage key injection
-		if !upstreamNameRegex.MatchString(up.Name) {
-			return fmt.Errorf("upstream[%d]: name %q must match %s (lowercase alphanumeric and hyphens)", i, up.Name, upstreamNameRegex.String())
+		if err := c.validateUpstreamName(i, up); err != nil {
+			return err
 		}
 
 		// Check for duplicate names
@@ -416,33 +400,70 @@ func (c *Config) validateUpstreams() error {
 		}
 		seenNames[up.Name] = true
 
-		// Validate based on provider type
-		switch up.Type {
-		case UpstreamProviderTypeOIDC:
-			if up.OIDCConfig == nil {
-				return fmt.Errorf("upstream %q: oidc_config is required for OIDC provider", up.Name)
-			}
-			if up.OAuth2Config != nil {
-				return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
-			}
-			if err := up.OIDCConfig.Validate(); err != nil {
-				return fmt.Errorf("upstream %q: %w", up.Name, err)
-			}
-		case UpstreamProviderTypeOAuth2:
-			if up.OAuth2Config == nil {
-				return fmt.Errorf("upstream %q: oauth2_config is required for OAuth2 provider", up.Name)
-			}
-			if up.OIDCConfig != nil {
-				return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
-			}
-			if err := up.OAuth2Config.Validate(); err != nil {
-				return fmt.Errorf("upstream %q: %w", up.Name, err)
-			}
-		default:
-			return fmt.Errorf("upstream %q: unsupported provider type: %q", up.Name, up.Type)
+		if err := validateUpstreamType(up); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// validateUpstreamName validates and defaults the upstream name.
+// For single upstream, empty names default to "default".
+// For multi-upstream, explicit non-"default" names are required.
+func (c *Config) validateUpstreamName(i int, up *UpstreamConfig) error {
+	if len(c.Upstreams) == 1 {
+		if up.Name == "" {
+			up.Name = "default"
+		}
+	} else {
+		if up.Name == "" {
+			return fmt.Errorf(
+				"upstream[%d]: name must be explicitly set when multiple upstreams are configured", i)
+		}
+		if up.Name == "default" {
+			return fmt.Errorf(
+				"upstream[%d]: name %q is reserved for single-upstream configs; use a descriptive name",
+				i, up.Name)
+		}
+	}
+
+	// Validate name format (DNS-label-like) to prevent storage key injection
+	if !upstreamNameRegex.MatchString(up.Name) {
+		return fmt.Errorf(
+			"upstream[%d]: name %q must match %s (lowercase alphanumeric and hyphens)",
+			i, up.Name, upstreamNameRegex.String())
+	}
+
+	return nil
+}
+
+// validateUpstreamType validates the provider type and its type-specific config.
+func validateUpstreamType(up *UpstreamConfig) error {
+	switch up.Type {
+	case UpstreamProviderTypeOIDC:
+		if up.OIDCConfig == nil {
+			return fmt.Errorf("upstream %q: oidc_config is required for OIDC provider", up.Name)
+		}
+		if up.OAuth2Config != nil {
+			return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
+		}
+		if err := up.OIDCConfig.Validate(); err != nil {
+			return fmt.Errorf("upstream %q: %w", up.Name, err)
+		}
+	case UpstreamProviderTypeOAuth2:
+		if up.OAuth2Config == nil {
+			return fmt.Errorf("upstream %q: oauth2_config is required for OAuth2 provider", up.Name)
+		}
+		if up.OIDCConfig != nil {
+			return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
+		}
+		if err := up.OAuth2Config.Validate(); err != nil {
+			return fmt.Errorf("upstream %q: %w", up.Name, err)
+		}
+	default:
+		return fmt.Errorf("upstream %q: unsupported provider type: %q", up.Name, up.Type)
+	}
 	return nil
 }
 

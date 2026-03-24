@@ -36,7 +36,7 @@ func loadRunConfigFields(ctx context.Context, store state.Store, name string) (*
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	var config minimalRunConfig
 	if err := json.NewDecoder(reader).Decode(&config); err != nil {

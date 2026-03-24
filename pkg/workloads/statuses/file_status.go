@@ -1016,7 +1016,9 @@ func (f *fileStatusManager) isProxyUnhealthy(
 }
 
 // mergeHealthyWorkloadData merges runtime container data with file-based status information
-func (f *fileStatusManager) mergeHealthyWorkloadData(containerInfo rt.ContainerInfo, result core.Workload) (core.Workload, error) {
+func (f *fileStatusManager) mergeHealthyWorkloadData(
+	containerInfo rt.ContainerInfo, result core.Workload,
+) (core.Workload, error) {
 	// Runtime and proxy confirm workload is healthy - use runtime data but preserve file-based status info
 	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo, f.runConfigStore)
 	if err != nil {

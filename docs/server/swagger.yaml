@@ -267,8 +267,7 @@ components:
         skip_browser:
           type: boolean
         timeout:
-          example: 5m
-          type: string
+          type: integer
         token_url:
           type: string
         use_pkce:

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive-core/registry/types"
+	registry "github.com/stacklok/toolhive-core/registry/types"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 )
 
@@ -23,7 +23,7 @@ type Config struct {
 	ClientSecretFile string        `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
 	Scopes           []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 	SkipBrowser      bool          `json:"skip_browser,omitempty" yaml:"skip_browser,omitempty"`
-	Timeout          time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty" swaggertype:"string" example:"5m"`
+	Timeout          time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty" swaggertype:"primitive,integer"`
 	CallbackPort     int           `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
 	UsePKCE          bool          `json:"use_pkce" yaml:"use_pkce"`
 

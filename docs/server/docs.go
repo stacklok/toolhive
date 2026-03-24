@@ -279,8 +279,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "timeout": {
-                        "example": "5m",
-                        "type": "string"
+                        "type": "integer"
                     },
                     "token_url": {
                         "type": "string"

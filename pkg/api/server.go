@@ -53,6 +53,7 @@ import (
 const (
 	middlewareTimeout  = 60 * time.Second
 	readHeaderTimeout  = 10 * time.Second
+	shutdownTimeout    = 30 * time.Second
 	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
 	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
@@ -559,7 +560,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 // shutdown gracefully shuts down the server
 func (s *Server) shutdown() error {
-	if err := s.httpServer.Shutdown(context.Background()); err != nil {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 		s.cleanup()
 		return fmt.Errorf("server shutdown failed: %w", err)
 	}

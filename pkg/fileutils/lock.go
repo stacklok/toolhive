@@ -26,11 +26,18 @@ const (
 // WithFileLock opens a new file descriptor, concurrent goroutines can all acquire
 // the flock simultaneously. This in-process mutex ensures serialization within a
 // single process, while the flock continues to protect cross-process access.
+//
+// This map is never pruned; callers should ensure the number of distinct
+// paths remains bounded (e.g. one secrets file per workload).
 var processLocks sync.Map
 
 // getProcessLock returns the in-process mutex for the given path,
 // creating one if it does not already exist.
 func getProcessLock(path string) *sync.Mutex {
+	// Fast path: return the existing mutex without allocating.
+	if val, ok := processLocks.Load(path); ok {
+		return val.(*sync.Mutex)
+	}
 	val, _ := processLocks.LoadOrStore(path, &sync.Mutex{})
 	return val.(*sync.Mutex)
 }

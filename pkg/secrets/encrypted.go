@@ -33,7 +33,11 @@ type fileStructure struct {
 	Secrets map[string]string `json:"secrets"`
 }
 
-// GetSecret retrieves a secret from the secret store.
+// GetSecret retrieves a secret from the in-memory cache.
+// It does not re-read the file; secrets written by other processes after
+// construction may not be visible. This is intentional: CLI invocations
+// create a fresh manager per call, and long-running proxies only need
+// their own tokens.
 func (e *EncryptedManager) GetSecret(_ context.Context, name string) (string, error) {
 	if name == "" {
 		return "", errors.New("secret name cannot be empty")
@@ -63,6 +67,9 @@ func (e *EncryptedManager) SetSecret(_ context.Context, name, value string) erro
 		if err := e.writeFileSecrets(secrets); err != nil {
 			return err
 		}
+		// Update the in-memory cache after the disk write. There is a brief
+		// window where a concurrent GetSecret may return a stale value; this
+		// is acceptable because the file is the authoritative source of truth.
 		e.secrets.Store(name, value)
 		return nil
 	})
@@ -82,12 +89,18 @@ func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 			return err
 		}
 		if _, ok := secrets[name]; !ok {
+			// Evict stale cache entry: another process may have already
+			// deleted this key from disk while it remained in our cache.
+			e.secrets.Delete(name)
 			return fmt.Errorf("cannot delete non-existent secret: %s", name)
 		}
 		delete(secrets, name)
 		if err := e.writeFileSecrets(secrets); err != nil {
 			return err
 		}
+		// Update the in-memory cache after the disk write. There is a brief
+		// window where a concurrent GetSecret may return a stale value; this
+		// is acceptable because the file is the authoritative source of truth.
 		e.secrets.Delete(name)
 		return nil
 	})

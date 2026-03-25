@@ -30,7 +30,6 @@ import (
 
 const (
 	testImage               = "test-image:latest"
-	stdioTransport          = "stdio"
 	sseProxyMode            = "sse"
 	streamableHTTPProxyMode = "streamable-http"
 )

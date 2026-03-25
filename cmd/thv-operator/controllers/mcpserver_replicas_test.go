@@ -456,7 +456,7 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 		"ReadyReplicas should match the number of running pods")
 }
 
-func TestDefaultCreationHasOneReplica(t *testing.T) {
+func TestDefaultCreationHasNilReplicas(t *testing.T) {
 	t.Parallel()
 
 	name := "default-creation"
@@ -494,13 +494,298 @@ func TestDefaultCreationHasOneReplica(t *testing.T) {
 	//nolint:staticcheck // Requeue is what the controller actually returns
 	assert.True(t, result.Requeue, "First reconcile should requeue after creating deployment")
 
-	// Verify the deployment was created with 1 replica
+	// Verify the deployment was created with nil replicas (nil-passthrough for HPA compatibility)
 	deployment := &appsv1.Deployment{}
 	err = fakeClient.Get(t.Context(), types.NamespacedName{
 		Name:      name,
 		Namespace: namespace,
 	}, deployment)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), *deployment.Spec.Replicas,
-		"Default deployment should start with 1 replica")
+	assert.Nil(t, deployment.Spec.Replicas,
+		"Default deployment should have nil replicas (hands-off mode for HPA/KEDA)")
+}
+
+// --- resolveDeploymentReplicas unit tests ---
+
+func TestResolveDeploymentReplicasNil(t *testing.T) {
+	t.Parallel()
+	result := resolveDeploymentReplicas("sse", nil)
+	assert.Nil(t, result, "nil spec.replicas should return nil (hands-off mode)")
+}
+
+func TestResolveDeploymentReplicas1(t *testing.T) {
+	t.Parallel()
+	result := resolveDeploymentReplicas("sse", int32Ptr(1))
+	require.NotNil(t, result)
+	assert.Equal(t, int32(1), *result)
+}
+
+func TestResolveDeploymentReplicas3SSE(t *testing.T) {
+	t.Parallel()
+	result := resolveDeploymentReplicas("sse", int32Ptr(3))
+	require.NotNil(t, result)
+	assert.Equal(t, int32(3), *result)
+}
+
+func TestResolveDeploymentReplicasStdioCap(t *testing.T) {
+	t.Parallel()
+	result := resolveDeploymentReplicas("stdio", int32Ptr(3))
+	require.NotNil(t, result)
+	assert.Equal(t, int32(1), *result, "stdio transport must be capped at 1")
+}
+
+// --- deploymentForMCPServer unit tests ---
+
+func TestTerminationGracePeriodSet(t *testing.T) {
+	t.Parallel()
+
+	name := "tgp-test"
+	namespace := testNamespaceDefault
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+		},
+	}
+
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+	dep := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	require.NotNil(t, dep)
+	require.NotNil(t, dep.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	assert.Equal(t, int64(30), *dep.Spec.Template.Spec.TerminationGracePeriodSeconds)
+}
+
+func TestSpecDrivenReplicasNil(t *testing.T) {
+	t.Parallel()
+
+	name := "nil-replicas-test"
+	namespace := testNamespaceDefault
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+			Replicas:  nil,
+		},
+	}
+
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+	dep := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	require.NotNil(t, dep)
+	assert.Nil(t, dep.Spec.Replicas, "nil spec.replicas should produce nil Deployment.Spec.Replicas")
+}
+
+func TestSpecDrivenReplicas3(t *testing.T) {
+	t.Parallel()
+
+	name := "three-replicas-test"
+	namespace := testNamespaceDefault
+	replicas := int32(3)
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+			Replicas:  &replicas,
+		},
+	}
+
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+	dep := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	require.NotNil(t, dep)
+	require.NotNil(t, dep.Spec.Replicas)
+	assert.Equal(t, int32(3), *dep.Spec.Replicas)
+}
+
+// --- reconciler-level condition tests ---
+
+func TestStdioCapConditionSet(t *testing.T) {
+	t.Parallel()
+
+	name := "stdio-cap-test"
+	namespace := testNamespaceDefault
+	replicas := int32(3)
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			ProxyPort: 8080,
+			Replicas:  &replicas,
+		},
+	}
+
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	// First reconcile creates the deployment
+	_, err := reconciler.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+	})
+	require.NoError(t, err)
+
+	// Read back the MCPServer to check conditions
+	updated := &mcpv1alpha1.MCPServer{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
+	require.NoError(t, err)
+
+	var found bool
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == mcpv1alpha1.ConditionStdioReplicaCapped {
+			found = true
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, mcpv1alpha1.ConditionReasonStdioReplicaCapped, cond.Reason)
+		}
+	}
+	assert.True(t, found, "ConditionStdioReplicaCapped condition should be set")
+}
+
+func TestSessionStorageWarningSet(t *testing.T) {
+	t.Parallel()
+
+	name := "session-storage-warning-test"
+	namespace := testNamespaceDefault
+	replicas := int32(2)
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+			Replicas:  &replicas,
+			// No SessionStorage configured
+		},
+	}
+
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	_, err := reconciler.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+	})
+	require.NoError(t, err)
+
+	updated := &mcpv1alpha1.MCPServer{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
+	require.NoError(t, err)
+
+	var found bool
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == mcpv1alpha1.ConditionSessionStorageWarning {
+			found = true
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, mcpv1alpha1.ConditionReasonSessionStorageMissing, cond.Reason)
+		}
+	}
+	assert.True(t, found, "ConditionSessionStorageWarning condition should be set")
+}
+
+func TestSessionStorageWarningCleared(t *testing.T) {
+	t.Parallel()
+
+	name := "session-storage-ok-test"
+	namespace := testNamespaceDefault
+	replicas := int32(2)
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+			Replicas:  &replicas,
+			SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6379",
+			},
+		},
+	}
+
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	_, err := reconciler.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+	})
+	require.NoError(t, err)
+
+	updated := &mcpv1alpha1.MCPServer{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
+	require.NoError(t, err)
+
+	var found bool
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == mcpv1alpha1.ConditionSessionStorageWarning {
+			found = true
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, mcpv1alpha1.ConditionReasonSessionStorageConfigured, cond.Reason)
+		}
+	}
+	assert.True(t, found, "ConditionSessionStorageWarning condition should be set to False when Redis is configured")
 }

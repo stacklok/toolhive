@@ -535,3 +535,58 @@ func TestVirtualMCPServerSpecScalingFieldsJSONRoundtrip(t *testing.T) {
 		})
 	}
 }
+
+func TestVirtualMCPServerSpecScalingFieldsJSONRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	replicas := int32(2)
+
+	tests := []struct {
+		name       string
+		spec       VirtualMCPServerSpec
+		wantKeys   []string
+		wantAbsent []string
+	}{
+		{
+			name: "nil replicas are omitted",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+			},
+			wantAbsent: []string{`"replicas"`, `"sessionStorage"`},
+		},
+		{
+			name: "set replicas are serialized",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+				Replicas:     &replicas,
+			},
+			wantKeys: []string{`"replicas":2`},
+		},
+		{
+			name: "sessionStorage is serialized when set",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+				SessionStorage: &SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				},
+			},
+			wantKeys: []string{`"sessionStorage"`, `"provider":"redis"`},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b, err := json.Marshal(tc.spec)
+			require.NoError(t, err)
+			out := string(b)
+			for _, key := range tc.wantKeys {
+				assert.Contains(t, out, key)
+			}
+			for _, key := range tc.wantAbsent {
+				assert.NotContains(t, out, key)
+			}
+		})
+	}
+}

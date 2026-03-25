@@ -10,7 +10,7 @@ When you use protocol schemes like `thv run go://github.com/example/server`, Too
 - **Node**: `node:22-alpine` (builder and runtime)
 - **Python**: `python:3.13-slim` (builder and runtime)
 
-You can customize these base images to use different versions or add additional build packages.
+You can customize these base images to use different versions or add additional build and runtime packages.
 
 ## Use Cases
 
@@ -40,7 +40,7 @@ thv run uvx://mcp-server-sqlite --runtime-image python:3.11-slim
 
 ### `--runtime-add-package`
 
-Add additional packages to install during the build stage. Can be repeated multiple times.
+Add additional packages to install during the build and runtime stages. Can be repeated multiple times.
 
 **Examples:**
 

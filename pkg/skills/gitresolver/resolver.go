@@ -4,6 +4,8 @@
 // Package gitresolver resolves skill installations from git repositories.
 package gitresolver
 
+//go:generate mockgen -destination=mocks/mock_resolver.go -package=mocks -source=resolver.go Resolver
+
 import (
 	"context"
 	"fmt"

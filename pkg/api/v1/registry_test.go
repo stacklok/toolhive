@@ -49,6 +49,96 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 	}
 }
 
+// TestRegistryAPI_GetEndpoint_UnavailableUpstream tests that GET endpoints return
+// 503 with a structured JSON response when the upstream registry API is unreachable
+// or returns an unexpected error (e.g. 404 because the URL path is wrong).
+//
+//nolint:paralleltest // Uses global registry provider singleton
+func TestRegistryAPI_GetEndpoint_UnavailableUpstream(t *testing.T) {
+	// Mock server that returns 404 (simulates a wrong registry API URL)
+	notFoundServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+	}))
+	defer notFoundServer.Close()
+
+	// Configure registry to point at the mock 404 server
+	cfg := &config.Config{
+		RegistryApiUrl:         notFoundServer.URL,
+		AllowPrivateRegistryIp: true,
+	}
+	configProvider, cleanup := CreateTestConfigProvider(t, cfg)
+	defer cleanup()
+
+	registry.ResetDefaultProvider()
+	t.Cleanup(registry.ResetDefaultProvider)
+
+	routes := &RegistryRoutes{
+		configProvider: configProvider,
+		configService:  registry.NewConfiguratorWithProvider(configProvider),
+		serveMode:      true,
+	}
+
+	endpoints := []struct {
+		name      string
+		method    string
+		path      string
+		handler   http.HandlerFunc
+		urlParams map[string]string
+	}{
+		{
+			name:    "listRegistries",
+			method:  http.MethodGet,
+			path:    "/",
+			handler: routes.listRegistries,
+		},
+		{
+			name:      "getRegistry",
+			method:    http.MethodGet,
+			path:      "/default",
+			handler:   routes.getRegistry,
+			urlParams: map[string]string{"name": "default"},
+		},
+		{
+			name:      "listServers",
+			method:    http.MethodGet,
+			path:      "/default/servers",
+			handler:   routes.listServers,
+			urlParams: map[string]string{"name": "default"},
+		},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.name, func(t *testing.T) {
+			registry.ResetDefaultProvider()
+
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			if ep.urlParams != nil {
+				rctx := chi.NewRouteContext()
+				for k, v := range ep.urlParams {
+					rctx.URLParams.Add(k, v)
+				}
+				req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+			}
+
+			w := httptest.NewRecorder()
+			ep.handler(w, req)
+
+			assert.Equal(t, http.StatusServiceUnavailable, w.Code,
+				"Expected 503 Service Unavailable for unreachable upstream registry")
+
+			var body registryErrorResponse
+			err := json.NewDecoder(w.Body).Decode(&body)
+			require.NoError(t, err, "Response should be valid JSON")
+			assert.Equal(t, RegistryUnavailableCode, body.Code,
+				"Response code should be registry_unavailable")
+			assert.Contains(t, body.Message, "unavailable",
+				"Response message should indicate unavailability")
+			assert.Contains(t, w.Header().Get("Content-Type"), "application/json",
+				"Response Content-Type should be application/json")
+		})
+	}
+}
+
 func TestRegistryRouter(t *testing.T) {
 	t.Parallel()
 

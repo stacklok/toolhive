@@ -66,7 +66,7 @@ func Login(
 	}
 
 	// Save any flag-supplied values that aren't yet in config.
-	if err := ensureRegistryURL(cfg, configProvider, opts); err != nil {
+	if err := ensureRegistryURL(configProvider, opts); err != nil {
 		return err
 	}
 	if err := ensureOAuthConfig(ctx, cfg, configProvider, opts); err != nil {
@@ -188,7 +188,7 @@ func checkMissingLoginConfig(cfg *config.Config, opts LoginOptions) error {
 // Existing auth is always cleared when a URL flag is given, to prevent tokens
 // from being sent to the wrong server after a registry change.
 // When no URL is provided via opts, existing config is used unchanged.
-func ensureRegistryURL(cfg *config.Config, configProvider config.Provider, opts LoginOptions) error {
+func ensureRegistryURL(configProvider config.Provider, opts LoginOptions) error {
 	if opts.RegistryURL == "" {
 		// No override — use whatever is already in config.
 		return nil

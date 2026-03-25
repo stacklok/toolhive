@@ -385,7 +385,7 @@ func TestEnsureRegistryURL(t *testing.T) {
 			mockCfg := configmocks.NewMockProvider(ctrl)
 			tt.setupMock(mockCfg)
 
-			err := ensureRegistryURL(tt.cfg, mockCfg, tt.opts)
+			err := ensureRegistryURL(mockCfg, tt.opts)
 			if !tt.wantErr {
 				require.NoError(t, err)
 				return

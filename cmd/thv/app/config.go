@@ -198,7 +198,8 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 
 	// If auth flags were provided, configure the new auth
 	if registryAuthIssuer != "" && registryAuthClientID != "" {
-		if err := authManager.SetOAuthAuth(registryAuthIssuer, registryAuthClientID, registryAuthAudience, registryAuthScopes); err != nil {
+		if err := authManager.SetOAuthAuth(registryAuthIssuer, registryAuthClientID, registryAuthAudience,
+			registryAuthScopes); err != nil {
 			return fmt.Errorf("failed to configure registry auth: %w", err)
 		}
 	}

@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -479,3 +480,145 @@ func TestValidateEmbeddingServer(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateAuthServerConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		server      *VirtualMCPServer
+		expectError bool
+		errContains string
+	}{
+		{
+			name: "nil_config_passes",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{Group: "test-group"},
+				},
+			},
+		},
+		{
+			name: "valid_config_passes",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{Group: "test-group"},
+					AuthServerConfig: &EmbeddedAuthServerConfig{
+						Issuer: "http://localhost:9090",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "test",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL: "https://accounts.google.com",
+									ClientID:  "test-client",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "empty_issuer_errors",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{Group: "test-group"},
+					AuthServerConfig: &EmbeddedAuthServerConfig{
+						Issuer: "",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{Name: "test", Type: UpstreamProviderTypeOIDC},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errContains: "spec.authServerConfig.issuer is required",
+		},
+		{
+			name: "no_upstreams_errors",
+			server: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					Config: config.Config{Group: "test-group"},
+					AuthServerConfig: &EmbeddedAuthServerConfig{
+						Issuer: "http://localhost:9090",
+					},
+				},
+			},
+			expectError: true,
+			errContains: "spec.authServerConfig.upstreamProviders is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.server.Validate()
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestVirtualMCPServerSpecScalingFieldsJSONRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	replicas := int32(2)
+
+	tests := []struct {
+		name       string
+		spec       VirtualMCPServerSpec
+		wantKeys   []string
+		wantAbsent []string
+	}{
+		{
+			name: "nil replicas are omitted",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+			},
+			wantAbsent: []string{`"replicas"`, `"sessionStorage"`},
+		},
+		{
+			name: "set replicas are serialized",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+				Replicas:     &replicas,
+			},
+			wantKeys: []string{`"replicas":2`},
+		},
+		{
+			name: "sessionStorage is serialized when set",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+				SessionStorage: &SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				},
+			},
+			wantKeys: []string{`"sessionStorage"`, `"provider":"redis"`},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b, err := json.Marshal(tc.spec)
+			require.NoError(t, err)
+			out := string(b)
+			for _, key := range tc.wantKeys {
+				assert.Contains(t, out, key)
+			}
+			for _, key := range tc.wantAbsent {
+				assert.NotContains(t, out, key)
+			}
+		})
+	}
+}
+

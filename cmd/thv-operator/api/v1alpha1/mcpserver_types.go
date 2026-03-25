@@ -226,6 +226,29 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=ClientIP
 	// +optional
 	SessionAffinity string `json:"sessionAffinity,omitempty"`
+
+	// Replicas is the desired number of proxy runner (thv run) pod replicas.
+	// MCPServer creates two separate Deployments: one for the proxy runner and one
+	// for the MCP server backend. This field controls the proxy runner Deployment.
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// BackendReplicas is the desired number of MCP server backend pod replicas.
+	// This controls the backend Deployment (the MCP server container itself),
+	// independent of the proxy runner controlled by Replicas.
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	BackendReplicas *int32 `json:"backendReplicas,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When nil, no session storage is configured.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -336,6 +359,35 @@ type SecretRef struct {
 	// If left unspecified, it defaults to the key
 	// +optional
 	TargetEnvName string `json:"targetEnvName,omitempty"`
+}
+
+// SessionStorageConfig defines session storage configuration for horizontal scaling
+//
+// +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
+type SessionStorageConfig struct {
+	// Provider is the session storage backend type
+	// +kubebuilder:validation:Enum=memory;redis
+	// +kubebuilder:validation:Required
+	Provider string `json:"provider"`
+
+	// Address is the Redis server address (required when provider is redis)
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Address string `json:"address,omitempty"`
+
+	// DB is the Redis database number
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=0
+	// +optional
+	DB int32 `json:"db,omitempty"`
+
+	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive
+	// +optional
+	KeyPrefix string `json:"keyPrefix,omitempty"`
+
+	// PasswordRef is a reference to a Secret key containing the Redis password
+	// +optional
+	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
 }
 
 // Permission profile types

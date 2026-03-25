@@ -2037,6 +2037,17 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              replicas:
+                description: |-
+                  Replicas is the desired number of vMCP pod replicas.
+                  VirtualMCPServer creates a single Deployment for the vMCP aggregator process,
+                  so there is only one replicas field (unlike MCPServer which has separate
+                  Replicas and BackendReplicas for its two Deployments).
+                  When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+                  management to an HPA or other external controller.
+                format: int32
+                minimum: 0
+                type: integer
               serviceAccount:
                 description: |-
                   ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.
@@ -2061,6 +2072,52 @@ spec:
                 - ClientIP
                 - None
                 type: string
+              sessionStorage:
+                description: |-
+                  SessionStorage configures session storage for stateful horizontal scaling.
+                  When nil, no session storage is configured.
+                properties:
+                  address:
+                    description: Address is the Redis server address (required when
+                      provider is redis)
+                    minLength: 1
+                    type: string
+                  db:
+                    default: 0
+                    description: DB is the Redis database number
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  keyPrefix:
+                    description: KeyPrefix is an optional prefix for all Redis keys
+                      used by ToolHive
+                    type: string
+                  passwordRef:
+                    description: PasswordRef is a reference to a Secret key containing
+                      the Redis password
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  provider:
+                    description: Provider is the session storage backend type
+                    enum:
+                    - memory
+                    - redis
+                    type: string
+                required:
+                - provider
+                type: object
+                x-kubernetes-validations:
+                - message: address is required
+                  rule: 'self.provider == ''redis'' ? has(self.address) : true'
             required:
             - incomingAuth
             type: object

@@ -130,6 +130,16 @@ spec:
                 - message: inline must be set when type is 'inline', and must not
                     be set otherwise
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              backendReplicas:
+                description: |-
+                  BackendReplicas is the desired number of MCP server backend pod replicas.
+                  This controls the backend Deployment (the MCP server container itself),
+                  independent of the proxy runner controlled by Replicas.
+                  When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+                  management to an HPA or other external controller.
+                format: int32
+                minimum: 0
+                type: integer
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -474,6 +484,16 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              replicas:
+                description: |-
+                  Replicas is the desired number of proxy runner (thv run) pod replicas.
+                  MCPServer creates two separate Deployments: one for the proxy runner and one
+                  for the MCP server backend. This field controls the proxy runner Deployment.
+                  When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+                  management to an HPA or other external controller.
+                format: int32
+                minimum: 0
+                type: integer
               resourceOverrides:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator
@@ -633,6 +653,52 @@ spec:
                 - ClientIP
                 - None
                 type: string
+              sessionStorage:
+                description: |-
+                  SessionStorage configures session storage for stateful horizontal scaling.
+                  When nil, no session storage is configured.
+                properties:
+                  address:
+                    description: Address is the Redis server address (required when
+                      provider is redis)
+                    minLength: 1
+                    type: string
+                  db:
+                    default: 0
+                    description: DB is the Redis database number
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  keyPrefix:
+                    description: KeyPrefix is an optional prefix for all Redis keys
+                      used by ToolHive
+                    type: string
+                  passwordRef:
+                    description: PasswordRef is a reference to a Secret key containing
+                      the Redis password
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  provider:
+                    description: Provider is the session storage backend type
+                    enum:
+                    - memory
+                    - redis
+                    type: string
+                required:
+                - provider
+                type: object
+                x-kubernetes-validations:
+                - message: address is required
+                  rule: 'self.provider == ''redis'' ? has(self.address) : true'
               targetPort:
                 description: |-
                   TargetPort is the port that MCP server listens to

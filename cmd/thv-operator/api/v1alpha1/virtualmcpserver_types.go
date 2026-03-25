@@ -82,6 +82,21 @@ type VirtualMCPServerSpec struct {
 	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
 	// +optional
 	AuthServerConfig *EmbeddedAuthServerConfig `json:"authServerConfig,omitempty"`
+
+	// Replicas is the desired number of vMCP pod replicas.
+	// VirtualMCPServer creates a single Deployment for the vMCP aggregator process,
+	// so there is only one replicas field (unlike MCPServer which has separate
+	// Replicas and BackendReplicas for its two Deployments).
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When nil, no session storage is configured.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
 }
 
 // EmbeddingServerRef references an existing EmbeddingServer resource by name.

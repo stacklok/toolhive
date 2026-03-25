@@ -44,7 +44,7 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 	registrationRequest := &DynamicClientRegistrationRequest{
 		ClientName:              ToolHiveMCPClientName,
 		RedirectURIs:            redirectURIs,
-		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone, // For PKCE flow
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
 		GrantTypes:              []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
 		ResponseTypes:           []string{oauthproto.ResponseTypeCode},
 		Scopes:                  scopes,
@@ -204,7 +204,7 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		request.ResponseTypes = []string{oauthproto.ResponseTypeCode}
 	}
 	if request.TokenEndpointAuthMethod == "" {
-		request.TokenEndpointAuthMethod = oauthproto.TokenEndpointAuthMethodNone // For PKCE flow
+		request.TokenEndpointAuthMethod = oauthproto.TokenEndpointAuthMethodClientSecretPost
 	}
 
 	return nil

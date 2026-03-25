@@ -179,7 +179,7 @@ func TestNewDynamicClientRegistrationRequest(t *testing.T) {
 			expected: &DynamicClientRegistrationRequest{
 				ClientName:              "ToolHive MCP Client",
 				RedirectURIs:            []string{"http://localhost:8080/callback"},
-				TokenEndpointAuthMethod: "none",
+				TokenEndpointAuthMethod: "client_secret_post",
 				GrantTypes:              []string{"authorization_code", "refresh_token"},
 				ResponseTypes:           []string{"code"},
 				Scopes:                  []string{"openid", "profile"},
@@ -192,7 +192,7 @@ func TestNewDynamicClientRegistrationRequest(t *testing.T) {
 			expected: &DynamicClientRegistrationRequest{
 				ClientName:              "ToolHive MCP Client",
 				RedirectURIs:            []string{"http://localhost:8666/callback"},
-				TokenEndpointAuthMethod: "none",
+				TokenEndpointAuthMethod: "client_secret_post",
 				GrantTypes:              []string{"authorization_code", "refresh_token"},
 				ResponseTypes:           []string{"code"},
 				Scopes:                  []string{},

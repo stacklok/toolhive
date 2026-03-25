@@ -63,9 +63,17 @@ type Config struct {
 	// ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).
 	// A zero value means the secret does not expire.
 	CachedSecretExpiry time.Time `json:"cached_secret_expiry,omitempty" yaml:"cached_secret_expiry,omitempty"`
-	// RegistrationAccessToken is used to update/delete the client registration.
+	// CachedRegTokenRef is a secret manager reference to the registration_access_token
+	// returned in the DCR response. Used for RFC 7592 client update operations.
 	// Stored as a secret reference since it's sensitive.
 	CachedRegTokenRef string `json:"cached_reg_token_ref,omitempty" yaml:"cached_reg_token_ref,omitempty"`
+	// CachedRegClientURI is the registration_client_uri from the DCR response.
+	// This is the endpoint used for RFC 7592 client read/update/delete operations.
+	// Stored as plain text since it is not sensitive.
+	CachedRegClientURI string `json:"cached_reg_client_uri,omitempty" yaml:"cached_reg_client_uri,omitempty"`
+	// CachedTokenEndpointAuthMethod is the auth method used for the token endpoint
+	// (e.g., "client_secret_basic", "none"). Persisted for RFC 7592 updates.
+	CachedTokenEndpointAuthMethod string `json:"cached_token_auth_method,omitempty" yaml:"cached_token_auth_method,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -165,6 +173,8 @@ func (c *Config) ClearCachedClientCredentials() {
 	c.CachedClientSecretRef = ""
 	c.CachedSecretExpiry = time.Time{}
 	c.CachedRegTokenRef = ""
+	c.CachedRegClientURI = ""
+	c.CachedTokenEndpointAuthMethod = ""
 }
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.

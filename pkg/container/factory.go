@@ -131,7 +131,7 @@ func (f *Factory) CreateWithRuntimeName(ctx context.Context, runtimeName string)
 
 		// Check if the runtime is available
 		if info.AutoDetector != nil && !info.AutoDetector() {
-			return nil, fmt.Errorf("runtime %q is not available on this system", runtimeName)
+			return nil, fmt.Errorf("runtime %q is not available on this system (run with --debug for details)", runtimeName)
 		}
 
 		selectedRuntimeName = runtimeName

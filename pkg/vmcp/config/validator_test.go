@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/authserver"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -279,24 +280,50 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "type must be one of",
 		},
-		// TODO: Uncomment when token_exchange strategy is implemented
-		// {
-		// 	name: "token_exchange missing required metadata",
-		// 	auth: &OutgoingAuthConfig{
-		// 		Source: "inline",
-		// 		Backends: map[string]*authtypes.BackendAuthStrategy{
-		// 			"github": {
-		// 				Type: "token_exchange",
-		// 				Metadata: map[string]any{
-		// 					"client_id": "test-client",
-		// 					// Missing token_url and audience
-		// 				},
-		// 			},
-		// 		},
-		// 	},
-		// 	wantErr: true,
-		// 	errMsg:  "token_exchange requires metadata field",
-		// },
+		{
+			name: "valid upstream_inject backend",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"github": {
+						Type: authtypes.StrategyTypeUpstreamInject,
+						UpstreamInject: &authtypes.UpstreamInjectConfig{
+							ProviderName: "github",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "upstream_inject nil config",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"github": {
+						Type:           authtypes.StrategyTypeUpstreamInject,
+						UpstreamInject: nil,
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "upstream_inject requires UpstreamInject configuration",
+		},
+		{
+			name: "upstream_inject empty providerName allowed",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"github": {
+						Type: authtypes.StrategyTypeUpstreamInject,
+						UpstreamInject: &authtypes.UpstreamInjectConfig{
+							ProviderName: "",
+						},
+					},
+				},
+			},
+			wantErr: false, // V-02 handles provider name resolution
+		},
 	}
 
 	for _, tt := range tests {
@@ -808,6 +835,331 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 			if tt.wantErr && err != nil && tt.errMsg != "" {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateFailureHandling() error message = %v, want to contain %v", err.Error(), tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateAuthServerIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Helper to build a minimal valid auth server RunConfig.
+	validASRunConfig := func(issuer string, upstreamName string) *authserver.RunConfig {
+		return &authserver.RunConfig{
+			Issuer: issuer,
+			Upstreams: []authserver.UpstreamRunConfig{
+				{Name: upstreamName, Type: authserver.UpstreamProviderTypeOIDC},
+			},
+			AllowedAudiences: []string{"https://my-vmcp"},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		rc      *authserver.RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "mode_a_no_auth_server_passes",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeUnauthenticated,
+					},
+				},
+			},
+			rc:      nil,
+			wantErr: false,
+		},
+		{
+			name: "v01_upstream_inject_without_auth_server",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"github-tools": {
+							Type: authtypes.StrategyTypeUpstreamInject,
+							UpstreamInject: &authtypes.UpstreamInjectConfig{
+								ProviderName: "github",
+							},
+						},
+					},
+				},
+			},
+			rc:      nil,
+			wantErr: true,
+			errMsg:  "upstream_inject requires an embedded auth server",
+		},
+		{
+			name: "v02_provider_not_in_upstreams",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"github-tools": {
+							Type: authtypes.StrategyTypeUpstreamInject,
+							UpstreamInject: &authtypes.UpstreamInjectConfig{
+								ProviderName: "github",
+							},
+						},
+					},
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "entra", Type: authserver.UpstreamProviderTypeOIDC},
+				},
+				AllowedAudiences: []string{"https://my-vmcp"},
+			},
+			wantErr: true,
+			errMsg:  "not found in auth server upstreams",
+		},
+		{
+			name: "v04_issuer_mismatch",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:8080",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc:      validASRunConfig("http://localhost:9090", "default"),
+			wantErr: true,
+			errMsg:  "issuer mismatch",
+		},
+		{
+			name: "v05_empty_issuer",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "default", Type: authserver.UpstreamProviderTypeOIDC},
+				},
+			},
+			wantErr: true,
+			errMsg:  "issuer is required",
+		},
+		{
+			name: "v05_no_upstreams",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:    "http://localhost:9090",
+				Upstreams: nil,
+			},
+			wantErr: true,
+			errMsg:  "at least one upstream",
+		},
+		{
+			name: "v07_audience_not_in_allowed",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-app",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "default", Type: authserver.UpstreamProviderTypeOIDC},
+				},
+				AllowedAudiences: []string{"https://other"},
+			},
+			wantErr: true,
+			errMsg:  "not in auth server's allowed audiences",
+		},
+		{
+			name: "v09_auth_server_requires_oidc_incoming",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeAnonymous,
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc:      validASRunConfig("http://localhost:9090", "default"),
+			wantErr: true,
+			errMsg:  "embedded auth server requires OIDC incoming auth",
+		},
+		{
+			name: "v13_empty_allowed_audiences",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "default", Type: authserver.UpstreamProviderTypeOIDC},
+				},
+				AllowedAudiences: nil,
+			},
+			wantErr: true,
+			errMsg:  "at least one allowed audience",
+		},
+		{
+			name: "v02_empty_upstream_name_matches_default",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"my-backend": {
+							Type: authtypes.StrategyTypeUpstreamInject,
+							UpstreamInject: &authtypes.UpstreamInjectConfig{
+								ProviderName: "default",
+							},
+						},
+					},
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "", Type: authserver.UpstreamProviderTypeOIDC}, // empty name → "default"
+				},
+				AllowedAudiences: []string{"https://my-vmcp"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "upstream_inject_as_default_strategy",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeUpstreamInject,
+						UpstreamInject: &authtypes.UpstreamInjectConfig{
+							ProviderName: "github",
+						},
+					},
+				},
+			},
+			rc:      validASRunConfig("http://localhost:9090", "github"),
+			wantErr: false,
+		},
+		{
+			name: "upstream_inject_default_provider_not_found",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeUpstreamInject,
+						UpstreamInject: &authtypes.UpstreamInjectConfig{
+							ProviderName: "nonexistent",
+						},
+					},
+				},
+			},
+			rc:      validASRunConfig("http://localhost:9090", "github"),
+			wantErr: true,
+			errMsg:  "not found in auth server upstreams",
+		},
+		{
+			name: "valid_mode_b_config",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"github-tools": {
+							Type: authtypes.StrategyTypeUpstreamInject,
+							UpstreamInject: &authtypes.UpstreamInjectConfig{
+								ProviderName: "github",
+							},
+						},
+					},
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "github", Type: authserver.UpstreamProviderTypeOIDC},
+				},
+				AllowedAudiences: []string{"https://my-vmcp"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateAuthServerIntegration(tt.cfg, tt.rc)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateAuthServerIntegration() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ValidateAuthServerIntegration() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
 			}
 		})

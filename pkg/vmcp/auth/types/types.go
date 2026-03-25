@@ -27,6 +27,11 @@ const (
 	// This strategy exchanges an incoming token for a new token to use
 	// when authenticating to the backend service.
 	StrategyTypeTokenExchange = "token_exchange"
+
+	// StrategyTypeUpstreamInject identifies the upstream inject strategy.
+	// This strategy injects an upstream IDP token obtained by the embedded
+	// authorization server into requests to the backend service.
+	StrategyTypeUpstreamInject = "upstream_inject"
 )
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
@@ -36,7 +41,7 @@ const (
 // +kubebuilder:object:generate=true
 // +gendoc
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.
@@ -46,6 +51,10 @@ type BackendAuthStrategy struct {
 	// TokenExchange contains configuration for token exchange auth strategy.
 	// Used when Type = "token_exchange".
 	TokenExchange *TokenExchangeConfig `json:"tokenExchange,omitempty" yaml:"tokenExchange,omitempty"`
+
+	// UpstreamInject contains configuration for upstream inject auth strategy.
+	// Used when Type = "upstream_inject".
+	UpstreamInject *UpstreamInjectConfig `json:"upstreamInject,omitempty" yaml:"upstreamInject,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.
@@ -94,4 +103,15 @@ type TokenExchangeConfig struct {
 	// SubjectTokenType is the token type of the incoming subject token.
 	// Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified.
 	SubjectTokenType string `json:"subjectTokenType,omitempty" yaml:"subjectTokenType,omitempty"`
+}
+
+// UpstreamInjectConfig configures the upstream inject auth strategy.
+// This strategy uses the embedded authorization server to obtain and inject
+// upstream IDP tokens into backend requests.
+// +kubebuilder:object:generate=true
+// +gendoc
+type UpstreamInjectConfig struct {
+	// ProviderName is the name of the upstream provider configured in the
+	// embedded authorization server. Must match an entry in AuthServer.Upstreams.
+	ProviderName string `json:"providerName" yaml:"providerName"`
 }

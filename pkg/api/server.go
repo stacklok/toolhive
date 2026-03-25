@@ -601,7 +601,14 @@ func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 		return nil
 	}
 
-	return fileutils.WithFileLock(discovery.FilePath(), func() error {
+	// Ensure the discovery directory exists before acquiring the lock,
+	// since the lock file is created in the same directory.
+	discoveryPath := discovery.FilePath()
+	if err := os.MkdirAll(filepath.Dir(discoveryPath), 0700); err != nil {
+		return fmt.Errorf("failed to create discovery directory: %w", err)
+	}
+
+	return fileutils.WithFileLock(discoveryPath, func() error {
 		// Guard against overwriting another server's discovery file.
 		result, err := discovery.Discover(ctx)
 		if err != nil {

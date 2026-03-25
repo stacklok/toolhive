@@ -525,17 +525,7 @@ func (sm *Manager) GetAdaptedResources(sessionID string) ([]mcpserver.ServerReso
 				return nil, readErr
 			}
 
-			mimeType := result.MimeType
-			if mimeType == "" {
-				mimeType = "application/octet-stream"
-			}
-			return []mcp.ResourceContents{
-				mcp.TextResourceContents{
-					URI:      capturedResourceURI,
-					MIMEType: mimeType,
-					Text:     string(result.Contents),
-				},
-			}, nil
+			return conversion.ToMCPResourceContents(result.Contents), nil
 		}
 
 		sdkResources = append(sdkResources, mcpserver.ServerResource{

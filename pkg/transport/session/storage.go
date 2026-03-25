@@ -20,11 +20,10 @@ type Storage interface {
 	// Load retrieves a session by ID from the storage backend.
 	// Returns ErrSessionNotFound if the session doesn't exist.
 	//
-	// Implementations may refresh the backend's eviction TTL on every Load (e.g. Redis
-	// GETEX) to prevent active sessions from expiring between reads, because Manager.Get
-	// calls Touch on the returned object but does not call Store. This TTL refresh is a
-	// backend-level eviction concern and is distinct from the session's application-level
-	// UpdatedAt timestamp, which Load must NOT update.
+	// Implementations should refresh their backend's eviction TTL on every Load to
+	// prevent active sessions from expiring between reads. For Redis, this is done via
+	// GETEX. For LocalStorage, Load updates a storage-owned last-access timestamp so
+	// that DeleteExpired does not evict sessions that are actively being accessed.
 	Load(ctx context.Context, id string) (Session, error)
 
 	// Delete removes a session from the storage backend.

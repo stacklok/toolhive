@@ -127,7 +127,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "invalid embeddedAuthServer with multiple providers",
+			name: "embeddedAuthServer with multiple providers - valid at CRD level",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-embedded-multi",
@@ -152,8 +152,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 					},
 				},
 			},
-			expectErr: true,
-			errMsg:    "currently only one upstream provider is supported (found 2)",
+			expectErr: false,
 		},
 		{
 			name: "invalid embeddedAuthServer with no providers",
@@ -312,7 +311,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "multiple providers - invalid",
+			name: "multiple providers - valid at CRD level",
 			config: &MCPExternalAuthConfig{
 				Spec: MCPExternalAuthConfigSpec{
 					Type: ExternalAuthTypeEmbeddedAuthServer,
@@ -343,8 +342,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 					},
 				},
 			},
-			expectErr: true,
-			errMsg:    "currently only one upstream provider is supported (found 3)",
+			expectErr: false,
 		},
 		{
 			name: "empty providers array - invalid",

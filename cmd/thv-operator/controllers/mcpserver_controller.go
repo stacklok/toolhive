@@ -1827,6 +1827,25 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		return fmt.Errorf("MCPExternalAuthConfig %s not found", m.Spec.ExternalAuthConfigRef.Name)
 	}
 
+	// MCPServer supports only single-upstream embedded auth server configs.
+	// Multi-upstream requires VirtualMCPServer.
+	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeExternalAuthConfigValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonExternalAuthConfigMultiUpstream,
+			Message: fmt.Sprintf(
+				"MCPServer supports only one upstream provider (found %d); "+
+					"use VirtualMCPServer for multi-upstream",
+				len(embeddedCfg.UpstreamProviders)),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf(
+			"MCPServer %s/%s: embedded auth server has %d upstream providers, "+
+				"but only 1 is supported; use VirtualMCPServer",
+			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
+	}
+
 	// Check if the MCPExternalAuthConfig hash has changed
 	if m.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPServer",

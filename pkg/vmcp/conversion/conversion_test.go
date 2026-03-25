@@ -4,7 +4,6 @@
 package conversion_test
 
 import (
-	"encoding/base64"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -408,77 +407,189 @@ func TestConvertMCPContents(t *testing.T) {
 	})
 }
 
-func TestConcatenateResourceContents(t *testing.T) {
+func TestConvertMCPResourceContents(t *testing.T) {
 	t.Parallel()
 
-	rawText := "hello resource"
-	blobBytes := []byte("binary data")
-	blobEncoded := base64.StdEncoding.EncodeToString(blobBytes)
-
 	tests := []struct {
-		name         string
-		contents     []mcp.ResourceContents
-		wantData     []byte
-		wantMimeType string
+		name     string
+		contents []mcp.ResourceContents
+		want     []vmcp.ResourceContent
 	}{
 		{
-			name:     "empty contents",
+			name:     "nil contents returns empty slice",
 			contents: nil,
-			wantData: nil,
+			want:     []vmcp.ResourceContent{},
 		},
 		{
 			name: "single text item",
 			contents: []mcp.ResourceContents{
-				mcp.TextResourceContents{URI: "file://a", MIMEType: "text/plain", Text: rawText},
+				mcp.TextResourceContents{URI: "file://a", MIMEType: "text/plain", Text: "hello resource"},
 			},
-			wantData:     []byte(rawText),
-			wantMimeType: "text/plain",
+			want: []vmcp.ResourceContent{
+				{URI: "file://a", MimeType: "text/plain", Text: "hello resource"},
+			},
 		},
 		{
-			name: "single blob item decoded",
+			name: "single blob item preserved as base64",
 			contents: []mcp.ResourceContents{
-				mcp.BlobResourceContents{URI: "file://b", MIMEType: "application/octet-stream", Blob: blobEncoded},
+				mcp.BlobResourceContents{URI: "file://b", MIMEType: "application/octet-stream", Blob: "YmluYXJ5IGRhdGE="},
 			},
-			wantData:     blobBytes,
-			wantMimeType: "application/octet-stream",
+			want: []vmcp.ResourceContent{
+				{URI: "file://b", MimeType: "application/octet-stream", Blob: "YmluYXJ5IGRhdGE="},
+			},
 		},
 		{
-			name: "multiple text chunks concatenated",
+			name: "multiple items preserve per-item URIs and MIME types",
 			contents: []mcp.ResourceContents{
 				mcp.TextResourceContents{URI: "file://c", MIMEType: "text/plain", Text: "part1"},
-				mcp.TextResourceContents{URI: "file://c", Text: "part2"},
+				mcp.TextResourceContents{URI: "file://d", MIMEType: "text/html", Text: "part2"},
 			},
-			wantData:     []byte("part1part2"),
-			wantMimeType: "text/plain",
+			want: []vmcp.ResourceContent{
+				{URI: "file://c", MimeType: "text/plain", Text: "part1"},
+				{URI: "file://d", MimeType: "text/html", Text: "part2"},
+			},
 		},
 		{
-			name: "mime type taken from first item only",
+			name: "mixed text and blob items",
 			contents: []mcp.ResourceContents{
-				mcp.TextResourceContents{URI: "file://d", MIMEType: "text/html", Text: "a"},
-				mcp.TextResourceContents{URI: "file://d", MIMEType: "text/plain", Text: "b"},
+				mcp.TextResourceContents{URI: "file://e", MIMEType: "text/plain", Text: "text"},
+				mcp.BlobResourceContents{URI: "file://f", MIMEType: "image/png", Blob: "cG5nZGF0YQ=="},
 			},
-			wantData:     []byte("ab"),
-			wantMimeType: "text/html",
-		},
-		{
-			name: "invalid base64 blob chunk is skipped",
-			contents: []mcp.ResourceContents{
-				mcp.BlobResourceContents{URI: "file://e", Blob: "not-valid-base64!!!"},
+			want: []vmcp.ResourceContent{
+				{URI: "file://e", MimeType: "text/plain", Text: "text"},
+				{URI: "file://f", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
 			},
-			// Malformed base64 is skipped entirely; appending raw bytes would produce
-			// corrupted binary data, so we prefer an empty result over corrupted data.
-			wantData: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			data, mimeType := conversion.ConcatenateResourceContents(tt.contents)
-			assert.Equal(t, tt.wantData, data)
-			assert.Equal(t, tt.wantMimeType, mimeType)
+			got := conversion.ConvertMCPResourceContents(tt.contents)
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestToMCPResourceContents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		contents []vmcp.ResourceContent
+		check    func(t *testing.T, result []mcp.ResourceContents)
+	}{
+		{
+			name:     "nil contents returns empty slice",
+			contents: nil,
+			check: func(t *testing.T, result []mcp.ResourceContents) {
+				t.Helper()
+				assert.Empty(t, result)
+			},
+		},
+		{
+			name: "text content produces TextResourceContents",
+			contents: []vmcp.ResourceContent{
+				{URI: "file://a", MimeType: "text/plain", Text: "hello"},
+			},
+			check: func(t *testing.T, result []mcp.ResourceContents) {
+				t.Helper()
+				require.Len(t, result, 1)
+				textRes, ok := mcp.AsTextResourceContents(result[0])
+				require.True(t, ok, "expected TextResourceContents")
+				assert.Equal(t, "file://a", textRes.URI)
+				assert.Equal(t, "text/plain", textRes.MIMEType)
+				assert.Equal(t, "hello", textRes.Text)
+			},
+		},
+		{
+			name: "blob content produces BlobResourceContents",
+			contents: []vmcp.ResourceContent{
+				{URI: "file://b", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
+			},
+			check: func(t *testing.T, result []mcp.ResourceContents) {
+				t.Helper()
+				require.Len(t, result, 1)
+				blobRes, ok := mcp.AsBlobResourceContents(result[0])
+				require.True(t, ok, "expected BlobResourceContents")
+				assert.Equal(t, "file://b", blobRes.URI)
+				assert.Equal(t, "image/png", blobRes.MIMEType)
+				assert.Equal(t, "cG5nZGF0YQ==", blobRes.Blob)
+			},
+		},
+		{
+			name: "empty text and blob produces TextResourceContents",
+			contents: []vmcp.ResourceContent{
+				{URI: "file://c", MimeType: "text/plain"},
+			},
+			check: func(t *testing.T, result []mcp.ResourceContents) {
+				t.Helper()
+				require.Len(t, result, 1)
+				textRes, ok := mcp.AsTextResourceContents(result[0])
+				require.True(t, ok, "expected TextResourceContents for empty content")
+				assert.Equal(t, "file://c", textRes.URI)
+				assert.Equal(t, "text/plain", textRes.MIMEType)
+				assert.Equal(t, "", textRes.Text)
+			},
+		},
+		{
+			name: "mixed items preserve order and types",
+			contents: []vmcp.ResourceContent{
+				{URI: "file://d", MimeType: "text/plain", Text: "text data"},
+				{URI: "file://e", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
+			},
+			check: func(t *testing.T, result []mcp.ResourceContents) {
+				t.Helper()
+				require.Len(t, result, 2)
+				_, ok := mcp.AsTextResourceContents(result[0])
+				assert.True(t, ok, "first item should be TextResourceContents")
+				_, ok = mcp.AsBlobResourceContents(result[1])
+				assert.True(t, ok, "second item should be BlobResourceContents")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := conversion.ToMCPResourceContents(tt.contents)
+			tt.check(t, got)
+		})
+	}
+}
+
+func TestResourceContentsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("text resource round-trip", func(t *testing.T) {
+		t.Parallel()
+		input := []mcp.ResourceContents{
+			mcp.TextResourceContents{URI: "file://a", MIMEType: "text/plain", Text: "hello"},
+		}
+		intermediate := conversion.ConvertMCPResourceContents(input)
+		output := conversion.ToMCPResourceContents(intermediate)
+		require.Len(t, output, 1)
+		textRes, ok := mcp.AsTextResourceContents(output[0])
+		require.True(t, ok)
+		assert.Equal(t, "file://a", textRes.URI)
+		assert.Equal(t, "text/plain", textRes.MIMEType)
+		assert.Equal(t, "hello", textRes.Text)
+	})
+
+	t.Run("blob resource round-trip", func(t *testing.T) {
+		t.Parallel()
+		input := []mcp.ResourceContents{
+			mcp.BlobResourceContents{URI: "file://b", MIMEType: "image/png", Blob: "cG5nZGF0YQ=="},
+		}
+		intermediate := conversion.ConvertMCPResourceContents(input)
+		output := conversion.ToMCPResourceContents(intermediate)
+		require.Len(t, output, 1)
+		blobRes, ok := mcp.AsBlobResourceContents(output[0])
+		require.True(t, ok)
+		assert.Equal(t, "file://b", blobRes.URI)
+		assert.Equal(t, "image/png", blobRes.MIMEType)
+		assert.Equal(t, "cG5nZGF0YQ==", blobRes.Blob)
+	})
 }
 
 func TestContentArrayToMap(t *testing.T) {

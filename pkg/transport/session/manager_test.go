@@ -121,32 +121,40 @@ func TestDeleteSession(t *testing.T) {
 	assert.False(t, ok, "deleted session should not be found")
 }
 
-func TestGetUpdatesTimestamp(t *testing.T) {
+func TestGetPreventsEviction(t *testing.T) {
 	t.Parallel()
-	oldTime := time.Now().Add(-1 * time.Minute)
+	oldTime := time.Now().Add(-2 * time.Hour)
 	factory := &stubFactory{fixedTime: oldTime}
+	ttl := 1 * time.Hour
 
-	m := NewManager(time.Hour, factory.New)
+	m := NewManager(ttl, factory.New)
 	defer m.Stop()
 
 	require.NoError(t, m.AddWithID(uuidTouchme))
-	s1, ok := m.Get(uuidTouchme)
+
+	// LocalStorage.Store() stamps lastAccessNano = time.Now(), so the entry is
+	// always fresh after AddWithID. Backdate it so the session looks expired and
+	// would be evicted if Get() did not refresh the timestamp.
+	ls := m.storage.(*LocalStorage)
+	val, ok := ls.sessions.Load(uuidTouchme)
+	require.True(t, ok, "entry must exist in storage before backdating")
+	val.(*localEntry).lastAccessNano.Store(oldTime.UnixNano())
+
+	// Get() refreshes the storage-level last-access time by swapping in a new entry.
+	_, ok = m.Get(uuidTouchme)
 	require.True(t, ok)
-	t0 := s1.UpdatedAt()
 
-	time.Sleep(10 * time.Millisecond)
-	s2, ok2 := m.Get(uuidTouchme)
-	require.True(t, ok2)
-	t1 := s2.UpdatedAt()
+	// Cleanup with a cutoff of "now minus ttl" should NOT evict the session
+	// because Get() just refreshed its last-access timestamp.
+	require.NoError(t, m.cleanupExpiredOnce())
 
-	assert.True(t, t1.After(t0), "UpdatedAt should update on repeated Get()")
+	_, stillPresent := m.Get(uuidTouchme)
+	assert.True(t, stillPresent, "session should survive cleanup after a recent Get()")
 }
 func TestCleanupExpired_ManualTrigger(t *testing.T) {
 	t.Parallel()
 
-	// Stub factory: all sessions start with UpdatedAt = `now`
-	now := time.Now()
-	factory := &stubFactory{fixedTime: now}
+	factory := &stubFactory{fixedTime: time.Now()}
 	ttl := 50 * time.Millisecond
 
 	m := NewManager(ttl, factory.New)
@@ -154,20 +162,16 @@ func TestCleanupExpired_ManualTrigger(t *testing.T) {
 
 	require.NoError(t, m.AddWithID(uuidOld))
 
-	// Retrieve and expire session manually
-	sess, ok := m.Get(uuidOld)
-	require.True(t, ok)
-	ps := sess.(*ProxySession)
-	ps.updated = now.Add(-ttl * 2)
+	// Wait for the session's last-access time to become older than the TTL.
+	time.Sleep(ttl * 2)
 
-	// Run cleanup manually
+	// Run cleanup — the stale session should be evicted.
 	m.cleanupExpiredOnce()
 
-	// Now it should be gone
 	_, okOld := m.Get(uuidOld)
 	assert.False(t, okOld, "expired session should have been cleaned")
 
-	// Add fresh session and assert it remains after cleanup
+	// A freshly-added session must survive the next cleanup run.
 	require.NoError(t, m.AddWithID(uuidNew))
 	m.cleanupExpiredOnce()
 	_, okNew := m.Get(uuidNew)

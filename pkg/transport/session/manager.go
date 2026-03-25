@@ -26,7 +26,6 @@ type Session interface {
 	Type() SessionType
 	CreatedAt() time.Time
 	UpdatedAt() time.Time
-	Touch()
 
 	// Data and metadata methods
 	GetData() interface{}
@@ -200,8 +199,8 @@ func (m *Manager) AddSession(session Session) error {
 	return m.storage.Store(ctx, session)
 }
 
-// Get retrieves a session by ID. Returns (session, true) if found,
-// and also updates its UpdatedAt timestamp.
+// Get retrieves a session by ID. Returns (session, true) if found.
+// For LocalStorage, the storage backend updates the session's last-access timestamp on Load.
 func (m *Manager) Get(id string) (Session, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
@@ -210,8 +209,6 @@ func (m *Manager) Get(id string) (Session, bool) {
 	if err != nil {
 		return nil, false
 	}
-	// Touch the session to update its timestamp
-	sess.Touch()
 	return sess, true
 }
 

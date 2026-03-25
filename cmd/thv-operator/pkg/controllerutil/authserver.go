@@ -6,6 +6,7 @@ package controllerutil
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	k8sptr "k8s.io/utils/ptr"
@@ -51,13 +52,42 @@ const (
 	// AuthServerHMACFilePattern is the pattern for HMAC secret filenames
 	AuthServerHMACFilePattern = "hmac-%d"
 
-	// UpstreamClientSecretEnvVar is the environment variable name for the upstream client secret
+	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
+	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
+	// upstream name uppercased with hyphens replaced by underscores.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	UpstreamClientSecretEnvVar = "TOOLHIVE_UPSTREAM_CLIENT_SECRET"
 
 	// DefaultSentinelPort is the default Redis Sentinel port
 	DefaultSentinelPort = 26379
 )
+
+// upstreamSecretBinding binds an upstream provider to its env var name for the
+// client secret. Both GenerateAuthServerEnvVars (Pod env) and
+// buildUpstreamRunConfig (runtime config) MUST use these bindings so the
+// env var names stay consistent.
+type upstreamSecretBinding struct {
+	Provider   *mcpv1alpha1.UpstreamProviderConfig
+	EnvVarName string
+}
+
+// buildUpstreamSecretBindings computes the canonical env var name for each
+// upstream provider's client secret. The env var name is derived from the
+// provider's Name field (uppercased, hyphens replaced with underscores) to
+// keep bindings stable across provider reordering in the CRD.
+func buildUpstreamSecretBindings(
+	providers []mcpv1alpha1.UpstreamProviderConfig,
+) []upstreamSecretBinding {
+	bindings := make([]upstreamSecretBinding, len(providers))
+	for i := range providers {
+		suffix := strings.ToUpper(strings.ReplaceAll(providers[i].Name, "-", "_"))
+		bindings[i] = upstreamSecretBinding{
+			Provider:   &providers[i],
+			EnvVarName: fmt.Sprintf("%s_%s", UpstreamClientSecretEnvVar, suffix),
+		}
+	}
+	return bindings
+}
 
 // GenerateAuthServerConfig generates volumes, volume mounts, and environment variables
 // for the embedded auth server if the external auth config is of type embeddedAuthServer.
@@ -228,13 +258,11 @@ func GenerateAuthServerVolumes(
 }
 
 // GenerateAuthServerEnvVars creates environment variables for embedded auth server.
-// Currently generates TOOLHIVE_UPSTREAM_CLIENT_SECRET from the upstream provider's
-// client secret reference.
+// Generates TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> env vars for each upstream
+// provider that has a client secret reference configured, where PROVIDER is the
+// provider name uppercased with hyphens replaced by underscores.
 //
-// The function looks at the first upstream provider (currently only one is supported)
-// and generates an environment variable for its client secret if one is configured.
-//
-// Returns nil slice if authConfig is nil or if no client secret is configured.
+// Returns nil slice if authConfig is nil or if no client secrets are configured.
 func GenerateAuthServerEnvVars(
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
 ) []corev1.EnvVar {
@@ -244,27 +272,25 @@ func GenerateAuthServerEnvVars(
 
 	var envVars []corev1.EnvVar
 
-	// Generate env var for upstream client secret if provided
-	if len(authConfig.UpstreamProviders) > 0 {
-		provider := authConfig.UpstreamProviders[0]
-
+	// Generate env vars for upstream client secrets using shared bindings
+	for _, b := range buildUpstreamSecretBindings(authConfig.UpstreamProviders) {
 		// Extract client secret reference based on provider type
 		var clientSecretRef *mcpv1alpha1.SecretKeyRef
 
-		switch provider.Type {
+		switch b.Provider.Type {
 		case mcpv1alpha1.UpstreamProviderTypeOIDC:
-			if provider.OIDCConfig != nil {
-				clientSecretRef = provider.OIDCConfig.ClientSecretRef
+			if b.Provider.OIDCConfig != nil {
+				clientSecretRef = b.Provider.OIDCConfig.ClientSecretRef
 			}
 		case mcpv1alpha1.UpstreamProviderTypeOAuth2:
-			if provider.OAuth2Config != nil {
-				clientSecretRef = provider.OAuth2Config.ClientSecretRef
+			if b.Provider.OAuth2Config != nil {
+				clientSecretRef = b.Provider.OAuth2Config.ClientSecretRef
 			}
 		}
 
 		if clientSecretRef != nil {
 			envVars = append(envVars, corev1.EnvVar{
-				Name: UpstreamClientSecretEnvVar,
+				Name: b.EnvVarName,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{
@@ -431,10 +457,11 @@ func buildEmbeddedAuthServerRunnerConfig(
 		}
 	}
 
-	// Build upstream provider config (currently only one supported)
-	if len(authConfig.UpstreamProviders) > 0 {
-		provider := authConfig.UpstreamProviders[0]
-		config.Upstreams = []authserver.UpstreamRunConfig{*buildUpstreamRunConfig(&provider)}
+	// Build upstream provider configs using shared bindings
+	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
+	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(bindings))
+	for _, b := range bindings {
+		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName))
 	}
 
 	// Build storage configuration
@@ -561,9 +588,11 @@ func resolveSentinelAddrs(
 }
 
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.
-// Client secrets are passed via environment variable reference (UpstreamClientSecretEnvVar).
+// The envVarName is computed by buildUpstreamSecretBindings to keep Pod env
+// and runtime config in sync.
 func buildUpstreamRunConfig(
 	provider *mcpv1alpha1.UpstreamProviderConfig,
+	envVarName string,
 ) *authserver.UpstreamRunConfig {
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
@@ -581,7 +610,7 @@ func buildUpstreamRunConfig(
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OIDCConfig.ClientSecretRef != nil {
-				config.OIDCConfig.ClientSecretEnvVar = UpstreamClientSecretEnvVar
+				config.OIDCConfig.ClientSecretEnvVar = envVarName
 			}
 			if provider.OIDCConfig.UserInfoOverride != nil {
 				config.OIDCConfig.UserInfoOverride = buildUserInfoRunConfig(provider.OIDCConfig.UserInfoOverride)
@@ -598,7 +627,7 @@ func buildUpstreamRunConfig(
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OAuth2Config.ClientSecretRef != nil {
-				config.OAuth2Config.ClientSecretEnvVar = UpstreamClientSecretEnvVar
+				config.OAuth2Config.ClientSecretEnvVar = envVarName
 			}
 			if provider.OAuth2Config.UserInfo != nil {
 				config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)

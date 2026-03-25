@@ -83,6 +83,15 @@ func TestConfigValidate(t *testing.T) {
 		{name: "nil upstream config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2}}}, wantErr: true, errMsg: "oauth2_config is required"},
 		{name: "multiple upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "duplicate upstream names", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "same", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "same", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "duplicate upstream name"},
+		{name: "multi-upstream with empty name on second", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "upstream[1]: name must be explicitly set"},
+		{name: "multi-upstream with empty name on first", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "upstream[0]: name must be explicitly set"},
+		{name: "multi-upstream with default name", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: `reserved for single-upstream`},
+		{name: "upstream name with uppercase", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "GitHub", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "must match"},
+		{name: "upstream name with underscore", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "my_provider", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "must match"},
+		{name: "upstream name with leading hyphen", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "-github", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "must match"},
+		{name: "upstream name with trailing hyphen", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "github-", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "must match"},
+		{name: "valid upstream name with hyphens", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "my-provider", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{name: "valid single-char upstream name", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "a", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "missing allowed audiences", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams}, wantErr: true, errMsg: "at least one allowed audience is required"},
 		{name: "empty allowed audiences slice", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{}}, wantErr: true, errMsg: "at least one allowed audience is required"},
 
@@ -106,46 +115,6 @@ func TestConfigValidate(t *testing.T) {
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
-}
-
-func TestConfigGetUpstream(t *testing.T) {
-	t.Parallel()
-
-	validUpstream := &upstream.OAuth2Config{
-		CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
-		AuthorizationEndpoint: "https://idp.example.com/authorize",
-		TokenEndpoint:         "https://idp.example.com/token",
-	}
-
-	t.Run("returns nil for empty upstreams", func(t *testing.T) {
-		t.Parallel()
-		cfg := Config{}
-		if got := cfg.GetUpstream(); got != nil {
-			t.Errorf("GetUpstream() = %v, want nil", got)
-		}
-	})
-
-	t.Run("returns first upstream config", func(t *testing.T) {
-		t.Parallel()
-		cfg := Config{
-			Upstreams: []UpstreamConfig{
-				{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream},
-			},
-		}
-		got := cfg.GetUpstream()
-		if got == nil {
-			t.Fatal("GetUpstream() = nil, want non-nil")
-		}
-		if got.Name != "default" {
-			t.Errorf("GetUpstream().Name = %q, want %q", got.Name, "default")
-		}
-		if got.Type != UpstreamProviderTypeOAuth2 {
-			t.Errorf("GetUpstream().Type = %q, want %q", got.Type, UpstreamProviderTypeOAuth2)
-		}
-		if got.OAuth2Config != validUpstream {
-			t.Errorf("GetUpstream().OAuth2Config = %v, want %v", got.OAuth2Config, validUpstream)
-		}
-	})
 }
 
 func TestConfigApplyDefaults(t *testing.T) {

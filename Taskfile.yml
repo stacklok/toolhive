@@ -107,9 +107,13 @@ tasks:
     cmds:
       - cmd: mkdir -p coverage
         platforms: [linux, darwin]
-      # Clean test cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries.
-      # Only the test cache needs clearing (not the full build cache), preserving compiled packages.
-      - cmd: go clean -testcache
+      # Clear both the test-result cache and the build cache before running coverage.
+      # The CI build cache is keyed on go.sum, so source-only changes don't bust it.
+      # With -coverpkg=./..., every test binary instruments all packages; if any binary
+      # was compiled from a stale cached artifact (different NumStmt than the current
+      # source), go tool cover -func will error with "inconsistent NumStmt". Clearing
+      # the full build cache guarantees every package is instrumented from fresh source.
+      - cmd: go clean -cache -testcache
         platforms: [linux, darwin]
       # Only install gotestfmt if not already installed
       - cmd: which gotestfmt > /dev/null 2>&1 || go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
@@ -131,9 +135,9 @@ tasks:
     cmds:
       - cmd: cmd.exe /c mkdir coverage
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
-      # Clean test cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries.
-      # Only the test cache needs clearing (not the full build cache), preserving compiled packages.
-      - go clean -testcache
+      # Clear both the test-result cache and the build cache before running coverage.
+      # See the unix variant above for rationale.
+      - go clean -cache -testcache
       - go test -race -coverpkg=./... -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"

@@ -6,18 +6,23 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.opentelemetry.io/otel/trace"
+	"gopkg.in/yaml.v3"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
+	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -228,6 +233,28 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	return cfg, nil
 }
 
+// loadAuthServerConfig loads the auth server RunConfig from a sibling file
+// alongside the main config. The operator serializes authserver.RunConfig
+// as a separate ConfigMap key (authserver-config.yaml).
+// Returns nil with no error if the file does not exist.
+func loadAuthServerConfig(configPath string) (*authserverconfig.RunConfig, error) {
+	authServerPath := filepath.Join(filepath.Dir(configPath), "authserver-config.yaml")
+	//nolint:gosec // path derived from trusted --config flag
+	authServerData, readErr := os.ReadFile(authServerPath)
+	if readErr != nil {
+		if errors.Is(readErr, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read auth server config %s: %w", authServerPath, readErr)
+	}
+	var rc authserverconfig.RunConfig
+	if unmarshalErr := yaml.Unmarshal(authServerData, &rc); unmarshalErr != nil {
+		return nil, fmt.Errorf("failed to parse auth server config %s: %w", authServerPath, unmarshalErr)
+	}
+	slog.Info("auth server configuration loaded", "path", authServerPath)
+	return &rc, nil
+}
+
 // discoverBackends initializes managers, discovers backends, and creates backend client
 // Returns empty backends list with no error if running in Kubernetes where CLI discovery doesn't work
 // Also returns the outgoingRegistry for use in creating SessionFactory
@@ -366,6 +393,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		cfg.Audit = audit.DefaultConfig()
 		cfg.Audit.Component = "vmcp-server"
 		slog.Info("audit logging enabled with default configuration")
+	}
+
+	// Load auth server config from sibling file if present.
+	authServerRC, err := loadAuthServerConfig(configPath)
+	if err != nil {
+		return err
+	}
+
+	// Construct embedded authorization server if configured.
+	// Hard failure — if the auth server is configured but cannot be
+	// created, we must not silently fall back to unauthenticated mode.
+	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
+	if authServerRC != nil {
+		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, authServerRC)
+		if err != nil {
+			return fmt.Errorf("failed to create embedded auth server: %w", err)
+		}
+		defer func() {
+			if closeErr := embeddedAuthServer.Close(); closeErr != nil {
+				slog.Error(fmt.Sprintf("failed to close embedded auth server: %v", closeErr))
+			}
+		}()
+		slog.Info("embedded authorization server initialized")
 	}
 
 	// Discover backends and create client
@@ -541,6 +591,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
+		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             cfg.Audit,
 		HealthMonitorConfig:     healthMonitorConfig,

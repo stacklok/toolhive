@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -69,6 +70,17 @@ type AuthConfigError struct {
 	BackendName string
 	// Error is the underlying error that occurred during conversion
 	Error error
+}
+
+// SpecValidationError represents a spec validation failure that the user must fix.
+// Unlike transient errors, these should NOT trigger requeue — the controller sets
+// a status condition and waits for the user to update the spec.
+type SpecValidationError struct {
+	Message string
+}
+
+func (e *SpecValidationError) Error() string {
+	return e.Message
 }
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -419,6 +431,26 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	return nil
 }
 
+// handleSpecValidationError checks whether err is a SpecValidationError (user must fix the spec).
+// If so, it applies the already-set status conditions and returns nil (no requeue).
+// Otherwise it returns the original error unchanged for normal requeue handling.
+func (r *VirtualMCPServerReconciler) handleSpecValidationError(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	err error,
+) error {
+	var specErr *SpecValidationError
+	if !stderrors.As(err, &specErr) {
+		return err
+	}
+	ctxLogger := log.FromContext(ctx)
+	if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+		ctxLogger.Error(applyErr, "Failed to apply status updates after spec validation error")
+	}
+	return nil
+}
+
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
 func (r *VirtualMCPServerReconciler) validateGroupRef(
 	ctx context.Context,
@@ -696,8 +728,11 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		return ctrl.Result{}, err
 	}
 
-	// Ensure vmcp Config ConfigMap
-	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager); err != nil {
+	// Ensure vmcp Config ConfigMap.
+	// handleSpecValidationError converts SpecValidationError to nil (no requeue)
+	// after applying status conditions, while passing through transient errors.
+	if err := r.handleSpecValidationError(ctx, vmcp, statusManager,
+		r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager)); err != nil {
 		ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
 		return ctrl.Result{}, err
 	}

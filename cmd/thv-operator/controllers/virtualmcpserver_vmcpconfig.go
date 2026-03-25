@@ -41,7 +41,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}
-	config, err := converter.Convert(ctx, vmcp)
+	config, authServerRC, err := converter.Convert(ctx, vmcp)
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
@@ -62,7 +62,23 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("invalid vmcp Config: %w", err)
 	}
 
-	// Marshal to YAML for storage in ConfigMap
+	// Cross-validate auth server RunConfig against backend strategies.
+	// TODO: Move this into the operator's vmcpconfig.Validator wrapper so callers
+	// don't need to know about the two-step validation sequence.
+	if err := vmcpconfig.ValidateAuthServerIntegration(config, authServerRC); err != nil {
+		message := fmt.Sprintf("invalid auth server integration: %v", err)
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return &SpecValidationError{Message: message}
+	}
+
+	// Marshal the serializable Config to YAML for storage in ConfigMap.
 	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
 	vmcpConfigYAML, err := yaml.Marshal(config)
@@ -71,15 +87,28 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 
 	configMapName := vmcpConfigMapName(vmcp.Name)
+	configMapData := map[string]string{
+		"config.yaml": string(vmcpConfigYAML),
+	}
+
+	// If an embedded auth server is configured, serialize its RunConfig as a separate key.
+	// RunConfig contains only references (file paths, env var names) — never actual secrets —
+	// so it is safe for ConfigMap storage. The vMCP binary loads this alongside config.yaml.
+	if authServerRC != nil {
+		authServerYAML, marshalErr := yaml.Marshal(authServerRC)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal auth server config: %w", marshalErr)
+		}
+		configMapData["authserver-config.yaml"] = string(authServerYAML)
+	}
+
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
 			Namespace: vmcp.Namespace,
 			Labels:    labelsForVmcpConfig(vmcp.Name),
 		},
-		Data: map[string]string{
-			"config.yaml": string(vmcpConfigYAML),
-		},
+		Data: configMapData,
 	}
 
 	// Compute and add content checksum annotation using robust SHA256-based checksum

@@ -218,3 +218,29 @@ Use `recover()` sparingly. It should only be used at well-defined boundaries to 
 - Do not use `recover()` deep in the call stack - let panics propagate to the top-level handlers
 - Do not use `recover()` for expected error conditions - use normal error handling
 
+## Sentry Error Reporting
+
+The API server supports optional [Sentry](https://sentry.io) integration for error tracking and distributed tracing. When enabled (via `--sentry-dsn`), the following errors are automatically reported:
+
+### What Gets Reported
+
+1. **Panics** - The recovery middleware in `pkg/recovery/recovery.go` reports recovered panics to Sentry via `sentrypkg.RecoverPanic()` before returning a 500 response.
+
+2. **5xx errors** - The error handler in `pkg/api/errors/handler.go` captures server errors to Sentry via `sentrypkg.CaptureException()`. This provides visibility into internal errors without requiring panics.
+
+### How It Works
+
+The Sentry integration is implemented in `pkg/sentry/sentry.go` and wired into the middleware chain:
+
+- **`sentryhttp` middleware** runs early in the chain (after recovery), creating a Sentry hub per request and extracting trace context from `sentry-trace`/`baggage` headers for distributed tracing.
+- **Recovery middleware** catches panics and reports them to Sentry using the hub from the request context.
+- **Error handler** captures 5xx errors to Sentry using the same request-scoped hub.
+
+### When Sentry Is Disabled
+
+When no DSN is configured, all Sentry operations are no-ops. The `sentrypkg.Enabled()` / `sentrypkg.CaptureException()` / `sentrypkg.RecoverPanic()` functions check an atomic boolean and return immediately, adding no overhead.
+
+### Configuration
+
+See [Deployment Modes - Sentry Integration](arch/01-deployment-modes.md#sentry-integration-distributed-tracing-and-error-reporting) for CLI flags and environment variables.
+

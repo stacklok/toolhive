@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"maps"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -1057,6 +1059,24 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		source, target, err := mount.Parse()
 		if err != nil {
 			return fmt.Errorf("invalid volume format: %s (%w)", volume, err)
+		}
+
+		// Validate source path exists on host filesystem (CLI context only)
+		if b.buildContext == BuildContextCLI && !mount.IsResourceURI() {
+			absSource := source
+			if !filepath.IsAbs(source) {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("failed to resolve relative path %s: %w", source, err)
+				}
+				absSource = filepath.Join(cwd, source)
+			}
+			if _, err := os.Stat(absSource); err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("volume source path does not exist: %s", absSource)
+				}
+				return fmt.Errorf("cannot access volume source path %s: %w", absSource, err)
+			}
 		}
 
 		// Check for duplicate mount target

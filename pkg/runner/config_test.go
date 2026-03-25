@@ -754,7 +754,8 @@ func TestRunConfigBuilder(t *testing.T) {
 	}
 	host := localhostStr
 	debug := true
-	volumes := []string{"/host:/container"}
+	hostDir := t.TempDir()
+	volumes := []string{hostDir + ":/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "" // Empty to skip loading the authorization configuration
 	permissionProfile := permissions.ProfileNone
@@ -1310,9 +1311,13 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
+	// Use real temp directories so volume mount source path validation passes
+	hostRead := t.TempDir()
+	hostWrite := t.TempDir()
+
 	volumes := []string{
-		"/host/read:/container/read:ro",
-		"/host/write:/container/write",
+		hostRead + ":/container/read:ro",
+		hostWrite + ":/container/write",
 	}
 
 	config, err := NewRunConfigBuilder(context.Background(), nil, nil, validator,

@@ -34,7 +34,7 @@ type OAuthPublicConfig struct {
 type AuthManager interface {
 	// SetOAuthAuth configures OIDC authentication for the registry.
 	// Validates the OIDC issuer before saving configuration.
-	SetOAuthAuth(issuer, clientID, audience string, scopes []string) error
+	SetOAuthAuth(ctx context.Context, issuer, clientID, audience string, scopes []string) error
 
 	// UnsetAuth removes registry authentication configuration.
 	UnsetAuth() error
@@ -66,8 +66,8 @@ func NewAuthManager(provider config.Provider) AuthManager {
 
 // SetOAuthAuth configures OIDC authentication for the registry.
 // PKCE (S256) is always enforced and not configurable.
-func (c *DefaultAuthManager) SetOAuthAuth(issuer, clientID, audience string, scopes []string) error {
-	updateFn, err := auth.ConfigureOAuth(context.Background(), issuer, clientID, audience, scopes)
+func (c *DefaultAuthManager) SetOAuthAuth(ctx context.Context, issuer, clientID, audience string, scopes []string) error {
+	updateFn, err := auth.ConfigureOAuth(ctx, issuer, clientID, audience, scopes)
 	if err != nil {
 		return fmt.Errorf("configuring OAuth: %w", err)
 	}

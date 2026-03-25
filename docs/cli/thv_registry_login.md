@@ -37,7 +37,7 @@ thv registry login [flags]
   -h, --help               help for login
       --issuer string      OIDC issuer URL for registry authentication
       --registry string    Registry URL
-      --scopes strings     OAuth scopes for registry authentication (defaults to offline_access)
+      --scopes strings     OAuth scopes for registry authentication (defaults to openid,offline_access)
 ```
 
 ### Options inherited from parent commands

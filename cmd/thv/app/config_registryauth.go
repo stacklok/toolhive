@@ -38,11 +38,12 @@ Examples:
 }
 
 var unsetRegistryAuthCmd = &cobra.Command{
-	Use:        "unset-registry-auth",
-	Short:      "Remove registry authentication configuration",
-	Deprecated: "use 'thv config unset-registry' instead, which clears both registry and auth",
-	Long:       "Remove the OIDC authentication configuration for the registry.",
-	RunE:       unsetRegistryAuthCmdFunc,
+	Use:   "unset-registry-auth",
+	Short: "Remove registry authentication configuration",
+	Deprecated: "use 'thv config unset-registry' to clear the registry configuration, or 'thv config set-registry' to" +
+		" reconfigure the registry without auth flags",
+	Long: "Remove the OIDC authentication configuration for the registry.",
+	RunE: unsetRegistryAuthCmdFunc,
 }
 
 func init() {
@@ -60,10 +61,18 @@ func init() {
 	configCmd.AddCommand(unsetRegistryAuthCmd)
 }
 
-func setRegistryAuthCmdFunc(_ *cobra.Command, _ []string) error {
-	authManager := registry.NewAuthManager(config.NewDefaultProvider())
+func setRegistryAuthCmdFunc(cmd *cobra.Command, _ []string) error {
+	provider := config.NewDefaultProvider()
 
-	if err := authManager.SetOAuthAuth(authIssuer, authClientID, authAudience, authScopes); err != nil {
+	// Enforce the coupling invariant: auth requires a registry URL.
+	cfg := provider.GetConfig()
+	if cfg.RegistryApiUrl == "" && cfg.RegistryUrl == "" && cfg.LocalRegistryPath == "" {
+		return fmt.Errorf("no registry URL is configured; use 'thv config set-registry' with --issuer and --client-id flags instead")
+	}
+
+	authManager := registry.NewAuthManager(provider)
+
+	if err := authManager.SetOAuthAuth(cmd.Context(), authIssuer, authClientID, authAudience, authScopes); err != nil {
 		return fmt.Errorf("failed to configure registry auth: %w", err)
 	}
 

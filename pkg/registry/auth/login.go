@@ -18,9 +18,10 @@ import (
 )
 
 // DefaultOAuthScopes returns the default OAuth scopes for registry authentication.
+// openid is required for OIDC (some IdPs enforce it based on client/policy configuration),
 // offline_access is required for the provider to return a refresh token.
 func DefaultOAuthScopes() []string {
-	return []string{"offline_access"}
+	return []string{"openid", "offline_access"}
 }
 
 // LoginOptions holds optional flag-based overrides for Login.
@@ -35,7 +36,7 @@ type LoginOptions struct {
 	ClientID string
 	// Audience is the OAuth audience (optional).
 	Audience string
-	// Scopes overrides the default OAuth scopes (defaults to ["offline_access"]).
+	// Scopes overrides the default OAuth scopes (defaults to ["openid", "offline_access"]).
 	Scopes []string
 }
 

@@ -45,7 +45,7 @@ func init() {
 	registryLoginCmd.Flags().StringVar(&loginAudience, "audience", "",
 		"OAuth audience parameter for registry authentication (optional)")
 	registryLoginCmd.Flags().StringSliceVar(&loginScopes, "scopes", nil,
-		"OAuth scopes for registry authentication (defaults to offline_access)")
+		"OAuth scopes for registry authentication (defaults to openid,offline_access)")
 }
 
 func registryLoginCmdFunc(cmd *cobra.Command, _ []string) error {

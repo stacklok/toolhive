@@ -44,7 +44,7 @@ thv config set-registry <url-or-path> [flags]
       --client-id string   OAuth client ID for registry authentication
   -h, --help               help for set-registry
       --issuer string      OIDC issuer URL for registry authentication
-      --scopes strings     OAuth scopes for registry authentication (default [offline_access])
+      --scopes strings     OAuth scopes for registry authentication (default [openid,offline_access])
 ```
 
 ### Options inherited from parent commands

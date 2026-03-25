@@ -177,10 +177,16 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
+func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 	input := args[0]
 
+	// Always clear existing auth when changing registry (security: prevents
+	// tokens from being sent to the wrong server).
 	provider := config.NewDefaultProvider()
+	authManager := registry.NewAuthManager(provider)
+	if err := authManager.UnsetAuth(); err != nil {
+		return fmt.Errorf("failed to clear registry auth: %w", err)
+	}
 
 	service := registry.NewConfigurator()
 	registryType, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
@@ -189,16 +195,9 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 		return enhanceRegistryError(err, input, registryType)
 	}
 
-	// Always clear existing auth when changing registry (security: prevents
-	// tokens from being sent to the wrong server).
-	authManager := registry.NewAuthManager(provider)
-	if err := authManager.UnsetAuth(); err != nil {
-		return fmt.Errorf("failed to clear registry auth: %w", err)
-	}
-
 	// If auth flags were provided, configure the new auth
 	if registryAuthIssuer != "" && registryAuthClientID != "" {
-		if err := authManager.SetOAuthAuth(registryAuthIssuer, registryAuthClientID, registryAuthAudience,
+		if err := authManager.SetOAuthAuth(cmd.Context(), registryAuthIssuer, registryAuthClientID, registryAuthAudience,
 			registryAuthScopes); err != nil {
 			return fmt.Errorf("failed to configure registry auth: %w", err)
 		}

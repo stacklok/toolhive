@@ -543,7 +543,7 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	// Always overwrite auth: if auth is provided, set it; if not, clear it.
 	// This prevents stale tokens from being sent to the wrong registry server.
 	if req.Auth != nil {
-		if err := rr.processAuthUpdate(req.Auth); err != nil {
+		if err := rr.processAuthUpdate(r.Context(), req.Auth); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -589,12 +589,12 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 }
 
 // processAuthUpdate validates and applies OAuth configuration for registry auth.
-func (rr *RegistryRoutes) processAuthUpdate(authReq *UpdateRegistryAuthRequest) error {
+func (rr *RegistryRoutes) processAuthUpdate(ctx context.Context, authReq *UpdateRegistryAuthRequest) error {
 	if authReq.Issuer == "" || authReq.ClientID == "" {
 		return fmt.Errorf("auth.issuer and auth.client_id are required")
 	}
 	authMgr := regpkg.NewAuthManager(rr.configProvider)
-	if err := authMgr.SetOAuthAuth(authReq.Issuer, authReq.ClientID, authReq.Audience, authReq.Scopes); err != nil {
+	if err := authMgr.SetOAuthAuth(ctx, authReq.Issuer, authReq.ClientID, authReq.Audience, authReq.Scopes); err != nil {
 		return fmt.Errorf("failed to configure registry auth: %w", err)
 	}
 	return nil

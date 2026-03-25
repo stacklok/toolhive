@@ -460,7 +460,7 @@ func TestEnsureOAuthConfig(t *testing.T) {
 					require.Equal(t, config.RegistryAuthTypeOAuth, c.RegistryAuth.Type)
 					require.NotNil(t, c.RegistryAuth.OAuth)
 					require.Equal(t, "my-client", c.RegistryAuth.OAuth.ClientID)
-					require.Equal(t, []string{"offline_access"}, c.RegistryAuth.OAuth.Scopes)
+					require.Equal(t, []string{"openid", "offline_access"}, c.RegistryAuth.OAuth.Scopes)
 					require.Equal(t, remote.DefaultCallbackPort, c.RegistryAuth.OAuth.CallbackPort)
 					return nil
 				})

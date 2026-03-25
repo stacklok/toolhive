@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -33,6 +34,7 @@ func Middleware(next http.Handler) http.Handler {
 				}
 				stack := debug.Stack()
 				slog.Error(fmt.Sprintf("Panic recovered: %v\nStack trace:\n%s", rec, stack))
+				sentrypkg.RecoverPanic(r, rec)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

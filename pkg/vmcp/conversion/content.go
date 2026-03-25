@@ -16,27 +16,97 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+// ConvertMCPAnnotations converts mcp.Annotations to vmcp.ContentAnnotations.
+// Returns nil if the input is nil or all fields are zero-valued.
+func ConvertMCPAnnotations(ann *mcp.Annotations) *vmcp.ContentAnnotations {
+	if ann == nil {
+		return nil
+	}
+	// Convert []mcp.Role to []string for the ACL boundary.
+	var audience []string
+	if len(ann.Audience) > 0 {
+		audience = make([]string, len(ann.Audience))
+		for i, r := range ann.Audience {
+			audience[i] = string(r)
+		}
+	}
+	if len(audience) == 0 && ann.Priority == nil && ann.LastModified == "" {
+		return nil
+	}
+	var priority *float64
+	if ann.Priority != nil {
+		p := *ann.Priority
+		priority = &p
+	}
+	return &vmcp.ContentAnnotations{
+		Audience:     audience,
+		Priority:     priority,
+		LastModified: ann.LastModified,
+	}
+}
+
+// ToMCPAnnotations converts vmcp.ContentAnnotations to mcp.Annotations.
+// Returns nil if the input is nil or all fields are zero-valued.
+func ToMCPAnnotations(ann *vmcp.ContentAnnotations) *mcp.Annotations {
+	if ann == nil {
+		return nil
+	}
+	var audience []mcp.Role
+	if len(ann.Audience) > 0 {
+		audience = make([]mcp.Role, len(ann.Audience))
+		for i, a := range ann.Audience {
+			audience[i] = mcp.Role(a)
+		}
+	}
+	if len(audience) == 0 && ann.Priority == nil && ann.LastModified == "" {
+		return nil
+	}
+	var priority *float64
+	if ann.Priority != nil {
+		p := *ann.Priority
+		priority = &p
+	}
+	return &mcp.Annotations{
+		Audience:     audience,
+		Priority:     priority,
+		LastModified: ann.LastModified,
+	}
+}
+
 // ConvertMCPContent converts a single mcp.Content item to vmcp.Content.
 // Unknown content types are returned as vmcp.Content{Type: "unknown"}.
 func ConvertMCPContent(content mcp.Content) vmcp.Content {
 	if text, ok := mcp.AsTextContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeText, Text: text.Text}
+		return vmcp.Content{Type: vmcp.ContentTypeText, Text: text.Text, Annotations: ConvertMCPAnnotations(text.Annotations)}
 	}
 	if img, ok := mcp.AsImageContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeImage, Data: img.Data, MimeType: img.MIMEType}
+		return vmcp.Content{
+			Type: vmcp.ContentTypeImage, Data: img.Data,
+			MimeType: img.MIMEType, Annotations: ConvertMCPAnnotations(img.Annotations),
+		}
 	}
 	if audio, ok := mcp.AsAudioContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeAudio, Data: audio.Data, MimeType: audio.MIMEType}
+		return vmcp.Content{
+			Type: vmcp.ContentTypeAudio, Data: audio.Data,
+			MimeType: audio.MIMEType, Annotations: ConvertMCPAnnotations(audio.Annotations),
+		}
 	}
 	if res, ok := mcp.AsEmbeddedResource(content); ok {
+		ann := ConvertMCPAnnotations(res.Annotations)
 		if textRes, ok := mcp.AsTextResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: vmcp.ContentTypeResource, Text: textRes.Text, URI: textRes.URI, MimeType: textRes.MIMEType}
+			return vmcp.Content{
+				Type: vmcp.ContentTypeResource, Text: textRes.Text,
+				URI: textRes.URI, MimeType: textRes.MIMEType, Annotations: ann,
+			}
 		}
 		if blobRes, ok := mcp.AsBlobResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: vmcp.ContentTypeResource, Data: blobRes.Blob, URI: blobRes.URI, MimeType: blobRes.MIMEType}
+			return vmcp.Content{
+				Type: vmcp.ContentTypeResource, Data: blobRes.Blob,
+				URI: blobRes.URI, MimeType: blobRes.MIMEType, Annotations: ann,
+			}
 		}
 		slog.Debug("Embedded resource has unknown resource contents type", "type", fmt.Sprintf("%T", res.Resource))
-		return vmcp.Content{Type: vmcp.ContentTypeResource}
+		return vmcp.Content{Type: vmcp.ContentTypeResource, Annotations: ann}
 	}
 	if link, ok := content.(mcp.ResourceLink); ok {
 		return vmcp.Content{
@@ -45,6 +115,7 @@ func ConvertMCPContent(content mcp.Content) vmcp.Content {
 			Name:        link.Name,
 			Description: link.Description,
 			MimeType:    link.MIMEType,
+			Annotations: ConvertMCPAnnotations(link.Annotations),
 		}
 	}
 	slog.Debug("Encountered unknown MCP content type", "type", fmt.Sprintf("%T", content))
@@ -64,44 +135,72 @@ func ConvertMCPContents(contents []mcp.Content) []vmcp.Content {
 // ToMCPContent converts a single vmcp.Content item to mcp.Content.
 // Unknown content types are converted to empty text with a warning.
 func ToMCPContent(content vmcp.Content) mcp.Content {
+	ann := toAnnotated(content.Annotations)
+
 	switch content.Type {
 	case vmcp.ContentTypeText:
-		return mcp.NewTextContent(content.Text)
+		tc := mcp.NewTextContent(content.Text)
+		tc.Annotated = ann
+		return tc
 	case vmcp.ContentTypeImage:
-		return mcp.NewImageContent(content.Data, content.MimeType)
+		ic := mcp.NewImageContent(content.Data, content.MimeType)
+		ic.Annotated = ann
+		return ic
 	case vmcp.ContentTypeAudio:
-		return mcp.NewAudioContent(content.Data, content.MimeType)
+		ac := mcp.NewAudioContent(content.Data, content.MimeType)
+		ac.Annotated = ann
+		return ac
 	case vmcp.ContentTypeResource:
 		// Reconstruct embedded resource from vmcp.Content fields.
 		// Text content takes precedence over blob content when both are present.
 		if content.Text != "" {
-			return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+			er := mcp.NewEmbeddedResource(mcp.TextResourceContents{
 				URI:      content.URI,
 				MIMEType: content.MimeType,
 				Text:     content.Text,
 			})
+			er.Annotated = ann
+			return er
 		}
 		if content.Data != "" {
-			return mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+			er := mcp.NewEmbeddedResource(mcp.BlobResourceContents{
 				URI:      content.URI,
 				MIMEType: content.MimeType,
 				Blob:     content.Data,
 			})
+			er.Annotated = ann
+			return er
 		}
 		// Empty resource content — preserve resource wrapper and metadata with empty contents.
 		slog.Warn("converting empty resource content to empty embedded resource - no Text or Data field present")
-		return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+		er := mcp.NewEmbeddedResource(mcp.TextResourceContents{
 			URI:      content.URI,
 			MIMEType: content.MimeType,
 			Text:     "",
 		})
+		er.Annotated = ann
+		return er
 	case vmcp.ContentTypeLink:
 		// Reconstruct a ResourceLink from vmcp.Content fields.
-		return mcp.NewResourceLink(content.URI, content.Name, content.Description, content.MimeType)
+		rl := mcp.NewResourceLink(content.URI, content.Name, content.Description, content.MimeType)
+		rl.Annotated = ann
+		return rl
 	default:
 		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
-		return mcp.NewTextContent("")
+		tc := mcp.NewTextContent("")
+		tc.Annotated = ann
+		return tc
 	}
+}
+
+// toAnnotated converts vmcp.ContentAnnotations to mcp.Annotated.
+// Returns a zero-valued mcp.Annotated if annotations is nil.
+func toAnnotated(ann *vmcp.ContentAnnotations) mcp.Annotated {
+	mcpAnn := ToMCPAnnotations(ann)
+	if mcpAnn == nil {
+		return mcp.Annotated{}
+	}
+	return mcp.Annotated{Annotations: mcpAnn}
 }
 
 // ToMCPContents converts a slice of vmcp.Content to []mcp.Content.

@@ -380,6 +380,21 @@ const (
 	ContentTypeLink ContentType = "resource_link"
 )
 
+// ContentAnnotations describes per-content metadata annotations.
+// These are the vmcp-domain equivalents of mcp.Annotations, following the
+// Anti-Corruption Layer pattern (vmcp types are decoupled from mcp-go).
+type ContentAnnotations struct {
+	// Audience describes who the content is intended for.
+	// Valid values are the mcp.Role constants: "user" and "assistant".
+	Audience []string `json:"audience,omitempty"`
+	// Priority is a hint for display ordering in the closed interval [0.0, 1.0]
+	// per the MCP spec, where 0.0 is least important and 1.0 is most important.
+	// Nil means no priority hint was provided.
+	Priority *float64 `json:"priority,omitempty"`
+	// LastModified is an ISO 8601 timestamp (e.g., "2025-01-12T15:00:58Z").
+	LastModified string `json:"lastModified,omitempty"`
+}
+
 // Content represents MCP content (text, image, audio, embedded resource, resource link).
 // This is used by ToolCallResult to preserve the full content structure from backends.
 type Content struct {
@@ -403,6 +418,10 @@ type Content struct {
 
 	// Description is the resource description (for ResourceLink)
 	Description string
+
+	// Annotations contains per-content metadata (audience, priority, lastModified).
+	// Nil means no annotations were provided by the backend.
+	Annotations *ContentAnnotations
 }
 
 // ToolCallResult wraps a tool call response with metadata.

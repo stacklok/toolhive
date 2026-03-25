@@ -169,15 +169,15 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name:   "malformed resource metadata URL",
+			name:   "malformed resource metadata URL falls through to URL-derived issuer",
 			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:             "OAuth",
 				ResourceMetadata: "not-a-url",
 			},
-			remoteURL:     "https://server.example.com",
-			expectError:   true,
-			errorContains: "could not determine OAuth issuer",
+			remoteURL:      "https://server.example.com",
+			expectError:    false,
+			expectedIssuer: "https://server.example.com",
 		},
 
 		// Edge cases
@@ -442,10 +442,11 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
-		_, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
-		// Should timeout or fail gracefully, not hang or crash
-		assert.Error(t, err)
+		// Should not hang or crash; Priority 3 fails gracefully and falls through to URL-derived issuer
+		require.NoError(t, err)
+		assert.Equal(t, "https://server.example.com", issuer)
 	})
 }
 

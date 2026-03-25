@@ -212,6 +212,12 @@ type OIDCConfig struct {
 	// Use with caution - only enable for trusted internal IDPs or testing
 	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIp,omitempty" yaml:"protectedResourceAllowPrivateIp,omitempty"` //nolint:lll
 
+	// JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.
+	// Enable when the embedded auth server runs on a loopback address and
+	// the OIDC middleware needs to fetch its JWKS from that address.
+	// Use with caution - only enable for trusted internal IDPs or testing.
+	JwksAllowPrivateIP bool `json:"jwksAllowPrivateIp,omitempty" yaml:"jwksAllowPrivateIp,omitempty"`
+
 	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
 	// WARNING: This is insecure and should NEVER be used in production
 	InsecureAllowHTTP bool `json:"insecureAllowHttp,omitempty" yaml:"insecureAllowHttp,omitempty"`

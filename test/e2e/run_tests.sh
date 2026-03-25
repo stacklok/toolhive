@@ -58,9 +58,10 @@ cd "$(dirname "$0")"
 
 # Build ginkgo command with conditional GitHub output flag
 GINKGO_CMD="ginkgo run --timeout=\"$TEST_TIMEOUT\""
+GINKGO_CMD="$GINKGO_CMD --junit-report=junit-report.xml --output-dir=."
 if [ -n "$GITHUB_ACTIONS" ]; then
     echo -e "${GREEN}✓${NC} GitHub Actions detected, enabling GitHub output format"
-    GINKGO_CMD="$GINKGO_CMD --github-output"
+    GINKGO_CMD="$GINKGO_CMD --github-output --vv"
 else
     GINKGO_CMD="$GINKGO_CMD --vv --show-node-events --trace"
 fi

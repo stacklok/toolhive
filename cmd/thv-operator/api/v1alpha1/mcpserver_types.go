@@ -68,6 +68,17 @@ const (
 	ConditionReasonCABundleRefInvalid = "CABundleRefInvalid"
 )
 
+const (
+	// ConditionTypeExternalAuthConfigValidated indicates whether the ExternalAuthConfig is valid
+	ConditionTypeExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+)
+
+const (
+	// ConditionReasonExternalAuthConfigMultiUpstream indicates the ExternalAuthConfig has multiple upstreams,
+	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
+	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+)
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
@@ -632,18 +643,18 @@ type ConfigMapAuthzRef struct {
 	Key string `json:"key,omitempty"`
 }
 
-// ToolConfigRef defines a reference to a MCPToolConfig resource.
-// The referenced MCPToolConfig must be in the same namespace as the MCPServer.
-type ToolConfigRef struct {
-	// Name is the name of the MCPToolConfig resource in the same namespace
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-}
-
 // ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
 // The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
 type ExternalAuthConfigRef struct {
 	// Name is the name of the MCPExternalAuthConfig resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
+// ToolConfigRef defines a reference to a MCPToolConfig resource.
+// The referenced MCPToolConfig must be in the same namespace as the MCPServer.
+type ToolConfigRef struct {
+	// Name is the name of the MCPToolConfig resource in the same namespace
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }

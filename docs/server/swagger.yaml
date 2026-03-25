@@ -467,7 +467,7 @@ components:
           description: |-
             Upstreams configures connections to upstream Identity Providers.
             At least one upstream is required - the server delegates authentication to these providers.
-            Currently only a single upstream is supported.
+            Multiple upstreams are supported for sequential authorization chains.
           items:
             $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig'
           type: array
@@ -1062,11 +1062,6 @@ components:
             BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.
             When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
             When set (including 0), the value is an explicit replica count.
-          type: integer
-        session_cache_size:
-          description: |-
-            SessionCacheSize is the maximum number of sessions held in the local LRU cache.
-            When nil, consuming code applies a sensible default (e.g. 1000).
           type: integer
       type: object
     github_com_stacklok_toolhive_pkg_runner.ToolOverride:

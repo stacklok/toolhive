@@ -198,10 +198,9 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 
 	// Add a MockMultiSession with the routing table
 	mockSess := sessionmocks.NewMockMultiSession(ctrl)
-	mockSess.EXPECT().ID().Return("test-session-123").AnyTimes()
+	mockSess.EXPECT().ID().Return("dddddddd-1001-1001-1001-000000000001").AnyTimes()
 	mockSess.EXPECT().GetRoutingTable().Return(routingTable).AnyTimes()
 	mockSess.EXPECT().Tools().Return(nil).AnyTimes()
-	mockSess.EXPECT().Touch().AnyTimes()
 	mockSess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
 	mockSess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 	mockSess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
@@ -219,7 +218,7 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 
 	// Create subsequent request (with session ID header)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
-	req.Header.Set("Mcp-Session-Id", "test-session-123")
+	req.Header.Set("Mcp-Session-Id", "dddddddd-1001-1001-1001-000000000001")
 	rec := httptest.NewRecorder()
 
 	// Execute request

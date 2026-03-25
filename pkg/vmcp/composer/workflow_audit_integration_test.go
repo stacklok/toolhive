@@ -53,8 +53,10 @@ func TestWorkflowEngine_WithAuditor_SuccessfulWorkflow(t *testing.T) {
 
 	// Execute with identity
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
-		Subject: "test-user",
-		Email:   "test@example.com",
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "test-user",
+			Email:   "test@example.com",
+		},
 	})
 
 	result, err := engine.ExecuteWorkflow(ctx, workflow, map[string]any{

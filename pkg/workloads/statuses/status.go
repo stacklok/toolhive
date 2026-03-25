@@ -36,6 +36,11 @@ type StatusManager interface {
 	// ResetWorkloadPID resets the PID of a workload to 0.
 	// This method will do nothing if the workload does not exist.
 	ResetWorkloadPID(ctx context.Context, workloadName string) error
+	// ResetWorkloadPIDIfMatch resets the PID of a workload to 0 only if the
+	// current PID in the status file matches expectedPID. This prevents a
+	// dying process from clobbering the PID written by a replacement process
+	// that started in the meantime.
+	ResetWorkloadPIDIfMatch(ctx context.Context, workloadName string, expectedPID int) error
 	// GetWorkloadPID retrieves the PID of a workload by its name.
 	// Returns 0 if the workload does not exist or if PID is not available.
 	GetWorkloadPID(ctx context.Context, workloadName string) (int, error)
@@ -143,6 +148,13 @@ func (*runtimeStatusManager) SetWorkloadPID(_ context.Context, workloadName stri
 func (*runtimeStatusManager) ResetWorkloadPID(_ context.Context, workloadName string) error {
 	// Noop for runtime status manager
 	slog.Debug("workload PID reset (noop for runtime status manager)", "workload", workloadName)
+	return nil
+}
+
+func (*runtimeStatusManager) ResetWorkloadPIDIfMatch(_ context.Context, workloadName string, expectedPID int) error {
+	// Noop for runtime status manager
+	slog.Debug("workload PID conditional reset (noop for runtime status manager)",
+		"workload", workloadName, "expected_pid", expectedPID)
 	return nil
 }
 

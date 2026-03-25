@@ -139,6 +139,22 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			wantErrContain: "no refresh token available",
 		},
 		{
+			name:      "unknown provider returns error",
+			sessionID: "session-unknown",
+			expired: &storage.UpstreamTokens{
+				ProviderID:      "unknown-provider",
+				AccessToken:     "old-access",
+				RefreshToken:    "old-refresh",
+				UserID:          "user-123",
+				UpstreamSubject: "upstream-sub-456",
+				ClientID:        "client-abc",
+			},
+			setupProvider:  func(_ *testing.T, _ *upstreammocks.MockOAuth2Provider) {},
+			setupStorage:   func(_ *testing.T, _ *storagemocks.MockUpstreamTokenStorage) {},
+			wantErr:        true,
+			wantErrContain: "no upstream provider configured",
+		},
+		{
 			name:      "provider refresh fails returns error",
 			sessionID: "session-5",
 			expired:   baseExpired,
@@ -196,8 +212,8 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			tt.setupStorage(t, mockStorage)
 
 			refresher := &upstreamTokenRefresher{
-				provider: mockProvider,
-				storage:  mockStorage,
+				providers: map[string]upstream.OAuth2Provider{"github": mockProvider},
+				storage:   mockStorage,
 			}
 
 			result, err := refresher.RefreshAndStore(context.Background(), tt.sessionID, tt.expired)

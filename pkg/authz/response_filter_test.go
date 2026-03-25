@@ -144,7 +144,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			require.NoError(t, err, "Failed to create HTTP request")
 			sub := tc.claims["sub"].(string)
 			name, _ := tc.claims["name"].(string)
-			identity := &auth.Identity{Subject: sub, Name: name, Claims: tc.claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: sub, Name: name, Claims: tc.claims}}
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
@@ -375,14 +375,14 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 	// 4. Calls FlushAndFilter after the proxy returns.
 	frontend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Inject identity into context (Cedar authorizer reads claims from it).
-		identity := &auth.Identity{
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 			Subject: "user123",
 			Name:    "Test User",
 			Claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "Test User",
 			},
-		}
+		}}
 		ctx := auth.WithIdentity(r.Context(), identity)
 
 		// Inject parsed MCP request into context (authz middleware reads method from it).

@@ -39,11 +39,16 @@ func validateRedisConfig(cfg *RedisConfig) error {
 	if cfg.KeyPrefix == "" {
 		return errors.New("KeyPrefix is required")
 	}
+	if cfg.KeyPrefix[len(cfg.KeyPrefix)-1] != ':' {
+		return errors.New("KeyPrefix must end with ':' to avoid key collisions (e.g. \"thv:vmcp:session:\")")
+	}
 	return nil
 }
 
 // NewRedisStorage constructs a RedisStorage from a RedisConfig.
-// ttl is the expiry applied to every key on Store.
+// ttl is the expiry applied to every key on Store and refreshed on every Load (sliding window).
+// Because TTL is sliding, sessions remain valid indefinitely while actively used; revocation
+// requires an explicit Delete call. There is no absolute maximum session lifetime.
 func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*RedisStorage, error) {
 	if err := validateRedisConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid redis configuration: %w", err)
@@ -73,6 +78,7 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*
 		opts := &redis.FailoverOptions{
 			MasterName:    cfg.SentinelConfig.MasterName,
 			SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
+			Username:      cfg.Username,
 			Password:      cfg.Password,
 			DB:            cfg.DB,
 			DialTimeout:   cfg.DialTimeout,
@@ -84,6 +90,7 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*
 	} else {
 		opts := &redis.Options{
 			Addr:         cfg.Addr,
+			Username:     cfg.Username,
 			Password:     cfg.Password,
 			DB:           cfg.DB,
 			DialTimeout:  cfg.DialTimeout,
@@ -160,6 +167,13 @@ func (s *RedisStorage) Store(ctx context.Context, session Session) error {
 // Load retrieves a session by ID. Returns ErrSessionNotFound when the key does not exist.
 // The Redis eviction TTL is refreshed atomically via GETEX on every read so that active
 // sessions are not evicted between accesses. The session's UpdatedAt timestamp is not modified.
+//
+// Lifetime note: this implements a sliding-window TTL. A session accessed at least once per
+// TTL window will never expire and can live indefinitely while the client keeps making requests.
+// Session revocation therefore depends entirely on explicit Delete calls (e.g. on logout or
+// token invalidation); there is no absolute maximum session lifetime enforced here. If a hard
+// cap is required in future, a MaxLifetime field checked against the session's CreatedAt would
+// be the path forward.
 func (s *RedisStorage) Load(ctx context.Context, id string) (Session, error) {
 	if id == "" {
 		return nil, fmt.Errorf("cannot load session with empty ID")

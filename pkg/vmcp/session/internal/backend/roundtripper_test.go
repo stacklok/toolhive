@@ -192,7 +192,7 @@ func TestAuthRoundTripper_AuthStrategyReceivesClonedRequest(t *testing.T) {
 func TestIdentityRoundTripper_WithIdentity_PropagatesIdentityInContext(t *testing.T) {
 	t.Parallel()
 
-	identity := &auth.Identity{Subject: "user-42"}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-42"}}
 	base := &okTransport{}
 	rt := &identityRoundTripper{base: base, identity: identity}
 
@@ -234,7 +234,7 @@ func TestIdentityRoundTripper_NilIdentity_ContextUnchanged(t *testing.T) {
 func TestIdentityRoundTripper_WithIdentity_ClonesRequest(t *testing.T) {
 	t.Parallel()
 
-	identity := &auth.Identity{Subject: "user-99"}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-99"}}
 	base := &okTransport{}
 	rt := &identityRoundTripper{base: base, identity: identity}
 

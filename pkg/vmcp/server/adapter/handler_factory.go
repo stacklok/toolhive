@@ -17,7 +17,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/compositetools"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
@@ -134,12 +133,6 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		slog.Debug("handling resource read", "uri", uri)
 
-		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-		if !ok {
-			slog.Warn("capabilities not discovered in context")
-			return nil, fmt.Errorf("capabilities not discovered")
-		}
-
 		target, err := f.router.RouteResource(ctx, uri)
 		if err != nil {
 			if errors.Is(err, router.ErrResourceNotFound) {
@@ -163,31 +156,7 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 			return nil, fmt.Errorf("resource read failed: %w", err)
 		}
 
-		// Use the MimeType from the result if available, otherwise fall back to discovery
-		mimeType := result.MimeType
-		if mimeType == "" {
-			mimeType = "application/octet-stream" // Default for unknown resources
-			for _, res := range caps.Resources {
-				if res.URI == uri && res.MimeType != "" {
-					mimeType = res.MimeType
-					break
-				}
-			}
-		}
-
-		// Note: MCP SDK limitation - resources/read handlers return []ResourceContents directly,
-		// not a result wrapper with _meta field. The SDK handler signature does not support
-		// forwarding _meta for resources. result.Meta is preserved in the vmcp layer but
-		// cannot be forwarded to clients due to SDK constraints.
-		contents := []mcp.ResourceContents{
-			mcp.TextResourceContents{
-				URI:      uri,
-				MIMEType: mimeType,
-				Text:     string(result.Contents),
-			},
-		}
-
-		return contents, nil
+		return conversion.ToMCPResourceContents(result.Contents), nil
 	}
 }
 
@@ -241,12 +210,7 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 				Meta: conversion.ToMCPMeta(result.Meta),
 			},
 			Description: description,
-			Messages: []mcp.PromptMessage{
-				{
-					Role:    "assistant",
-					Content: mcp.NewTextContent(result.Messages),
-				},
-			},
+			Messages:    conversion.ToMCPPromptMessages(result.Messages),
 		}
 
 		return mcpResult, nil

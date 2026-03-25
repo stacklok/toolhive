@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -24,7 +26,6 @@ type Session interface {
 	Type() SessionType
 	CreatedAt() time.Time
 	UpdatedAt() time.Time
-	Touch()
 
 	// Data and metadata methods
 	GetData() interface{}
@@ -113,6 +114,21 @@ func NewManagerWithStorage(ttl time.Duration, factory Factory, storage Storage) 
 	return m
 }
 
+// NewManagerWithRedis creates a session manager backed by Redis.
+// ctx is used for the initial Ping during construction and should carry any
+// deadline appropriate for the connection attempt (e.g. a startup timeout).
+// cfg supplies the Redis connection configuration; ttl is applied as both the
+// manager's cleanup interval and the Redis key TTL.
+// Returns an error if the Redis client cannot be constructed (e.g. invalid config or TLS error).
+// Callers that do not require Redis should use NewManager or NewTypedManager instead.
+func NewManagerWithRedis(ctx context.Context, ttl time.Duration, factory Factory, cfg RedisConfig) (*Manager, error) {
+	storage, err := NewRedisStorage(ctx, cfg, ttl)
+	if err != nil {
+		return nil, fmt.Errorf("creating redis storage: %w", err)
+	}
+	return NewManagerWithStorage(ttl, factory, storage), nil
+}
+
 func (m *Manager) cleanupRoutine() {
 	ticker := time.NewTicker(m.ttl / 2)
 	defer ticker.Stop()
@@ -131,11 +147,23 @@ func (m *Manager) cleanupRoutine() {
 	}
 }
 
-// AddWithID creates (and adds) a new session with the provided ID.
-// Returns error if ID is empty or already exists.
-func (m *Manager) AddWithID(id string) error {
+// validateSessionID returns an error if id is empty or not a valid UUID.
+// UUID format is enforced across all storage backends to keep ID semantics consistent.
+func validateSessionID(id string) error {
 	if id == "" {
 		return fmt.Errorf("session ID cannot be empty")
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return fmt.Errorf("invalid session ID format: %w", err)
+	}
+	return nil
+}
+
+// AddWithID creates (and adds) a new session with the provided ID.
+// Returns error if ID is empty, not a valid UUID, or already exists.
+func (m *Manager) AddWithID(id string) error {
+	if err := validateSessionID(id); err != nil {
+		return err
 	}
 	// Check if session already exists
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
@@ -156,8 +184,8 @@ func (m *Manager) AddSession(session Session) error {
 	if session == nil {
 		return fmt.Errorf("session cannot be nil")
 	}
-	if session.ID() == "" {
-		return fmt.Errorf("session ID cannot be empty")
+	if err := validateSessionID(session.ID()); err != nil {
+		return err
 	}
 
 	// Check if session already exists
@@ -171,8 +199,8 @@ func (m *Manager) AddSession(session Session) error {
 	return m.storage.Store(ctx, session)
 }
 
-// Get retrieves a session by ID. Returns (session, true) if found,
-// and also updates its UpdatedAt timestamp.
+// Get retrieves a session by ID. Returns (session, true) if found.
+// For LocalStorage, the storage backend updates the session's last-access timestamp on Load.
 func (m *Manager) Get(id string) (Session, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
@@ -181,8 +209,6 @@ func (m *Manager) Get(id string) (Session, bool) {
 	if err != nil {
 		return nil, false
 	}
-	// Touch the session to update its timestamp
-	sess.Touch()
 	return sess, true
 }
 
@@ -193,8 +219,8 @@ func (m *Manager) UpsertSession(session Session) error {
 	if session == nil {
 		return fmt.Errorf("session cannot be nil")
 	}
-	if session.ID() == "" {
-		return fmt.Errorf("session ID cannot be empty")
+	if err := validateSessionID(session.ID()); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
@@ -202,8 +228,11 @@ func (m *Manager) UpsertSession(session Session) error {
 }
 
 // Delete removes a session by ID.
-// Returns an error if the deletion fails.
+// Returns an error if the ID is invalid or the deletion fails.
 func (m *Manager) Delete(id string) error {
+	if err := validateSessionID(id); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 	return m.storage.Delete(ctx, id)

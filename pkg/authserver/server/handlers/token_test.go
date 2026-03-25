@@ -242,6 +242,8 @@ func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorag
 		Scopes:               []string{"openid"},
 		InternalState:        internalState,
 		UpstreamPKCEVerifier: "upstream-verifier-12345678901234567890",
+		SessionID:            "session-token-test-" + t.Name(),
+		UpstreamProviderName: "test-upstream",
 		CreatedAt:            time.Now(),
 	}
 	storState.pendingAuths[internalState] = pending

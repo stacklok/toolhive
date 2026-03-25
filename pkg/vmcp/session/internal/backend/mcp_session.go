@@ -154,11 +154,8 @@ func (c *mcpSession) ReadResource(
 		return nil, fmt.Errorf("resource %q read failed on backend %s: %w", uri, c.target.WorkloadID, err)
 	}
 
-	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
-
 	return &vmcp.ResourceReadResult{
-		Contents: data,
-		MimeType: mimeType,
+		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     conversion.FromMCPMeta(result.Meta),
 	}, nil
 }
@@ -186,10 +183,8 @@ func (c *mcpSession) GetPrompt(
 		return nil, fmt.Errorf("prompt %q get failed on backend %s: %w", name, c.target.WorkloadID, err)
 	}
 
-	// NOTE: ConvertPromptMessages is lossy — non-text content (images, audio)
-	// is discarded. Phase 1 limitation; see vmcp.PromptGetResult.
 	return &vmcp.PromptGetResult{
-		Messages:    conversion.ConvertPromptMessages(result.Messages),
+		Messages:    conversion.ConvertMCPPromptMessages(result.Messages),
 		Description: result.Description,
 		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil

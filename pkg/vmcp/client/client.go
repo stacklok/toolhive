@@ -82,6 +82,32 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 	return c, nil
 }
 
+// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
+// If http.DefaultTransport is a *http.Transport, it is cloned directly (preserving any
+// environment-specific settings like TLS config or proxy overrides). Otherwise a transport
+// with the standard Go defaults is constructed, preserving proxy, dial timeout, HTTP/2, and
+// idle-connection settings that a zero-value &http.Transport{} would drop.
+func newBackendTransport() *http.Transport {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		return dt.Clone()
+	}
+	// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
+	// Construct a transport with the same defaults as the Go standard library uses for
+	// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
 // roundTripperFunc is a function adapter for http.RoundTripper.
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
@@ -173,7 +199,10 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
-	var baseTransport = http.DefaultTransport
+	//
+	// Clone DefaultTransport per call so each client gets an isolated connection pool,
+	// preventing stale keep-alive connections from one backend affecting others.
+	var baseTransport http.RoundTripper = newBackendTransport()
 
 	// Resolve authentication strategy ONCE at client creation time
 	authStrategy, err := h.resolveAuthStrategy(target)
@@ -321,7 +350,23 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrTimeout, operation, backendID, err)
 	}
 
-	// 4. String-based detection: Fall back to pattern matching for cases where
+	// 4. mcp-go transport sentinel errors: check before string-based fallbacks
+	// to ensure accurate classification of protocol-level errors.
+	if errors.Is(err, transport.ErrUnauthorized) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
+	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
+	// We cannot distinguish auth failures from routing errors without the raw status code,
+	// so we surface a clear message and classify as backend unavailable to allow recovery.
+	if errors.Is(err, transport.ErrLegacySSEServer) {
+		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
+		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
+			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
+	}
+
+	// 5. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {
@@ -666,17 +711,13 @@ func (h *httpBackendClient) ReadResource(
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all resource content items into a single byte slice.
-	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
-
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
 	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
 	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
-		Contents: data,
-		MimeType: mimeType,
+		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     meta,
 	}, nil
 }
@@ -727,7 +768,7 @@ func (h *httpBackendClient) GetPrompt(
 	}
 
 	return &vmcp.PromptGetResult{
-		Messages:    conversion.ConvertPromptMessages(result.Messages),
+		Messages:    conversion.ConvertMCPPromptMessages(result.Messages),
 		Description: result.Description,
 		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil

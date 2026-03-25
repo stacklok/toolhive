@@ -361,6 +361,7 @@ _Appears in:_
 | `resource` _string_ | Resource is the OAuth 2.0 resource indicator (RFC 8707).<br />Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).<br />If not specified, defaults to Audience. |  |  |
 | `scopes` _string array_ | Scopes are the required OAuth scopes. |  |  |
 | `protectedResourceAllowPrivateIp` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing |  |  |
+| `jwksAllowPrivateIp` _boolean_ | JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.<br />Enable when the embedded auth server runs on a loopback address and<br />the OIDC middleware needs to fetch its JWKS from that address.<br />Use with caution - only enable for trusted internal IDPs or testing. |  |  |
 | `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
 
 
@@ -952,6 +953,7 @@ This enables running an authorization server that delegates authentication to up
 
 _Appears in:_
 - [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -959,7 +961,7 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1alpha1.TokenLifespanConfig](#apiv1alpha1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
-| `upstreamProviders` _[api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />Currently only a single upstream provider is supported (validated at runtime). |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `upstreamProviders` _[api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `storage` _[api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 
 
@@ -2899,7 +2901,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name uniquely identifies this upstream provider.<br />Used for routing decisions and session binding in multi-upstream scenarios. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `name` _string_ | Name uniquely identifies this upstream provider.<br />Used for routing decisions and session binding in multi-upstream scenarios.<br />Must be lowercase alphanumeric with hyphens (DNS-label-like). |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Required: \{\} <br /> |
 | `type` _[api.v1alpha1.UpstreamProviderType](#apiv1alpha1upstreamprovidertype)_ | Type specifies the provider type: "oidc" or "oauth2" |  | Enum: [oidc oauth2] <br />Required: \{\} <br /> |
 | `oidcConfig` _[api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)_ | OIDCConfig contains OIDC-specific configuration.<br />Required when Type is "oidc", must be nil when Type is "oauth2". |  | Optional: \{\} <br /> |
 | `oauth2Config` _[api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)_ | OAuth2Config contains OAuth 2.0-specific configuration.<br />Required when Type is "oauth2", must be nil when Type is "oidc". |  | Optional: \{\} <br /> |
@@ -3157,6 +3159,7 @@ _Appears in:_
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br />Optional: \{\} <br /> |
 | `embeddingServerRef` _[api.v1alpha1.EmbeddingServerRef](#apiv1alpha1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />When the optimizer is enabled, this field is required to point to a ready EmbeddingServer<br />that provides embedding capabilities.<br />The referenced EmbeddingServer must exist in the same namespace and be ready. |  | Optional: \{\} <br /> |
+| `authServerConfig` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.VirtualMCPServerStatus

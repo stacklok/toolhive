@@ -45,10 +45,12 @@ func nilServiceGetter() ServiceGetter {
 func requestWithIdentity(tsid string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	identity := &auth.Identity{
-		Subject: "user123",
-		Claims: map[string]any{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: tsid,
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user123",
+			Claims: map[string]any{
+				"sub":                                "user123",
+				upstreamtoken.TokenSessionIDClaimKey: tsid,
+			},
 		},
 	}
 	ctx := auth.WithIdentity(req.Context(), identity)
@@ -159,10 +161,12 @@ func TestMiddleware_NoTsidClaim(t *testing.T) {
 	// Create request with identity but no tsid claim
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	identity := &auth.Identity{
-		Subject: "user123",
-		Claims: map[string]any{
-			"sub": "user123",
-			// No tsid claim
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user123",
+			Claims: map[string]any{
+				"sub": "user123",
+				// No tsid claim
+			},
 		},
 	}
 	ctx := auth.WithIdentity(req.Context(), identity)
@@ -666,10 +670,12 @@ func TestMiddleware_TsidClaimWrongType(t *testing.T) {
 	// Create request with identity but tsid claim is wrong type (int instead of string)
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	identity := &auth.Identity{
-		Subject: "user123",
-		Claims: map[string]any{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: 12345, // Wrong type: int instead of string
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user123",
+			Claims: map[string]any{
+				"sub":                                "user123",
+				upstreamtoken.TokenSessionIDClaimKey: 12345, // Wrong type: int instead of string
+			},
 		},
 	}
 	ctx := auth.WithIdentity(req.Context(), identity)

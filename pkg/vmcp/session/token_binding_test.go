@@ -38,7 +38,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "test-bearer-token"
-		identity := &auth.Identity{Subject: "alice", Token: rawToken}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: rawToken}
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
 		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, false, nil)
@@ -79,7 +79,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 	t.Run("identity with empty token stores empty sentinel", func(t *testing.T) {
 		t.Parallel()
 
-		identity := &auth.Identity{Subject: "user", Token: ""}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""}
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
 		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, true, nil)
 		require.NoError(t, err)
@@ -97,7 +97,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "id-specific-token"
-		identity := &auth.Identity{Subject: "bob", Token: rawToken}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "bob"}, Token: rawToken}
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
 		sess, err := factory.MakeSessionWithID(t.Context(), "explicit-session-id", identity, false, nil)
@@ -130,7 +130,7 @@ func TestMakeSessionWithID_ValidationOfAllowAnonymous(t *testing.T) {
 
 	t.Run("rejects anonymous session with bearer token", func(t *testing.T) {
 		t.Parallel()
-		identity := &auth.Identity{Subject: "user", Token: "bearer-token"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "bearer-token"}
 		_, err := factory.MakeSessionWithID(
 			context.Background(),
 			"test-session",
@@ -159,7 +159,7 @@ func TestMakeSessionWithID_ValidationOfAllowAnonymous(t *testing.T) {
 
 	t.Run("rejects bound session without bearer token (empty token)", func(t *testing.T) {
 		t.Parallel()
-		identity := &auth.Identity{Subject: "user", Token: ""} // empty token
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""} // empty token
 		_, err := factory.MakeSessionWithID(
 			context.Background(),
 			"test-session",
@@ -186,7 +186,7 @@ func TestMakeSessionWithID_ValidationOfAllowAnonymous(t *testing.T) {
 
 	t.Run("allows anonymous session with empty token", func(t *testing.T) {
 		t.Parallel()
-		identity := &auth.Identity{Subject: "user", Token: ""}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""}
 		_, err := factory.MakeSessionWithID(
 			context.Background(),
 			"test-session",
@@ -213,7 +213,7 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 	// Create factory with the secret
 	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(secretSlice))
 
-	identity := &auth.Identity{Subject: "user", Token: "test-token"}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
 
 	// Create first session before modification
 	sess1, err := factory.MakeSessionWithID(context.Background(), "session-1", identity, false, nil)
@@ -267,7 +267,7 @@ func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {
 		// Create factory with nil secret (should fall back to default)
 		factory := NewSessionFactory(nil, WithHMACSecret(nil))
 
-		identity := &auth.Identity{Subject: "user", Token: "test-token"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
 		sess, err := factory.MakeSessionWithID(context.Background(), "test-session", identity, false, nil)
 		require.NoError(t, err)
 
@@ -282,7 +282,7 @@ func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {
 		// Create factory with empty secret (should fall back to default)
 		factory := NewSessionFactory(nil, WithHMACSecret([]byte{}))
 
-		identity := &auth.Identity{Subject: "user", Token: "test-token"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
 		sess, err := factory.MakeSessionWithID(context.Background(), "test-session", identity, false, nil)
 		require.NoError(t, err)
 

@@ -235,6 +235,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	// This must happen before middleware creation so that the upstream token
 	// service is available to middleware factories (e.g., upstreamswap).
 	if r.Config.EmbeddedAuthServerConfig != nil {
+		// Proxy runner supports only single-upstream configs; multi-upstream
+		// requires VirtualMCPServer.
+		if len(r.Config.EmbeddedAuthServerConfig.Upstreams) > 1 {
+			return fmt.Errorf(
+				"proxy runner does not support multiple upstream providers (found %d); "+
+					"use VirtualMCPServer for multi-upstream deployments",
+				len(r.Config.EmbeddedAuthServerConfig.Upstreams),
+			)
+		}
+
 		var err error
 		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
 		if err != nil {
@@ -252,13 +262,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
-		handler := r.embeddedAuthServer.Handler()
-		transportConfig.PrefixHandlers = map[string]http.Handler{
-			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
-			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
-			"/.well-known/openid-configuration":       handler, // OIDC Discovery
-			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
-		}
+		transportConfig.PrefixHandlers = r.embeddedAuthServer.Routes()
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
@@ -290,6 +294,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if r.Config.RemoteURL == "" {
 		// For local workloads, deploy the container using runtime.Setup first
+		var scalingConfig *rt.ScalingConfig
+		if r.Config.ScalingConfig != nil {
+			scalingConfig = &rt.ScalingConfig{
+				BackendReplicas: r.Config.ScalingConfig.BackendReplicas,
+			}
+		}
 		result, err := runtime.Setup(
 			ctx,
 			r.Config.Transport,
@@ -306,6 +316,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.Host,
 			r.Config.TargetPort,
 			r.Config.TargetHost,
+			scalingConfig,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to set up workload: %w", err)
@@ -452,8 +463,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			slog.Warn("failed to cleanup telemetry", "error", err)
 		}
 
-		// Remove the PID file if it exists
-		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
+		// Remove the PID file if it exists. Use PID-guarded reset so that a
+		// dying process does not clobber the PID of a replacement process that
+		// started in the meantime (e.g. during thv rm + thv run).
+		if err := r.statusManager.ResetWorkloadPIDIfMatch(cleanupCtx, r.Config.BaseName, os.Getpid()); err != nil {
 			slog.Warn("failed to reset workload PID", "container", r.Config.ContainerName, "error", err)
 		}
 
@@ -531,8 +544,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Remove the old PID from the state file
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+		// Remove the old PID from the state file. Use PID-guarded reset to
+		// avoid clobbering a replacement process's PID.
+		if err := r.statusManager.ResetWorkloadPIDIfMatch(ctx, r.Config.BaseName, os.Getpid()); err != nil {
 			slog.Warn("failed to reset workload PID", "workload", r.Config.BaseName, "error", err)
 		}
 

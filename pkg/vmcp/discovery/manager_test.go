@@ -68,7 +68,7 @@ func TestDefaultManager_Discover(t *testing.T) {
 		defer mgr.Stop()
 
 		// Create context with user identity
-		identity := &auth.Identity{Subject: "user123", Name: "Test User"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Name: "Test User"}}
 		ctx := auth.WithIdentity(context.Background(), identity)
 
 		caps, err := mgr.Discover(ctx, backends)
@@ -120,7 +120,7 @@ func TestDefaultManager_Discover(t *testing.T) {
 		defer mgr.Stop()
 
 		// Create context with user identity
-		identity := &auth.Identity{Subject: "user456"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user456"}}
 		ctx := auth.WithIdentity(context.Background(), identity)
 
 		caps, err := mgr.Discover(ctx, backends)

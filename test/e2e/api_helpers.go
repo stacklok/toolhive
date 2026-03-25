@@ -7,6 +7,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -224,10 +225,25 @@ func StartServer(config *ServerConfig) *Server {
 	server, err := NewServer(config)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Failed to start API server")
 
-	// Register cleanup
+	// Dump server logs when a test fails for post-mortem debugging
 	DeferCleanup(func() {
+		if CurrentSpecReport().Failed() {
+			GinkgoWriter.Printf("\n=== thv serve stdout (port %d) ===\n%s\n", server.port, server.GetStdout())
+			GinkgoWriter.Printf("=== thv serve stderr (port %d) ===\n%s\n", server.port, server.GetStderr())
+		}
 		_ = server.Stop()
 	})
 
 	return server
+}
+
+// ExpectStatus reads the response body and asserts the status code,
+// including the response body in the failure message for debugging.
+// The response body is consumed and closed; callers must not read it again.
+func ExpectStatus(resp *http.Response, expected int) {
+	body, _ := io.ReadAll(resp.Body)
+	//nolint:errcheck,gosec // This is just a test
+	resp.Body.Close()
+	ExpectWithOffset(1, resp.StatusCode).To(Equal(expected),
+		fmt.Sprintf("Response body: %s", string(body)))
 }

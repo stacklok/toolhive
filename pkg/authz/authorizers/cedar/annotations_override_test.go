@@ -136,7 +136,7 @@ func TestAnnotationAttributesCannotOverrideStandardAttributes(t *testing.T) {
 				"sub":  "user456",
 				"name": "Annotation Tester",
 			}
-			identity := &auth.Identity{Subject: "user456", Claims: claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user456", Claims: claims}}
 			ctx = auth.WithIdentity(ctx, identity)
 
 			if tc.annotations != nil {

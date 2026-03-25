@@ -6,38 +6,106 @@
 package conversion
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+// ConvertMCPAnnotations converts mcp.Annotations to vmcp.ContentAnnotations.
+// Returns nil if the input is nil or all fields are zero-valued.
+func ConvertMCPAnnotations(ann *mcp.Annotations) *vmcp.ContentAnnotations {
+	if ann == nil {
+		return nil
+	}
+	// Convert []mcp.Role to []string for the ACL boundary.
+	var audience []string
+	if len(ann.Audience) > 0 {
+		audience = make([]string, len(ann.Audience))
+		for i, r := range ann.Audience {
+			audience[i] = string(r)
+		}
+	}
+	if len(audience) == 0 && ann.Priority == nil && ann.LastModified == "" {
+		return nil
+	}
+	var priority *float64
+	if ann.Priority != nil {
+		p := *ann.Priority
+		priority = &p
+	}
+	return &vmcp.ContentAnnotations{
+		Audience:     audience,
+		Priority:     priority,
+		LastModified: ann.LastModified,
+	}
+}
+
+// ToMCPAnnotations converts vmcp.ContentAnnotations to mcp.Annotations.
+// Returns nil if the input is nil or all fields are zero-valued.
+func ToMCPAnnotations(ann *vmcp.ContentAnnotations) *mcp.Annotations {
+	if ann == nil {
+		return nil
+	}
+	var audience []mcp.Role
+	if len(ann.Audience) > 0 {
+		audience = make([]mcp.Role, len(ann.Audience))
+		for i, a := range ann.Audience {
+			audience[i] = mcp.Role(a)
+		}
+	}
+	if len(audience) == 0 && ann.Priority == nil && ann.LastModified == "" {
+		return nil
+	}
+	var priority *float64
+	if ann.Priority != nil {
+		p := *ann.Priority
+		priority = &p
+	}
+	return &mcp.Annotations{
+		Audience:     audience,
+		Priority:     priority,
+		LastModified: ann.LastModified,
+	}
+}
+
 // ConvertMCPContent converts a single mcp.Content item to vmcp.Content.
 // Unknown content types are returned as vmcp.Content{Type: "unknown"}.
 func ConvertMCPContent(content mcp.Content) vmcp.Content {
 	if text, ok := mcp.AsTextContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeText, Text: text.Text}
+		return vmcp.Content{Type: vmcp.ContentTypeText, Text: text.Text, Annotations: ConvertMCPAnnotations(text.Annotations)}
 	}
 	if img, ok := mcp.AsImageContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeImage, Data: img.Data, MimeType: img.MIMEType}
+		return vmcp.Content{
+			Type: vmcp.ContentTypeImage, Data: img.Data,
+			MimeType: img.MIMEType, Annotations: ConvertMCPAnnotations(img.Annotations),
+		}
 	}
 	if audio, ok := mcp.AsAudioContent(content); ok {
-		return vmcp.Content{Type: vmcp.ContentTypeAudio, Data: audio.Data, MimeType: audio.MIMEType}
+		return vmcp.Content{
+			Type: vmcp.ContentTypeAudio, Data: audio.Data,
+			MimeType: audio.MIMEType, Annotations: ConvertMCPAnnotations(audio.Annotations),
+		}
 	}
 	if res, ok := mcp.AsEmbeddedResource(content); ok {
+		ann := ConvertMCPAnnotations(res.Annotations)
 		if textRes, ok := mcp.AsTextResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: vmcp.ContentTypeResource, Text: textRes.Text, URI: textRes.URI, MimeType: textRes.MIMEType}
+			return vmcp.Content{
+				Type: vmcp.ContentTypeResource, Text: textRes.Text,
+				URI: textRes.URI, MimeType: textRes.MIMEType, Annotations: ann,
+			}
 		}
 		if blobRes, ok := mcp.AsBlobResourceContents(res.Resource); ok {
-			return vmcp.Content{Type: vmcp.ContentTypeResource, Data: blobRes.Blob, URI: blobRes.URI, MimeType: blobRes.MIMEType}
+			return vmcp.Content{
+				Type: vmcp.ContentTypeResource, Data: blobRes.Blob,
+				URI: blobRes.URI, MimeType: blobRes.MIMEType, Annotations: ann,
+			}
 		}
 		slog.Debug("Embedded resource has unknown resource contents type", "type", fmt.Sprintf("%T", res.Resource))
-		return vmcp.Content{Type: vmcp.ContentTypeResource}
+		return vmcp.Content{Type: vmcp.ContentTypeResource, Annotations: ann}
 	}
 	if link, ok := content.(mcp.ResourceLink); ok {
 		return vmcp.Content{
@@ -46,6 +114,7 @@ func ConvertMCPContent(content mcp.Content) vmcp.Content {
 			Name:        link.Name,
 			Description: link.Description,
 			MimeType:    link.MIMEType,
+			Annotations: ConvertMCPAnnotations(link.Annotations),
 		}
 	}
 	slog.Debug("Encountered unknown MCP content type", "type", fmt.Sprintf("%T", content))
@@ -65,44 +134,72 @@ func ConvertMCPContents(contents []mcp.Content) []vmcp.Content {
 // ToMCPContent converts a single vmcp.Content item to mcp.Content.
 // Unknown content types are converted to empty text with a warning.
 func ToMCPContent(content vmcp.Content) mcp.Content {
+	ann := toAnnotated(content.Annotations)
+
 	switch content.Type {
 	case vmcp.ContentTypeText:
-		return mcp.NewTextContent(content.Text)
+		tc := mcp.NewTextContent(content.Text)
+		tc.Annotated = ann
+		return tc
 	case vmcp.ContentTypeImage:
-		return mcp.NewImageContent(content.Data, content.MimeType)
+		ic := mcp.NewImageContent(content.Data, content.MimeType)
+		ic.Annotated = ann
+		return ic
 	case vmcp.ContentTypeAudio:
-		return mcp.NewAudioContent(content.Data, content.MimeType)
+		ac := mcp.NewAudioContent(content.Data, content.MimeType)
+		ac.Annotated = ann
+		return ac
 	case vmcp.ContentTypeResource:
 		// Reconstruct embedded resource from vmcp.Content fields.
 		// Text content takes precedence over blob content when both are present.
 		if content.Text != "" {
-			return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+			er := mcp.NewEmbeddedResource(mcp.TextResourceContents{
 				URI:      content.URI,
 				MIMEType: content.MimeType,
 				Text:     content.Text,
 			})
+			er.Annotated = ann
+			return er
 		}
 		if content.Data != "" {
-			return mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+			er := mcp.NewEmbeddedResource(mcp.BlobResourceContents{
 				URI:      content.URI,
 				MIMEType: content.MimeType,
 				Blob:     content.Data,
 			})
+			er.Annotated = ann
+			return er
 		}
 		// Empty resource content — preserve resource wrapper and metadata with empty contents.
 		slog.Warn("converting empty resource content to empty embedded resource - no Text or Data field present")
-		return mcp.NewEmbeddedResource(mcp.TextResourceContents{
+		er := mcp.NewEmbeddedResource(mcp.TextResourceContents{
 			URI:      content.URI,
 			MIMEType: content.MimeType,
 			Text:     "",
 		})
+		er.Annotated = ann
+		return er
 	case vmcp.ContentTypeLink:
 		// Reconstruct a ResourceLink from vmcp.Content fields.
-		return mcp.NewResourceLink(content.URI, content.Name, content.Description, content.MimeType)
+		rl := mcp.NewResourceLink(content.URI, content.Name, content.Description, content.MimeType)
+		rl.Annotated = ann
+		return rl
 	default:
 		slog.Warn("converting unknown content type to empty text - this may cause data loss", "type", content.Type)
-		return mcp.NewTextContent("")
+		tc := mcp.NewTextContent("")
+		tc.Annotated = ann
+		return tc
 	}
+}
+
+// toAnnotated converts vmcp.ContentAnnotations to mcp.Annotated.
+// Returns a zero-valued mcp.Annotated if annotations is nil.
+func toAnnotated(ann *vmcp.ContentAnnotations) mcp.Annotated {
+	mcpAnn := ToMCPAnnotations(ann)
+	if mcpAnn == nil {
+		return mcp.Annotated{}
+	}
+	return mcp.Annotated{Annotations: mcpAnn}
 }
 
 // ToMCPContents converts a slice of vmcp.Content to []mcp.Content.
@@ -114,36 +211,55 @@ func ToMCPContents(contents []vmcp.Content) []mcp.Content {
 	return result
 }
 
-// ConcatenateResourceContents concatenates all MCP resource content items into a
-// single byte slice and returns the MIME type of the first item.
-//
-// MCP resources may return multiple content chunks (text or blob). Text chunks
-// are appended as UTF-8 bytes; blob chunks are base64-decoded per the MCP spec.
-// If base64 decoding fails, the malformed chunk is skipped and a warning is logged
-// (appending raw base64 bytes would produce corrupted binary data).
-// The MIME type is taken from the first content item; subsequent items are
-// expected to share the same type (the MCP spec does not define per-chunk types).
-func ConcatenateResourceContents(contents []mcp.ResourceContents) (data []byte, mimeType string) {
-	for i, content := range contents {
-		if textContent, ok := mcp.AsTextResourceContents(content); ok {
-			data = append(data, []byte(textContent.Text)...)
-			if i == 0 && textContent.MIMEType != "" {
-				mimeType = textContent.MIMEType
-			}
-		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
-			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
-			if err != nil {
-				slog.Warn("Skipping malformed base64 blob resource chunk; this chunk's data is lost",
-					"uri", blobContent.URI, "error", err)
-				continue
-			}
-			data = append(data, decoded...)
-			if i == 0 && blobContent.MIMEType != "" {
-				mimeType = blobContent.MIMEType
-			}
+// ConvertMCPResourceContents converts []mcp.ResourceContents to []vmcp.ResourceContent,
+// preserving the text vs blob distinction and per-item metadata.
+func ConvertMCPResourceContents(contents []mcp.ResourceContents) []vmcp.ResourceContent {
+	result := make([]vmcp.ResourceContent, 0, len(contents))
+	for _, c := range contents {
+		if textRes, ok := mcp.AsTextResourceContents(c); ok {
+			result = append(result, vmcp.ResourceContent{
+				URI:      textRes.URI,
+				MimeType: textRes.MIMEType,
+				Text:     textRes.Text,
+			})
+		} else if blobRes, ok := mcp.AsBlobResourceContents(c); ok {
+			result = append(result, vmcp.ResourceContent{
+				URI:      blobRes.URI,
+				MimeType: blobRes.MIMEType,
+				Blob:     blobRes.Blob,
+			})
+		} else {
+			// Warn rather than debug: an unrecognized resource type likely
+			// indicates a protocol change or bug, and silently dropping data
+			// should be visible to operators.
+			slog.Warn("Skipping unknown resource contents type", "type", fmt.Sprintf("%T", c))
 		}
 	}
-	return data, mimeType
+	return result
+}
+
+// ToMCPResourceContents converts []vmcp.ResourceContent to []mcp.ResourceContents,
+// reconstructing the text vs blob distinction.
+func ToMCPResourceContents(contents []vmcp.ResourceContent) []mcp.ResourceContents {
+	result := make([]mcp.ResourceContents, 0, len(contents))
+	for _, c := range contents {
+		// Blob takes precedence: a non-empty Blob field means this is a blob resource.
+		// If both Text and Blob are set the Text field is ignored.
+		if c.Blob != "" {
+			result = append(result, mcp.BlobResourceContents{
+				URI:      c.URI,
+				MIMEType: c.MimeType,
+				Blob:     c.Blob,
+			})
+		} else {
+			result = append(result, mcp.TextResourceContents{
+				URI:      c.URI,
+				MIMEType: c.MimeType,
+				Text:     c.Text,
+			})
+		}
+	}
+	return result
 }
 
 // ConvertToolInputSchema converts a mcp.ToolInputSchema to map[string]any via a
@@ -162,22 +278,29 @@ func ConvertToolInputSchema(schema mcp.ToolInputSchema) map[string]any {
 	return result
 }
 
-// ConvertPromptMessages flattens MCP prompt messages into a single string with
-// the format "[role] text\n". Messages without a role omit the prefix. Only
-// text content is included; non-text content is silently discarded (Phase 1
-// limitation — vmcp.PromptGetResult carries a flat string, not structured messages).
-func ConvertPromptMessages(messages []mcp.PromptMessage) string {
-	var sb strings.Builder
+// ConvertMCPPromptMessages converts []mcp.PromptMessage to []vmcp.PromptMessage,
+// preserving individual message roles and content types.
+func ConvertMCPPromptMessages(messages []mcp.PromptMessage) []vmcp.PromptMessage {
+	result := make([]vmcp.PromptMessage, 0, len(messages))
 	for _, msg := range messages {
-		if msg.Role != "" {
-			fmt.Fprintf(&sb, "[%s] ", msg.Role)
-		}
-		if textContent, ok := mcp.AsTextContent(msg.Content); ok {
-			sb.WriteString(textContent.Text)
-			sb.WriteByte('\n')
-		}
+		result = append(result, vmcp.PromptMessage{
+			Role:    string(msg.Role),
+			Content: ConvertMCPContent(msg.Content),
+		})
 	}
-	return sb.String()
+	return result
+}
+
+// ToMCPPromptMessages converts []vmcp.PromptMessage to []mcp.PromptMessage.
+func ToMCPPromptMessages(messages []vmcp.PromptMessage) []mcp.PromptMessage {
+	result := make([]mcp.PromptMessage, 0, len(messages))
+	for _, msg := range messages {
+		result = append(result, mcp.PromptMessage{
+			Role:    mcp.Role(msg.Role),
+			Content: ToMCPContent(msg.Content),
+		})
+	}
+	return result
 }
 
 // ConvertPromptArguments converts map[string]any to map[string]string by

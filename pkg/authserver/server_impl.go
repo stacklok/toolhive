@@ -21,9 +21,9 @@ import (
 
 // server is the internal implementation of the Server interface.
 type server struct {
-	handler     http.Handler
-	storage     storage.Storage
-	upstreamIDP upstream.OAuth2Provider
+	handler   http.Handler
+	storage   storage.Storage
+	upstreams []handlers.NamedUpstream
 }
 
 // upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
@@ -122,29 +122,36 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Create fosite provider
 	slog.Debug("creating fosite OAuth2 provider")
-	provider := createProvider(authServerConfig, stor)
+	fositeProvider := createProvider(authServerConfig, stor)
 
-	// Get upstream config
-	upstreamCfg := cfg.GetUpstream()
-
-	// Create upstream IDP provider using factory
-	slog.Debug("creating upstream IDP provider", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
-	upstreamIDP, err := options.upstreamFactory(ctx, upstreamCfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
+	// Build ordered upstream provider list from all configured upstreams.
+	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
+	for i := range cfg.Upstreams {
+		upCfg := &cfg.Upstreams[i]
+		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
+		upstreamProvider, upErr := options.upstreamFactory(ctx, upCfg)
+		if upErr != nil {
+			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, upErr)
+		}
+		upstreams = append(upstreams, handlers.NamedUpstream{
+			Name:     upCfg.Name,
+			Provider: upstreamProvider,
+		})
+		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
-	slog.Debug("upstream IDP provider configured", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
 
 	// Run one-shot bulk migration of legacy data before handler construction.
 	// TODO(migration): Remove once all deployments have upgraded past this version.
 	if rs, ok := stor.(*storage.RedisStorage); ok {
-		if err := rs.MigrateLegacyUpstreamData(ctx, upstreamCfg.Name, string(upstreamCfg.Type)); err != nil {
-			return nil, fmt.Errorf("legacy data migration failed: %w", err)
+		for i := range cfg.Upstreams {
+			upCfg := &cfg.Upstreams[i]
+			if err := rs.MigrateLegacyUpstreamData(ctx, upCfg.Name, string(upCfg.Type)); err != nil {
+				return nil, fmt.Errorf("legacy data migration failed for upstream %q: %w", upCfg.Name, err)
+			}
 		}
 	}
 
-	userResolver := handlers.NewUserResolver(stor)
-	handlerInstance, err := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP, upstreamCfg.Name, userResolver)
+	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -157,9 +164,9 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	return &server{
-		handler:     router,
-		storage:     stor,
-		upstreamIDP: upstreamIDP,
+		handler:   router,
+		storage:   stor,
+		upstreams: upstreams,
 	}, nil
 }
 
@@ -173,15 +180,20 @@ func (s *server) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return s.storage
 }
 
-// UpstreamTokenRefresher returns a refresher that wraps the upstream provider
-// and storage to transparently refresh expired upstream tokens.
+// UpstreamTokenRefresher returns a refresher that wraps the upstream providers
+// and storage to transparently refresh expired upstream tokens. The refresher
+// dispatches to the correct provider based on each token's ProviderID.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
-	if s.upstreamIDP == nil {
+	if len(s.upstreams) == 0 {
 		return nil
 	}
+	providers := make(map[string]upstream.OAuth2Provider, len(s.upstreams))
+	for _, u := range s.upstreams {
+		providers[u.Name] = u.Provider
+	}
 	return &upstreamTokenRefresher{
-		provider: s.upstreamIDP,
-		storage:  s.storage,
+		providers: providers,
+		storage:   s.storage,
 	}
 }
 

@@ -40,7 +40,6 @@ func newMockSession(t *testing.T, ctrl *gomock.Controller, sessionID string, too
 	sess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
 	sess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 	sess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
-	sess.EXPECT().Touch().AnyTimes()
 	sess.EXPECT().GetData().Return(nil).AnyTimes()
 	sess.EXPECT().SetData(gomock.Any()).AnyTimes()
 	sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
@@ -1253,8 +1252,9 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 			},
 		}
 		readResult := &vmcp.ResourceReadResult{
-			Contents: []byte("hello resource"),
-			MimeType: "text/plain",
+			Contents: []vmcp.ResourceContent{
+				{URI: "file:///data.txt", MimeType: "text/plain", Text: "hello resource"},
+			},
 		}
 
 		ctrl := gomock.NewController(t)
@@ -1336,7 +1336,7 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 		assert.ErrorContains(t, handlerErr, "read failed")
 	})
 
-	t.Run("handler uses application/octet-stream fallback when MimeType is empty", func(t *testing.T) {
+	t.Run("handler preserves empty MimeType from backend", func(t *testing.T) {
 		t.Parallel()
 
 		resources := []vmcp.Resource{
@@ -1347,8 +1347,9 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 			},
 		}
 		readResult := &vmcp.ResourceReadResult{
-			Contents: []byte("binary data"),
-			MimeType: "", // empty — should fall back to application/octet-stream
+			Contents: []vmcp.ResourceContent{
+				{URI: "file:///binary.bin", MimeType: "", Text: "binary data"},
+			},
 		}
 
 		ctrl := gomock.NewController(t)
@@ -1382,7 +1383,7 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 
 		textContents, ok := contents[0].(mcp.TextResourceContents)
 		require.True(t, ok, "expected TextResourceContents")
-		assert.Equal(t, "application/octet-stream", textContents.MIMEType)
+		assert.Equal(t, "", textContents.MIMEType)
 	})
 
 	t.Run("handler terminates session on authorization errors", func(t *testing.T) {
@@ -1493,7 +1494,6 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 			decorated.EXPECT().Type().Return(sess.Type()).AnyTimes()
 			decorated.EXPECT().CreatedAt().Return(sess.CreatedAt()).AnyTimes()
 			decorated.EXPECT().UpdatedAt().Return(sess.UpdatedAt()).AnyTimes()
-			decorated.EXPECT().Touch().AnyTimes()
 			decorated.EXPECT().GetData().Return(nil).AnyTimes()
 			decorated.EXPECT().SetData(gomock.Any()).AnyTimes()
 			decorated.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()

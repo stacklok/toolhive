@@ -226,10 +226,6 @@ type ScalingConfig struct {
 	// When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
 	// When set (including 0), the value is an explicit replica count.
 	BackendReplicas *int32 `json:"backend_replicas,omitempty" yaml:"backend_replicas,omitempty"`
-
-	// SessionCacheSize is the maximum number of sessions held in the local LRU cache.
-	// When nil, consuming code applies a sensible default (e.g. 1000).
-	SessionCacheSize *int32 `json:"session_cache_size,omitempty" yaml:"session_cache_size,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

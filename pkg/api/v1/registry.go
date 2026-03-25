@@ -26,9 +26,10 @@ import (
 // Desktop clients (Studio) match on this value to display the correct UI.
 const RegistryAuthRequiredCode = "registry_auth_required"
 
-// registryAuthErrorResponse is the JSON body for HTTP 503 auth-required errors.
-// Studio uses the "code" field to detect this specific condition and prompt the user.
-type registryAuthErrorResponse struct {
+// registryErrorResponse is the JSON body for structured HTTP 503 error responses.
+// The "code" field allows clients (e.g. Studio) to distinguish between
+// "registry_auth_required" and "registry_unavailable" conditions.
+type registryErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
@@ -38,9 +39,25 @@ type registryAuthErrorResponse struct {
 // but thv serve itself lacks a valid registry credential. This is a server-side dependency
 // issue, not a client auth failure (which would be 401).
 func writeRegistryAuthRequiredError(w http.ResponseWriter) {
-	body := registryAuthErrorResponse{
+	body := registryErrorResponse{
 		Code:    RegistryAuthRequiredCode,
 		Message: "Registry authentication required. Run 'thv registry login' to authenticate.",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// RegistryUnavailableCode is the machine-readable error code returned in the
+// structured JSON 503 response when the upstream registry is unreachable.
+const RegistryUnavailableCode = "registry_unavailable"
+
+// writeRegistryUnavailableError writes a structured JSON 503 response when the
+// upstream registry cannot be reached or returns an unexpected error (e.g. 404).
+func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.UnavailableError) {
+	body := registryErrorResponse{
+		Code:    RegistryUnavailableCode,
+		Message: unavailableErr.Error(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
@@ -244,6 +261,12 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 			writeRegistryAuthRequiredError(w)
 			return nil, false
 		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
+			return nil, false
+		}
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
 		slog.Error("failed to get registry provider", "error", err)
 		return nil, false
@@ -342,6 +365,12 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 			writeRegistryAuthRequiredError(w)
 			return
 		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
+			return
+		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -415,6 +444,12 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if isRegistryAuthError(err) {
 			writeRegistryAuthRequiredError(w)
+			return
+		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
 			return
 		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
@@ -658,6 +693,12 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if isRegistryAuthError(err) {
 			writeRegistryAuthRequiredError(w)
+			return
+		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
 			return
 		}
 		slog.Error("failed to get registry", "error", err)

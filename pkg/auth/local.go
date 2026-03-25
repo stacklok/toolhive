@@ -34,10 +34,12 @@ func LocalUserMiddleware(username string) func(http.Handler) http.Handler {
 
 			// Create Identity from claims
 			identity := &Identity{
-				Subject:   username,
-				Name:      "Local User: " + username,
-				Email:     username + "@localhost",
-				Claims:    claims,
+				PrincipalInfo: PrincipalInfo{
+					Subject: username,
+					Name:    "Local User: " + username,
+					Email:   username + "@localhost",
+					Claims:  claims,
+				},
 				Token:     "", // No token for local auth
 				TokenType: "Bearer",
 			}

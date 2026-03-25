@@ -340,7 +340,7 @@ func (r *VirtualMCPServerReconciler) runValidations(
 // validateAuthServerConfig validates inline AuthServerConfig and sets the
 // AuthServerConfigValidated condition. Returns an error when validation fails
 // (caller should NOT requeue — user must fix the spec).
-func (r *VirtualMCPServerReconciler) validateAuthServerConfig(
+func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {

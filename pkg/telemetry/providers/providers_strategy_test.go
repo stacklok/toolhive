@@ -14,8 +14,17 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 )
+
+// noopSpanProcessor is a minimal SpanProcessor for testing.
+type noopSpanProcessor struct{}
+
+func (noopSpanProcessor) OnStart(_ context.Context, _ sdktrace.ReadWriteSpan) {}
+func (noopSpanProcessor) OnEnd(_ sdktrace.ReadOnlySpan)                       {}
+func (noopSpanProcessor) Shutdown(_ context.Context) error                    { return nil }
+func (noopSpanProcessor) ForceFlush(_ context.Context) error                  { return nil }
 
 func TestStrategySelector_SelectTracerStrategy(t *testing.T) {
 	t.Parallel()
@@ -47,6 +56,22 @@ func TestStrategySelector_SelectTracerStrategy(t *testing.T) {
 				TracingEnabled: true,
 			},
 			expectedType: "*providers.NoOpTracerStrategy",
+		},
+		{
+			name: "OTLP tracer when extra processors present without endpoint",
+			config: Config{
+				ExtraSpanProcessors: []sdktrace.SpanProcessor{noopSpanProcessor{}},
+			},
+			expectedType: "*providers.OTLPTracerStrategy",
+		},
+		{
+			name: "OTLP tracer when extra processors present with endpoint",
+			config: Config{
+				OTLPEndpoint:        "localhost:4318",
+				TracingEnabled:      true,
+				ExtraSpanProcessors: []sdktrace.SpanProcessor{noopSpanProcessor{}},
+			},
+			expectedType: "*providers.OTLPTracerStrategy",
 		},
 	}
 
@@ -155,6 +180,32 @@ func TestOTLPTracerStrategy_CreateTracerProvider(t *testing.T) {
 	}
 }
 
+func TestOTLPTracerStrategy_ExtraProcessorsWithoutEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	res := createTestResource(t)
+	config := Config{
+		SamplingRate:        1.0,
+		ExtraSpanProcessors: []sdktrace.SpanProcessor{noopSpanProcessor{}},
+	}
+
+	strategy := &OTLPTracerStrategy{}
+	provider, shutdown, err := strategy.CreateTracerProvider(ctx, config, res)
+
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	require.NotNil(t, shutdown, "Expected shutdown function even without OTLP endpoint when processors are registered")
+
+	// Must be a real SDK provider, not a no-op
+	typeName := getTypeName(provider)
+	assert.NotContains(t, typeName, "noop", "Expected real SDK tracer provider, got %s", typeName)
+
+	if shutdown != nil {
+		assert.NoError(t, shutdown(ctx))
+	}
+}
+
 func TestStrategySelector_SelectMeterStrategy(t *testing.T) {
 	t.Parallel()
 
@@ -260,6 +311,13 @@ func TestStrategySelector_IsFullyNoOp(t *testing.T) {
 				MetricsEnabled: false,
 			},
 			expected: true,
+		},
+		{
+			name: "not no-op when extra processors present without endpoint",
+			config: Config{
+				ExtraSpanProcessors: []sdktrace.SpanProcessor{noopSpanProcessor{}},
+			},
+			expected: false,
 		},
 	}
 

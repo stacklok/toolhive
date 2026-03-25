@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 )
 
 // HandlerWithError is an HTTP handler that can return an error.
@@ -42,6 +43,7 @@ func ErrorHandler(fn HandlerWithError) http.HandlerFunc {
 		// For 5xx errors, log the full error but return a generic message
 		if code >= http.StatusInternalServerError {
 			slog.Error("internal server error", "error", err)
+			sentrypkg.CaptureException(r, err)
 			http.Error(w, http.StatusText(code), code)
 			return
 		}

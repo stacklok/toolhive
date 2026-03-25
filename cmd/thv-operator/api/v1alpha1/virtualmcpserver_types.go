@@ -411,30 +411,11 @@ func (r *VirtualMCPServer) Validate() error {
 		}
 	}
 
-	// Validate AuthServerConfig (inline embedded auth server)
-	if err := r.validateAuthServerConfig(); err != nil {
-		return err
-	}
+	// Note: AuthServerConfig validation is handled by the reconciler (validateAuthServerConfig)
+	// so it can set the AuthServerConfigValidated condition on failure.
 
 	// Validate EmbeddingServer / EmbeddingServerRef
 	return r.validateEmbeddingServer()
-}
-
-// validateAuthServerConfig validates inline AuthServerConfig.
-// Rules:
-// - issuer must be non-empty when config is provided
-// - at least one upstream provider must be configured
-func (r *VirtualMCPServer) validateAuthServerConfig() error {
-	if r.Spec.AuthServerConfig == nil {
-		return nil
-	}
-	if r.Spec.AuthServerConfig.Issuer == "" {
-		return fmt.Errorf("spec.authServerConfig.issuer is required")
-	}
-	if len(r.Spec.AuthServerConfig.UpstreamProviders) == 0 {
-		return fmt.Errorf("spec.authServerConfig.upstreamProviders is required")
-	}
-	return nil
 }
 
 // validateEmbeddingServer validates EmbeddingServerRef and Optimizer configuration.

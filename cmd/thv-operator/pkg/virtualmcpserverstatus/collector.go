@@ -132,6 +132,11 @@ func (s *StatusCollector) SetEmbeddingServerReadyCondition(reason, message strin
 	s.SetCondition(mcpv1alpha1.ConditionTypeEmbeddingServerReady, reason, message, status)
 }
 
+// SetAuthServerConfigValidatedCondition sets the AuthServerConfigValidated condition.
+func (s *StatusCollector) SetAuthServerConfigValidatedCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeAuthServerConfigValidated, reason, message, status)
+}
+
 // SetDiscoveredBackends sets the discovered backends list to be updated.
 func (s *StatusCollector) SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend) {
 	s.discoveredBackends = backends

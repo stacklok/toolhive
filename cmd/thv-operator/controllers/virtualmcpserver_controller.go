@@ -268,7 +268,7 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 }
 
 // runValidations runs all pre-reconciliation validations (PodTemplateSpec, GroupRef,
-// CompositeToolRefs, EmbeddingServerRef).
+// CompositeToolRefs, EmbeddingServerRef, AuthServerConfig).
 // Returns (true, nil) to continue reconciliation.
 // Returns (false, nil) for spec validation errors that should NOT trigger requeue
 // (user must fix the spec; next reconciliation is triggered by spec changes).
@@ -321,7 +321,66 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		}
 	}
 
+	// Validate inline AuthServerConfig (when specified).
+	if vmcp.Spec.AuthServerConfig != nil {
+		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
+			}
+			return false, nil
+		}
+	} else {
+		// Remove stale condition if AuthServerConfig was previously set then removed.
+		statusManager.RemoveConditionsWithPrefix(mcpv1alpha1.ConditionTypeAuthServerConfigValidated, []string{})
+	}
+
 	return true, nil
+}
+
+// validateAuthServerConfig validates inline AuthServerConfig and sets the
+// AuthServerConfigValidated condition. Returns an error when validation fails
+// (caller should NOT requeue — user must fix the spec).
+func (*VirtualMCPServerReconciler) validateAuthServerConfig(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	cfg := vmcp.Spec.AuthServerConfig
+
+	if cfg.Issuer == "" {
+		message := "spec.authServerConfig.issuer is required"
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return fmt.Errorf("%s", message)
+	}
+
+	if len(cfg.UpstreamProviders) == 0 {
+		message := "spec.authServerConfig.upstreamProviders is required"
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return fmt.Errorf("%s", message)
+	}
+
+	// AuthServerConfig is valid
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1alpha1.ConditionReasonAuthServerConfigValid,
+		"AuthServerConfig is valid",
+		metav1.ConditionTrue,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return nil
 }
 
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
@@ -2243,12 +2302,16 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 }
 
 // vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig.
-// It checks both inline references (in outgoingAuth spec) and discovered references (via MCPServers in the group).
+// It checks authServerConfigRef, inline references (in outgoingAuth spec), and discovered references
+// (via MCPServers in the group).
 func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
+	// Note: AuthServerConfig is inline (not a ref), so it doesn't reference
+	// MCPExternalAuthConfig resources. Only outgoing auth refs are checked here.
+
 	if vmcp.Spec.OutgoingAuth == nil {
 		return false
 	}

@@ -169,6 +169,25 @@ func TestStatusCollector_SetAuthConfiguredCondition(t *testing.T) {
 	assert.Equal(t, "auth is configured", status.Conditions[0].Message)
 }
 
+func TestStatusCollector_SetAuthServerConfigValidatedCondition(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetAuthServerConfigValidatedCondition("AuthServerConfigValid", "AuthServerConfig is valid", metav1.ConditionTrue)
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Len(t, status.Conditions, 1)
+	assert.Equal(t, mcpv1alpha1.ConditionTypeAuthServerConfigValidated, status.Conditions[0].Type)
+	assert.Equal(t, metav1.ConditionTrue, status.Conditions[0].Status)
+	assert.Equal(t, "AuthServerConfigValid", status.Conditions[0].Reason)
+	assert.Equal(t, "AuthServerConfig is valid", status.Conditions[0].Message)
+}
+
 func TestStatusCollector_MultipleConditions(t *testing.T) {
 	t.Parallel()
 

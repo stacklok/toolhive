@@ -59,6 +59,9 @@ type StatusManager interface {
 	// SetEmbeddingServerReadyCondition sets the EmbeddingServerReady condition
 	SetEmbeddingServerReadyCondition(reason, message string, status metav1.ConditionStatus)
 
+	// SetAuthServerConfigValidatedCondition sets the AuthServerConfigValidated condition
+	SetAuthServerConfigValidatedCondition(reason, message string, status metav1.ConditionStatus)
+
 	// SetDiscoveredBackends sets the discovered backends list
 	SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend)
 

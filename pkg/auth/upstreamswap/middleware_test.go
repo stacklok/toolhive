@@ -19,15 +19,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
 
-// requestWithIdentity creates an HTTP request with the given identity in context.
-func requestWithIdentity(providerName, token string) *http.Request {
+// requestWithIdentity creates an HTTP request with a "github" upstream token in context.
+func requestWithIdentity(token string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	identity := &auth.Identity{
 		PrincipalInfo: auth.PrincipalInfo{
 			Subject: "user123",
 		},
 		UpstreamTokens: map[string]string{
-			providerName: token,
+			"github": token,
 		},
 	}
 	ctx := auth.WithIdentity(req.Context(), identity)
@@ -160,7 +160,7 @@ func TestMiddleware_ProviderMissing_Returns401(t *testing.T) {
 	})
 
 	handler := middleware(nextHandler)
-	req := requestWithIdentity("github", "gh-token") // has github but not atlassian
+	req := requestWithIdentity("gh-token") // has github but not atlassian
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -179,7 +179,7 @@ func TestMiddleware_EmptyToken_Returns401(t *testing.T) {
 	})
 
 	handler := middleware(nextHandler)
-	req := requestWithIdentity("github", "") // empty token
+	req := requestWithIdentity("") // empty token
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -202,7 +202,7 @@ func TestMiddleware_SuccessfulSwap_ReplaceStrategy(t *testing.T) {
 	})
 
 	handler := middleware(nextHandler)
-	req := requestWithIdentity("github", "upstream-access-token")
+	req := requestWithIdentity("upstream-access-token")
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -225,7 +225,7 @@ func TestMiddleware_SuccessfulSwap_DefaultStrategy(t *testing.T) {
 	})
 
 	handler := middleware(nextHandler)
-	req := requestWithIdentity("github", "default-strategy-token")
+	req := requestWithIdentity("default-strategy-token")
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -252,7 +252,7 @@ func TestMiddleware_SuccessfulSwap_CustomHeader(t *testing.T) {
 	})
 
 	handler := middleware(nextHandler)
-	req := requestWithIdentity("github", "upstream-access-token")
+	req := requestWithIdentity("upstream-access-token")
 	req.Header.Set("Authorization", "Bearer original-token")
 
 	rr := httptest.NewRecorder()
@@ -314,7 +314,7 @@ func TestMiddlewareWithContext(t *testing.T) {
 	})
 
 	handler := middleware(nextHandler)
-	req := requestWithIdentity("github", "ctx-test-token")
+	req := requestWithIdentity("ctx-test-token")
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

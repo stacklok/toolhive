@@ -124,10 +124,10 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 }
 
 // GetUpstreamTokenReader mocks base method.
-func (m *MockMiddlewareRunner) GetUpstreamTokenReader() upstreamtoken.UpstreamTokenReader {
+func (m *MockMiddlewareRunner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetUpstreamTokenReader")
-	ret0, _ := ret[0].(upstreamtoken.UpstreamTokenReader)
+	ret0, _ := ret[0].(upstreamtoken.TokenReader)
 	return ret0
 }
 

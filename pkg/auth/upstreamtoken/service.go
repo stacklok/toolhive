@@ -31,8 +31,8 @@ type InProcessService struct {
 
 // Compile-time checks.
 var (
-	_ Service             = (*InProcessService)(nil)
-	_ UpstreamTokenReader = (*InProcessService)(nil)
+	_ Service     = (*InProcessService)(nil)
+	_ TokenReader = (*InProcessService)(nil)
 )
 
 // NewInProcessService creates a new InProcessService.
@@ -137,7 +137,10 @@ func (s *InProcessService) refreshOrFail(
 	}
 
 	if s.refresher == nil {
-		slog.Debug("token refresher not configured, cannot refresh upstream tokens")
+		slog.Debug("token refresher not configured, cannot refresh upstream tokens",
+			"session_id", sessionID,
+			"provider", providerName,
+		)
 		return nil, ErrNoRefreshToken
 	}
 
@@ -156,6 +159,7 @@ func (s *InProcessService) refreshOrFail(
 	if err != nil {
 		slog.Warn("upstream token refresh failed",
 			"session_id", sessionID,
+			"provider", providerName,
 			"error", err,
 		)
 		return nil, fmt.Errorf("%w: %w", ErrRefreshFailed, err)

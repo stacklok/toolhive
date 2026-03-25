@@ -370,7 +370,7 @@ type TokenValidator struct {
 
 	// upstreamTokenReader loads upstream provider tokens for identity enrichment.
 	// nil means no enrichment (no embedded auth server).
-	upstreamTokenReader upstreamtoken.UpstreamTokenReader
+	upstreamTokenReader upstreamtoken.TokenReader
 
 	// Lazy JWKS registration
 	jwksRegistered      bool
@@ -546,7 +546,7 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 // tokenValidatorOptions holds optional dependencies for NewTokenValidator.
 type tokenValidatorOptions struct {
 	envReader           env.Reader
-	upstreamTokenReader upstreamtoken.UpstreamTokenReader
+	upstreamTokenReader upstreamtoken.TokenReader
 }
 
 // TokenValidatorOption is a functional option for NewTokenValidator.
@@ -564,7 +564,7 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 // with upstream provider tokens. When set, the Middleware extracts the token
 // session ID (tsid) from JWT claims and loads all upstream tokens into
 // Identity.UpstreamTokens before placing the Identity in the request context.
-func WithUpstreamTokenReader(reader upstreamtoken.UpstreamTokenReader) TokenValidatorOption {
+func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
 	}

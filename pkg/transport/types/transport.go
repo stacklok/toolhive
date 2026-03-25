@@ -77,9 +77,9 @@ type MiddlewareRunner interface {
 	// GetConfig returns a config interface for middleware to access runner configuration
 	GetConfig() RunnerConfig
 
-	// GetUpstreamTokenReader returns an UpstreamTokenReader for identity enrichment.
+	// GetUpstreamTokenReader returns a TokenReader for identity enrichment.
 	// Returns nil if the embedded auth server is not configured.
-	GetUpstreamTokenReader() upstreamtoken.UpstreamTokenReader
+	GetUpstreamTokenReader() upstreamtoken.TokenReader
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration

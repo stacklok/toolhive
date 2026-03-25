@@ -80,7 +80,7 @@ type Runner struct {
 	// identity enrichment in auth middleware. Set when the embedded auth
 	// server is initialized in Run().
 	// Nil when no embedded auth server is configured.
-	upstreamTokenReader upstreamtoken.UpstreamTokenReader
+	upstreamTokenReader upstreamtoken.TokenReader
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -134,7 +134,7 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 // GetUpstreamTokenReader returns the UpstreamTokenReader for identity
 // enrichment in the auth middleware. Returns nil if no embedded auth
 // server is configured.
-func (r *Runner) GetUpstreamTokenReader() upstreamtoken.UpstreamTokenReader {
+func (r *Runner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
 	return r.upstreamTokenReader
 }
 

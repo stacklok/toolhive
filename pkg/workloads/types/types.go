@@ -12,7 +12,6 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/httperr"
-
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"

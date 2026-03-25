@@ -518,36 +518,38 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Process the registry URL/path update.
-	// Call processRegistryUpdate when source fields are present, or when no fields
-	// at all are provided (which resets the registry to defaults).
-	hasSourceFields := req.URL != nil || req.APIURL != nil || req.LocalPath != nil
-	hasSourceUpdate := hasSourceFields || req.Auth == nil
 	var responseType string
-	if hasSourceUpdate {
-		var err error
-		responseType, err = rr.processRegistryUpdate(&req)
-		if err != nil {
-			// Check if it's a connectivity error - return 504 Gateway Timeout
-			var connErr *connectivityError
-			if errors.As(err, &connErr) {
-				http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
-				return
-			}
-			// Check if it's a validation error - return 502 Bad Gateway
-			if isValidationError(err) {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			// Other errors - return 400 Bad Request
-			http.Error(w, err.Error(), http.StatusBadRequest)
+	registryType, err := rr.processRegistryUpdate(&req)
+	if err != nil {
+		// Check if it's a connectivity error - return 504 Gateway Timeout
+		var connErr *connectivityError
+		if errors.As(err, &connErr) {
+			http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
 			return
 		}
+		// Check if it's a validation error - return 502 Bad Gateway
+		if isValidationError(err) {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		// Other errors - return 400 Bad Request
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+	responseType = registryType
 
-	// Process auth configuration if provided
+	// Always overwrite auth: if auth is provided, set it; if not, clear it.
+	// This prevents stale tokens from being sent to the wrong registry server.
 	if req.Auth != nil {
 		if err := rr.processAuthUpdate(req.Auth); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		authMgr := regpkg.NewAuthManager(rr.configProvider)
+		if err := authMgr.UnsetAuth(); err != nil {
+			slog.Error("failed to clear registry auth", "error", err)
+			http.Error(w, "Failed to clear registry auth", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -555,7 +557,8 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	// Reset the registry provider cache to pick up configuration changes
 	regpkg.ResetDefaultProvider()
 
-	// If no source update was performed, resolve the current type from config
+	// If registry was reset to default, responseType is already "default".
+	// Otherwise resolve from config.
 	if responseType == "" {
 		currentType, _ := rr.getRegistryInfo()
 		responseType = string(currentType)

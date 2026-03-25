@@ -18,24 +18,24 @@ import (
 )
 
 // DefaultOAuthScopes returns the default OAuth scopes for registry authentication.
-// openid is required for OIDC, offline_access is required for refresh tokens.
+// offline_access is required for the provider to return a refresh token.
 func DefaultOAuthScopes() []string {
-	return []string{"openid", "offline_access"}
+	return []string{"offline_access"}
 }
 
 // LoginOptions holds optional flag-based overrides for Login.
 // When provided, these values are validated and saved to config before
 // proceeding with the OAuth flow.
 type LoginOptions struct {
-	// RegistryURL is the registry endpoint to save if none is configured.
+	// RegistryURL is the registry endpoint.
 	RegistryURL string
-	// Issuer is the OIDC issuer URL to save if OAuth config is missing.
+	// Issuer is the OIDC issuer URL.
 	Issuer string
-	// ClientID is the OAuth client ID to save if OAuth config is missing.
+	// ClientID is the OAuth client ID.
 	ClientID string
 	// Audience is the OAuth audience (optional).
 	Audience string
-	// Scopes overrides the default OAuth scopes (defaults to ["openid", "offline_access"]).
+	// Scopes overrides the default OAuth scopes (defaults to ["offline_access"]).
 	Scopes []string
 }
 
@@ -184,19 +184,26 @@ func checkMissingLoginConfig(cfg *config.Config, opts LoginOptions) error {
 	)
 }
 
-// ensureRegistryURL checks whether a registry URL is already configured and,
-// if not, attempts to save the one supplied via opts. Returns an actionable
-// error when no URL can be determined.
+// ensureRegistryURL saves the registry URL from opts when provided.
+// Existing auth is always cleared when a URL flag is given, to prevent tokens
+// from being sent to the wrong server after a registry change.
+// When no URL is provided via opts, existing config is used unchanged.
 func ensureRegistryURL(cfg *config.Config, configProvider config.Provider, opts LoginOptions) error {
-	if hasRegistryConfig(cfg) {
+	if opts.RegistryURL == "" {
+		// No override — use whatever is already in config.
 		return nil
 	}
 
-	if opts.RegistryURL == "" {
-		return fmt.Errorf("no registry URL configured and --registry not provided: %w", ErrRegistryAuthRequired)
+	registryType, cleanPath := config.DetectRegistryType(opts.RegistryURL, false)
+
+	// Always clear auth when a registry URL is explicitly provided, so that
+	// tokens are never sent to the wrong server.
+	if err := configProvider.UpdateConfig(func(c *config.Config) {
+		c.RegistryAuth = config.RegistryAuth{}
+	}); err != nil {
+		return fmt.Errorf("clearing stale auth config: %w", err)
 	}
 
-	registryType, cleanPath := config.DetectRegistryType(opts.RegistryURL, false)
 	switch registryType {
 	case config.RegistryTypeAPI:
 		if err := configProvider.SetRegistryAPI(cleanPath, false); err != nil {
@@ -216,25 +223,29 @@ func ensureRegistryURL(cfg *config.Config, configProvider config.Provider, opts 
 	return nil
 }
 
-// ensureOAuthConfig checks whether OAuth auth is already configured and,
-// if not, attempts to configure it from the supplied opts (issuer + clientID).
+// ensureOAuthConfig ensures OAuth auth is configured.
+// When --issuer/--client-id flags are provided they are always applied (override semantics),
+// allowing the caller to update auth even when an existing config is present.
+// When no flags are supplied, existing config is used as-is.
 // Returns an actionable error when auth cannot be determined.
 func ensureOAuthConfig(
 	ctx context.Context, cfg *config.Config, configProvider config.Provider, opts LoginOptions,
 ) error {
+	// If auth flags were explicitly provided, always apply them.
+	if opts.Issuer != "" && opts.ClientID != "" {
+		updateFn, err := ConfigureOAuth(ctx, opts.Issuer, opts.ClientID, opts.Audience, opts.Scopes)
+		if err != nil {
+			return err
+		}
+		return configProvider.UpdateConfig(updateFn)
+	}
+
+	// No flags provided — use existing config if present.
 	if cfg.RegistryAuth.Type == config.RegistryAuthTypeOAuth && cfg.RegistryAuth.OAuth != nil {
 		return nil
 	}
 
-	if opts.Issuer == "" || opts.ClientID == "" {
-		return fmt.Errorf("OAuth config missing and --issuer/--client-id not provided: %w", ErrRegistryAuthRequired)
-	}
-
-	updateFn, err := ConfigureOAuth(ctx, opts.Issuer, opts.ClientID, opts.Audience, opts.Scopes)
-	if err != nil {
-		return err
-	}
-	return configProvider.UpdateConfig(updateFn)
+	return fmt.Errorf("OAuth config missing and --issuer/--client-id not provided: %w", ErrRegistryAuthRequired)
 }
 
 // registryURLFromConfig returns the registry URL, preferring RegistryApiUrl.

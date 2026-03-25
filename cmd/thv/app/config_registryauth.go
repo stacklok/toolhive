@@ -21,9 +21,10 @@ var (
 )
 
 var setRegistryAuthCmd = &cobra.Command{
-	Use:   "set-registry-auth",
-	Short: "Configure OAuth/OIDC authentication for the registry",
-	Long: `Configure OAuth/OIDC authentication for the remote MCP server registry.
+	Use:        "set-registry-auth",
+	Short:      "Configure OIDC authentication for the registry",
+	Deprecated: "use 'thv config set-registry' with --issuer and --client-id flags instead",
+	Long: `Configure OIDC authentication for the remote MCP server registry.
 PKCE (S256) is always enforced for security.
 
 The issuer URL is validated via OIDC discovery before saving.
@@ -32,15 +33,16 @@ Examples:
   thv config set-registry-auth --issuer https://auth.company.com --client-id toolhive-cli
   thv config set-registry-auth \
     --issuer https://auth.company.com --client-id toolhive-cli \
-    --audience api://my-registry --scopes openid,profile`,
+    --audience api://my-registry --scopes profile`,
 	RunE: setRegistryAuthCmdFunc,
 }
 
 var unsetRegistryAuthCmd = &cobra.Command{
-	Use:   "unset-registry-auth",
-	Short: "Remove registry authentication configuration",
-	Long:  "Remove the OAuth/OIDC authentication configuration for the registry.",
-	RunE:  unsetRegistryAuthCmdFunc,
+	Use:        "unset-registry-auth",
+	Short:      "Remove registry authentication configuration",
+	Deprecated: "use 'thv config unset-registry' instead, which clears both registry and auth",
+	Long:       "Remove the OIDC authentication configuration for the registry.",
+	RunE:       unsetRegistryAuthCmdFunc,
 }
 
 func init() {

@@ -39,11 +39,11 @@ Examples:
 func init() {
 	registryCmd.AddCommand(registryLoginCmd)
 
-	registryLoginCmd.Flags().StringVar(&loginRegistry, "registry", "", "Registry URL to save if not already configured")
-	registryLoginCmd.Flags().StringVar(&loginIssuer, "issuer", "", "OIDC issuer URL to save if OAuth is not configured")
-	registryLoginCmd.Flags().StringVar(&loginClientID, "client-id", "", "OAuth client ID to save if OAuth is not configured")
-	registryLoginCmd.Flags().StringVar(&loginAudience, "audience", "", "OAuth audience (optional)")
-	registryLoginCmd.Flags().StringSliceVar(&loginScopes, "scopes", nil, "OAuth scopes (defaults to openid,offline_access)")
+	registryLoginCmd.Flags().StringVar(&loginRegistry, "registry", "", "Registry URL")
+	registryLoginCmd.Flags().StringVar(&loginIssuer, "issuer", "", "OIDC issuer URL for registry authentication")
+	registryLoginCmd.Flags().StringVar(&loginClientID, "client-id", "", "OAuth client ID for registry authentication")
+	registryLoginCmd.Flags().StringVar(&loginAudience, "audience", "", "OAuth audience parameter for registry authentication (optional)")
+	registryLoginCmd.Flags().StringSliceVar(&loginScopes, "scopes", nil, "OAuth scopes for registry authentication (defaults to offline_access)")
 }
 
 func registryLoginCmdFunc(cmd *cobra.Command, _ []string) error {

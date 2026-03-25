@@ -215,3 +215,85 @@ func TestGitReference_SkillName(t *testing.T) {
 		})
 	}
 }
+
+//nolint:paralleltest // t.Setenv is incompatible with t.Parallel
+func TestParseGitReferenceDevMode(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEV", "true")
+
+	tests := []struct {
+		name        string
+		input       string
+		expected    *GitReference
+		expectError string
+	}{
+		{
+			name:  "localhost allowed in dev mode",
+			input: "git://localhost/org/repo",
+			expected: &GitReference{
+				URL: "http://localhost/org/repo",
+			},
+		},
+		{
+			name:  "127.0.0.1 allowed in dev mode",
+			input: "git://127.0.0.1/org/repo",
+			expected: &GitReference{
+				URL: "http://127.0.0.1/org/repo",
+			},
+		},
+		{
+			name:  "10.x private IP allowed in dev mode",
+			input: "git://10.0.0.1/org/repo",
+			expected: &GitReference{
+				URL: "http://10.0.0.1/org/repo",
+			},
+		},
+		{
+			name:  "192.168.x private IP allowed in dev mode",
+			input: "git://192.168.1.1/org/repo",
+			expected: &GitReference{
+				URL: "http://192.168.1.1/org/repo",
+			},
+		},
+		{
+			name:  "localhost with port allowed in dev mode",
+			input: "git://localhost:8080/org/repo",
+			expected: &GitReference{
+				URL: "http://localhost:8080/org/repo",
+			},
+		},
+		{
+			name:        "empty host still rejected in dev mode",
+			input:       "git://",
+			expectError: "empty host/path",
+		},
+		{
+			name:        "no repo path still rejected in dev mode",
+			input:       "git://localhost",
+			expectError: "no repository path after host",
+		},
+		{
+			name:        "single path component still rejected in dev mode",
+			input:       "git://localhost/org",
+			expectError: "repository path must be at least owner/repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ParseGitReference(tt.input)
+
+			if tt.expectError != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectError)
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected.URL, result.URL)
+			assert.Equal(t, tt.expected.Path, result.Path)
+			assert.Equal(t, tt.expected.Ref, result.Ref)
+		})
+	}
+}

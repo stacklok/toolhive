@@ -93,7 +93,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
   - Go: Default `golang:1.25-alpine`
   - Node: Default `node:22-alpine`
   - Python: Default `python:3.13-slim`
-- `additional_packages`: Extra packages to install during build (e.g., build tools, libraries)
+- `additional_packages`: Extra packages to install during the build and runtime stages (e.g., build tools, libraries)
 
 **CLI usage:**
 ```bash

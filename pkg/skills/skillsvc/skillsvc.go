@@ -26,6 +26,7 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -87,6 +88,13 @@ func WithSkillLookup(sl SkillLookup) Option {
 	}
 }
 
+// WithGitResolver sets the git resolver for git:// skill installations.
+func WithGitResolver(gr gitresolver.Resolver) Option {
+	return func(s *service) {
+		s.gitResolver = gr
+	}
+}
+
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
@@ -124,6 +132,7 @@ type service struct {
 	packager     ociskills.SkillPackager
 	registry     ociskills.RegistryClient
 	skillLookup  SkillLookup
+	gitResolver  gitresolver.Resolver
 }
 
 // New creates a new SkillService backed by the given store.
@@ -137,6 +146,9 @@ func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 	}
 	if s.installer == nil {
 		s.installer = skills.NewInstaller()
+	}
+	if s.gitResolver == nil {
+		s.gitResolver = gitresolver.NewResolver()
 	}
 	return s
 }
@@ -203,6 +215,16 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// the same lock key and DB record.
 	opts.ProjectRoot = projectRoot
 
+	// Git references (git://host/owner/repo[@ref][#path]) are dispatched first;
+	// the prefix is unambiguous and cannot collide with OCI references.
+	if gitresolver.IsGitReference(opts.Name) {
+		result, err := s.installFromGit(ctx, opts, scope)
+		if err != nil {
+			return nil, err
+		}
+		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+	}
+
 	ref, isOCI, err := parseOCIReference(opts.Name)
 	if err != nil {
 		return nil, httperr.WithCode(
@@ -215,7 +237,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		if err != nil {
 			return nil, err
 		}
-		return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+		return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 	}
 
 	// Plain skill name — validate and proceed with existing flow.
@@ -223,6 +245,16 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
+	return s.installByName(ctx, opts, scope)
+}
+
+// installByName handles installation for a validated plain skill name. It
+// checks the local OCI store and registry before falling back to an error.
+func (s *service) installByName(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+) (*skills.InstallResult, error) {
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	locked := true
 	defer func() {
@@ -251,26 +283,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			unlock()
 			locked = false
 
-			ref, regErr := s.resolveFromRegistry(opts.Name)
-			if regErr != nil {
-				return nil, regErr
-			}
-			if ref != nil {
-				slog.Info("resolved skill from registry", "name", opts.Name, "oci_reference", ref.String())
-				opts.Name = ref.String()
-				result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
-				if ociErr != nil {
-					return nil, ociErr
-				}
-				return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
-			}
-
-			return nil, httperr.WithCode(
-				fmt.Errorf("skill %q not found in local store or registry;"+
-					" install by OCI reference:\n  thv skill install ghcr.io/<namespace>/%s:<version>",
-					opts.Name, opts.Name),
-				http.StatusNotFound,
-			)
+			return s.installFromRegistryLookup(ctx, opts, scope)
 		}
 		// resolved: opts hydrated, fall through to installWithExtraction
 	}
@@ -279,7 +292,47 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	if err != nil {
 		return nil, err
 	}
-	return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+	return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+}
+
+// installFromRegistryLookup resolves a plain skill name via the registry and
+// dispatches to the appropriate installer (OCI or git).
+func (s *service) installFromRegistryLookup(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+) (*skills.InstallResult, error) {
+	resolved, regErr := s.resolveFromRegistry(opts.Name)
+	if regErr != nil {
+		return nil, regErr
+	}
+	if resolved != nil {
+		switch {
+		case resolved.OCIRef != nil:
+			slog.Info("resolved skill from registry (OCI)", "name", opts.Name, "oci_reference", resolved.OCIRef.String())
+			opts.Name = resolved.OCIRef.String()
+			result, ociErr := s.installFromOCI(ctx, opts, scope, resolved.OCIRef)
+			if ociErr != nil {
+				return nil, ociErr
+			}
+			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+		case resolved.GitURL != "":
+			slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
+			opts.Name = resolved.GitURL
+			result, gitErr := s.installFromGit(ctx, opts, scope)
+			if gitErr != nil {
+				return nil, gitErr
+			}
+			return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+		}
+	}
+
+	return nil, httperr.WithCode(
+		fmt.Errorf("skill %q not found in local store or registry;"+
+			" install by OCI reference:\n  thv skill install ghcr.io/<namespace>/%s:<version>",
+			opts.Name, opts.Name),
+		http.StatusNotFound,
+	)
 }
 
 // Uninstall removes an installed skill and cleans up files for all clients.
@@ -552,6 +605,150 @@ func (s *service) installFromOCI(
 	return s.installWithExtraction(ctx, opts, scope)
 }
 
+// installFromGit clones a git repository, extracts the skill, writes files to
+// disk, and creates a DB record. The digest is the git commit hash, enabling
+// same-commit no-op and upgrade detection.
+func (s *service) installFromGit(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+) (*skills.InstallResult, error) {
+	if s.gitResolver == nil {
+		return nil, httperr.WithCode(
+			errors.New("git resolver is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	if s.pathResolver == nil {
+		return nil, httperr.WithCode(
+			errors.New("path resolver is required for git installs"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	// Parse the git:// reference.
+	gitRef, err := gitresolver.ParseGitReference(opts.Name)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("invalid git reference: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	// Preserve the original git:// URL for provenance tracking.
+	gitURL := opts.Name
+
+	// Clone, read SKILL.md, collect files.
+	resolved, err := s.gitResolver.Resolve(ctx, gitRef)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("resolving git skill: %w", err),
+			http.StatusBadGateway,
+		)
+	}
+
+	if err := skills.ValidateSkillName(resolved.SkillConfig.Name); err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("skill contains invalid name: %w", err),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// Hydrate install options from the git result.
+	opts.Name = resolved.SkillConfig.Name
+	opts.Reference = gitURL
+	opts.Digest = resolved.CommitHash
+	if opts.Version == "" && resolved.SkillConfig.Version != "" {
+		opts.Version = resolved.SkillConfig.Version
+	}
+
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
+
+	clientType := s.resolveClient(opts.Client)
+
+	targetDir, err := s.pathResolver.GetSkillPath(clientType, opts.Name, scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolving skill path: %w", err)
+	}
+
+	return s.applyGitInstall(ctx, opts, scope, clientType, targetDir, resolved.Files)
+}
+
+// applyGitInstall handles the create/upgrade/no-op logic for a git-based skill
+// install. It checks the store for an existing record, writes files, and
+// persists the result.
+func (s *service) applyGitInstall(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	clientType string,
+	targetDir string,
+	files []gitresolver.FileEntry,
+) (*skills.InstallResult, error) {
+	existing, storeErr := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
+	isNotFound := errors.Is(storeErr, storage.ErrNotFound)
+
+	switch {
+	case storeErr != nil && !isNotFound:
+		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
+
+	case storeErr == nil && existing.Digest == opts.Digest:
+		// Same commit hash — already installed, no-op.
+		return &skills.InstallResult{Skill: existing}, nil
+
+	case storeErr == nil:
+		// Different commit — upgrade.
+		return s.writeAndPersistGitSkill(ctx, opts, scope, clientType, targetDir, files, existing.Clients, true)
+
+	default:
+		// Fresh install — check for unmanaged directory on disk.
+		if _, statErr := os.Stat(targetDir); statErr == nil && !opts.Force {
+			return nil, httperr.WithCode(
+				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", targetDir),
+				http.StatusConflict,
+			)
+		}
+		return s.writeAndPersistGitSkill(ctx, opts, scope, clientType, targetDir, files, nil, false)
+	}
+}
+
+// writeAndPersistGitSkill writes git skill files to disk, verifies the result,
+// and creates or updates the DB record. When existingClients is non-nil, the
+// record is updated (upgrade); otherwise a new record is created.
+func (s *service) writeAndPersistGitSkill(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	clientType string,
+	targetDir string,
+	files []gitresolver.FileEntry,
+	existingClients []string,
+	isUpgrade bool,
+) (*skills.InstallResult, error) {
+	if writeErr := gitresolver.WriteFiles(files, targetDir, isUpgrade || opts.Force); writeErr != nil {
+		return nil, fmt.Errorf("writing git skill: %w", writeErr)
+	}
+	// Defense in depth: verify the extracted directory post-write.
+	if checkErr := skills.CheckFilesystem(targetDir); checkErr != nil {
+		_ = s.installer.Remove(targetDir)
+		return nil, fmt.Errorf("post-extraction verification failed: %w", checkErr)
+	}
+	sk := buildInstalledSkill(opts, scope, clientType, existingClients)
+	if isUpgrade {
+		if err := s.store.Update(ctx, sk); err != nil {
+			_ = s.installer.Remove(targetDir)
+			return nil, err
+		}
+	} else {
+		if err := s.store.Create(ctx, sk); err != nil {
+			_ = s.installer.Remove(targetDir)
+			return nil, err
+		}
+	}
+	return &skills.InstallResult{Skill: sk}, nil
+}
+
 // resolveFromLocalStore attempts to resolve a skill name as a tag in the local
 // OCI store. On success it hydrates opts with layer data, digest, and version
 // from the artifact. Returns (true, nil) when resolved, (false, nil) when the
@@ -601,10 +798,17 @@ func (s *service) resolveFromLocalStore(ctx context.Context, opts *skills.Instal
 	return true, nil
 }
 
+// registryResolveResult holds the outcome of a registry skill name lookup.
+// Exactly one of OCIRef or GitURL will be set.
+type registryResolveResult struct {
+	OCIRef nameref.Reference
+	GitURL string // raw git:// URL for installFromGit
+}
+
 // resolveFromRegistry attempts to resolve a plain skill name by querying the
-// configured skill registry/index. Returns (ref, nil) on success, (nil, nil) when
-// no match is found or no lookup is configured, or (nil, err) on ambiguity.
-func (s *service) resolveFromRegistry(name string) (nameref.Reference, error) {
+// configured skill registry/index. Returns (result, nil) on success, (nil, nil)
+// when no match is found or no lookup is configured, or (nil, err) on ambiguity.
+func (s *service) resolveFromRegistry(name string) (*registryResolveResult, error) {
 	if s.skillLookup == nil {
 		return nil, nil
 	}
@@ -646,31 +850,82 @@ func (s *service) resolveFromRegistry(name string) (nameref.Reference, error) {
 		)
 	}
 
-	// Exactly one match -- use the first OCI package found.
-	// Selection policy: packages are returned in registry order; we take the
-	// first one with type "oci" and a non-empty identifier.
-	for _, pkg := range matches[0].Packages {
+	return resolveRegistryPackages(name, matches[0].Packages)
+}
+
+// resolveRegistryPackages selects the best installable package from a registry
+// entry. OCI packages are preferred; git is the fallback.
+func resolveRegistryPackages(name string, packages []regtypes.SkillPackage) (*registryResolveResult, error) {
+	// Try OCI packages first (preferred).
+	for _, pkg := range packages {
 		if pkg.RegistryType == "oci" && pkg.Identifier != "" {
 			ref, parseErr := nameref.ParseReference(pkg.Identifier)
 			if parseErr != nil {
-				// Truncate to avoid reflecting unbounded attacker-controlled data.
-				id := pkg.Identifier
-				if len(id) > 256 {
-					id = id[:256] + "..."
-				}
+				id := truncate(pkg.Identifier, 256)
 				return nil, httperr.WithCode(
 					fmt.Errorf("registry skill %q has invalid OCI identifier %q: %w", name, id, parseErr),
 					http.StatusUnprocessableEntity,
 				)
 			}
-			return ref, nil
+			return &registryResolveResult{OCIRef: ref}, nil
+		}
+	}
+
+	// Fallback: look for git packages.
+	for _, pkg := range packages {
+		if pkg.RegistryType == "git" && pkg.URL != "" {
+			gitURL, gitErr := buildGitReferenceFromRegistryURL(pkg.URL)
+			if gitErr != nil {
+				u := truncate(pkg.URL, 256)
+				return nil, httperr.WithCode(
+					fmt.Errorf("registry skill %q has invalid git URL %q: %w", name, u, gitErr),
+					http.StatusUnprocessableEntity,
+				)
+			}
+			return &registryResolveResult{GitURL: gitURL}, nil
 		}
 	}
 
 	return nil, httperr.WithCode(
-		fmt.Errorf("skill %q found in registry but has no OCI package; install from git or contact the skill author", name),
+		fmt.Errorf("skill %q found in registry but has no installable package (OCI or git)", name),
 		http.StatusUnprocessableEntity,
 	)
+}
+
+// truncate returns s shortened to maxLen with an ellipsis appended if needed.
+func truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
+// buildGitReferenceFromRegistryURL converts a registry URL (typically HTTPS)
+// to a git:// scheme reference that ParseGitReference can handle.
+func buildGitReferenceFromRegistryURL(rawURL string) (string, error) {
+	// The registry may store URLs as "https://github.com/org/repo" or
+	// already as "git://github.com/org/repo".
+	if gitresolver.IsGitReference(rawURL) {
+		// Already a git:// URL — validate it.
+		if _, err := gitresolver.ParseGitReference(rawURL); err != nil {
+			return "", err
+		}
+		return rawURL, nil
+	}
+
+	// Convert https://host/path → git://host/path
+	stripped := strings.TrimPrefix(rawURL, "https://")
+	stripped = strings.TrimPrefix(stripped, "http://")
+	if stripped == rawURL {
+		return "", fmt.Errorf("unsupported URL scheme; expected https:// or git://")
+	}
+	gitURL := "git://" + stripped
+
+	// Validate the constructed reference.
+	if _, err := gitresolver.ParseGitReference(gitURL); err != nil {
+		return "", err
+	}
+	return gitURL, nil
 }
 
 // extractOCIContent navigates the OCI content graph from a pulled digest,
@@ -983,4 +1238,26 @@ func (s *service) registerSkillInGroup(ctx context.Context, groupName string, sk
 		groupName = groups.DefaultGroup
 	}
 	return groups.AddSkillToGroup(ctx, s.groupManager, groupName, skillName)
+}
+
+// installAndRegister registers the just-installed skill in the target group.
+// If group registration fails, the DB record is rolled back so that a retry
+// starts fresh rather than leaving the system in an inconsistent state (skill
+// installed but not in the expected group).
+func (s *service) installAndRegister(
+	ctx context.Context,
+	result *skills.InstallResult,
+	groupName string,
+	skillName string,
+	scope skills.Scope,
+	projectRoot string,
+) (*skills.InstallResult, error) {
+	if err := s.registerSkillInGroup(ctx, groupName, skillName); err != nil {
+		// Best-effort rollback: remove the DB record so retries start fresh.
+		// Files on disk are left in place; a fresh install will detect them
+		// and either overwrite (force) or return a conflict.
+		_ = s.store.Delete(ctx, skillName, scope, projectRoot)
+		return nil, fmt.Errorf("registering skill in group: %w", err)
+	}
+	return result, nil
 }

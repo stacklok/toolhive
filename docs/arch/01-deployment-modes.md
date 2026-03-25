@@ -200,13 +200,23 @@ Full API documentation available at:
 - `/api/v1beta/clients` - Client configuration
 - `/api/v1beta/groups` - Group management
 
-### Sentry Integration (Distributed Tracing and Error Reporting)
+### Observability: OTEL Distributed Tracing and Sentry Error Reporting
 
-The API server supports optional [Sentry](https://sentry.io) integration for distributed tracing and error reporting. When enabled, the API server:
+The API server supports two complementary observability integrations:
 
-- Creates transaction spans for every request using `sentryhttp` middleware
-- Extracts `sentry-trace` and `baggage` headers from incoming requests, enabling **distributed tracing** between ToolHive Studio (frontend) and the API server (backend)
-- Reports panics and 5xx errors to Sentry automatically
+#### OpenTelemetry (Distributed Tracing)
+
+`thv serve` reads the global OTEL config (set via `thv config otel set-endpoint`) — the same configuration used by `thv run`. When an OTEL endpoint is configured, the API server:
+
+- Initialises an OTEL provider with service name `thv-api`
+- Adds `otelhttp` middleware to extract W3C `traceparent` headers from incoming requests, enabling **distributed tracing** with ToolHive Studio (frontend) and any OTEL-compatible backend
+- Exports spans to the configured OTLP endpoint
+
+No new CLI flags are required; all OTEL settings come from `thv config otel`.
+
+#### Sentry (Error Reporting and Span Export)
+
+Sentry is configured separately via CLI flags for error and panic capture. When a Sentry DSN is provided alongside an OTEL endpoint, spans are automatically exported to **both** backends via the Sentry OTEL span processor.
 
 To enable Sentry, pass a DSN when starting the API server:
 
@@ -222,7 +232,11 @@ Available flags:
 | `--sentry-environment` | `SENTRY_ENVIRONMENT` | Environment name (e.g. `production`, `development`) |
 | `--sentry-traces-sample-rate` | `SENTRY_TRACES_SAMPLE_RATE` | Trace sampling rate, 0.0–1.0 (default: `1.0`) |
 
-When no DSN is provided, all Sentry operations are no-ops with zero overhead.
+When no DSN is configured, all Sentry operations are no-ops with zero overhead.
+
+#### Distributed Tracing with ToolHive Studio
+
+For end-to-end distributed tracing between ToolHive Studio (Electron / Sentry JS SDK) and the API server, enable `propagateTraceparent: true` in the Studio Sentry initialisation. This causes the Sentry JS SDK to send a W3C `traceparent` header alongside `sentry-trace`, which the Go `otelhttp` middleware can extract — correlating frontend and backend spans in Sentry and any configured OTEL backend.
 
 ### Differences from CLI Mode
 
@@ -233,6 +247,7 @@ When no DSN is provided, all Sentry operations are no-ops with zero overhead.
 | **Authentication** | None (local user) | Optional (configurable) |
 | **Middleware Config** | CLI flags or config file | API requests |
 | **Runtime Selection** | Automatic detection | User selectable in UI |
+| **Distributed Tracing** | None | OTEL (`otelhttp`) via `thv config otel` |
 | **Error Reporting** | Local logs only | Optional Sentry integration |
 
 ## Kubernetes Mode: Operator

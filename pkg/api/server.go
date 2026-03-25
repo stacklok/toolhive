@@ -45,6 +45,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
+	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
@@ -72,6 +73,7 @@ type ServerBuilder struct {
 	enableDocs       bool
 	nonce            string
 	oidcConfig       *auth.TokenValidatorConfig
+	sentryEnabled    bool
 	middlewares      []func(http.Handler) http.Handler
 	customRoutes     map[string]http.Handler
 	containerRuntime runtime.Runtime
@@ -128,6 +130,13 @@ func (b *ServerBuilder) WithOIDCConfig(oidcConfig *auth.TokenValidatorConfig) *S
 	return b
 }
 
+// WithSentryEnabled enables Sentry middleware for distributed tracing and error reporting.
+// Sentry must be initialized (via sentrypkg.Init) before the server starts.
+func (b *ServerBuilder) WithSentryEnabled(enabled bool) *ServerBuilder {
+	b.sentryEnabled = enabled
+	return b
+}
+
 // WithMiddleware adds middleware to the server
 func (b *ServerBuilder) WithMiddleware(mw ...func(http.Handler) http.Handler) *ServerBuilder {
 	b.middlewares = append(b.middlewares, mw...)
@@ -178,6 +187,13 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 
 	// Apply recovery middleware first to catch panics from all other middleware and handlers
 	r.Use(recovery.Middleware)
+
+	// Apply Sentry middleware early to capture the full request lifecycle for
+	// distributed tracing (sentry-trace/baggage header extraction) and error reporting.
+	// Repanic is enabled so recovery middleware still handles panic responses.
+	if b.sentryEnabled {
+		r.Use(sentrypkg.NewMiddleware())
+	}
 
 	// Apply default middleware
 	// NOTE: Timeout is NOT applied globally because workload create/update routes
@@ -757,6 +773,7 @@ func generateNonce() (string, error) {
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
 // If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
+// If sentryEnabled is true, Sentry middleware is added for distributed tracing and error reporting.
 func Serve(
 	ctx context.Context,
 	address string,
@@ -764,6 +781,7 @@ func Serve(
 	debugMode bool,
 	enableDocs bool,
 	oidcConfig *auth.TokenValidatorConfig,
+	sentryEnabled bool,
 	middlewares ...func(http.Handler) http.Handler,
 ) error {
 	nonce, err := generateNonce()
@@ -778,6 +796,7 @@ func Serve(
 		WithDocs(enableDocs).
 		WithNonce(nonce).
 		WithOIDCConfig(oidcConfig).
+		WithSentryEnabled(sentryEnabled).
 		WithMiddleware(middlewares...)
 
 	server, err := NewServer(ctx, builder)

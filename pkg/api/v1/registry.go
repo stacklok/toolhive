@@ -41,7 +41,7 @@ type registryErrorResponse struct {
 func writeRegistryAuthRequiredError(w http.ResponseWriter) {
 	body := registryErrorResponse{
 		Code:    RegistryAuthRequiredCode,
-		Message: "Registry authentication required. POST to /registry/auth/login to authenticate.",
+		Message: "Registry authentication required. POST to /api/v1beta/registry/auth/login to authenticate.",
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)

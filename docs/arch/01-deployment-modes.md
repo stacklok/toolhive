@@ -200,6 +200,30 @@ Full API documentation available at:
 - `/api/v1beta/clients` - Client configuration
 - `/api/v1beta/groups` - Group management
 
+### Sentry Integration (Distributed Tracing and Error Reporting)
+
+The API server supports optional [Sentry](https://sentry.io) integration for distributed tracing and error reporting. When enabled, the API server:
+
+- Creates transaction spans for every request using `sentryhttp` middleware
+- Extracts `sentry-trace` and `baggage` headers from incoming requests, enabling **distributed tracing** between ToolHive Studio (frontend) and the API server (backend)
+- Reports panics and 5xx errors to Sentry automatically
+
+To enable Sentry, pass a DSN when starting the API server:
+
+```bash
+thv serve --sentry-dsn "https://...@sentry.io/..." --sentry-environment development
+```
+
+Available flags:
+
+| Flag | Env Variable | Description |
+|------|-------------|-------------|
+| `--sentry-dsn` | `SENTRY_DSN` | Sentry Data Source Name (required to enable) |
+| `--sentry-environment` | `SENTRY_ENVIRONMENT` | Environment name (e.g. `production`, `development`) |
+| `--sentry-traces-sample-rate` | `SENTRY_TRACES_SAMPLE_RATE` | Trace sampling rate, 0.0–1.0 (default: `1.0`) |
+
+When no DSN is provided, all Sentry operations are no-ops with zero overhead.
+
 ### Differences from CLI Mode
 
 | Aspect | CLI Mode | UI Mode |
@@ -209,6 +233,7 @@ Full API documentation available at:
 | **Authentication** | None (local user) | Optional (configurable) |
 | **Middleware Config** | CLI flags or config file | API requests |
 | **Runtime Selection** | Automatic detection | User selectable in UI |
+| **Error Reporting** | Local logs only | Optional Sentry integration |
 
 ## Kubernetes Mode: Operator
 

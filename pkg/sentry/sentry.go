@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
-	sentryhttp "github.com/getsentry/sentry-go/http"
+	sentryotel "github.com/getsentry/sentry-go/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -61,6 +63,17 @@ func Init(cfg Config) error {
 
 	initialized.Store(true)
 	slog.Debug("sentry initialized", "environment", cfg.Environment)
+
+	// Tag every event and transaction with the anonymous instance ID so that
+	// Sentry events from the API server can be correlated with those from
+	// toolhive-studio, which sets the same value as custom.user_id.
+	if id, err := updates.TryGetAnonymousID(); err == nil && id != "" {
+		sentry.ConfigureScope(func(scope *sentry.Scope) {
+			scope.SetTag("custom.user_id", id)
+		})
+		slog.Debug("sentry anonymous instance ID tagged", "id", id)
+	}
+
 	return nil
 }
 
@@ -79,14 +92,14 @@ func Enabled() bool {
 	return initialized.Load()
 }
 
-// NewMiddleware returns an HTTP middleware that creates Sentry transactions
-// for each request and extracts distributed tracing headers (sentry-trace, baggage).
-// Repanic is set to true so the existing recovery middleware handles panic responses.
-func NewMiddleware() func(http.Handler) http.Handler {
-	handler := sentryhttp.New(sentryhttp.Options{
-		Repanic: true,
-	})
-	return handler.Handle
+// SpanProcessor returns an OTEL SpanProcessor that exports spans to Sentry,
+// enabling Sentry as a backend for OTEL-instrumented traces.
+// Returns nil when Sentry is not initialized, allowing callers to skip registration safely.
+func SpanProcessor() sdktrace.SpanProcessor {
+	if !initialized.Load() {
+		return nil
+	}
+	return sentryotel.NewSentrySpanProcessor()
 }
 
 // CaptureException reports an error to Sentry using the hub from the request context.

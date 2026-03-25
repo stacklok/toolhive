@@ -30,6 +30,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -42,7 +43,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
-	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
@@ -66,7 +66,7 @@ type ServerBuilder struct {
 	debugMode        bool
 	enableDocs       bool
 	oidcConfig       *auth.TokenValidatorConfig
-	sentryEnabled    bool
+	otelEnabled      bool
 	middlewares      []func(http.Handler) http.Handler
 	customRoutes     map[string]http.Handler
 	containerRuntime runtime.Runtime
@@ -115,10 +115,12 @@ func (b *ServerBuilder) WithOIDCConfig(oidcConfig *auth.TokenValidatorConfig) *S
 	return b
 }
 
-// WithSentryEnabled enables Sentry middleware for distributed tracing and error reporting.
-// Sentry must be initialized (via sentrypkg.Init) before the server starts.
-func (b *ServerBuilder) WithSentryEnabled(enabled bool) *ServerBuilder {
-	b.sentryEnabled = enabled
+// WithOtelEnabled enables OTEL HTTP middleware for distributed tracing.
+// When enabled, the server extracts W3C traceparent headers from incoming requests
+// and creates child OTEL spans for each request. Requires OTEL to be initialized
+// (via telemetry.NewProvider) before the server starts.
+func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
+	b.otelEnabled = enabled
 	return b
 }
 
@@ -173,11 +175,19 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	// Apply recovery middleware first to catch panics from all other middleware and handlers
 	r.Use(recovery.Middleware)
 
-	// Apply Sentry middleware early to capture the full request lifecycle for
-	// distributed tracing (sentry-trace/baggage header extraction) and error reporting.
-	// Repanic is enabled so recovery middleware still handles panic responses.
-	if b.sentryEnabled {
-		r.Use(sentrypkg.NewMiddleware())
+	// Apply OTEL middleware early so that W3C traceparent headers from incoming requests
+	// (e.g. from toolhive-studio) are extracted and a child span is created for each request.
+	// The span name is set to "METHOD /route/pattern" (e.g. "GET /api/v1beta/workloads/{name}")
+	// using chi's matched route pattern for clean grouping in Sentry and OTEL backends.
+	if b.otelEnabled {
+		r.Use(otelhttp.NewMiddleware("thv-api",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				if routeCtx := chi.RouteContext(r.Context()); routeCtx != nil && routeCtx.RoutePattern() != "" {
+					return r.Method + " " + routeCtx.RoutePattern()
+				}
+				return r.Method + " " + r.URL.Path
+			}),
+		))
 	}
 
 	// Apply default middleware
@@ -669,7 +679,7 @@ func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
 // If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
-// If sentryEnabled is true, Sentry middleware is added for distributed tracing and error reporting.
+// If otelEnabled is true, OTEL HTTP middleware is added for W3C traceparent extraction and distributed tracing.
 func Serve(
 	ctx context.Context,
 	address string,
@@ -677,7 +687,7 @@ func Serve(
 	debugMode bool,
 	enableDocs bool,
 	oidcConfig *auth.TokenValidatorConfig,
-	sentryEnabled bool,
+	otelEnabled bool,
 	middlewares ...func(http.Handler) http.Handler,
 ) error {
 	builder := NewServerBuilder().
@@ -686,7 +696,7 @@ func Serve(
 		WithDebugMode(debugMode).
 		WithDocs(enableDocs).
 		WithOIDCConfig(oidcConfig).
-		WithSentryEnabled(sentryEnabled).
+		WithOtelEnabled(otelEnabled).
 		WithMiddleware(middlewares...)
 
 	server, err := NewServer(ctx, builder)

@@ -2336,3 +2336,120 @@ func TestRunConfig_BackendReplicas(t *testing.T) {
 		assert.Equal(t, int32(5), *got.ScalingConfig.BackendReplicas)
 	})
 }
+
+func TestRunConfig_SessionRedis(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil SessionRedis is omitted from JSON output", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "no-redis"
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.NotContains(t, buf.String(), "session_redis")
+	})
+
+	t.Run("nil SessionRedis within non-nil ScalingConfig is omitted from JSON output", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "scaling-no-redis"
+		replicas := int32(2)
+		cfg.ScalingConfig = &ScalingConfig{
+			BackendReplicas: &replicas,
+			SessionRedis:    nil,
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.NotContains(t, buf.String(), "session_redis")
+	})
+
+	t.Run("JSON round-trip with all SessionRedis fields set", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "redis-server"
+		cfg.ScalingConfig = &ScalingConfig{
+			SessionRedis: &SessionRedisConfig{
+				Address:   "redis.default.svc:6379",
+				DB:        2,
+				KeyPrefix: "thv:",
+			},
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		require.NotNil(t, got.ScalingConfig)
+		require.NotNil(t, got.ScalingConfig.SessionRedis)
+		assert.Equal(t, "redis.default.svc:6379", got.ScalingConfig.SessionRedis.Address)
+		assert.Equal(t, int32(2), got.ScalingConfig.SessionRedis.DB)
+		assert.Equal(t, "thv:", got.ScalingConfig.SessionRedis.KeyPrefix)
+	})
+
+	t.Run("JSON round-trip with zero DB and empty KeyPrefix", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "redis-defaults"
+		cfg.ScalingConfig = &ScalingConfig{
+			SessionRedis: &SessionRedisConfig{
+				Address: "redis:6379",
+			},
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		require.NotNil(t, got.ScalingConfig.SessionRedis)
+		assert.Equal(t, "redis:6379", got.ScalingConfig.SessionRedis.Address)
+		assert.Equal(t, int32(0), got.ScalingConfig.SessionRedis.DB)
+		assert.Empty(t, got.ScalingConfig.SessionRedis.KeyPrefix)
+	})
+
+	t.Run("YAML round-trip with SessionRedis set", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "yaml-redis"
+		cfg.ScalingConfig = &ScalingConfig{
+			SessionRedis: &SessionRedisConfig{
+				Address:   "redis:6379",
+				DB:        3,
+				KeyPrefix: "prefix:",
+			},
+		}
+
+		data, err := yaml.Marshal(cfg)
+		require.NoError(t, err)
+
+		var got RunConfig
+		require.NoError(t, yaml.Unmarshal(data, &got))
+		require.NotNil(t, got.ScalingConfig)
+		require.NotNil(t, got.ScalingConfig.SessionRedis)
+		assert.Equal(t, "redis:6379", got.ScalingConfig.SessionRedis.Address)
+		assert.Equal(t, int32(3), got.ScalingConfig.SessionRedis.DB)
+		assert.Equal(t, "prefix:", got.ScalingConfig.SessionRedis.KeyPrefix)
+	})
+
+	t.Run("SessionRedis with nil BackendReplicas preserves both in round-trip", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "redis-no-backend"
+		cfg.ScalingConfig = &ScalingConfig{
+			SessionRedis: &SessionRedisConfig{Address: "redis:6379"},
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		require.NotNil(t, got.ScalingConfig)
+		assert.Nil(t, got.ScalingConfig.BackendReplicas)
+		require.NotNil(t, got.ScalingConfig.SessionRedis)
+		assert.Equal(t, "redis:6379", got.ScalingConfig.SessionRedis.Address)
+	})
+}

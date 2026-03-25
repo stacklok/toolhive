@@ -233,6 +233,26 @@ type ScalingConfig struct {
 	// When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
 	// When set (including 0), the value is an explicit replica count.
 	BackendReplicas *int32 `json:"backend_replicas,omitempty" yaml:"backend_replicas,omitempty"`
+
+	// SessionRedis holds non-sensitive Redis connection parameters for distributed session storage.
+	// Populated only when MCPServer.spec.sessionStorage.provider == "redis".
+	// The Redis password is not included — it is injected as env var THV_SESSION_REDIS_PASSWORD.
+	// +optional
+	SessionRedis *SessionRedisConfig `json:"session_redis,omitempty" yaml:"session_redis,omitempty"`
+}
+
+// SessionRedisConfig contains non-sensitive Redis connection parameters used for distributed
+// session storage when the operator is configured with sessionStorage.provider == "redis".
+// The Redis password is excluded and injected separately as env var THV_SESSION_REDIS_PASSWORD.
+type SessionRedisConfig struct {
+	// Address is the Redis server address (host:port).
+	Address string `json:"address,omitempty" yaml:"address,omitempty"`
+
+	// DB is the Redis database number.
+	DB int32 `json:"db,omitempty" yaml:"db,omitempty"`
+
+	// KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
+	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

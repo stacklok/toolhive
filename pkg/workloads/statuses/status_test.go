@@ -6,6 +6,7 @@ package statuses
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -13,27 +14,32 @@ import (
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive-core/httperr"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
+	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 const testWorkloadName = "test-workload"
 
-//nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestNewStatusManagerFromRuntime(t *testing.T) {
+	t.Parallel()
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := NewStatusManagerFromRuntime(mockRuntime)
+	mockStore := stateMocks.NewMockStore(ctrl)
+	manager := NewStatusManagerFromRuntime(mockRuntime, mockStore)
 
 	assert.NotNil(t, manager)
 	assert.IsType(t, &runtimeStatusManager{}, manager)
 
 	rsm := manager.(*runtimeStatusManager)
 	assert.Equal(t, mockRuntime, rsm.runtime)
+	assert.Equal(t, mockStore, rsm.runConfigStore)
 }
 
 func TestRuntimeStatusManager_CreateWorkloadStatus(t *testing.T) {
@@ -109,7 +115,14 @@ func TestRuntimeStatusManager_GetWorkload(t *testing.T) {
 			mockRuntime := rtmocks.NewMockRuntime(ctrl)
 			tt.setupMock(mockRuntime)
 
-			manager := &runtimeStatusManager{runtime: mockRuntime}
+			mockStore := stateMocks.NewMockStore(ctrl)
+			// For the successful case, the store is queried for the workload's run config
+			if tt.expectedError == "" {
+				mockStore.EXPECT().GetReader(gomock.Any(), tt.workloadName).
+					Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound))
+			}
+
+			manager := &runtimeStatusManager{runtime: mockRuntime, runConfigStore: mockStore}
 			ctx := context.Background()
 
 			workload, err := manager.GetWorkload(ctx, tt.workloadName)
@@ -237,7 +250,14 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 			mockRuntime := rtmocks.NewMockRuntime(ctrl)
 			tt.setupMock(mockRuntime)
 
-			manager := &runtimeStatusManager{runtime: mockRuntime}
+			mockStore := stateMocks.NewMockStore(ctrl)
+			// For successful list cases, the store is queried for each workload's run config
+			if tt.expectedError == "" {
+				mockStore.EXPECT().GetReader(gomock.Any(), gomock.Any()).
+					Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound)).AnyTimes()
+			}
+
+			manager := &runtimeStatusManager{runtime: mockRuntime, runConfigStore: mockStore}
 			ctx := context.Background()
 
 			workloads, err := manager.ListWorkloads(ctx, tt.listAll, tt.labelFilters)

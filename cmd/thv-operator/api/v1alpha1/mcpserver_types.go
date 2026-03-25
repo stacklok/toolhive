@@ -101,6 +101,9 @@ const (
 	ConditionReasonSessionStorageNotApplicable = "SessionStorageWarningNotApplicable"
 )
 
+// SessionStorageProviderRedis is the provider name for Redis-backed session storage.
+const SessionStorageProviderRedis = "redis"
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server

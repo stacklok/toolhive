@@ -1964,7 +1964,7 @@ func setSessionStorageCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.
 // Clears the condition when replicas drop back to nil or <= 1.
 func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
 	if mcpServer.Spec.Replicas != nil && *mcpServer.Spec.Replicas > 1 {
-		if mcpServer.Spec.SessionStorage == nil || mcpServer.Spec.SessionStorage.Provider != "redis" {
+		if mcpServer.Spec.SessionStorage == nil || mcpServer.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis {
 			setSessionStorageCondition(mcpServer, metav1.ConditionTrue,
 				mcpv1alpha1.ConditionReasonSessionStorageMissing,
 				"replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas")

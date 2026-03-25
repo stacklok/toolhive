@@ -220,7 +220,7 @@ Use `recover()` sparingly. It should only be used at well-defined boundaries to 
 
 ## Sentry Error Reporting
 
-The API server supports optional [Sentry](https://sentry.io) integration for error tracking and distributed tracing. When enabled (via `--sentry-dsn`), the following errors are automatically reported:
+The API server supports optional [Sentry](https://sentry.io) integration for error and panic capture. When enabled (via `--sentry-dsn`), the following are automatically reported:
 
 ### What Gets Reported
 
@@ -230,17 +230,18 @@ The API server supports optional [Sentry](https://sentry.io) integration for err
 
 ### How It Works
 
-The Sentry integration is implemented in `pkg/sentry/sentry.go` and wired into the middleware chain:
+The Sentry integration is implemented in `pkg/sentry/sentry.go` and wired into two places:
 
-- **`sentryhttp` middleware** runs early in the chain (after recovery), creating a Sentry hub per request and extracting trace context from `sentry-trace`/`baggage` headers for distributed tracing.
-- **Recovery middleware** catches panics and reports them to Sentry using the hub from the request context.
-- **Error handler** captures 5xx errors to Sentry using the same request-scoped hub.
+- **Recovery middleware** catches panics and reports them to Sentry using `RecoverPanic()`.
+- **Error handler** captures 5xx errors to Sentry using `CaptureException()`.
+
+For distributed tracing, `thv serve` uses **OTEL `otelhttp` middleware** (not `sentryhttp`) to extract W3C `traceparent` headers. When a Sentry DSN is configured alongside an OTEL endpoint, the `pkg/sentry.SpanProcessor()` is registered with the OTEL SDK so spans are exported to **both** the configured OTLP backend and Sentry simultaneously.
 
 ### When Sentry Is Disabled
 
-When no DSN is configured, all Sentry operations are no-ops. The `sentrypkg.Enabled()` / `sentrypkg.CaptureException()` / `sentrypkg.RecoverPanic()` functions check an atomic boolean and return immediately, adding no overhead.
+When no DSN is configured, all Sentry operations are no-ops. `sentrypkg.Enabled()`, `sentrypkg.CaptureException()`, `sentrypkg.RecoverPanic()`, and `sentrypkg.SpanProcessor()` all check an atomic boolean and return immediately, adding no overhead.
 
 ### Configuration
 
-See [Deployment Modes - Sentry Integration](arch/01-deployment-modes.md#sentry-integration-distributed-tracing-and-error-reporting) for CLI flags and environment variables.
+See [Deployment Modes - Observability](arch/01-deployment-modes.md#observability-otel-distributed-tracing-and-sentry-error-reporting) for CLI flags, environment variables, and OTEL configuration.
 

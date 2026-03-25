@@ -62,6 +62,24 @@ func CheckHealth(ctx context.Context, serverURL string, expectedNonce string) er
 // buildHealthClient returns an HTTP client and request URL appropriate for
 // the given server URL scheme.
 func buildHealthClient(serverURL string) (*http.Client, string, error) {
+	client, baseURL, err := HTTPClientForURL(serverURL)
+	if err != nil {
+		return nil, "", err
+	}
+	healthURL, err := url.JoinPath(baseURL, "health")
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to build health URL: %w", err)
+	}
+	return client, healthURL, nil
+}
+
+// HTTPClientForURL returns an HTTP client configured for the given server URL
+// and the base URL to use for requests. For unix:// URLs it creates a client
+// with a Unix socket transport and returns "http://localhost" as the base URL.
+// For http:// URLs it validates the host is a loopback address and returns a
+// default client. The returned client has no timeout set; callers should apply
+// their own timeout via context or client.Timeout.
+func HTTPClientForURL(serverURL string) (*http.Client, string, error) {
 	switch {
 	case strings.HasPrefix(serverURL, "unix://"):
 		socketPath, err := ParseUnixSocketPath(serverURL)
@@ -75,13 +93,13 @@ func buildHealthClient(serverURL string) (*http.Client, string, error) {
 				},
 			},
 		}
-		return client, "http://localhost/health", nil
+		return client, "http://localhost", nil
 
 	case strings.HasPrefix(serverURL, "http://"):
 		if err := ValidateLoopbackURL(serverURL); err != nil {
 			return nil, "", err
 		}
-		return &http.Client{}, serverURL + "/health", nil
+		return &http.Client{}, serverURL, nil
 
 	default:
 		return nil, "", fmt.Errorf("unsupported URL scheme: %s", serverURL)

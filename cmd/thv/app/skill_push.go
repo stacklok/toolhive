@@ -22,7 +22,7 @@ func init() {
 }
 
 func skillPushCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	err := c.Push(cmd.Context(), skills.PushOptions{
 		Reference: args[0],

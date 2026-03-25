@@ -42,7 +42,7 @@ func init() {
 }
 
 func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	_, err := c.Install(cmd.Context(), skills.InstallOptions{
 		Name:        args[0],

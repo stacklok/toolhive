@@ -43,7 +43,7 @@ func init() {
 }
 
 func skillInfoCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	info, err := c.Info(cmd.Context(), skills.InfoOptions{
 		Name:        args[0],

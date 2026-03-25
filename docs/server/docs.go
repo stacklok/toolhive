@@ -740,7 +740,7 @@ const docTemplate = `{
                 "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
                 "properties": {
                     "additional_packages": {
-                        "description": "AdditionalPackages lists extra packages to install in builder stage\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
+                        "description": "AdditionalPackages lists extra packages to install in the builder and\nruntime stages.\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
                         "items": {
                             "type": "string"
                         },
@@ -748,7 +748,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
                         "type": "string"
                     }
                 },

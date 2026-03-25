@@ -21,11 +21,16 @@ The command automatically detects the registry type:
   - Other URLs are treated as MCP Registry API endpoints (v0.1 spec)
   - Local paths are treated as local registry files
 
+Any previously configured registry authentication is cleared when this command is run.
+To configure OIDC authentication, provide --issuer and --client-id flags.
+
 Examples:
   thv config set-registry https://example.com/registry.json           # Static remote file
   thv config set-registry https://registry.example.com                # API endpoint
   thv config set-registry /path/to/local-registry.json               # Local file path
   thv config set-registry file:///path/to/local-registry.json        # Explicit file URL
+  thv config set-registry https://registry.example.com \
+    --issuer https://auth.company.com --client-id toolhive-cli       # With OAuth auth
 
 ```
 thv config set-registry <url-or-path> [flags]
@@ -35,7 +40,11 @@ thv config set-registry <url-or-path> [flags]
 
 ```
   -p, --allow-private-ip   Allow setting the registry URL or API endpoint, even if it references a private IP address (default false)
+      --audience string    OAuth audience parameter for registry authentication
+      --client-id string   OAuth client ID for registry authentication
   -h, --help               help for set-registry
+      --issuer string      OIDC issuer URL for registry authentication
+      --scopes strings     OAuth scopes for registry authentication (default [offline_access])
 ```
 
 ### Options inherited from parent commands

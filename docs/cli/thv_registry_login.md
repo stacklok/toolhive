@@ -32,12 +32,12 @@ thv registry login [flags]
 ### Options
 
 ```
-      --audience string    OAuth audience (optional)
-      --client-id string   OAuth client ID to save if OAuth is not configured
+      --audience string    OAuth audience parameter for registry authentication (optional)
+      --client-id string   OAuth client ID for registry authentication
   -h, --help               help for login
-      --issuer string      OIDC issuer URL to save if OAuth is not configured
-      --registry string    Registry URL to save if not already configured
-      --scopes strings     OAuth scopes (defaults to openid,offline_access)
+      --issuer string      OIDC issuer URL for registry authentication
+      --registry string    Registry URL
+      --scopes strings     OAuth scopes for registry authentication (defaults to offline_access)
 ```
 
 ### Options inherited from parent commands

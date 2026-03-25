@@ -92,11 +92,11 @@ var usageMetricsCmd = &cobra.Command{
 }
 
 var (
-	allowPrivateRegistryIp  bool
-	registryAuthIssuer      string
-	registryAuthClientID    string
-	registryAuthAudience    string
-	registryAuthScopes      []string
+	allowPrivateRegistryIp bool
+	registryAuthIssuer     string
+	registryAuthClientID   string
+	registryAuthAudience   string
+	registryAuthScopes     []string
 )
 
 func init() {

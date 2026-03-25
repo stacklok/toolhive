@@ -201,7 +201,6 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 	mockSess.EXPECT().ID().Return("dddddddd-1001-1001-1001-000000000001").AnyTimes()
 	mockSess.EXPECT().GetRoutingTable().Return(routingTable).AnyTimes()
 	mockSess.EXPECT().Tools().Return(nil).AnyTimes()
-	mockSess.EXPECT().Touch().AnyTimes()
 	mockSess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
 	mockSess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 	mockSess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()

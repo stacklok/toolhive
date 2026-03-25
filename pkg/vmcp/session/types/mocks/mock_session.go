@@ -253,18 +253,6 @@ func (mr *MockMultiSessionMockRecorder) Tools() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tools", reflect.TypeOf((*MockMultiSession)(nil).Tools))
 }
 
-// Touch mocks base method.
-func (m *MockMultiSession) Touch() {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "Touch")
-}
-
-// Touch indicates an expected call of Touch.
-func (mr *MockMultiSessionMockRecorder) Touch() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Touch", reflect.TypeOf((*MockMultiSession)(nil).Touch))
-}
-
 // Type mocks base method.
 func (m *MockMultiSession) Type() session.SessionType {
 	m.ctrl.T.Helper()

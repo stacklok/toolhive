@@ -17,16 +17,20 @@ import (
 	s "github.com/stacklok/toolhive/pkg/api"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpserver "github.com/stacklok/toolhive/pkg/mcp/server"
+	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 )
 
 var (
-	host            string
-	port            int
-	enableDocs      bool
-	socketPath      string
-	enableMCPServer bool
-	mcpServerPort   string
-	mcpServerHost   string
+	host                   string
+	port                   int
+	enableDocs             bool
+	socketPath             string
+	enableMCPServer        bool
+	mcpServerPort          string
+	mcpServerHost          string
+	sentryDSN              string
+	sentryEnvironment      string
+	sentryTracesSampleRate float64
 )
 
 var serveCmd = &cobra.Command{
@@ -40,6 +44,18 @@ var serveCmd = &cobra.Command{
 
 		// Get debug mode flag
 		debugMode, _ := cmd.Flags().GetBool("debug")
+
+		// Initialize Sentry for distributed tracing and error reporting.
+		sentryCfg := sentrypkg.Config{
+			DSN:              sentryDSN,
+			Environment:      sentryEnvironment,
+			TracesSampleRate: sentryTracesSampleRate,
+			Debug:            debugMode,
+		}
+		if err := sentrypkg.Init(sentryCfg); err != nil {
+			return fmt.Errorf("failed to initialize sentry: %w", err)
+		}
+		defer sentrypkg.Close()
 
 		// If socket path is provided, use it; otherwise use host:port
 		address := fmt.Sprintf("%s:%d", host, port)
@@ -106,7 +122,7 @@ var serveCmd = &cobra.Command{
 			}()
 		}
 
-		return s.Serve(ctx, address, isUnixSocket, debugMode, enableDocs, oidcConfig)
+		return s.Serve(ctx, address, isUnixSocket, debugMode, enableDocs, oidcConfig, sentrypkg.Enabled())
 	},
 }
 
@@ -125,6 +141,14 @@ func init() {
 		"EXPERIMENTAL: Port for the embedded MCP server")
 	serveCmd.Flags().StringVar(&mcpServerHost, "experimental-mcp-host", "localhost",
 		"EXPERIMENTAL: Host for the embedded MCP server")
+
+	// Add Sentry flags
+	serveCmd.Flags().StringVar(&sentryDSN, "sentry-dsn", "",
+		"Sentry DSN for error tracking and distributed tracing (env: SENTRY_DSN)")
+	serveCmd.Flags().StringVar(&sentryEnvironment, "sentry-environment", "",
+		"Sentry environment name, e.g. production or development (env: SENTRY_ENVIRONMENT)")
+	serveCmd.Flags().Float64Var(&sentryTracesSampleRate, "sentry-traces-sample-rate", 1.0,
+		"Sentry traces sample rate (0.0-1.0) for performance monitoring (env: SENTRY_TRACES_SAMPLE_RATE)")
 
 	// Add OIDC validation flags
 	AddOIDCFlags(serveCmd)

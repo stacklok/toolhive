@@ -61,13 +61,13 @@ func ExtractBearerToken(r *http.Request) (string, error) {
 
 // GetAuthenticationMiddleware returns the appropriate authentication middleware based on the configuration.
 // If OIDC config is provided, it returns JWT middleware. Otherwise, it returns local user middleware.
-func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig,
+func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig, opts ...TokenValidatorOption,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcConfig != nil {
 		slog.Debug("oidc validation enabled")
 
 		// Create JWT validator
-		jwtValidator, err := NewTokenValidator(ctx, *oidcConfig)
+		jwtValidator, err := NewTokenValidator(ctx, *oidcConfig, opts...)
 		if err != nil {
 			return nil, nil, err
 		}

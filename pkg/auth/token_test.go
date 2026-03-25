@@ -24,6 +24,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	upstreamtokenmocks "github.com/stacklok/toolhive/pkg/auth/upstreamtoken/mocks"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -2222,4 +2224,245 @@ func TestMiddleware_RFC6750JSONErrorResponse(t *testing.T) {
 			require.Contains(t, body.ErrorDescription, tt.wantDescSubstring)
 		})
 	}
+}
+
+func TestLoadUpstreamTokens(t *testing.T) {
+	t.Parallel()
+
+	t.Run("loads tokens when tsid present", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-abc").
+			Return(map[string]string{"github": "gh-token", "atlassian": "atl-token"}, nil)
+
+		v := &TokenValidator{upstreamTokenReader: reader}
+		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+			"sub":                                "user123",
+			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+		})
+		require.NoError(t, err)
+		require.Equal(t, map[string]string{"github": "gh-token", "atlassian": "atl-token"}, result)
+	})
+
+	t.Run("returns nil when no tsid claim", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		// No EXPECT — reader should not be called
+
+		v := &TokenValidator{upstreamTokenReader: reader}
+		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{"sub": "user123"})
+		require.NoError(t, err)
+		require.Nil(t, result)
+	})
+
+	t.Run("returns nil when tsid is empty string", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+
+		v := &TokenValidator{upstreamTokenReader: reader}
+		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+			"sub":                                "user123",
+			upstreamtoken.TokenSessionIDClaimKey: "",
+		})
+		require.NoError(t, err)
+		require.Nil(t, result)
+	})
+
+	t.Run("returns nil when tsid is non-string type", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+
+		v := &TokenValidator{upstreamTokenReader: reader}
+		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+			"sub":                                "user123",
+			upstreamtoken.TokenSessionIDClaimKey: 12345,
+		})
+		require.NoError(t, err)
+		require.Nil(t, result)
+	})
+
+	t.Run("returns error when reader fails", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-abc").
+			Return(nil, errors.New("storage unavailable"))
+
+		v := &TokenValidator{upstreamTokenReader: reader}
+		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+			"sub":                                "user123",
+			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+		})
+		require.Error(t, err)
+		require.Nil(t, result)
+	})
+
+	t.Run("returns empty map from reader", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-abc").
+			Return(map[string]string{}, nil)
+
+		v := &TokenValidator{upstreamTokenReader: reader}
+		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+			"sub":                                "user123",
+			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+		})
+		require.NoError(t, err)
+		require.Equal(t, map[string]string{}, result)
+	})
+}
+
+func TestWithUpstreamTokenReader(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+	opt := WithUpstreamTokenReader(reader)
+
+	o := &tokenValidatorOptions{}
+	opt(o)
+
+	require.Equal(t, reader, o.upstreamTokenReader)
+}
+
+// TestMiddleware_UpstreamTokenEnrichment verifies the full middleware pipeline:
+// JWT validation → tsid extraction → token loading → Identity.UpstreamTokens.
+func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
+	t.Parallel()
+
+	// Shared JWKS infrastructure
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	key, err := jwk.Import(&privateKey.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
+	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
+	require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
+
+	keySet := jwk.NewSet()
+	require.NoError(t, keySet.AddKey(key))
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(jwksServer.Close)
+
+	makeValidator := func(t *testing.T, opts ...TokenValidatorOption) *TokenValidator {
+		t.Helper()
+		v, vErr := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer: "test-issuer", Audience: "test-audience",
+			JWKSURL: jwksServer.URL, ClientID: "test-client",
+			CACertPath: caCertPath, AllowPrivateIP: true,
+		}, opts...)
+		require.NoError(t, vErr)
+		require.NoError(t, v.ensureJWKSRegistered(context.Background()))
+		_, lErr := v.jwksClient.Lookup(context.Background(), jwksServer.URL)
+		require.NoError(t, lErr)
+		return v
+	}
+
+	signToken := func(claims jwt.MapClaims) string {
+		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+		tok.Header["kid"] = testKeyID
+		s, sErr := tok.SignedString(privateKey)
+		require.NoError(t, sErr)
+		return s
+	}
+
+	claimsWithTsid := jwt.MapClaims{
+		"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+		"exp":                                time.Now().Add(time.Hour).Unix(),
+		upstreamtoken.TokenSessionIDClaimKey: "session-xyz",
+	}
+
+	t.Run("enriches identity with upstream tokens", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
+			Return(map[string]string{"github": "gh-tok"}, nil)
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+		var captured *Identity
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured, _ = IdentityFromContext(r.Context())
+		}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, map[string]string{"github": "gh-tok"}, captured.UpstreamTokens)
+	})
+
+	t.Run("returns 503 when storage fails", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
+			Return(nil, errors.New("redis down"))
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+		nextCalled := false
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			nextCalled = true
+		}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		require.False(t, nextCalled)
+	})
+
+	t.Run("no enrichment without tsid", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		// No EXPECT — reader should not be called when tsid is absent
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+		var captured *Identity
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured, _ = IdentityFromContext(r.Context())
+		}))
+
+		noTsid := jwt.MapClaims{
+			"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(noTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Nil(t, captured.UpstreamTokens)
+	})
+
+	t.Run("no enrichment when reader is nil", func(t *testing.T) {
+		t.Parallel()
+		v := makeValidator(t) // no WithUpstreamTokenReader
+
+		var captured *Identity
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured, _ = IdentityFromContext(r.Context())
+		}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Nil(t, captured.UpstreamTokens)
+	})
 }

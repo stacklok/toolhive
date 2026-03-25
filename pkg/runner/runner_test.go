@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
@@ -463,57 +464,6 @@ func TestRunner_EmbeddedAuthServer_Integration(t *testing.T) {
 	})
 }
 
-func TestRunner_GetUpstreamTokenService(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns nil when no auth server configured", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
-
-		runConfig := NewRunConfig()
-		runner := NewRunner(runConfig, mockStatusManager)
-
-		serviceGetter := runner.GetUpstreamTokenService()
-		assert.NotNil(t, serviceGetter, "GetUpstreamTokenService should always return a non-nil function")
-
-		svc := serviceGetter()
-		assert.Nil(t, svc, "service should be nil when no auth server is configured")
-	})
-
-	t.Run("returns service when upstreamTokenService is set", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
-
-		runConfig := NewRunConfig()
-		runner := NewRunner(runConfig, mockStatusManager)
-
-		// Simulate what Run() does: create auth server, then set the service
-		authServerCfg := createMinimalAuthServerConfig()
-		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
-		require.NoError(t, err)
-		require.NotNil(t, embeddedServer)
-		defer func() { _ = embeddedServer.Close() }()
-
-		runner.embeddedAuthServer = embeddedServer
-
-		stor := embeddedServer.IDPTokenStorage()
-		refresher := embeddedServer.UpstreamTokenRefresher()
-		runner.upstreamTokenService = upstreamtoken.NewInProcessService(stor, refresher)
-
-		serviceGetter := runner.GetUpstreamTokenService()
-		svc := serviceGetter()
-		assert.NotNil(t, svc, "service should not be nil when upstreamTokenService is set")
-	})
-}
-
 func TestRunner_RejectsMultiUpstreamConfig(t *testing.T) {
 	t.Parallel()
 
@@ -559,4 +509,31 @@ func TestRunner_RejectsMultiUpstreamConfig(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support multiple upstream providers")
+}
+
+func TestRunner_GetUpstreamTokenReader(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns nil when no auth server configured", func(t *testing.T) {
+		t.Parallel()
+
+		r := &Runner{}
+		reader := r.GetUpstreamTokenReader()
+		assert.Nil(t, reader)
+	})
+
+	t.Run("returns reader when auth server configured", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		svc := upstreamtoken.NewInProcessService(mockStorage, nil)
+
+		r := &Runner{
+			upstreamTokenReader: svc,
+		}
+		reader := r.GetUpstreamTokenReader()
+		assert.NotNil(t, reader)
+		assert.Equal(t, svc, reader)
+	})
 }

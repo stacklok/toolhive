@@ -8,6 +8,63 @@ const docTemplate = `{
     "schemes": {{ marshal .Schemes }},
     "components": {
         "schemas": {
+            "auth.TokenValidatorConfig": {
+                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
+                "properties": {
+                    "allowPrivateIP": {
+                        "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
+                        "type": "boolean"
+                    },
+                    "audience": {
+                        "description": "Audience is the expected audience for the token",
+                        "type": "string"
+                    },
+                    "authTokenFile": {
+                        "description": "AuthTokenFile is the path to file containing bearer token for authentication",
+                        "type": "string"
+                    },
+                    "cacertPath": {
+                        "description": "CACertPath is the path to the CA certificate bundle for HTTPS requests",
+                        "type": "string"
+                    },
+                    "clientID": {
+                        "description": "ClientID is the OIDC client ID",
+                        "type": "string"
+                    },
+                    "clientSecret": {
+                        "description": "ClientSecret is the optional OIDC client secret for introspection",
+                        "type": "string"
+                    },
+                    "insecureAllowHTTP": {
+                        "description": "InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing\nWARNING: This is insecure and should NEVER be used in production",
+                        "type": "boolean"
+                    },
+                    "introspectionURL": {
+                        "description": "IntrospectionURL is the optional introspection endpoint for validating tokens",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)",
+                        "type": "string"
+                    },
+                    "jwksurl": {
+                        "description": "JWKSURL is the URL to fetch the JWKS from",
+                        "type": "string"
+                    },
+                    "resourceURL": {
+                        "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)\nIf empty, defaults to [\"openid\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive-core_registry_types.Registry": {
                 "description": "Full registry data",
                 "properties": {
@@ -86,63 +143,6 @@ const docTemplate = `{
                     "maxDataSize": {
                         "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
                         "type": "integer"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig": {
-                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
-                "properties": {
-                    "allowPrivateIP": {
-                        "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
-                        "type": "boolean"
-                    },
-                    "audience": {
-                        "description": "Audience is the expected audience for the token",
-                        "type": "string"
-                    },
-                    "authTokenFile": {
-                        "description": "AuthTokenFile is the path to file containing bearer token for authentication",
-                        "type": "string"
-                    },
-                    "cacertPath": {
-                        "description": "CACertPath is the path to the CA certificate bundle for HTTPS requests",
-                        "type": "string"
-                    },
-                    "clientID": {
-                        "description": "ClientID is the OIDC client ID",
-                        "type": "string"
-                    },
-                    "clientSecret": {
-                        "description": "ClientSecret is the optional OIDC client secret for introspection",
-                        "type": "string"
-                    },
-                    "insecureAllowHTTP": {
-                        "description": "InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing\nWARNING: This is insecure and should NEVER be used in production",
-                        "type": "boolean"
-                    },
-                    "introspectionURL": {
-                        "description": "IntrospectionURL is the optional introspection endpoint for validating tokens",
-                        "type": "string"
-                    },
-                    "issuer": {
-                        "description": "Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)",
-                        "type": "string"
-                    },
-                    "jwksurl": {
-                        "description": "JWKSURL is the URL to fetch the JWKS from",
-                        "type": "string"
-                    },
-                    "resourceURL": {
-                        "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)\nIf empty, defaults to [\"openid\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array"
                     }
                 },
                 "type": "object"
@@ -471,7 +471,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig"
                     },
                     "storage": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig"
+                        "$ref": "#/components/schemas/storage.RunConfig"
                     },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
@@ -633,107 +633,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig": {
-                "description": "ACLUserConfig contains ACL user authentication configuration.",
-                "properties": {
-                    "password_env_var": {
-                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
-                        "type": "string"
-                    },
-                    "username_env_var": {
-                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig": {
-                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
-                "properties": {
-                    "acl_user_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
-                    },
-                    "auth_type": {
-                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
-                        "type": "string"
-                    },
-                    "dial_timeout": {
-                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
-                        "type": "string"
-                    },
-                    "key_prefix": {
-                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
-                        "type": "string"
-                    },
-                    "read_timeout": {
-                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
-                        "type": "string"
-                    },
-                    "sentinel_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig"
-                    },
-                    "sentinel_tls": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
-                    },
-                    "tls": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
-                    },
-                    "write_timeout": {
-                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig": {
-                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
-                "properties": {
-                    "ca_cert_file": {
-                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
-                        "type": "string"
-                    },
-                    "insecure_skip_verify": {
-                        "description": "InsecureSkipVerify skips certificate verification.",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig": {
-                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
-                "properties": {
-                    "redis_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig"
-                    },
-                    "type": {
-                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig": {
-                "description": "SentinelConfig contains Sentinel-specific configuration.",
-                "properties": {
-                    "db": {
-                        "description": "DB is the Redis database number (default: 0).",
-                        "type": "integer"
-                    },
-                    "master_name": {
-                        "description": "MasterName is the name of the Redis Sentinel master.",
-                        "type": "string"
-                    },
-                    "sentinel_addrs": {
-                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_authz.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
@@ -837,50 +736,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus": {
-                "description": "Current status of the workload",
-                "enum": [
-                    "running",
-                    "stopped",
-                    "error",
-                    "starting",
-                    "stopping",
-                    "unhealthy",
-                    "removing",
-                    "unknown",
-                    "unauthenticated",
-                    "running",
-                    "stopped",
-                    "error",
-                    "starting",
-                    "stopping",
-                    "unhealthy",
-                    "removing",
-                    "unknown",
-                    "unauthenticated",
-                    "running",
-                    "stopped",
-                    "error",
-                    "starting",
-                    "stopping",
-                    "unhealthy",
-                    "removing",
-                    "unknown",
-                    "unauthenticated"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "WorkloadStatusRunning",
-                    "WorkloadStatusStopped",
-                    "WorkloadStatusError",
-                    "WorkloadStatusStarting",
-                    "WorkloadStatusStopping",
-                    "WorkloadStatusUnhealthy",
-                    "WorkloadStatusRemoving",
-                    "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated"
-                ]
-            },
             "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {
                 "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
                 "properties": {
@@ -941,7 +796,19 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "status": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
+                        "description": "Status is the current status of the workload.",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
+                        "type": "string"
                     },
                     "status_context": {
                         "description": "StatusContext provides additional context about the workload's status.\nThe exact meaning is determined by the status and the underlying runtime.",
@@ -956,7 +823,14 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "transport_type": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
+                        "description": "TransportType is the type of transport used for this workload.",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
+                        "type": "string"
                     },
                     "url": {
                         "description": "URL is the URL of the workload exposed by the ToolHive proxy.",
@@ -983,20 +857,6 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_ignore.Config": {
-                "description": "IgnoreConfig contains configuration for ignore processing",
-                "properties": {
-                    "loadGlobal": {
-                        "description": "Whether to load global ignore patterns",
-                        "type": "boolean"
-                    },
-                    "printOverlays": {
-                        "description": "Whether to print resolved overlay paths for debugging",
-                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -1119,7 +979,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "ignore_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ignore.Config"
+                        "$ref": "#/components/schemas/ignore.Config"
                     },
                     "image": {
                         "description": "Image is the Docker image to run",
@@ -1140,7 +1000,7 @@ const docTemplate = `{
                     "middleware_configs": {
                         "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                            "$ref": "#/components/schemas/types.MiddlewareConfig"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -1150,7 +1010,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "oidc_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig"
+                        "$ref": "#/components/schemas/auth.TokenValidatorConfig"
                     },
                     "permission_profile_name_or_path": {
                         "description": "PermissionProfileNameOrPath is the name or path of the permission profile",
@@ -1161,7 +1021,12 @@ const docTemplate = `{
                         "type": "integer"
                     },
                     "proxy_mode": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.ProxyMode"
+                        "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                        "enum": [
+                            "sse",
+                            "streamable-http"
+                        ],
+                        "type": "string"
                     },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
@@ -1222,7 +1087,14 @@ const docTemplate = `{
                         "type": "object"
                     },
                     "transport": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
+                        "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
+                        "type": "string"
                     },
                     "trust_proxy_headers": {
                         "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
@@ -1510,56 +1382,19 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig": {
+            "ignore.Config": {
+                "description": "IgnoreConfig contains configuration for ignore processing",
                 "properties": {
-                    "parameters": {
-                        "description": "Parameters is a JSON object containing the middleware parameters.\nIt is stored as a raw message to allow flexible parameter types.",
-                        "type": "object"
+                    "loadGlobal": {
+                        "description": "Whether to load global ignore patterns",
+                        "type": "boolean"
                     },
-                    "type": {
-                        "description": "Type is a string representing the middleware type.",
-                        "type": "string"
+                    "printOverlays": {
+                        "description": "Whether to print resolved overlay paths for debugging",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_transport_types.ProxyMode": {
-                "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
-                "enum": [
-                    "sse",
-                    "streamable-http",
-                    "sse",
-                    "streamable-http"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "ProxyModeSSE",
-                    "ProxyModeStreamableHTTP"
-                ]
-            },
-            "github_com_stacklok_toolhive_pkg_transport_types.TransportType": {
-                "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
-                "enum": [
-                    "stdio",
-                    "sse",
-                    "streamable-http",
-                    "inspector",
-                    "stdio",
-                    "sse",
-                    "streamable-http",
-                    "inspector",
-                    "stdio",
-                    "sse",
-                    "streamable-http",
-                    "inspector"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "TransportTypeStdio",
-                    "TransportTypeSSE",
-                    "TransportTypeStreamableHTTP",
-                    "TransportTypeInspector"
-                ]
             },
             "permissions.InboundNetworkPermissions": {
                 "description": "Inbound defines inbound network permissions",
@@ -2621,7 +2456,19 @@ const docTemplate = `{
                 "description": "Response containing workload status information",
                 "properties": {
                     "status": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
+                        "description": "Current status of the workload",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated"
+                        ],
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -3031,6 +2878,120 @@ const docTemplate = `{
                 "properties": {
                     "predicate": {},
                     "predicate_type": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "properties": {
+                    "password_env_var": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                        "type": "string"
+                    },
+                    "username_env_var": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "acl_user_config": {
+                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    },
+                    "auth_type": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "type": "string"
+                    },
+                    "dial_timeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
+                        "type": "string"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
+                        "type": "string"
+                    },
+                    "read_timeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
+                        "type": "string"
+                    },
+                    "sentinel_config": {
+                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
+                    },
+                    "sentinel_tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "write_timeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisTLSRunConfig": {
+                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
+                "properties": {
+                    "ca_cert_file": {
+                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify skips certificate verification.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redis_config": {
+                        "$ref": "#/components/schemas/storage.RedisRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
+                        "type": "integer"
+                    },
+                    "master_name": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
+                        "type": "string"
+                    },
+                    "sentinel_addrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "types.MiddlewareConfig": {
+                "properties": {
+                    "parameters": {
+                        "description": "Parameters is a JSON object containing the middleware parameters.\nIt is stored as a raw message to allow flexible parameter types.",
+                        "type": "object"
+                    },
+                    "type": {
+                        "description": "Type is a string representing the middleware type.",
                         "type": "string"
                     }
                 },

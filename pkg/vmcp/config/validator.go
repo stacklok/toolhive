@@ -484,11 +484,7 @@ func ValidateAuthServerIntegration(cfg *Config, rc *authserver.RunConfig) error 
 	}
 
 	// Issuer and audience consistency between auth server and incoming auth.
-	if err := validateAuthServerIncomingAuthConsistency(cfg, rc); err != nil {
-		return err
-	}
-
-	return nil
+	return validateAuthServerIncomingAuthConsistency(cfg, rc)
 }
 
 // validateAuthServerRunConfig performs lightweight structural validation of the

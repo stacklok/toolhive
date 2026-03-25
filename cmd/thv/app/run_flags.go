@@ -365,18 +365,17 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
 	configProvider := cfg.NewDefaultProvider()
 	config := configProvider.GetConfig()
-	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables, finalOtelInsecure,
-		finalOtelEnablePrometheusMetricsPath, finalOtelUseLegacyAttributes,
-		finalOtelTracingEnabled, finalOtelMetricsEnabled := getTelemetryFromFlags(
+	finalTelemetry := getTelemetryFromFlags(
 		cmd, config, runFlags.OtelEndpoint,
 		runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables, runFlags.OtelInsecure,
 		runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelUseLegacyAttributes,
 		runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled)
 
-	return createTelemetryConfig(finalOtelEndpoint, finalOtelEnablePrometheusMetricsPath,
-		runFlags.OtelServiceName, finalOtelTracingEnabled, finalOtelMetricsEnabled, finalOtelSamplingRate,
-		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables, runFlags.OtelCustomAttributes,
-		finalOtelUseLegacyAttributes)
+	return createTelemetryConfig(finalTelemetry.OtelEndpoint, finalTelemetry.OtelEnablePrometheusMetricsPath,
+		runFlags.OtelServiceName, finalTelemetry.OtelTracingEnabled, finalTelemetry.OtelMetricsEnabled,
+		finalTelemetry.OtelSamplingRate, runFlags.OtelHeaders, finalTelemetry.OtelInsecure,
+		finalTelemetry.OtelEnvironmentVariables, runFlags.OtelCustomAttributes,
+		finalTelemetry.OtelUseLegacyAttributes)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -713,8 +712,10 @@ func configureMiddlewareAndOptions(
 	// Extract resolved tracing/metrics values from the middleware telemetry config.
 	// These must match what setupTelemetryConfiguration resolved (with global config
 	// fallbacks) rather than the raw runFlags values, which ignore global config.
-	finalTracingEnabled := runFlags.OtelTracingEnabled
-	finalMetricsEnabled := runFlags.OtelMetricsEnabled
+	// Default to false when telemetryConfig is nil (both signals disabled or no endpoint)
+	// rather than falling back to runFlags defaults, which would re-enable signals
+	// that the user explicitly disabled via global config.
+	var finalTracingEnabled, finalMetricsEnabled bool
 	if telemetryConfig != nil {
 		finalTracingEnabled = telemetryConfig.TracingEnabled
 		finalMetricsEnabled = telemetryConfig.MetricsEnabled
@@ -967,11 +968,23 @@ func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, strin
 	return oidcIssuer, oidcAudience, oidcJwksURL, introspectionURL, oidcClientID, oidcClientSecret, oidcScopes
 }
 
+// finalTelemetry holds the telemetry configuration values after applying
+// global config fallbacks to CLI flag values.
+type finalTelemetry struct {
+	OtelEndpoint                    string
+	OtelSamplingRate                float64
+	OtelEnvironmentVariables        []string
+	OtelInsecure                    bool
+	OtelEnablePrometheusMetricsPath bool
+	OtelUseLegacyAttributes         bool
+	OtelTracingEnabled              bool
+	OtelMetricsEnabled              bool
+}
+
 // getTelemetryFromFlags extracts telemetry configuration from command flags
 func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint string, otelSamplingRate float64,
 	otelEnvironmentVariables []string, otelInsecure bool, otelEnablePrometheusMetricsPath bool,
-	otelUseLegacyAttributes bool, otelTracingEnabled bool, otelMetricsEnabled bool) (
-	string, float64, []string, bool, bool, bool, bool, bool) {
+	otelUseLegacyAttributes bool, otelTracingEnabled bool, otelMetricsEnabled bool) finalTelemetry {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
 	if !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
@@ -1017,9 +1030,16 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		finalOtelUseLegacyAttributes = *config.OTEL.UseLegacyAttributes
 	}
 
-	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables,
-		finalOtelInsecure, finalOtelEnablePrometheusMetricsPath, finalOtelUseLegacyAttributes,
-		finalOtelTracingEnabled, finalOtelMetricsEnabled
+	return finalTelemetry{
+		OtelEndpoint:                    finalOtelEndpoint,
+		OtelSamplingRate:                finalOtelSamplingRate,
+		OtelEnvironmentVariables:        finalOtelEnvironmentVariables,
+		OtelInsecure:                    finalOtelInsecure,
+		OtelEnablePrometheusMetricsPath: finalOtelEnablePrometheusMetricsPath,
+		OtelUseLegacyAttributes:         finalOtelUseLegacyAttributes,
+		OtelTracingEnabled:              finalOtelTracingEnabled,
+		OtelMetricsEnabled:              finalOtelMetricsEnabled,
+	}
 }
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided

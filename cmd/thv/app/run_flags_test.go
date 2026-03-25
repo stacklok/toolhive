@@ -356,8 +356,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			})
 			defer cleanup()
 			configInstance := configProvider.GetConfig()
-			finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath,
-				finalUseLegacyAttributes, finalTracingEnabled, finalMetricsEnabled := getTelemetryFromFlags(
+			finalTelemetry := getTelemetryFromFlags(
 				cmd,
 				configInstance,
 				tt.runFlags.OtelEndpoint,
@@ -371,14 +370,14 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			)
 
 			// Assert the results
-			assert.Equal(t, tt.expectedEndpoint, finalEndpoint, "OTEL endpoint should match expected value")
-			assert.Equal(t, tt.expectedSamplingRate, finalSamplingRate, "OTEL sampling rate should match expected value")
-			assert.Equal(t, tt.expectedEnvironmentVariables, finalEnvVars, "OTEL environment variables should match expected value")
-			assert.Equal(t, tt.expectedInsecure, finalInsecure, "OTEL insecure setting should match expected value")
-			assert.Equal(t, tt.expectedEnablePrometheusMetricsPath, finalEnablePrometheusMetricsPath, "OTEL enable Prometheus metrics path setting should match expected value")
-			assert.Equal(t, tt.expectedUseLegacyAttributes, finalUseLegacyAttributes, "OTEL use legacy attributes setting should match expected value")
-			assert.Equal(t, tt.expectedTracingEnabled, finalTracingEnabled, "OTEL tracing enabled should match expected value")
-			assert.Equal(t, tt.expectedMetricsEnabled, finalMetricsEnabled, "OTEL metrics enabled should match expected value")
+			assert.Equal(t, tt.expectedEndpoint, finalTelemetry.OtelEndpoint, "OTEL endpoint should match expected value")
+			assert.Equal(t, tt.expectedSamplingRate, finalTelemetry.OtelSamplingRate, "OTEL sampling rate should match expected value")
+			assert.Equal(t, tt.expectedEnvironmentVariables, finalTelemetry.OtelEnvironmentVariables, "OTEL environment variables should match expected value")
+			assert.Equal(t, tt.expectedInsecure, finalTelemetry.OtelInsecure, "OTEL insecure setting should match expected value")
+			assert.Equal(t, tt.expectedEnablePrometheusMetricsPath, finalTelemetry.OtelEnablePrometheusMetricsPath, "OTEL enable Prometheus metrics path setting should match expected value")
+			assert.Equal(t, tt.expectedUseLegacyAttributes, finalTelemetry.OtelUseLegacyAttributes, "OTEL use legacy attributes setting should match expected value")
+			assert.Equal(t, tt.expectedTracingEnabled, finalTelemetry.OtelTracingEnabled, "OTEL tracing enabled should match expected value")
+			assert.Equal(t, tt.expectedMetricsEnabled, finalTelemetry.OtelMetricsEnabled, "OTEL metrics enabled should match expected value")
 		})
 	}
 }
@@ -503,8 +502,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	defer cleanup()
 
 	configInstance := configProvider.GetConfig()
-	finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath,
-		finalUseLegacyAttributes, finalTracingEnabled, finalMetricsEnabled := getTelemetryFromFlags(
+	finalTelemetry := getTelemetryFromFlags(
 		cmd,
 		configInstance,
 		runFlags.OtelEndpoint,
@@ -518,14 +516,14 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	)
 
 	// Verify that CLI values take precedence
-	assert.Equal(t, "https://integration-test.example.com", finalEndpoint, "CLI endpoint should take precedence over config")
-	assert.Equal(t, 0.7, finalSamplingRate, "CLI sampling rate should take precedence over config")
-	assert.Equal(t, []string{"CONFIG_VAR=value"}, finalEnvVars, "Environment variables should fall back to config when not set via CLI")
-	assert.Equal(t, false, finalInsecure, "Insecure setting should use runFlags value when not set via CLI")
-	assert.Equal(t, true, finalUseLegacyAttributes, "UseLegacyAttributes should default to true when not set via CLI or config")
-	assert.Equal(t, false, finalEnablePrometheusMetricsPath, "Enable Prometheus metrics path should use runFlags value when not set via CLI")
-	assert.Equal(t, true, finalTracingEnabled, "TracingEnabled should use CLI default when not set via CLI or config")
-	assert.Equal(t, true, finalMetricsEnabled, "MetricsEnabled should use CLI default when not set via CLI or config")
+	assert.Equal(t, "https://integration-test.example.com", finalTelemetry.OtelEndpoint, "CLI endpoint should take precedence over config")
+	assert.Equal(t, 0.7, finalTelemetry.OtelSamplingRate, "CLI sampling rate should take precedence over config")
+	assert.Equal(t, []string{"CONFIG_VAR=value"}, finalTelemetry.OtelEnvironmentVariables, "Environment variables should fall back to config when not set via CLI")
+	assert.Equal(t, false, finalTelemetry.OtelInsecure, "Insecure setting should use runFlags value when not set via CLI")
+	assert.Equal(t, true, finalTelemetry.OtelUseLegacyAttributes, "UseLegacyAttributes should default to true when not set via CLI or config")
+	assert.Equal(t, false, finalTelemetry.OtelEnablePrometheusMetricsPath, "Enable Prometheus metrics path should use runFlags value when not set via CLI")
+	assert.Equal(t, true, finalTelemetry.OtelTracingEnabled, "TracingEnabled should use CLI default when not set via CLI or config")
+	assert.Equal(t, true, finalTelemetry.OtelMetricsEnabled, "MetricsEnabled should use CLI default when not set via CLI or config")
 }
 
 func TestCreateTelemetryConfig_DisabledSignals(t *testing.T) {

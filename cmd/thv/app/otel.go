@@ -422,8 +422,8 @@ func unsetOtelMetricsEnabledCmdFunc(_ *cobra.Command, _ []string) error {
 	configProvider := config.NewDefaultProvider()
 	cfg := configProvider.GetConfig()
 
-	if cfg.OTEL.MetricsEnabled == nil || !*cfg.OTEL.MetricsEnabled {
-		fmt.Println("OpenTelemetry metrics enabled is already disabled.")
+	if cfg.OTEL.MetricsEnabled == nil {
+		fmt.Println("OpenTelemetry metrics enabled is not configured.")
 		return nil
 	}
 
@@ -435,7 +435,7 @@ func unsetOtelMetricsEnabledCmdFunc(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	fmt.Println("Successfully disabled OpenTelemetry metrics enabled configuration.")
+	fmt.Println("Successfully unset OpenTelemetry metrics enabled configuration.")
 	return nil
 }
 
@@ -470,8 +470,8 @@ func unsetOtelTracingEnabledCmdFunc(_ *cobra.Command, _ []string) error {
 	configProvider := config.NewDefaultProvider()
 	cfg := configProvider.GetConfig()
 
-	if cfg.OTEL.TracingEnabled == nil || !*cfg.OTEL.TracingEnabled {
-		fmt.Println("OpenTelemetry tracing enabled is already disabled.")
+	if cfg.OTEL.TracingEnabled == nil {
+		fmt.Println("OpenTelemetry tracing enabled is not configured.")
 		return nil
 	}
 
@@ -483,7 +483,7 @@ func unsetOtelTracingEnabledCmdFunc(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	fmt.Println("Successfully disabled OpenTelemetry tracing enabled configuration.")
+	fmt.Println("Successfully unset OpenTelemetry tracing enabled configuration.")
 	return nil
 }
 

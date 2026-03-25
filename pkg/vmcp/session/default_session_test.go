@@ -47,7 +47,7 @@ func (m *mockConnectedBackend) ReadResource(ctx context.Context, uri string) (*v
 	if m.readResourceFunc != nil {
 		return m.readResourceFunc(ctx, uri)
 	}
-	return &vmcp.ResourceReadResult{Contents: []byte("data"), MimeType: "text/plain"}, nil
+	return &vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{{URI: "test://resource", MimeType: "text/plain", Text: "data"}}}, nil
 }
 
 func (m *mockConnectedBackend) GetPrompt(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
@@ -227,7 +227,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 			name: "successful read",
 			uri:  "file://readme",
 			mockFn: func(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
-				return &vmcp.ResourceReadResult{Contents: []byte("hello"), MimeType: "text/plain"}, nil
+				return &vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{{URI: "file://readme", MimeType: "text/plain", Text: "hello"}}}, nil
 			},
 			wantData: "hello",
 		},
@@ -267,7 +267,8 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantData, string(result.Contents))
+			require.NotEmpty(t, result.Contents)
+			assert.Equal(t, tt.wantData, result.Contents[0].Text)
 		})
 	}
 }

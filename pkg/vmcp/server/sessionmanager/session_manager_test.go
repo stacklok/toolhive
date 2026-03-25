@@ -1253,8 +1253,9 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 			},
 		}
 		readResult := &vmcp.ResourceReadResult{
-			Contents: []byte("hello resource"),
-			MimeType: "text/plain",
+			Contents: []vmcp.ResourceContent{
+				{URI: "file:///data.txt", MimeType: "text/plain", Text: "hello resource"},
+			},
 		}
 
 		ctrl := gomock.NewController(t)
@@ -1336,7 +1337,7 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 		assert.ErrorContains(t, handlerErr, "read failed")
 	})
 
-	t.Run("handler uses application/octet-stream fallback when MimeType is empty", func(t *testing.T) {
+	t.Run("handler preserves empty MimeType from backend", func(t *testing.T) {
 		t.Parallel()
 
 		resources := []vmcp.Resource{
@@ -1347,8 +1348,9 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 			},
 		}
 		readResult := &vmcp.ResourceReadResult{
-			Contents: []byte("binary data"),
-			MimeType: "", // empty — should fall back to application/octet-stream
+			Contents: []vmcp.ResourceContent{
+				{URI: "file:///binary.bin", MimeType: "", Text: "binary data"},
+			},
 		}
 
 		ctrl := gomock.NewController(t)
@@ -1382,7 +1384,7 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 
 		textContents, ok := contents[0].(mcp.TextResourceContents)
 		require.True(t, ok, "expected TextResourceContents")
-		assert.Equal(t, "application/octet-stream", textContents.MIMEType)
+		assert.Equal(t, "", textContents.MIMEType)
 	})
 
 	t.Run("handler terminates session on authorization errors", func(t *testing.T) {

@@ -258,8 +258,9 @@ func TestMetaPreservation_ReadResource(t *testing.T) {
 	assert.Nil(t, result.Meta, "_meta cannot be included due to SDK limitation - handler returns []ResourceContents without _meta wrapper")
 
 	// Verify resource content works correctly
-	assert.Equal(t, "Test resource content", string(result.Contents))
-	assert.Equal(t, "text/plain", result.MimeType)
+	require.NotEmpty(t, result.Contents)
+	assert.Equal(t, "Test resource content", result.Contents[0].Text)
+	assert.Equal(t, "text/plain", result.Contents[0].MimeType)
 }
 
 // startTestMCPServer creates and starts a test MCP server with tools that return _meta.

@@ -711,17 +711,13 @@ func (h *httpBackendClient) ReadResource(
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all resource content items into a single byte slice.
-	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
-
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
 	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
 	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
-		Contents: data,
-		MimeType: mimeType,
+		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     meta,
 	}, nil
 }

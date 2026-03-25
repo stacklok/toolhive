@@ -48,15 +48,11 @@ type StatusManager interface {
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
-func NewStatusManagerFromRuntime(runtime rt.Runtime) (StatusManager, error) {
-	runConfigStore, err := state.NewRunConfigStore(state.DefaultAppName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create run config store: %w", err)
-	}
+func NewStatusManagerFromRuntime(runtime rt.Runtime, runConfigStore state.Store) StatusManager {
 	return &runtimeStatusManager{
 		runtime:        runtime,
 		runConfigStore: runConfigStore,
-	}, nil
+	}
 }
 
 // NewStatusManager creates a new status manager instance using the appropriate implementation
@@ -70,7 +66,11 @@ func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
 // This allows for dependency injection of environment variable access for testing.
 func NewStatusManagerWithEnv(runtime rt.Runtime, envReader env.Reader) (StatusManager, error) {
 	if rt.IsKubernetesRuntimeWithEnv(envReader) {
-		return NewStatusManagerFromRuntime(runtime)
+		runConfigStore, err := state.NewRunConfigStore(state.DefaultAppName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create run config store: %w", err)
+		}
+		return NewStatusManagerFromRuntime(runtime, runConfigStore), nil
 	}
 	return NewFileStatusManager(runtime)
 }

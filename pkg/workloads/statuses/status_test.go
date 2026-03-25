@@ -24,21 +24,22 @@ import (
 
 const testWorkloadName = "test-workload"
 
-//nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestNewStatusManagerFromRuntime(t *testing.T) {
+	t.Parallel()
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager, err := NewStatusManagerFromRuntime(mockRuntime)
+	mockStore := stateMocks.NewMockStore(ctrl)
+	manager := NewStatusManagerFromRuntime(mockRuntime, mockStore)
 
-	assert.NoError(t, err)
 	assert.NotNil(t, manager)
 	assert.IsType(t, &runtimeStatusManager{}, manager)
 
 	rsm := manager.(*runtimeStatusManager)
 	assert.Equal(t, mockRuntime, rsm.runtime)
-	assert.NotNil(t, rsm.runConfigStore)
+	assert.Equal(t, mockStore, rsm.runConfigStore)
 }
 
 func TestRuntimeStatusManager_CreateWorkloadStatus(t *testing.T) {

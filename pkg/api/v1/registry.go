@@ -120,7 +120,7 @@ func (rr *RegistryRoutes) registryAuthLogin(w http.ResponseWriter, r *http.Reque
 
 	if err := auth.Login(r.Context(), rr.configProvider, secretsProvider, auth.LoginOptions{}); err != nil {
 		if isRegistryAuthError(err) {
-			http.Error(w, "Registry OAuth not configured; call PUT /registry/default with a client ID and "+
+			http.Error(w, "Registry OAuth not configured; call PUT /api/v1beta/registry/default with a client ID and "+
 				"issuer URL first", http.StatusBadRequest)
 			return
 		}

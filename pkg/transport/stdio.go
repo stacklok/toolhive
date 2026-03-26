@@ -29,6 +29,7 @@ import (
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/streamable"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -61,6 +62,7 @@ type StdioTransport struct {
 	middlewares       []types.NamedMiddleware
 	prometheusHandler http.Handler
 	trustProxyHeaders bool
+	sessionStorage    session.Storage
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -133,6 +135,13 @@ func (t *StdioTransport) SetProxyMode(mode types.ProxyMode) {
 	t.proxyMode = mode
 }
 
+// SetSessionStorage configures a custom session storage backend.
+// When set, the underlying proxy will use this storage instead of the default
+// in-memory store, enabling session sharing across replicas (e.g. Redis-backed).
+func (t *StdioTransport) SetSessionStorage(storage session.Storage) {
+	t.sessionStorage = storage
+}
+
 // Mode returns the transport mode.
 func (*StdioTransport) Mode() types.TransportType {
 	return types.TransportTypeStdio
@@ -182,18 +191,27 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
-		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.prometheusHandler, t.middlewares...)
+		var streamableOpts []streamable.Option
+		if t.sessionStorage != nil {
+			streamableOpts = append(streamableOpts, streamable.WithSessionStorage(t.sessionStorage))
+		}
+		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.prometheusHandler, t.middlewares, streamableOpts...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
 		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
+		var sseOpts []httpsse.Option
+		if t.sessionStorage != nil {
+			sseOpts = append(sseOpts, httpsse.WithSessionStorage(t.sessionStorage))
+		}
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
 			t.host,
 			t.proxyPort,
 			t.trustProxyHeaders,
 			t.prometheusHandler,
-			t.middlewares...,
+			t.middlewares,
+			sseOpts...,
 		)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err

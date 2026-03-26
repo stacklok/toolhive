@@ -31,6 +31,7 @@ type Session interface {
 	GetData() interface{}
 	SetData(data interface{})
 	GetMetadata() map[string]string
+	GetMetadataValue(key string) (string, bool)
 	SetMetadata(key, value string)
 }
 
@@ -212,6 +213,17 @@ func (m *Manager) Get(id string) (Session, bool) {
 	return sess, true
 }
 
+// GetWithError retrieves a session by ID and returns the underlying storage
+// error when the lookup fails. Callers that need to distinguish between
+// ErrSessionNotFound (session absent or expired) and other storage errors
+// (e.g. Redis connectivity failures) should use this method so they can
+// return an appropriate HTTP status code (400 vs 503) to the client.
+func (m *Manager) GetWithError(id string) (Session, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
+	defer cancel()
+	return m.storage.Load(ctx, id)
+}
+
 // UpsertSession inserts or updates a session in storage, replacing any existing
 // session with the same ID. Used by SessionManager to replace placeholder sessions
 // with fully-formed MultiSession objects after phase-2 construction.
@@ -246,22 +258,6 @@ func (m *Manager) Stop() error {
 		return m.storage.Close()
 	}
 	return nil
-}
-
-// Range calls f sequentially for each key and value present in the map.
-// If f returns false, range stops the iteration.
-//
-// Note: This method only works with LocalStorage backend. It will silently
-// do nothing with other storage backends. Range is not part of the Storage
-// interface because it's not feasible for distributed storage backends like
-// Redis where iterating all keys can be prohibitively expensive or impractical.
-//
-// For distributed storage, consider using more targeted queries or maintaining
-// a separate index of session IDs.
-func (m *Manager) Range(f func(key, value interface{}) bool) {
-	if localStorage, ok := m.storage.(*LocalStorage); ok {
-		localStorage.Range(f)
-	}
 }
 
 // Count returns the number of active sessions.

@@ -12,13 +12,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
+
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // TestNewHTTPProxy tests the creation of a new HTTP proxy
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestNewHTTPProxy(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
 
 	assert.NotNil(t, proxy)
 	assert.Equal(t, "localhost", proxy.host)
@@ -31,7 +33,7 @@ func TestNewHTTPProxy(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProxyChannelCommunication(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
 	ctx := context.Background()
 
 	// Test that we can send a message to the destination
@@ -69,7 +71,7 @@ func TestProxyChannelCommunication(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
 
 	// Create a test message
 	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -92,7 +94,7 @@ func TestSendMessageToDestination(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination_ChannelFull(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
 
 	// Fill the channel
 	for i := 0; i < 100; i++ {
@@ -111,7 +113,7 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 //
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 0, nil) // Use port 0 for auto-assignment
+	proxy := NewHTTPProxy("localhost", 0, nil, nil) // Use port 0 for auto-assignment
 	ctx := context.Background()
 
 	// Start the proxy
@@ -192,7 +194,7 @@ func TestResolveRequestTimeout(t *testing.T) {
 // resolved timeout into the proxy struct.
 func TestNewHTTPProxyUsesResolvedTimeout(t *testing.T) {
 	t.Setenv(proxyRequestTimeoutEnv, "7m")
-	proxy := NewHTTPProxy("localhost", 0, nil)
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
 	assert.Equal(t, 7*time.Minute, proxy.requestTimeout)
 }
 
@@ -201,6 +203,14 @@ func TestNewHTTPProxyUsesResolvedTimeout(t *testing.T) {
 // TOOLHIVE_PROXY_REQUEST_TIMEOUT from the test runner's environment.
 func TestNewHTTPProxyDefaultTimeout(t *testing.T) { //nolint:paralleltest
 	t.Setenv(proxyRequestTimeoutEnv, "")
-	proxy := NewHTTPProxy("localhost", 0, nil)
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
 	assert.Equal(t, defaultRequestTimeout, proxy.requestTimeout)
+}
+
+func TestNewHTTPProxyWithSessionStorage(t *testing.T) {
+	t.Parallel()
+	storage := session.NewLocalStorage()
+	proxy := NewHTTPProxy("localhost", 0, nil, nil, WithSessionStorage(storage))
+	require.NotNil(t, proxy)
+	require.NotNil(t, proxy.sessionManager)
 }

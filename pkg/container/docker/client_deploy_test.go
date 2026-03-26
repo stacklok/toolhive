@@ -31,8 +31,9 @@ type fakeDeployOps struct {
 	dnsID     string
 	dnsIP     string
 
-	egressCalled bool
-	egressID     string
+	egressCalled           bool
+	egressID               string
+	egressAllowDockerGW    bool
 
 	ingressCalled bool
 	ingressPort   int
@@ -79,8 +80,9 @@ func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, 
 	return f.dnsID, f.dnsIP, f.errDNS
 }
 
-func (f *fakeDeployOps) createEgressSquidContainer(_ context.Context, _ string, _ string, _ bool, _ map[string]struct{}, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions, _ bool) (string, error) {
+func (f *fakeDeployOps) createEgressSquidContainer(_ context.Context, _ string, _ string, _ bool, _ map[string]struct{}, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions, allowDockerGateway bool) (string, error) {
 	f.egressCalled = true
+	f.egressAllowDockerGW = allowDockerGateway
 	return f.egressID, f.errEgress
 }
 
@@ -280,6 +282,34 @@ func TestDeployWorkload_NoIsolation_ReturnsPortFromBindingsAndSkipsAuxContainers
 
 	// Returned host port should be the one from the binding (since auxiliary retains host port)
 	assert.Equal(t, 56789, hostPort)
+}
+
+func TestDeployWorkload_AllowDockerGateway_ForwardedToEgress(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{dnsIP: "172.18.0.10"}
+	c := newClientWithOps(fops)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.AttachStdio = true
+	opts.AllowDockerGateway = true
+
+	_, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"app",
+		[]string{"serve"},
+		map[string]string{},
+		map[string]string{},
+		&permissions.Profile{},
+		"stdio",
+		opts,
+		true, // isolateNetwork required for egress container to be created
+	)
+	require.NoError(t, err)
+
+	require.True(t, fops.egressCalled, "egress container must be created when isolateNetwork=true")
+	assert.True(t, fops.egressAllowDockerGW, "AllowDockerGateway must be forwarded to createEgressSquidContainer")
 }
 
 func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {

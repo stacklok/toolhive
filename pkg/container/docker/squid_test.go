@@ -88,7 +88,7 @@ func TestCreateSquidContainer_Basics(t *testing.T) {
 func TestCreateTempEgressSquidConf_AllowAllWhenNil(t *testing.T) {
 	t.Parallel()
 
-	fp, err := createTempEgressSquidConf(nil, "server", false)
+	fp, err := createTempEgressSquidConf(nil, "server", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -123,7 +123,7 @@ func TestCreateTempEgressSquidConf_AllowAllWhenInsecure(t *testing.T) {
 			InsecureAllowAll: true,
 		},
 	}
-	fp, err := createTempEgressSquidConf(cfg, "server", false)
+	fp, err := createTempEgressSquidConf(cfg, "server", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -160,7 +160,7 @@ func TestCreateTempEgressSquidConf_WithACLs(t *testing.T) {
 			AllowHost:        []string{"example.com", "api.github.com"},
 		},
 	}
-	fp, err := createTempEgressSquidConf(cfg, "edge", false)
+	fp, err := createTempEgressSquidConf(cfg, "edge", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -301,6 +301,7 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 		allowDockerGateway bool
 		expectDenyRule     bool
 		expectAllowAll     bool
+		expectContains     []string // additional substrings that must appear
 	}{
 		{
 			name:           "nil permissions blocks docker gateway",
@@ -339,13 +340,30 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 			expectDenyRule: true,
 			expectAllowAll: false,
 		},
+		{
+			name: "ACL-based outbound with allow-docker-gateway omits deny rules but keeps ACL allow",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+					AllowPort: []int{443},
+				},
+			},
+			allowDockerGateway: true,
+			expectDenyRule:     false,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_ports port 443",
+				"acl allowed_dsts dstdomain example.com",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fp, err := createTempEgressSquidConf(tt.permissions, "server", tt.allowDockerGateway)
+			fp, err := createTempEgressSquidConf(tt.permissions, "server", tt.allowDockerGateway, dockerDefaultBridgeGatewayIP)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -373,6 +391,10 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 
 			if tt.expectAllowAll {
 				assert.Contains(t, s, "http_access allow all")
+			}
+
+			for _, sub := range tt.expectContains {
+				assert.Contains(t, s, sub)
 			}
 
 			assert.True(t, strings.HasSuffix(strings.TrimSpace(s), "http_access deny all"))
@@ -405,7 +427,7 @@ func TestGetSquidImage(t *testing.T) {
 func TestTempFilesWrittenToSystemTempDir(t *testing.T) {
 	t.Parallel()
 
-	fp1, err := createTempEgressSquidConf(nil, "s1", false)
+	fp1, err := createTempEgressSquidConf(nil, "s1", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp1) })
 

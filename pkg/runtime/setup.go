@@ -47,6 +47,7 @@ func Setup(
 	permissionProfile *permissions.Profile,
 	k8sPodTemplatePatch string,
 	isolateNetwork bool,
+	allowDockerGateway bool,
 	ignoreConfig *ignore.Config,
 	host string,
 	targetPort int,
@@ -97,6 +98,7 @@ func Setup(
 		containerOptions.PortBindings[containerPortStr] = bindings
 	}
 	containerOptions.ScalingConfig = scalingConfig
+	containerOptions.AllowDockerGateway = allowDockerGateway
 
 	if transportType == types.TransportTypeStdio {
 		containerOptions.AttachStdio = true

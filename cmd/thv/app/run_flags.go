@@ -91,7 +91,8 @@ type RunFlags struct {
 	OtelUseLegacyAttributes         bool     // Emit legacy attribute names alongside new ones
 
 	// Network isolation
-	IsolateNetwork bool
+	IsolateNetwork     bool
+	AllowDockerGateway bool
 
 	// Proxy headers
 	TrustProxyHeaders bool
@@ -246,6 +247,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default false)")
+	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
+		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
+			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
@@ -596,6 +600,7 @@ func buildRunnerConfig(
 		runner.WithAuditConfigPath(runFlags.AuditConfig),
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
+		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),

@@ -98,6 +98,7 @@ type deployOps interface {
 		exposedPorts map[string]struct{},
 		endpointsConfig map[string]*network.EndpointSettings,
 		perm *permissions.NetworkPermissions,
+		allowDockerGateway bool,
 	) (string, error)
 	createMcpContainer(
 		ctx context.Context,
@@ -165,8 +166,9 @@ func (c *Client) createEgressSquidContainer(
 	exposedPorts map[string]struct{},
 	endpointsConfig map[string]*network.EndpointSettings,
 	perm *permissions.NetworkPermissions,
+	allowDockerGateway bool,
 ) (string, error) {
-	return createEgressSquidContainer(ctx, c, containerName, squidContainerName, attachStdio, exposedPorts, endpointsConfig, perm)
+	return createEgressSquidContainer(ctx, c, containerName, squidContainerName, attachStdio, exposedPorts, endpointsConfig, perm, allowDockerGateway)
 }
 
 // DeployWorkload creates and starts a workload.
@@ -251,6 +253,7 @@ func (c *Client) DeployWorkload(
 			nil,
 			externalEndpointsConfig,
 			permissionProfile.Network,
+			options.AllowDockerGateway,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create egress container: %w", err)

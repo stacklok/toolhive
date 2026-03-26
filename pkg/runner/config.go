@@ -162,6 +162,12 @@ type RunConfig struct {
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 
+	// AllowDockerGateway permits outbound connections to Docker gateway addresses
+	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// blocked by default in the egress proxy even when InsecureAllowAll is set.
+	// Only applicable to Docker deployments with network isolation enabled.
+	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty" yaml:"allow_docker_gateway,omitempty"`
+
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 

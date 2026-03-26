@@ -21,6 +21,15 @@ import (
 
 const defaultSquidImage = "ghcr.io/stacklok/toolhive/egress-proxy:latest"
 
+// dockerGateway* are Docker-specific addresses that resolve to the host network
+// interface from inside a container. They are blocked by default to prevent
+// containers from reaching host services unintentionally.
+const (
+	dockerGatewayHostname        = "host.docker.internal"
+	dockerAltGatewayHostname     = "gateway.docker.internal"
+	dockerDefaultBridgeGatewayIP = "172.17.0.1"
+)
+
 type proxyDirection int
 
 const (
@@ -69,8 +78,9 @@ func createEgressSquidContainer(
 	exposedPorts map[string]struct{},
 	endpointsConfig map[string]*network.EndpointSettings,
 	perm *permissions.NetworkPermissions,
+	allowDockerGateway bool,
 ) (string, error) {
-	squidConfPath, err := createTempEgressSquidConf(perm, containerName)
+	squidConfPath, err := createTempEgressSquidConf(perm, containerName, allowDockerGateway)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary squid.conf: %w", err)
 	}
@@ -173,13 +183,36 @@ func createSquidContainer(
 	return squidContainerId, nil
 }
 
+// writeDockerGatewayDenyRules emits Squid ACL definitions and http_access deny
+// rules that block the Docker gateway addresses. These rules MUST be written
+// before any http_access allow rules: Squid evaluates access control in
+// first-match-wins order, so a deny placed after an allow is never reached.
+func writeDockerGatewayDenyRules(sb *strings.Builder) {
+	sb.WriteString(
+		"# Block Docker gateway addresses — opt in with --allow-docker-gateway\n" +
+			"acl docker_gateway_hosts dstdomain " +
+			dockerGatewayHostname + " " + dockerAltGatewayHostname + "\n" +
+			"acl docker_gateway_ip dst " + dockerDefaultBridgeGatewayIP + "\n" +
+			"http_access deny docker_gateway_hosts\n" +
+			"http_access deny docker_gateway_ip\n\n",
+	)
+}
+
 func createTempEgressSquidConf(
 	networkPermissions *permissions.NetworkPermissions,
 	serverHostname string,
+	allowDockerGateway bool,
 ) (string, error) {
 	var sb strings.Builder
 
 	writeCommonConfig(&sb, serverHostname, proxyEgress)
+
+	// Always block Docker gateway addresses unless the caller explicitly opts
+	// in via --allow-docker-gateway. MUST precede any http_access allow —
+	// Squid is first-match-wins.
+	if !allowDockerGateway {
+		writeDockerGatewayDenyRules(&sb)
+	}
 
 	if networkPermissions == nil || (networkPermissions.Outbound != nil && networkPermissions.Outbound.InsecureAllowAll) {
 		sb.WriteString("# Allow all traffic\nhttp_access allow all\n")

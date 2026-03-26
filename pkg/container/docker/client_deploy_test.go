@@ -79,7 +79,7 @@ func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, 
 	return f.dnsID, f.dnsIP, f.errDNS
 }
 
-func (f *fakeDeployOps) createEgressSquidContainer(_ context.Context, _ string, _ string, _ bool, _ map[string]struct{}, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions) (string, error) {
+func (f *fakeDeployOps) createEgressSquidContainer(_ context.Context, _ string, _ string, _ bool, _ map[string]struct{}, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions, _ bool) (string, error) {
 	f.egressCalled = true
 	return f.egressID, f.errEgress
 }

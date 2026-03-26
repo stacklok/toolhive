@@ -204,6 +204,10 @@ type RunConfig struct {
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.
 	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
 
+	// MutatingWebhooks contains the configuration for mutating webhook middleware.
+	// Mutating webhooks run before validating webhooks, per RFC THV-0017 ordering.
+	MutatingWebhooks []webhook.Config `json:"mutating_webhooks,omitempty" yaml:"mutating_webhooks,omitempty"`
+
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port
 	existingPort int

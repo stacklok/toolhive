@@ -119,21 +119,17 @@ func (s *TokenExchangeStrategy) Authenticate(
 		return fmt.Errorf("no identity found in context")
 	}
 
-	subjectToken, err := func() (string, error) {
-		if config.SubjectProviderName != "" {
-			tok := identity.UpstreamTokens[config.SubjectProviderName] // nil map safe in Go
-			if tok == "" {
-				return "", fmt.Errorf("provider %q: %w", config.SubjectProviderName, authtypes.ErrUpstreamTokenNotFound)
-			}
-			return tok, nil
+	var subjectToken string
+	if config.SubjectProviderName != "" {
+		subjectToken = identity.UpstreamTokens[config.SubjectProviderName] // nil map safe in Go
+		if subjectToken == "" {
+			return fmt.Errorf("provider %q: %w", config.SubjectProviderName, authtypes.ErrUpstreamTokenNotFound)
 		}
+	} else {
 		if identity.Token == "" {
-			return "", fmt.Errorf("identity has no token")
+			return fmt.Errorf("identity has no token")
 		}
-		return identity.Token, nil
-	}()
-	if err != nil {
-		return err
+		subjectToken = identity.Token
 	}
 
 	// Get user-specific exchange config. This creates a fresh config instance

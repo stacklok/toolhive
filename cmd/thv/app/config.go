@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 var configCmd = &cobra.Command{
@@ -55,11 +56,16 @@ The command automatically detects the registry type:
   - Other URLs are treated as MCP Registry API endpoints (v0.1 spec)
   - Local paths are treated as local registry files
 
+Any previously configured registry authentication is cleared when this command is run.
+To configure OIDC authentication, provide --issuer and --client-id flags.
+
 Examples:
   thv config set-registry https://example.com/registry.json           # Static remote file
   thv config set-registry https://registry.example.com                # API endpoint
   thv config set-registry /path/to/local-registry.json               # Local file path
-  thv config set-registry file:///path/to/local-registry.json        # Explicit file URL`,
+  thv config set-registry file:///path/to/local-registry.json        # Explicit file URL
+  thv config set-registry https://registry.example.com \
+    --issuer https://auth.company.com --client-id toolhive-cli       # With OAuth auth`,
 	Args: cobra.ExactArgs(1),
 	RunE: setRegistryCmdFunc,
 }
@@ -87,6 +93,10 @@ var usageMetricsCmd = &cobra.Command{
 
 var (
 	allowPrivateRegistryIp bool
+	registryAuthIssuer     string
+	registryAuthClientID   string
+	registryAuthAudience   string
+	registryAuthScopes     []string
 )
 
 func init() {
@@ -105,6 +115,13 @@ func init() {
 		false,
 		"Allow setting the registry URL or API endpoint, even if it references a private IP address (default false)",
 	)
+	setRegistryCmd.Flags().StringVar(&registryAuthIssuer, "issuer", "", "OIDC issuer URL for registry authentication")
+	setRegistryCmd.Flags().StringVar(&registryAuthClientID, "client-id", "", "OAuth client ID for registry authentication")
+	setRegistryCmd.Flags().StringVar(&registryAuthAudience, "audience", "", "OAuth audience parameter for registry authentication")
+	setRegistryCmd.Flags().StringSliceVar(
+		&registryAuthScopes, "scopes", auth.DefaultOAuthScopes(), "OAuth scopes for registry authentication",
+	)
+	setRegistryCmd.MarkFlagsRequiredTogether("issuer", "client-id")
 	configCmd.AddCommand(getRegistryCmd)
 	configCmd.AddCommand(unsetRegistryCmd)
 	configCmd.AddCommand(usageMetricsCmd)
@@ -160,14 +177,30 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
+func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 	input := args[0]
+
+	// Always clear existing auth when changing registry (security: prevents
+	// tokens from being sent to the wrong server).
+	provider := config.NewDefaultProvider()
+	authManager := registry.NewAuthManager(provider)
+	if err := authManager.UnsetAuth(); err != nil {
+		return fmt.Errorf("failed to clear registry auth: %w", err)
+	}
 
 	service := registry.NewConfigurator()
 	registryType, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
 	if err != nil {
 		// Enhance error message for better user experience
 		return enhanceRegistryError(err, input, registryType)
+	}
+
+	// If auth flags were provided, configure the new auth
+	if registryAuthIssuer != "" && registryAuthClientID != "" {
+		if err := authManager.SetOAuthAuth(cmd.Context(), registryAuthIssuer, registryAuthClientID, registryAuthAudience,
+			registryAuthScopes); err != nil {
+			return fmt.Errorf("failed to configure registry auth: %w", err)
+		}
 	}
 
 	// Reset the registry provider cache to pick up the new configuration
@@ -208,6 +241,13 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	err := service.UnsetRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	// Also clear auth when unsetting registry (security: prevents stale
+	// tokens from being sent to a different server later).
+	authManager := registry.NewAuthManager(config.NewDefaultProvider())
+	if err := authManager.UnsetAuth(); err != nil {
+		return fmt.Errorf("failed to clear registry auth: %w", err)
 	}
 
 	// Reset the registry provider cache to pick up the default configuration

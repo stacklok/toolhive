@@ -40,6 +40,13 @@ type RunConfig struct {
 	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
 	Issuer string `json:"issuer" yaml:"issuer"`
 
+	// AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+	// in the OAuth discovery document. When set, the discovery document will advertise
+	// `{authorization_endpoint_base_url}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
+	// All other endpoints remain derived from the issuer.
+	//nolint:lll // field tags require full JSON+YAML names
+	AuthorizationEndpointBaseURL string `json:"authorization_endpoint_base_url,omitempty" yaml:"authorization_endpoint_base_url,omitempty"`
+
 	// SigningKeyConfig configures the signing key provider for JWT operations.
 	// If nil or empty, an ephemeral signing key will be auto-generated (development only).
 	SigningKeyConfig *SigningKeyRunConfig `json:"signing_key_config,omitempty" yaml:"signing_key_config,omitempty"`
@@ -304,6 +311,10 @@ type Config struct {
 	// This will be included in the "iss" claim of issued tokens.
 	Issuer string
 
+	// AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+	// in the OAuth discovery document. When empty, defaults to Issuer.
+	AuthorizationEndpointBaseURL string
+
 	// KeyProvider provides signing keys for JWT operations.
 	// Supports key rotation by returning multiple public keys for JWKS.
 	// If nil, an ephemeral key will be auto-generated (development only).
@@ -362,6 +373,12 @@ func (c *Config) Validate() error {
 
 	if err := validateIssuerURL(c.Issuer); err != nil {
 		return fmt.Errorf("issuer: %w", err)
+	}
+
+	if c.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL); err != nil {
+			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
+		}
 	}
 
 	// KeyProvider is optional - if nil, applyDefaults() will create a GeneratingProvider

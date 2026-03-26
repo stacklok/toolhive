@@ -80,15 +80,16 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 
 	// 5. Build the resolved Config
 	resolvedCfg := authserver.Config{
-		Issuer:               cfg.Issuer,
-		KeyProvider:          keyProvider,
-		HMACSecrets:          hmacSecrets,
-		AccessTokenLifespan:  accessLifespan,
-		RefreshTokenLifespan: refreshLifespan,
-		AuthCodeLifespan:     authCodeLifespan,
-		Upstreams:            upstreams,
-		ScopesSupported:      cfg.ScopesSupported,
-		AllowedAudiences:     cfg.AllowedAudiences,
+		Issuer:                       cfg.Issuer,
+		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
+		KeyProvider:                  keyProvider,
+		HMACSecrets:                  hmacSecrets,
+		AccessTokenLifespan:          accessLifespan,
+		RefreshTokenLifespan:         refreshLifespan,
+		AuthCodeLifespan:             authCodeLifespan,
+		Upstreams:                    upstreams,
+		ScopesSupported:              cfg.ScopesSupported,
+		AllowedAudiences:             cfg.AllowedAudiences,
 	}
 
 	// 6. Create storage backend based on configuration

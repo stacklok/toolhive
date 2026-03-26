@@ -58,6 +58,9 @@ type AuthorizationServerConfig struct {
 	// This is advertised in /.well-known/openid-configuration and
 	// /.well-known/oauth-authorization-server discovery endpoints.
 	ScopesSupported []string
+	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
+	// in the discovery document. When empty, defaults to the issuer (AccessTokenIssuer).
+	AuthorizationEndpointBaseURL string
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -86,6 +89,9 @@ type AuthorizationServerParams struct {
 	AllowedAudiences []string
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	ScopesSupported []string
+	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
+	// in the discovery document. When empty, defaults to Issuer.
+	AuthorizationEndpointBaseURL string
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -178,6 +184,13 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		return nil, fmt.Errorf("authorization code lifespan must be between %v and %v", MinAuthCodeLifespan, MaxAuthCodeLifespan)
 	}
 
+	// Validate authorization endpoint base URL if set
+	if cfg.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(cfg.AuthorizationEndpointBaseURL); err != nil {
+			return nil, fmt.Errorf("authorization endpoint base URL: %w", err)
+		}
+	}
+
 	// Validate allowed audiences are valid RFC 8707 URIs
 	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
 		return nil, err
@@ -208,11 +221,12 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:           fositeConfig,
-		SigningKey:       &jwk,
-		SigningJWKS:      &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
-		AllowedAudiences: cfg.AllowedAudiences,
-		ScopesSupported:  cfg.ScopesSupported,
+		Config:                       fositeConfig,
+		SigningKey:                   &jwk,
+		SigningJWKS:                  &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
+		AllowedAudiences:             cfg.AllowedAudiences,
+		ScopesSupported:              cfg.ScopesSupported,
+		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
 	}, nil
 }
 
@@ -289,6 +303,15 @@ func (c *AuthorizationServerConfig) PublicJWKS() *jose.JSONWebKeySet {
 // This is an adapter method that wraps the embedded fosite.Config method.
 func (c *AuthorizationServerConfig) GetAccessTokenIssuer() string {
 	return c.AccessTokenIssuer
+}
+
+// GetAuthorizationEndpointBaseURL returns the base URL for the authorization endpoint.
+// If AuthorizationEndpointBaseURL is set, it is returned; otherwise falls back to the issuer.
+func (c *AuthorizationServerConfig) GetAuthorizationEndpointBaseURL() string {
+	if c.AuthorizationEndpointBaseURL != "" {
+		return c.AuthorizationEndpointBaseURL
+	}
+	return c.GetAccessTokenIssuer()
 }
 
 // GetAuthorizeCodeLifespan returns the lifetime for authorization codes.

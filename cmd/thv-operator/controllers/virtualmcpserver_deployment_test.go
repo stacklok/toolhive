@@ -48,7 +48,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme:           scheme,
@@ -86,6 +86,55 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	assert.Equal(t, resource.MustParse("128Mi"), container.Resources.Requests[corev1.ResourceMemory])
 	assert.Equal(t, resource.MustParse("500m"), container.Resources.Limits[corev1.ResourceCPU])
 	assert.Equal(t, resource.MustParse("512Mi"), container.Resources.Limits[corev1.ResourceMemory])
+}
+
+// TestDeploymentForVirtualMCPServer_WithRedisPassword tests that the deployment pod
+// spec includes THV_SESSION_REDIS_PASSWORD when spec.sessionStorage has a passwordRef.
+func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1alpha1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp-redis",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				Provider:    mcpv1alpha1.SessionStorageProviderRedis,
+				Address:     "redis:6379",
+				PasswordRef: passwordRef,
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	r := &VirtualMCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+	require.NotNil(t, deployment)
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+
+	container := deployment.Spec.Template.Spec.Containers[0]
+	var found bool
+	for _, e := range container.Env {
+		if e.Name == vmcpconfig.RedisPasswordEnvVar {
+			found = true
+			assert.Empty(t, e.Value, "password must not appear as plaintext")
+			require.NotNil(t, e.ValueFrom)
+			require.NotNil(t, e.ValueFrom.SecretKeyRef)
+			assert.Equal(t, passwordRef.Name, e.ValueFrom.SecretKeyRef.Name)
+			assert.Equal(t, passwordRef.Key, e.ValueFrom.SecretKeyRef.Key)
+		}
+	}
+	assert.True(t, found, "deployment should contain %s env var", vmcpconfig.RedisPasswordEnvVar)
 }
 
 // TestBuildContainerArgsForVmcp tests container argument generation
@@ -360,8 +409,8 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -401,8 +450,8 @@ func TestServiceForVirtualMCPServerSessionAffinityNone(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme: scheme,

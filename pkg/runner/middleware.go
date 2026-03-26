@@ -19,6 +19,7 @@ import (
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
+	"github.com/stacklok/toolhive/pkg/webhook/validating"
 )
 
 // GetSupportedMiddlewareFactories returns a map of supported middleware types to their factory functions
@@ -37,6 +38,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		audit.MiddlewareType:                  audit.CreateMiddleware,
 		recovery.MiddlewareType:               recovery.CreateMiddleware,
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
+		validating.MiddlewareType:             validating.CreateMiddleware,
 	}
 }
 
@@ -112,6 +114,12 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return fmt.Errorf("failed to create MCP parser middleware config: %w", err)
 	}
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+
+	// Validating Webhooks middleware (if configured)
+	middlewareConfigs, err = addValidatingWebhookMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
 
 	// Load application config for global settings
 	configProvider := cfg.NewDefaultProvider()
@@ -195,6 +203,28 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// addValidatingWebhookMiddleware configures the validating webhook middleware if any webhooks are defined
+func addValidatingWebhookMiddleware(configs []types.MiddlewareConfig, runConfig *RunConfig) ([]types.MiddlewareConfig, error) {
+	if len(runConfig.ValidatingWebhooks) == 0 {
+		return configs, nil
+	}
+
+	params := validating.FactoryMiddlewareParams{
+		MiddlewareParams: validating.MiddlewareParams{
+			Webhooks: runConfig.ValidatingWebhooks,
+		},
+		ServerName: runConfig.Name,
+		Transport:  runConfig.Transport.String(),
+	}
+
+	config, err := types.NewMiddlewareConfig(validating.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create validating webhook middleware config: %w", err)
+	}
+
+	return append(configs, *config), nil
 }
 
 // addTokenExchangeMiddleware adds token exchange middleware if configured

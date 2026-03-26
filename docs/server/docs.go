@@ -443,6 +443,10 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "authorization_endpoint_base_url": {
+                        "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
+                        "type": "string"
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {

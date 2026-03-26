@@ -147,52 +147,57 @@ func validateHMACSecrets(secrets *servercrypto.HMACSecrets) error {
 	return nil
 }
 
+// validateTokenLifespans validates that token lifespans are within allowed bounds.
+func validateTokenLifespans(cfg *AuthorizationServerParams) error {
+	if cfg.AccessTokenLifespan < MinAccessTokenLifespan || cfg.AccessTokenLifespan > MaxAccessTokenLifespan {
+		return fmt.Errorf("access token lifespan must be between %v and %v", MinAccessTokenLifespan, MaxAccessTokenLifespan)
+	}
+	if cfg.RefreshTokenLifespan < MinRefreshTokenLifespan || cfg.RefreshTokenLifespan > MaxRefreshTokenLifespan {
+		return fmt.Errorf("refresh token lifespan must be between %v and %v", MinRefreshTokenLifespan, MaxRefreshTokenLifespan)
+	}
+	if cfg.AuthCodeLifespan < MinAuthCodeLifespan || cfg.AuthCodeLifespan > MaxAuthCodeLifespan {
+		return fmt.Errorf("authorization code lifespan must be between %v and %v", MinAuthCodeLifespan, MaxAuthCodeLifespan)
+	}
+	return nil
+}
+
+// validateParams validates all fields on AuthorizationServerParams.
+func validateParams(cfg *AuthorizationServerParams) error {
+	if err := validateIssuerURL(cfg.Issuer); err != nil {
+		return err
+	}
+	if cfg.SigningKeyID == "" {
+		return fmt.Errorf("signing key ID is required")
+	}
+	if cfg.SigningKeyAlgorithm == "" {
+		return fmt.Errorf("signing key algorithm is required")
+	}
+	if cfg.SigningKey == nil {
+		return fmt.Errorf("signing key is required")
+	}
+	if err := validateHMACSecrets(cfg.HMACSecrets); err != nil {
+		return err
+	}
+	if err := servercrypto.ValidateAlgorithmForKey(cfg.SigningKeyAlgorithm, cfg.SigningKey); err != nil {
+		return fmt.Errorf("invalid signing configuration: %w", err)
+	}
+	if err := validateTokenLifespans(cfg); err != nil {
+		return err
+	}
+	if cfg.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(cfg.AuthorizationEndpointBaseURL); err != nil {
+			return fmt.Errorf("authorization endpoint base URL: %w", err)
+		}
+	}
+	return validateAllowedAudiences(cfg.AllowedAudiences)
+}
+
 // NewAuthorizationServerConfig creates an AuthorizationServerConfig from the provided configuration.
 func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*AuthorizationServerConfig, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-	if err := validateIssuerURL(cfg.Issuer); err != nil {
-		return nil, err
-	}
-	if cfg.SigningKeyID == "" {
-		return nil, fmt.Errorf("signing key ID is required")
-	}
-	if cfg.SigningKeyAlgorithm == "" {
-		return nil, fmt.Errorf("signing key algorithm is required")
-	}
-	if cfg.SigningKey == nil {
-		return nil, fmt.Errorf("signing key is required")
-	}
-	if err := validateHMACSecrets(cfg.HMACSecrets); err != nil {
-		return nil, err
-	}
-
-	// Validate algorithm matches key type
-	if err := servercrypto.ValidateAlgorithmForKey(cfg.SigningKeyAlgorithm, cfg.SigningKey); err != nil {
-		return nil, fmt.Errorf("invalid signing configuration: %w", err)
-	}
-
-	// Validate token lifespans are within reasonable bounds
-	if cfg.AccessTokenLifespan < MinAccessTokenLifespan || cfg.AccessTokenLifespan > MaxAccessTokenLifespan {
-		return nil, fmt.Errorf("access token lifespan must be between %v and %v", MinAccessTokenLifespan, MaxAccessTokenLifespan)
-	}
-	if cfg.RefreshTokenLifespan < MinRefreshTokenLifespan || cfg.RefreshTokenLifespan > MaxRefreshTokenLifespan {
-		return nil, fmt.Errorf("refresh token lifespan must be between %v and %v", MinRefreshTokenLifespan, MaxRefreshTokenLifespan)
-	}
-	if cfg.AuthCodeLifespan < MinAuthCodeLifespan || cfg.AuthCodeLifespan > MaxAuthCodeLifespan {
-		return nil, fmt.Errorf("authorization code lifespan must be between %v and %v", MinAuthCodeLifespan, MaxAuthCodeLifespan)
-	}
-
-	// Validate authorization endpoint base URL if set
-	if cfg.AuthorizationEndpointBaseURL != "" {
-		if err := validateIssuerURL(cfg.AuthorizationEndpointBaseURL); err != nil {
-			return nil, fmt.Errorf("authorization endpoint base URL: %w", err)
-		}
-	}
-
-	// Validate allowed audiences are valid RFC 8707 URIs
-	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
+	if err := validateParams(cfg); err != nil {
 		return nil, err
 	}
 

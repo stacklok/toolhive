@@ -31,9 +31,9 @@ type fakeDeployOps struct {
 	dnsID     string
 	dnsIP     string
 
-	egressCalled           bool
-	egressID               string
-	egressAllowDockerGW    bool
+	egressCalled        bool
+	egressID            string
+	egressAllowDockerGW bool
 
 	ingressCalled bool
 	ingressPort   int

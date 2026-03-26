@@ -169,7 +169,11 @@ func (c *Client) createEgressSquidContainer(
 	allowDockerGateway bool,
 ) (string, error) {
 	gatewayIP := c.getDockerBridgeGatewayIP(ctx)
-	return createEgressSquidContainer(ctx, c, containerName, squidContainerName, attachStdio, exposedPorts, endpointsConfig, perm, allowDockerGateway, gatewayIP)
+	return createEgressSquidContainer(
+		ctx, c, containerName, squidContainerName,
+		attachStdio, exposedPorts, endpointsConfig, perm,
+		allowDockerGateway, gatewayIP,
+	)
 }
 
 // DeployWorkload creates and starts a workload.

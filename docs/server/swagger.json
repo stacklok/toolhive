@@ -902,6 +902,10 @@
             },
             "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "audit_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
                     },

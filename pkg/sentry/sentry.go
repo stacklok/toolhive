@@ -13,8 +13,8 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	sentryotel "github.com/getsentry/sentry-go/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -74,6 +74,12 @@ func Init(cfg Config) error {
 		slog.Debug("sentry anonymous instance ID tagged", "id", id)
 	}
 
+	// Self-register the Sentry span processor with the global OTEL registry so
+	// that any telemetry.NewProvider call automatically includes it. This decouples
+	// the OTEL provider setup from Sentry-specific code.
+	telemetry.RegisterSpanProcessor(sentryotel.NewSentrySpanProcessor())
+	slog.Debug("sentry span processor registered with OTEL registry")
+
 	return nil
 }
 
@@ -90,16 +96,6 @@ func Close() {
 // Enabled reports whether the Sentry SDK was successfully initialized.
 func Enabled() bool {
 	return initialized.Load()
-}
-
-// SpanProcessor returns an OTEL SpanProcessor that exports spans to Sentry,
-// enabling Sentry as a backend for OTEL-instrumented traces.
-// Returns nil when Sentry is not initialized, allowing callers to skip registration safely.
-func SpanProcessor() sdktrace.SpanProcessor {
-	if !initialized.Load() {
-		return nil
-	}
-	return sentryotel.NewSentrySpanProcessor()
 }
 
 // CaptureException reports an error to Sentry using the hub from the request context.

@@ -162,6 +162,13 @@ type Config struct {
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When provider is "redis", the operator injects Redis connection parameters
+	// (address, db, keyPrefix) here. The Redis password is provided separately via
+	// the THV_SESSION_REDIS_PASSWORD environment variable.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty" yaml:"sessionStorage,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -832,6 +839,32 @@ type OptimizerConfig struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
 	// +optional
 	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
+}
+
+// SessionStorageConfig configures session storage for stateful horizontal scaling.
+// The Redis password is not stored here; it is injected as the THV_SESSION_REDIS_PASSWORD
+// environment variable by the operator when spec.sessionStorage.passwordRef is set.
+// +kubebuilder:object:generate=true
+// +gendoc
+type SessionStorageConfig struct {
+	// Provider is the session storage backend type.
+	// +kubebuilder:validation:Enum=memory;redis
+	// +kubebuilder:validation:Required
+	Provider string `json:"provider" yaml:"provider"`
+
+	// Address is the Redis server address (required when provider is redis).
+	// +optional
+	Address string `json:"address,omitempty" yaml:"address,omitempty"`
+
+	// DB is the Redis database number.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=0
+	// +optional
+	DB int32 `json:"db,omitempty" yaml:"db,omitempty"`
+
+	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
+	// +optional
+	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
 }
 
 // Validator validates configuration.

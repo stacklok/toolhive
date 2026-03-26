@@ -21,6 +21,7 @@ import (
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
+	"github.com/stacklok/toolhive/pkg/webhook/mutating"
 	"github.com/stacklok/toolhive/pkg/webhook/validating"
 )
 
@@ -41,6 +42,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		recovery.MiddlewareType:               recovery.CreateMiddleware,
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
 		validating.MiddlewareType:             validating.CreateMiddleware,
+		mutating.MiddlewareType:               mutating.CreateMiddleware,
 	}
 }
 
@@ -116,6 +118,14 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return fmt.Errorf("failed to create MCP parser middleware config: %w", err)
 	}
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+
+	// Mutating Webhooks middleware (if configured).
+	// Must run BEFORE validating webhooks:
+	// MCP Parser -> [Mutating Webhooks] -> [Validating Webhooks] -> Authz -> Audit
+	middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
 
 	// Validating Webhooks middleware (if configured)
 	middlewareConfigs, err = addValidatingWebhookMiddleware(middlewareConfigs, config)
@@ -209,6 +219,29 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// addMutatingWebhookMiddleware configures the mutating webhook middleware if any webhooks are defined.
+// It must be called before addValidatingWebhookMiddleware to preserve the RFC-specified ordering.
+func addMutatingWebhookMiddleware(configs []types.MiddlewareConfig, runConfig *RunConfig) ([]types.MiddlewareConfig, error) {
+	if len(runConfig.MutatingWebhooks) == 0 {
+		return configs, nil
+	}
+
+	params := mutating.FactoryMiddlewareParams{
+		MiddlewareParams: mutating.MiddlewareParams{
+			Webhooks: runConfig.MutatingWebhooks,
+		},
+		ServerName: runConfig.Name,
+		Transport:  runConfig.Transport.String(),
+	}
+
+	config, err := types.NewMiddlewareConfig(mutating.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create mutating webhook middleware config: %w", err)
+	}
+
+	return append(configs, *config), nil
 }
 
 // addValidatingWebhookMiddleware configures the validating webhook middleware if any webhooks are defined

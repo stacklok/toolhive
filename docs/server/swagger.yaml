@@ -1078,6 +1078,26 @@ components:
             When nil, replicas are unmanaged (preserving HPA or manual kubectl control).
             When set (including 0), the value is an explicit replica count.
           type: integer
+        session_redis:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig'
+      type: object
+    github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig:
+      description: |-
+        SessionRedis holds non-sensitive Redis connection parameters for distributed session storage.
+        Populated only when MCPServer.spec.sessionStorage.provider == "redis".
+        The Redis password is not included — it is injected as env var THV_SESSION_REDIS_PASSWORD.
+        +optional
+      properties:
+        address:
+          description: Address is the Redis server address (host:port).
+          type: string
+        db:
+          description: DB is the Redis database number.
+          type: integer
+        key_prefix:
+          description: KeyPrefix is an optional prefix applied to all Redis keys used
+            by ToolHive.
+          type: string
       type: object
     github_com_stacklok_toolhive_pkg_runner.ToolOverride:
       properties:

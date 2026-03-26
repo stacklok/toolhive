@@ -154,8 +154,10 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 					return k8sClient.Update(ctx, dep)
 				}, timeout, interval).Should(Succeed())
 
-				// Touch VirtualMCPServer to trigger a reconciliation and capture the
-				// generation that the controller must observe before we assert.
+				// Trigger a reconciliation via a spec change (ServiceType=ClusterIP,
+				// which is the default). Unlike annotation changes, spec changes increment
+				// metadata.generation, so we can gate on status.observedGeneration to
+				// confirm the reconcile completed after the external scale.
 				var triggerGeneration int64
 				Eventually(func() error {
 					vmcp := &mcpv1alpha1.VirtualMCPServer{}
@@ -165,19 +167,18 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 					}, vmcp); err != nil {
 						return err
 					}
-					if vmcp.Annotations == nil {
-						vmcp.Annotations = make(map[string]string)
-					}
-					vmcp.Annotations["test/trigger-reconcile"] = "true"
+					vmcp.Spec.ServiceType = "ClusterIP"
 					if err := k8sClient.Update(ctx, vmcp); err != nil {
 						return err
 					}
-					triggerGeneration = vmcp.Generation + 1
+					// controller-runtime Update mutates the object in-place with the server
+					// response, so vmcp.Generation already holds the post-increment value.
+					triggerGeneration = vmcp.Generation
 					return nil
 				}, timeout, interval).Should(Succeed())
 
 				// Wait until the controller has processed at least triggerGeneration,
-				// confirming a reconciliation ran after the annotation bump.
+				// confirming a reconciliation ran after the spec change.
 				Eventually(func() (int64, error) {
 					vmcp := &mcpv1alpha1.VirtualMCPServer{}
 					if err := k8sClient.Get(ctx, types.NamespacedName{

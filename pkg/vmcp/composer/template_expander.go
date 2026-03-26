@@ -45,13 +45,43 @@ func (e *defaultTemplateExpander) Expand(
 	data map[string]any,
 	workflowCtx *WorkflowContext,
 ) (map[string]any, error) {
+	return e.expandMap(ctx, data, workflowCtx, nil)
+}
+
+// ExpandString expands a single template string using the workflow context.
+func (e *defaultTemplateExpander) ExpandString(
+	ctx context.Context,
+	tmplStr string,
+	workflowCtx *WorkflowContext,
+) (string, error) {
+	return e.expandStringInternal(ctx, tmplStr, workflowCtx, nil)
+}
+
+// ExpandWithForEach expands templates with additional forEach context variables.
+func (e *defaultTemplateExpander) ExpandWithForEach(
+	ctx context.Context,
+	data map[string]any,
+	workflowCtx *WorkflowContext,
+	forEachCtx map[string]any,
+) (map[string]any, error) {
+	return e.expandMap(ctx, data, workflowCtx, forEachCtx)
+}
+
+// expandMap expands all template values in a map. extraCtx is optional additional
+// template context (e.g., forEach variables); pass nil for standard expansion.
+func (e *defaultTemplateExpander) expandMap(
+	ctx context.Context,
+	data map[string]any,
+	workflowCtx *WorkflowContext,
+	extraCtx map[string]any,
+) (map[string]any, error) {
 	if data == nil {
 		return nil, nil
 	}
 
 	result := make(map[string]any, len(data))
 	for key, value := range data {
-		expanded, err := e.expandValue(ctx, value, workflowCtx)
+		expanded, err := e.expandValueWithDepth(ctx, value, workflowCtx, extraCtx, 0)
 		if err != nil {
 			return nil, fmt.Errorf("failed to expand value for key %q: %w", key, err)
 		}
@@ -61,20 +91,13 @@ func (e *defaultTemplateExpander) Expand(
 	return result, nil
 }
 
-// expandValue recursively expands templates in a value.
-func (e *defaultTemplateExpander) expandValue(
-	ctx context.Context,
-	value any,
-	workflowCtx *WorkflowContext,
-) (any, error) {
-	return e.expandValueWithDepth(ctx, value, workflowCtx, 0)
-}
-
 // expandValueWithDepth recursively expands templates with depth tracking.
+// extraCtx is optional additional template context (e.g., forEach variables).
 func (e *defaultTemplateExpander) expandValueWithDepth(
 	ctx context.Context,
 	value any,
 	workflowCtx *WorkflowContext,
+	extraCtx map[string]any,
 	depth int,
 ) (any, error) {
 	// Check context cancellation before proceeding
@@ -88,14 +111,12 @@ func (e *defaultTemplateExpander) expandValueWithDepth(
 	}
 	switch v := value.(type) {
 	case string:
-		// Expand template string
-		return e.expandString(ctx, v, workflowCtx)
+		return e.expandStringInternal(ctx, v, workflowCtx, extraCtx)
 
 	case map[string]any:
-		// Recursively expand nested maps
 		expanded := make(map[string]any, len(v))
 		for key, val := range v {
-			expandedVal, err := e.expandValueWithDepth(ctx, val, workflowCtx, depth+1)
+			expandedVal, err := e.expandValueWithDepth(ctx, val, workflowCtx, extraCtx, depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("failed to expand nested key %q: %w", key, err)
 			}
@@ -104,10 +125,9 @@ func (e *defaultTemplateExpander) expandValueWithDepth(
 		return expanded, nil
 
 	case []any:
-		// Recursively expand arrays
 		expanded := make([]any, len(v))
 		for i, val := range v {
-			expandedVal, err := e.expandValueWithDepth(ctx, val, workflowCtx, depth+1)
+			expandedVal, err := e.expandValueWithDepth(ctx, val, workflowCtx, extraCtx, depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("failed to expand array element %d: %w", i, err)
 			}
@@ -116,16 +136,17 @@ func (e *defaultTemplateExpander) expandValueWithDepth(
 		return expanded, nil
 
 	default:
-		// Return other types unchanged (numbers, booleans, nil)
 		return value, nil
 	}
 }
 
-// expandString expands a single template string.
-func (e *defaultTemplateExpander) expandString(
+// expandStringInternal expands a single template string.
+// extraCtx is optional additional template context (e.g., {"forEach": {...}}).
+func (e *defaultTemplateExpander) expandStringInternal(
 	ctx context.Context,
 	tmplStr string,
 	workflowCtx *WorkflowContext,
+	extraCtx map[string]any,
 ) (string, error) {
 	// Check context cancellation before expensive template operations
 	if err := ctx.Err(); err != nil {
@@ -138,6 +159,11 @@ func (e *defaultTemplateExpander) expandString(
 		"steps":    e.buildStepsContext(workflowCtx),
 		"vars":     workflowCtx.Variables,
 		"workflow": e.buildWorkflowContext(workflowCtx),
+	}
+
+	// Merge extra context (e.g., forEach variables)
+	if extraCtx != nil {
+		tmplCtx["forEach"] = extraCtx
 	}
 
 	// Parse and execute template
@@ -225,7 +251,7 @@ func (e *defaultTemplateExpander) EvaluateCondition(
 	}
 
 	// Expand the condition as a template
-	result, err := e.expandString(ctx, condition, workflowCtx)
+	result, err := e.expandStringInternal(ctx, condition, workflowCtx, nil)
 	if err != nil {
 		return false, fmt.Errorf("failed to evaluate condition: %w", err)
 	}

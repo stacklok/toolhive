@@ -627,7 +627,7 @@ type WorkflowStepConfig struct {
 	ID string `json:"id" yaml:"id"`
 
 	// Type is the step type (tool, elicitation, etc.)
-	// +kubebuilder:validation:Enum=tool;elicitation
+	// +kubebuilder:validation:Enum=tool;elicitation;forEach
 	// +kubebuilder:default=tool
 	// +optional
 	Type string `json:"type,omitempty" yaml:"type,omitempty"`
@@ -691,6 +691,36 @@ type WorkflowStepConfig struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	DefaultResults thvjson.Map `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
+
+	// Collection is a Go template expression that resolves to a JSON array or a slice.
+	// Only used when Type is "forEach".
+	// +optional
+	Collection string `json:"collection,omitempty" yaml:"collection,omitempty"`
+
+	// ItemVar is the variable name used to reference the current item in forEach templates.
+	// Defaults to "item" if not specified.
+	// Only used when Type is "forEach".
+	// +optional
+	ItemVar string `json:"itemVar,omitempty" yaml:"itemVar,omitempty"`
+
+	// MaxParallel limits the number of concurrent iterations in a forEach step.
+	// Defaults to the DAG executor's maxParallel (10).
+	// Only used when Type is "forEach".
+	// +optional
+	MaxParallel int `json:"maxParallel,omitempty" yaml:"maxParallel,omitempty"`
+
+	// MaxIterations limits the number of items that can be iterated over.
+	// Defaults to 100, hard cap at 1000.
+	// Only used when Type is "forEach".
+	// +optional
+	MaxIterations int `json:"maxIterations,omitempty" yaml:"maxIterations,omitempty"`
+
+	// InnerStep defines the step to execute for each item in the collection.
+	// Only used when Type is "forEach". Only tool-type inner steps are supported.
+	// +optional
+	// +kubebuilder:validation:Type=object
+	// +kubebuilder:pruning:PreserveUnknownFields
+	InnerStep *WorkflowStepConfig `json:"step,omitempty" yaml:"step,omitempty"`
 }
 
 // StepErrorHandling defines error handling behavior for workflow steps.

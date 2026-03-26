@@ -117,6 +117,25 @@ type WorkflowStep struct {
 	// DefaultResults provides fallback output values when this step is skipped
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
 	DefaultResults map[string]any
+
+	// Collection is a Go template expression resolving to a JSON array or slice.
+	// Only used for forEach steps.
+	Collection string
+
+	// ItemVar is the variable name for the current item in forEach templates.
+	// Defaults to "item".
+	ItemVar string
+
+	// MaxParallel limits concurrent iterations in a forEach step.
+	// Defaults to the DAG executor's maxParallel.
+	MaxParallel int
+
+	// MaxIterations limits the number of items that can be iterated.
+	// Defaults to 100, hard cap at 1000.
+	MaxIterations int
+
+	// InnerStep is the step definition executed for each item in a forEach step.
+	InnerStep *WorkflowStep
 }
 
 // StepType defines the type of workflow step.
@@ -128,6 +147,9 @@ const (
 
 	// StepTypeElicitation requests user input via MCP elicitation protocol.
 	StepTypeElicitation StepType = "elicitation"
+
+	// StepTypeForEach iterates over a collection and executes an inner step for each item.
+	StepTypeForEach StepType = "forEach"
 )
 
 // ErrorHandler defines how to handle step failures.
@@ -329,6 +351,16 @@ type TemplateExpander interface {
 
 	// EvaluateCondition evaluates a condition template to a boolean.
 	EvaluateCondition(ctx context.Context, condition string, workflowCtx *WorkflowContext) (bool, error)
+
+	// ExpandString expands a single template string using the workflow context.
+	ExpandString(ctx context.Context, tmplStr string, workflowCtx *WorkflowContext) (string, error)
+
+	// ExpandWithForEach expands templates with additional forEach context variables.
+	// The forEachCtx is merged into the template context under the "forEach" key.
+	ExpandWithForEach(
+		ctx context.Context, data map[string]any,
+		workflowCtx *WorkflowContext, forEachCtx map[string]any,
+	) (map[string]any, error)
 }
 
 // WorkflowContext contains the execution context for a workflow.

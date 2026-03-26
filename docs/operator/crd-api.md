@@ -614,11 +614,12 @@ This matches the proposal's step configuration (lines 180-255).
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
 - [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
+- [vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `id` _string_ | ID is the unique identifier for this step. |  | Required: \{\} <br /> |
-| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation] <br />Optional: \{\} <br /> |
+| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation forEach] <br />Optional: \{\} <br /> |
 | `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool" |  | Optional: \{\} <br /> |
 | `arguments` _[pkg.json.Map](#pkgjsonmap)_ | Arguments is a map of argument values with template expansion support.<br />Supports Go template syntax with .params and .steps for string values.<br />Non-string values (integers, booleans, arrays, objects) are passed as-is.<br />Note: the templating is only supported on the first level of the key-value pairs. |  | Type: object <br />Optional: \{\} <br /> |
 | `condition` _string_ | Condition is a template expression that determines if the step should execute |  | Optional: \{\} <br /> |
@@ -630,6 +631,11 @@ _Appears in:_
 | `onDecline` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  | Optional: \{\} <br /> |
 | `onCancel` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  | Optional: \{\} <br /> |
 | `defaultResults` _[pkg.json.Map](#pkgjsonmap)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br />Optional: \{\} <br /> |
+| `collection` _string_ | Collection is a Go template expression that resolves to a JSON array or a slice.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `itemVar` _string_ | ItemVar is the variable name used to reference the current item in forEach templates.<br />Defaults to "item" if not specified.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `maxParallel` _integer_ | MaxParallel limits the number of concurrent iterations in a forEach step.<br />Defaults to the DAG executor's maxParallel (10).<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `maxIterations` _integer_ | MaxIterations limits the number of items that can be iterated over.<br />Defaults to 100, hard cap at 1000.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `step` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)_ | InnerStep defines the step to execute for each item in the collection.<br />Only used when Type is "forEach". Only tool-type inner steps are supported. |  | Type: object <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.WorkloadToolConfig

@@ -6,6 +6,7 @@ package composer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,9 +14,11 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
@@ -366,6 +369,8 @@ func (e *workflowEngine) executeStep(
 		err = e.executeToolStep(stepCtx, step, workflowCtx)
 	case StepTypeElicitation:
 		err = e.executeElicitationStep(stepCtx, step, workflowCtx)
+	case StepTypeForEach:
+		err = e.executeForEachStep(stepCtx, step, workflowCtx)
 	default:
 		err = fmt.Errorf("unsupported step type: %s", step.Type)
 		workflowCtx.RecordStepFailure(step.ID, err)
@@ -680,6 +685,262 @@ func (e *workflowEngine) executeElicitationStep(
 	}
 }
 
+// defaultMaxIterations is the default maximum number of forEach iterations.
+const defaultMaxIterations = 100
+
+// iterationResult holds the outcome of a single forEach iteration.
+type iterationResult struct {
+	Index  int
+	Item   any
+	Status string
+	Output map[string]any
+	Error  string
+}
+
+// executeForEachStep executes a forEach step, iterating over a collection
+// and running the inner step for each item with configurable parallelism.
+func (e *workflowEngine) executeForEachStep(
+	ctx context.Context,
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	slog.Debug("executing forEach step", "step", step.ID)
+
+	// Resolve and validate the collection to iterate over
+	items, err := e.prepareForEachCollection(ctx, step, workflowCtx)
+	if err != nil {
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+
+	// Handle empty collection
+	if len(items) == 0 {
+		workflowCtx.RecordStepSuccess(step.ID, buildForEachOutput(nil, 0), nil)
+		return nil
+	}
+
+	// Resolve configuration defaults
+	itemVar := step.ItemVar
+	if itemVar == "" {
+		itemVar = "item"
+	}
+	maxPar := step.MaxParallel
+	if maxPar <= 0 {
+		maxPar = e.dagExecutor.MaxParallel()
+	}
+	// Runtime cap to prevent goroutine/connection exhaustion even if validation is bypassed
+	const runtimeMaxParallel = 50
+	if maxPar > runtimeMaxParallel {
+		maxPar = runtimeMaxParallel
+	}
+	continueOnIterError := step.OnError != nil && step.OnError.Action == failureModeContinue
+
+	// Execute iterations with bounded parallelism
+	results := make([]iterationResult, len(items))
+	sem := make(chan struct{}, maxPar)
+	g, gCtx := errgroup.WithContext(ctx)
+
+	for i, item := range items {
+		g.Go(func() error {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-gCtx.Done():
+				results[i] = iterationResult{Index: i, Item: item, Status: "cancelled", Error: gCtx.Err().Error()}
+				return gCtx.Err()
+			}
+
+			r := e.executeForEachIteration(gCtx, step, workflowCtx, i, item, itemVar)
+			results[i] = r
+			if r.Error != "" && !continueOnIterError {
+				return fmt.Errorf("forEach step %s iteration %d: %s", step.ID, i, r.Error)
+			}
+			return nil
+		})
+	}
+
+	execErr := g.Wait()
+
+	// Build and record aggregated output
+	aggregatedOutput := buildForEachOutput(results, len(items))
+
+	if execErr != nil && !continueOnIterError {
+		workflowCtx.RecordStepFailure(step.ID, execErr)
+		if result, exists := workflowCtx.GetStepResult(step.ID); exists {
+			result.Output = aggregatedOutput
+		}
+		return execErr
+	}
+
+	workflowCtx.RecordStepSuccess(step.ID, aggregatedOutput, nil)
+	return nil
+}
+
+// prepareForEachCollection validates the step, resolves the collection template,
+// and validates the collection size.
+func (e *workflowEngine) prepareForEachCollection(
+	ctx context.Context,
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) ([]any, error) {
+	if step.InnerStep == nil {
+		return nil, fmt.Errorf("forEach step %s: inner step is nil", step.ID)
+	}
+
+	items, err := e.resolveForEachCollection(ctx, step, workflowCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := e.validateCollectionSize(step, len(items)); err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
+// validateCollectionSize checks the collection does not exceed the configured limit.
+func (*workflowEngine) validateCollectionSize(step *WorkflowStep, size int) error {
+	maxIter := step.MaxIterations
+	if maxIter <= 0 {
+		maxIter = defaultMaxIterations
+	}
+	if maxIter > config.MaxForEachIterations {
+		maxIter = config.MaxForEachIterations
+	}
+	if size > maxIter {
+		return fmt.Errorf("forEach step %s: collection size %d exceeds maxIterations %d",
+			step.ID, size, maxIter)
+	}
+	return nil
+}
+
+// executeForEachIteration runs the inner tool step for a single collection item.
+func (e *workflowEngine) executeForEachIteration(
+	ctx context.Context,
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+	index int,
+	item any,
+	itemVar string,
+) iterationResult {
+	forEachCtx := map[string]any{
+		itemVar: item,
+		"index": index,
+	}
+
+	expandedArgs, expandErr := e.templateExpander.ExpandWithForEach(
+		ctx, step.InnerStep.Arguments, workflowCtx, forEachCtx,
+	)
+	if expandErr != nil {
+		return iterationResult{
+			Index: index, Item: item, Status: "failed",
+			Error: fmt.Sprintf("template expansion failed: %v", expandErr),
+		}
+	}
+
+	// Coerce expanded arguments based on tool schema
+	rawSchema := e.getToolInputSchema(ctx, step.InnerStep.Tool)
+	s := schema.MakeSchema(rawSchema)
+	if coerced, ok := s.TryCoerce(expandedArgs).(map[string]any); ok {
+		expandedArgs = coerced
+	}
+
+	target, routeErr := e.router.RouteTool(ctx, step.InnerStep.Tool)
+	if routeErr != nil {
+		return iterationResult{
+			Index: index, Item: item, Status: "failed",
+			Error: fmt.Sprintf("failed to route tool: %v", routeErr),
+		}
+	}
+
+	result, _, callErr := e.callToolWithRetry(ctx, target, step.InnerStep, expandedArgs, workflowCtx)
+	if callErr != nil {
+		return iterationResult{
+			Index: index, Item: item, Status: "failed",
+			Error: callErr.Error(),
+		}
+	}
+
+	output := result.StructuredContent
+	if output == nil {
+		output = conversion.ContentArrayToMap(result.Content)
+	}
+
+	return iterationResult{
+		Index: index, Item: item, Status: "completed", Output: output,
+	}
+}
+
+// buildForEachOutput constructs the aggregated output map for a forEach step.
+func buildForEachOutput(results []iterationResult, totalCount int) map[string]any {
+	if len(results) == 0 {
+		return map[string]any{
+			"iterations": []any{},
+			"count":      totalCount,
+			"completed":  0,
+			"failed":     0,
+		}
+	}
+
+	completedCount := 0
+	failedCount := 0
+	iterations := make([]any, len(results))
+	for i, r := range results {
+		iterMap := map[string]any{
+			"index":  r.Index,
+			"item":   r.Item,
+			"status": r.Status,
+			"output": r.Output,
+		}
+		if r.Error != "" {
+			iterMap["error"] = r.Error
+		}
+		iterations[i] = iterMap
+		if r.Status == "completed" {
+			completedCount++
+		} else {
+			failedCount++
+		}
+	}
+
+	return map[string]any{
+		"iterations": iterations,
+		"count":      totalCount,
+		"completed":  completedCount,
+		"failed":     failedCount,
+	}
+}
+
+// resolveForEachCollection expands the collection template and parses it into a slice.
+func (e *workflowEngine) resolveForEachCollection(
+	ctx context.Context,
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) ([]any, error) {
+	expanded, err := e.templateExpander.ExpandString(ctx, step.Collection, workflowCtx)
+	if err != nil {
+		return nil, fmt.Errorf("forEach step %s: failed to expand collection template: %w", step.ID, err)
+	}
+
+	// Try to parse as JSON array
+	var items []any
+	if err := json.Unmarshal([]byte(expanded), &items); err != nil {
+		return nil, fmt.Errorf("forEach step %s: collection must resolve to a JSON array, got: %s", step.ID, truncate(expanded, 100))
+	}
+
+	return items, nil
+}
+
+// truncate shortens a string for error messages, respecting UTF-8 rune boundaries.
+func truncate(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
 // handleElicitationAccept handles when the user accepts and provides data.
 func (*workflowEngine) handleElicitationAccept(
 	step *WorkflowStep,
@@ -980,6 +1241,17 @@ func (*workflowEngine) validateStep(step *WorkflowStep, validStepIDs map[string]
 		if step.Elicitation.Message == "" {
 			return NewValidationError("step.elicitation.message",
 				fmt.Sprintf("elicitation message is required for step %s", step.ID),
+				nil)
+		}
+	case StepTypeForEach:
+		if step.Collection == "" {
+			return NewValidationError("step.collection",
+				fmt.Sprintf("collection is required for forEach step %s", step.ID),
+				nil)
+		}
+		if step.InnerStep == nil {
+			return NewValidationError("step.innerStep",
+				fmt.Sprintf("inner step is required for forEach step %s", step.ID),
 				nil)
 		}
 	default:

@@ -13,6 +13,7 @@ This guide covers advanced workflow patterns and best practices for Virtual MCP 
 - [Performance Optimization](#performance-optimization)
 - [Best Practices](#best-practices)
 - [Common Patterns](#common-patterns)
+- [ForEach Iteration Patterns](#foreach-iteration-patterns)
 
 ---
 
@@ -890,6 +891,75 @@ steps:
 4. Monitor for race conditions or dependency issues
 
 ---
+
+## ForEach Iteration Patterns
+
+The `forEach` step type iterates over a collection produced by a previous step, executing an inner tool step for each item. The forEach step is a single node in the DAG -- its internal parallelism is self-managed.
+
+### Basic forEach: Vulnerability Scanning
+
+```yaml
+steps:
+  - id: get_packages
+    type: tool
+    tool: oci-registry.get_image_config
+    arguments:
+      image_ref: "{{.params.image}}"
+
+  - id: check_each_vuln
+    type: forEach
+    collection: "{{json .steps.get_packages.output.packages}}"
+    itemVar: pkg
+    maxParallel: 5
+    step:
+      type: tool
+      tool: osv.query_vulnerability
+      arguments:
+        package_name: "{{.forEach.pkg.name}}"
+        ecosystem: "{{.forEach.pkg.ecosystem}}"
+        version: "{{.forEach.pkg.version}}"
+    dependsOn: [get_packages]
+    onError:
+      action: continue    # Skip failed items, don't abort
+
+  - id: summarize
+    type: tool
+    tool: reporter.summarize
+    arguments:
+      total: "{{.steps.check_each_vuln.output.count}}"
+      failed: "{{.steps.check_each_vuln.output.failed}}"
+      results: "{{json .steps.check_each_vuln.output.iterations}}"
+    dependsOn: [check_each_vuln]
+```
+
+### forEach with Error Abort
+
+When any iteration fails, abort immediately and fail the workflow:
+
+```yaml
+- id: deploy_each
+  type: forEach
+  collection: "{{json .steps.get_targets.output.targets}}"
+  itemVar: target
+  maxParallel: 1            # Sequential deployment
+  step:
+    type: tool
+    tool: kubectl.apply
+    arguments:
+      cluster: "{{.forEach.target.cluster}}"
+      manifest: "{{.params.manifest}}"
+  dependsOn: [get_targets]
+  # Default onError is abort -- any failure stops remaining iterations
+```
+
+### forEach Limits and Safety
+
+| Setting | Default | Hard Cap | Description |
+|---------|---------|----------|-------------|
+| `maxIterations` | 100 | 1000 | Max collection items |
+| `maxParallel` | 10 (DAG default) | 50 | Concurrent iterations |
+
+The forEach step's timeout (inherited from step-level `timeout`) applies to the entire iteration set.
 
 ## Additional Resources
 

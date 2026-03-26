@@ -25,6 +25,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -39,6 +41,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
@@ -114,11 +117,15 @@ type Config struct {
 	// This should be a composed middleware chain (e.g., TokenValidator + MCP parser).
 	AuthMiddleware func(http.Handler) http.Handler
 
-	// AuthzMiddleware is the optional authorization middleware to apply AFTER discovery.
-	// Split from AuthMiddleware so authz can access discovered tool annotations
-	// injected by the annotation enrichment middleware.
+	// CedarAuthorizer is the optional Cedar authorizer for tool-level authorization.
+	// If non-nil, the server builds authz middleware from this authorizer during
+	// initialization. When the optimizer is enabled, the middleware is configured
+	// to pass through optimizer meta-tools (find_tool, call_tool) since those are
+	// authorized internally by the optimizer decorator.
+	// The authorizer is also passed to the session manager so the optimizer
+	// decorator can filter find_tool results and gate call_tool invocations.
 	// If nil, no authorization is performed.
-	AuthzMiddleware func(http.Handler) http.Handler
+	CedarAuthorizer authorizers.Authorizer
 
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
@@ -176,6 +183,10 @@ type Config struct {
 // Server is the Virtual MCP Server that aggregates multiple backends.
 type Server struct {
 	config *Config
+
+	// authzMiddleware is the Cedar authorization middleware built from
+	// config.CedarAuthorizer during New(). Nil when no authorizer is configured.
+	authzMiddleware func(http.Handler) http.Handler
 
 	// MCP protocol server (mark3labs/mcp-go)
 	mcpServer *server.MCPServer
@@ -385,6 +396,31 @@ func New(
 		slog.Info("health monitoring disabled")
 	}
 
+	// Build authz middleware from the Authorizer if configured.
+	// The server owns middleware construction so it can configure pass-through
+	// rules without leaking optimizer concerns into the auth factory.
+	//
+	// When the optimizer is enabled, its meta-tools (find_tool, call_tool) are
+	// added to the pass-through set so they are not rejected by Cedar default-deny
+	// in tools/list response filtering. Authorization for the underlying backend
+	// tools is enforced inside the optimizer decorator itself:
+	//   - find_tool filters search results via authz.FilterToolsByPolicy
+	//   - call_tool gates invocations via authz.AuthorizeToolCall
+	// See: https://github.com/stacklok/toolhive/issues/4373
+	var authzMiddleware func(http.Handler) http.Handler
+	if cfg.CedarAuthorizer != nil {
+		var passThroughTools map[string]struct{}
+		if cfg.OptimizerConfig != nil {
+			passThroughTools = map[string]struct{}{
+				optimizerdec.FindToolName: {},
+				optimizerdec.CallToolName: {},
+			}
+			slog.Debug("authz middleware configured with optimizer meta-tool pass-through",
+				"pass_through", []string{optimizerdec.FindToolName, optimizerdec.CallToolName})
+		}
+		authzMiddleware = authz.CreateMiddlewareFromAuthorizer(cfg.CedarAuthorizer, passThroughTools)
+	}
+
 	// Pass the whole factory config so the session manager constructs everything
 	// it needs (optimizer wiring, composite tool layers, telemetry instruments).
 	sessMgrCfg := &sessionmanager.FactoryConfig{
@@ -395,7 +431,7 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 	}
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionManager, sessMgrCfg, backendRegistry)
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionManager, sessMgrCfg, backendRegistry, cfg.CedarAuthorizer)
 	if err != nil {
 		return nil, err
 	}
@@ -403,6 +439,7 @@ func New(
 	// Create Server instance
 	srv := &Server{
 		config:            cfg,
+		authzMiddleware:   authzMiddleware,
 		mcpServer:         mcpServer,
 		router:            rt,
 		backendClient:     backendClient,
@@ -518,15 +555,15 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// Apply authorization middleware if configured (runs AFTER discovery in execution).
 	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
-	if s.config.AuthzMiddleware != nil {
-		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
-		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
+	if s.authzMiddleware != nil {
+		mcpHandler = s.authzMiddleware(mcpHandler)
+		slog.Debug("authorization middleware enabled for MCP endpoints (post-discovery)")
 	}
 
 	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).
 	// Reads tool annotations from discovered capabilities and injects them into the
 	// request context so the authz middleware can make annotation-aware decisions.
-	if s.config.AuthzMiddleware != nil {
+	if s.authzMiddleware != nil {
 		mcpHandler = AnnotationEnrichmentMiddleware(mcpHandler)
 		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
 	}

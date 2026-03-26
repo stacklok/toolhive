@@ -506,7 +506,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type))
 
-	authMiddleware, authzMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
+	authMiddleware, cedarAuthorizer, authInfoHandler, err :=
+		factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
@@ -589,7 +590,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Host:                    host,
 		Port:                    port,
 		AuthMiddleware:          authMiddleware,
-		AuthzMiddleware:         authzMiddleware,
+		CedarAuthorizer:         cedarAuthorizer,
 		AuthInfoHandler:         authInfoHandler,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,

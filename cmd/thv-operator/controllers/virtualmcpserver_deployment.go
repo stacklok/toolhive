@@ -24,6 +24,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -55,6 +56,9 @@ const (
 	vmcpReadinessPeriod       = int32(5)  // seconds - check more frequently for quick detection
 	vmcpReadinessTimeout      = int32(3)  // seconds - shorter timeout for faster detection
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
+
+	// Graceful shutdown configuration
+	vmcpTerminationGracePeriodSeconds = int64(30) // seconds - allow in-flight requests to complete
 
 	// Default resource requirements for VirtualMCPServer vmcp container
 	// These provide sensible defaults that can be overridden via PodTemplateSpec
@@ -117,7 +121,6 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
-	replicas := int32(1)
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp(vmcp)
@@ -136,7 +139,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas: vmcp.Spec.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: ls,
 			},
@@ -146,7 +149,8 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: serviceAccountName,
+					TerminationGracePeriodSeconds: int64Ptr(vmcpTerminationGracePeriodSeconds),
+					ServiceAccountName:            serviceAccountName,
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,
@@ -280,8 +284,8 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Always mount HMAC secret for session token binding.
 	env = append(env, r.buildHMACSecretEnvVar(vmcp))
 
-	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
-	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
+	// Mount Redis password secret when session storage provider is Redis.
+	env = append(env, r.buildRedisPasswordEnvVar(vmcp)...)
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
 }
@@ -345,6 +349,27 @@ func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1alpha1.Virtu
 			},
 		},
 	}
+}
+
+// buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
+// sessionStorage.provider == "redis" and passwordRef is set; returns nil otherwise.
+func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
+	if vmcp.Spec.SessionStorage == nil ||
+		vmcp.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis ||
+		vmcp.Spec.SessionStorage.PasswordRef == nil {
+		return nil
+	}
+	return []corev1.EnvVar{{
+		Name: vmcpconfig.RedisPasswordEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: vmcp.Spec.SessionStorage.PasswordRef.Name,
+				},
+				Key: vmcp.Spec.SessionStorage.PasswordRef.Key,
+			},
+		},
+	}}
 }
 
 // buildOutgoingAuthEnvVars builds environment variables for outgoing auth secrets.

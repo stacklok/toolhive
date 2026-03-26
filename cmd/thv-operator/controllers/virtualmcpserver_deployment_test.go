@@ -60,13 +60,17 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
 	assert.Equal(t, vmcp.Namespace, deployment.Namespace)
-	assert.NotNil(t, deployment.Spec.Replicas)
-	assert.Equal(t, int32(1), *deployment.Spec.Replicas)
+	// spec.replicas is nil in this test — nil-passthrough for HPA compatibility
+	assert.Nil(t, deployment.Spec.Replicas)
 
 	// Verify labels
 	expectedLabels := labelsForVirtualMCPServer(vmcp.Name)
 	assert.Equal(t, expectedLabels, deployment.Labels)
 	assert.Equal(t, expectedLabels, deployment.Spec.Template.Labels)
+
+	// Verify terminationGracePeriodSeconds is always set
+	require.NotNil(t, deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	assert.Equal(t, vmcpTerminationGracePeriodSeconds, *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
 
 	// Verify service account
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), deployment.Spec.Template.Spec.ServiceAccountName)
@@ -201,6 +205,64 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 
 	assert.True(t, foundName, "Should have VMCP_NAME env var")
 	assert.True(t, foundNamespace, "Should have VMCP_NAMESPACE env var")
+}
+
+// TestBuildRedisPasswordEnvVar tests conditional Redis password env var injection.
+func TestBuildRedisPasswordEnvVar(t *testing.T) {
+	t.Parallel()
+
+	r := &VirtualMCPServerReconciler{}
+
+	passwordRef := &mcpv1alpha1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	tests := []struct {
+		name        string
+		storage     *mcpv1alpha1.SessionStorageConfig
+		expectEnVar bool
+	}{
+		{
+			name:        "nil sessionStorage produces no env var",
+			storage:     nil,
+			expectEnVar: false,
+		},
+		{
+			name:        "memory provider produces no env var",
+			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: "memory"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis without passwordRef produces no env var",
+			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: mcpv1alpha1.SessionStorageProviderRedis, Address: "redis:6379"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis with passwordRef produces THV_SESSION_REDIS_PASSWORD",
+			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: mcpv1alpha1.SessionStorageProviderRedis, Address: "redis:6379", PasswordRef: passwordRef},
+			expectEnVar: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec:       mcpv1alpha1.VirtualMCPServerSpec{SessionStorage: tc.storage},
+			}
+			env := r.buildRedisPasswordEnvVar(vmcp)
+			if tc.expectEnVar {
+				require.Len(t, env, 1)
+				assert.Equal(t, vmcpconfig.RedisPasswordEnvVar, env[0].Name)
+				assert.Empty(t, env[0].Value, "must not use plaintext Value")
+				require.NotNil(t, env[0].ValueFrom)
+				require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
+				assert.Equal(t, passwordRef.Name, env[0].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, passwordRef.Key, env[0].ValueFrom.SecretKeyRef.Key)
+			} else {
+				assert.Empty(t, env)
+			}
+		})
+	}
 }
 
 // TestBuildDeploymentMetadataForVmcp tests deployment metadata generation

@@ -20,6 +20,12 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
+// RedisPasswordEnvVar is the environment variable name for the Redis session storage password.
+// The operator injects this as a SecretKeyRef when sessionStorage.provider is "redis"
+// and passwordRef is set. The vMCP process reads this at startup to authenticate to Redis.
+// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+const RedisPasswordEnvVar = "THV_SESSION_REDIS_PASSWORD"
+
 // Transport type constants for static backend configuration.
 // These define the allowed network transport protocols for vMCP backends in static mode.
 const (

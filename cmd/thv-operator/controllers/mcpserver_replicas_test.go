@@ -755,7 +755,7 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 			ProxyPort: 8080,
 			Replicas:  &replicas,
 			SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-				Provider: "redis",
+				Provider: mcpv1alpha1.SessionStorageProviderRedis,
 				Address:  "redis:6379",
 			},
 		},

@@ -35,8 +35,19 @@ import (
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
+// testSetupOptions allows customizing the test handler setup.
+type testSetupOptions struct {
+	AuthorizationEndpointBaseURL string
+}
+
 // testSetup creates a Handler with all dependencies for testing.
 func testSetup(t *testing.T) *Handler {
+	t.Helper()
+	return testSetupWithOptions(t, testSetupOptions{})
+}
+
+// testSetupWithOptions creates a Handler with customizable configuration.
+func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -53,14 +64,15 @@ func testSetup(t *testing.T) *Handler {
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
-		Issuer:               "https://auth.example.com",
-		AccessTokenLifespan:  time.Hour,
-		RefreshTokenLifespan: time.Hour * 24,
-		AuthCodeLifespan:     time.Minute * 10,
-		HMACSecrets:          servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:         "test-key-1",
-		SigningKeyAlgorithm:  "RS256",
-		SigningKey:           rsaKey,
+		Issuer:                       "https://auth.example.com",
+		AuthorizationEndpointBaseURL: opts.AuthorizationEndpointBaseURL,
+		AccessTokenLifespan:          time.Hour,
+		RefreshTokenLifespan:         time.Hour * 24,
+		AuthCodeLifespan:             time.Minute * 10,
+		HMACSecrets:                  servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:                 "test-key-1",
+		SigningKeyAlgorithm:          "RS256",
+		SigningKey:                   rsaKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -240,42 +252,9 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 
 func TestOAuthDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
 	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(func() {
-		ctrl.Finish()
-	})
-
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-
-	secret := make([]byte, 32)
-	_, err = rand.Read(secret)
-	require.NoError(t, err)
-
-	cfg := &server.AuthorizationServerParams{
-		Issuer:                       "https://auth.example.com",
+	handler := testSetupWithOptions(t, testSetupOptions{
 		AuthorizationEndpointBaseURL: "https://login.example.com",
-		AccessTokenLifespan:          time.Hour,
-		RefreshTokenLifespan:         time.Hour * 24,
-		AuthCodeLifespan:             time.Minute * 10,
-		HMACSecrets:                  servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:                 "test-key-1",
-		SigningKeyAlgorithm:          "RS256",
-		SigningKey:                   rsaKey,
-	}
-
-	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
-	require.NoError(t, err)
-
-	stor := mocks.NewMockStorage(ctrl)
-	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
-
-	provider := fosite.NewOAuth2Provider(stor, oauth2Config.Config)
-	dummyUpstream := &mockIDPProvider{}
-	handler, err := NewHandler(provider, oauth2Config, stor,
-		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
-	require.NoError(t, err)
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	rec := httptest.NewRecorder()
@@ -285,7 +264,7 @@ func TestOAuthDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var metadata sharedobauth.AuthorizationServerMetadata
-	err = json.NewDecoder(rec.Body).Decode(&metadata)
+	err := json.NewDecoder(rec.Body).Decode(&metadata)
 	require.NoError(t, err)
 
 	// Authorization endpoint should use the override base URL
@@ -300,42 +279,9 @@ func TestOAuthDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
 
 func TestOIDCDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
 	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(func() {
-		ctrl.Finish()
-	})
-
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-
-	secret := make([]byte, 32)
-	_, err = rand.Read(secret)
-	require.NoError(t, err)
-
-	cfg := &server.AuthorizationServerParams{
-		Issuer:                       "https://auth.example.com",
+	handler := testSetupWithOptions(t, testSetupOptions{
 		AuthorizationEndpointBaseURL: "https://login.example.com",
-		AccessTokenLifespan:          time.Hour,
-		RefreshTokenLifespan:         time.Hour * 24,
-		AuthCodeLifespan:             time.Minute * 10,
-		HMACSecrets:                  servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:                 "test-key-1",
-		SigningKeyAlgorithm:          "RS256",
-		SigningKey:                   rsaKey,
-	}
-
-	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
-	require.NoError(t, err)
-
-	stor := mocks.NewMockStorage(ctrl)
-	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
-
-	provider := fosite.NewOAuth2Provider(stor, oauth2Config.Config)
-	dummyUpstream := &mockIDPProvider{}
-	handler, err := NewHandler(provider, oauth2Config, stor,
-		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
-	require.NoError(t, err)
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
 	rec := httptest.NewRecorder()
@@ -345,7 +291,7 @@ func TestOIDCDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var discovery sharedobauth.OIDCDiscoveryDocument
-	err = json.NewDecoder(rec.Body).Decode(&discovery)
+	err := json.NewDecoder(rec.Body).Decode(&discovery)
 	require.NoError(t, err)
 
 	// Authorization endpoint should use the override base URL

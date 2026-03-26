@@ -726,7 +726,7 @@ func (e *workflowEngine) executeForEachStep(
 	}
 	maxPar := step.MaxParallel
 	if maxPar <= 0 {
-		maxPar = e.dagExecutor.maxParallel
+		maxPar = e.dagExecutor.MaxParallel()
 	}
 	// Runtime cap to prevent goroutine/connection exhaustion even if validation is bypassed
 	const runtimeMaxParallel = 50
@@ -746,6 +746,7 @@ func (e *workflowEngine) executeForEachStep(
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-gCtx.Done():
+				results[i] = iterationResult{Index: i, Item: item, Status: "cancelled", Error: gCtx.Err().Error()}
 				return gCtx.Err()
 			}
 

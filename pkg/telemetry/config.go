@@ -265,8 +265,11 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 		providers.WithCustomAttributes(config.CustomAttributes),
 	}
 
-	if len(extraProcessors) > 0 {
-		telemetryOptions = append(telemetryOptions, providers.WithExtraSpanProcessors(extraProcessors...))
+	// Merge globally registered processors (self-registered by integrations such
+	// as a Sentry bridge) with any explicitly passed ones.
+	allProcessors := append(registeredSpanProcessors(), extraProcessors...)
+	if len(allProcessors) > 0 {
+		telemetryOptions = append(telemetryOptions, providers.WithExtraSpanProcessors(allProcessors...))
 	}
 
 	telemetryProviders, err := providers.NewCompositeProvider(ctx, telemetryOptions...)

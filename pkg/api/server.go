@@ -172,13 +172,15 @@ func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBui
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
 
-	// Apply recovery middleware first to catch panics from all other middleware and handlers
-	r.Use(recovery.Middleware)
-
-	// Apply OTEL middleware early so that W3C traceparent headers from incoming requests
-	// (e.g. from toolhive-studio) are extracted and a child span is created for each request.
-	// The span name is set to "METHOD /route/pattern" (e.g. "GET /api/v1beta/workloads/{name}")
-	// using chi's matched route pattern for clean grouping in Sentry and OTEL backends.
+	// OTEL middleware must be outermost so its span is still active when recovery
+	// middleware catches a panic. If recovery were outer, otelhttp's defer span.End()
+	// would fire during panic unwinding — before recover() — leaving the span ended
+	// and making span.RecordError a no-op. With otelhttp outer:
+	//   1. otelhttp starts span, calls next
+	//   2. recovery catches panic, calls span.RecordError, returns 500 normally
+	//   3. otelhttp's defer fires: span has error recorded + 500 status, then ends
+	// The span name uses chi's matched route pattern (e.g. "GET /api/v1beta/workloads/{name}")
+	// for clean grouping in Sentry and OTEL backends.
 	if b.otelEnabled {
 		r.Use(otelhttp.NewMiddleware("thv-api",
 			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
@@ -189,6 +191,10 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 			}),
 		))
 	}
+
+	// Recovery middleware is inner so it runs inside the OTEL span lifetime,
+	// allowing panic details to be recorded on the span before it ends.
+	r.Use(recovery.Middleware)
 
 	// Apply default middleware
 	// NOTE: Timeout is NOT applied globally because workload create/update routes

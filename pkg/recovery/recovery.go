@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"runtime/debug"
 
-	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -34,7 +36,9 @@ func Middleware(next http.Handler) http.Handler {
 				}
 				stack := debug.Stack()
 				slog.Error(fmt.Sprintf("Panic recovered: %v\nStack trace:\n%s", rec, stack))
-				sentrypkg.RecoverPanic(r, rec)
+				span := trace.SpanFromContext(r.Context())
+				span.RecordError(fmt.Errorf("%v", rec), trace.WithStackTrace(true))
+				span.SetStatus(codes.Error, fmt.Sprintf("panic: %v", rec))
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
 // These tests are deliberately NOT parallel because they mutate the package-level
@@ -84,25 +86,28 @@ func TestClose(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // mutates global initialized state
-func TestSpanProcessor(t *testing.T) {
-	t.Run("returns nil when not initialized", func(_ *testing.T) {
+//nolint:paralleltest // mutates global initialized and telemetry registry state
+func TestInit_RegistersSpanProcessor(t *testing.T) {
+	t.Run("does not register processor when not initialized", func(_ *testing.T) {
 		initialized.Store(false)
-		sp := SpanProcessor()
-		assert.Nil(t, sp)
+		telemetry.ResetSpanProcessorsForTesting()
+		assert.False(t, telemetry.HasRegisteredSpanProcessors())
 	})
 
-	t.Run("returns a processor when initialized", func(t *testing.T) {
+	t.Run("registers span processor with telemetry registry on init", func(t *testing.T) {
 		initialized.Store(false)
+		telemetry.ResetSpanProcessorsForTesting()
 		err := Init(Config{
 			DSN:              "https://examplePublicKey@o0.ingest.sentry.io/0",
 			TracesSampleRate: 1.0,
 		})
 		require.NoError(t, err)
-		defer initialized.Store(false)
+		defer func() {
+			initialized.Store(false)
+			telemetry.ResetSpanProcessorsForTesting()
+		}()
 
-		sp := SpanProcessor()
-		assert.NotNil(t, sp)
+		assert.True(t, telemetry.HasRegisteredSpanProcessors())
 	})
 }
 

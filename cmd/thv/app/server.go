@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	s "github.com/stacklok/toolhive/pkg/api"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -139,16 +138,16 @@ var serveCmd = &cobra.Command{
 
 // initServeOTEL initialises the OTEL provider for thv serve using the global config
 // (set via `thv config otel set-endpoint`). No new CLI flags are introduced; serve reuses
-// the same OTEL config as thv run. If Sentry is also initialised, the Sentry span processor
-// is registered so spans are exported to both the configured OTLP backend and Sentry.
+// the same OTEL config as thv run. Any span processors registered via
+// telemetry.RegisterSpanProcessor (e.g. by sentrypkg.Init) are automatically included.
 // Returns true when OTEL HTTP middleware should be enabled on the API server.
 func initServeOTEL(ctx context.Context, _ bool) (bool, error) {
 	configProvider := cfg.NewDefaultProvider()
 	appConfig := configProvider.GetConfig()
 
 	otelCfg := appConfig.OTEL
-	hasSentryProcessor := sentrypkg.SpanProcessor() != nil
-	if otelCfg.Endpoint == "" && !otelCfg.EnablePrometheusMetricsPath && !hasSentryProcessor {
+	hasRegisteredProcessors := telemetry.HasRegisteredSpanProcessors()
+	if otelCfg.Endpoint == "" && !otelCfg.EnablePrometheusMetricsPath && !hasRegisteredProcessors {
 		return false, nil
 	}
 
@@ -168,21 +167,16 @@ func initServeOTEL(ctx context.Context, _ bool) (bool, error) {
 		telemetryCfg.SamplingRate = "0.05"
 	}
 
-	// Sentry-only mode: no OTLP endpoint but the Sentry span processor is active.
-	// Force tracing on with 100% OTEL sampling so every span reaches the Sentry processor.
-	// Sentry's own TracesSampleRate flag is then the sole sampling gate.
-	if otelCfg.Endpoint == "" && hasSentryProcessor {
+	// No OTLP endpoint but registered processors are active (e.g. a Sentry bridge).
+	// Force tracing on with 100% OTEL sampling so every span reaches the processors.
+	// Each processor's own sampling config is then the sole gate.
+	if otelCfg.Endpoint == "" && hasRegisteredProcessors {
 		telemetryCfg.TracingEnabled = true
 		telemetryCfg.SamplingRate = "1.0"
 	}
 
-	var extraProcessors []sdktrace.SpanProcessor
-	if sp := sentrypkg.SpanProcessor(); sp != nil {
-		extraProcessors = append(extraProcessors, sp)
-		slog.Debug("sentry span processor registered with OTEL")
-	}
-
-	provider, err := telemetry.NewProvider(ctx, telemetryCfg, extraProcessors...)
+	// Registered processors are picked up automatically by NewProvider via the global registry.
+	provider, err := telemetry.NewProvider(ctx, telemetryCfg)
 	if err != nil {
 		return false, fmt.Errorf("failed to initialize telemetry: %w", err)
 	}

@@ -686,7 +686,58 @@ func TestContentArrayToMap(t *testing.T) {
 			content: []vmcp.Content{
 				{Type: vmcp.ContentTypeText, Text: "Text"},
 				{Type: "unknown", Text: "Should be ignored"},
-				{Type: vmcp.ContentTypeResource, URI: "file://test"},
+			},
+			expected: map[string]any{
+				"text": "Text",
+			},
+		},
+		{
+			name: "single text resource content",
+			content: []vmcp.Content{
+				{Type: vmcp.ContentTypeResource, Text: "SBOM JSON data", URI: "file://sbom.json", MimeType: "application/json"},
+			},
+			expected: map[string]any{
+				"resource": "SBOM JSON data",
+			},
+		},
+		{
+			name: "single blob resource content uses Data field",
+			content: []vmcp.Content{
+				{Type: vmcp.ContentTypeResource, Data: "base64blobdata", URI: "file://binary", MimeType: "application/octet-stream"},
+			},
+			expected: map[string]any{
+				"resource": "base64blobdata",
+			},
+		},
+		{
+			name: "multiple resource contents",
+			content: []vmcp.Content{
+				{Type: vmcp.ContentTypeResource, Text: "First resource", URI: "file://a"},
+				{Type: vmcp.ContentTypeResource, Text: "Second resource", URI: "file://b"},
+				{Type: vmcp.ContentTypeResource, Data: "Third blob", URI: "file://c"},
+			},
+			expected: map[string]any{
+				"resource":   "First resource",
+				"resource_1": "Second resource",
+				"resource_2": "Third blob",
+			},
+		},
+		{
+			name: "mixed text and resource content",
+			content: []vmcp.Content{
+				{Type: vmcp.ContentTypeText, Text: "summary"},
+				{Type: vmcp.ContentTypeResource, Text: "SBOM JSON", URI: "file://sbom.json"},
+			},
+			expected: map[string]any{
+				"text":     "summary",
+				"resource": "SBOM JSON",
+			},
+		},
+		{
+			name: "resource link content is still ignored",
+			content: []vmcp.Content{
+				{Type: vmcp.ContentTypeText, Text: "Text"},
+				{Type: vmcp.ContentTypeLink, URI: "file://link", Name: "link"},
 			},
 			expected: map[string]any{
 				"text": "Text",

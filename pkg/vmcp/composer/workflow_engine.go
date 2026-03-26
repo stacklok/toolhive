@@ -428,24 +428,32 @@ func (e *workflowEngine) executeToolStep(
 	}
 
 	// Call tool with retry logic
-	output, retryCount, err := e.callToolWithRetry(ctx, target, step, expandedArgs, workflowCtx)
+	result, retryCount, err := e.callToolWithRetry(ctx, target, step, expandedArgs, workflowCtx)
 
 	// Handle result
 	if err != nil {
 		return e.handleToolStepFailure(step, workflowCtx, retryCount, err)
 	}
 
-	return e.handleToolStepSuccess(ctx, step, workflowCtx, output, retryCount)
+	// Extract output map from result.
+	// Prefer StructuredContent (already a map), fall back to Content array conversion.
+	output := result.StructuredContent
+	if output == nil {
+		output = conversion.ContentArrayToMap(result.Content)
+	}
+
+	return e.handleToolStepSuccess(ctx, step, workflowCtx, output, result.Content, retryCount)
 }
 
 // callToolWithRetry calls a tool with retry logic using exponential backoff.
+// Returns the full ToolCallResult so callers can access both StructuredContent and Content.
 func (e *workflowEngine) callToolWithRetry(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	step *WorkflowStep,
 	args map[string]any,
 	_ *WorkflowContext,
-) (map[string]any, int, error) {
+) (*vmcp.ToolCallResult, int, error) {
 	maxRetries, initialDelay := e.getRetryConfig(step)
 
 	// Configure exponential backoff
@@ -455,7 +463,7 @@ func (e *workflowEngine) callToolWithRetry(
 	expBackoff.Reset()
 
 	attemptCount := 0
-	operation := func() (map[string]any, error) {
+	operation := func() (*vmcp.ToolCallResult, error) {
 		attemptCount++
 		// TODO: For composite tools, we may want to propagate metadata from the parent request
 		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil)
@@ -482,22 +490,12 @@ func (e *workflowEngine) callToolWithRetry(
 			return nil, fmt.Errorf("%w: %s", vmcp.ErrToolExecutionFailed, errorMsg)
 		}
 
-		// Extract output map from result.
-		// Workflow logic uses map[string]any for template variable substitution.
-		// Prefer StructuredContent (already a map), fall back to Content array conversion.
-		// The _meta field is not needed for workflow execution, so we don't extract it.
-		if result.StructuredContent != nil {
-			return result.StructuredContent, nil
-		}
-
-		// Fallback: convert Content array to map for backward compatibility.
-		// This happens when backends return only Content without StructuredContent.
-		return conversion.ContentArrayToMap(result.Content), nil
+		return result, nil
 	}
 
 	// Execute with retry
 	// Safe conversion: maxRetries is capped by maxRetryCount constant (10)
-	output, err := backoff.Retry(ctx, operation,
+	result, err := backoff.Retry(ctx, operation,
 		backoff.WithBackOff(expBackoff),
 		backoff.WithMaxTries(uint(maxRetries+1)), // #nosec G115 -- +1 because it includes the initial attempt
 		backoff.WithNotify(func(_ error, duration time.Duration) {
@@ -505,7 +503,7 @@ func (e *workflowEngine) callToolWithRetry(
 		}),
 	)
 
-	return output, attemptCount - 1, err // Return retry count (attempts - 1)
+	return result, attemptCount - 1, err // Return retry count (attempts - 1)
 }
 
 // extractErrorMessage extracts a user-friendly error message from a failed tool call result.
@@ -595,9 +593,10 @@ func (e *workflowEngine) handleToolStepSuccess(
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 	output map[string]any,
+	content []vmcp.Content,
 	retryCount int,
 ) error {
-	workflowCtx.RecordStepSuccess(step.ID, output)
+	workflowCtx.RecordStepSuccess(step.ID, output, content)
 
 	// Update retry count
 	if result, exists := workflowCtx.GetStepResult(step.ID); exists {
@@ -698,7 +697,7 @@ func (*workflowEngine) handleElicitationAccept(
 		"content": response.Content,
 	}
 
-	workflowCtx.RecordStepSuccess(step.ID, output)
+	workflowCtx.RecordStepSuccess(step.ID, output, nil)
 	slog.Debug("step completed with user-provided data", "step", step.ID)
 	return nil
 }
@@ -772,7 +771,7 @@ func (*workflowEngine) handleElicitationAction(
 			"action":  reason,
 			"skipped": true,
 		}
-		workflowCtx.RecordStepSuccess(step.ID, output)
+		workflowCtx.RecordStepSuccess(step.ID, output, nil)
 		// Return a special error that the workflow engine can detect
 		// For now, we'll just complete the step successfully
 		return nil
@@ -795,7 +794,7 @@ func (*workflowEngine) handleElicitationAction(
 		output := map[string]any{
 			"action": reason,
 		}
-		workflowCtx.RecordStepSuccess(step.ID, output)
+		workflowCtx.RecordStepSuccess(step.ID, output, nil)
 		return nil
 
 	default:

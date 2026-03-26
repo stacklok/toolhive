@@ -171,7 +171,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 // The authorizer parameter should implement the authorizers.Authorizer interface,
 // which can be created using authz.CreateMiddlewareFromConfig() or directly
 // from an authorizer package (e.g., cedar.NewCedarAuthorizer()).
-func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
+func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools map[string]struct{}) http.Handler {
 	// Cache is shared across requests for the same proxy.
 	// Populated from tools/list responses, read during tools/call.
 	annotationCache := NewAnnotationCache()
@@ -218,7 +218,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 		if featureOp.Operation == authorizers.MCPOperationList {
 
 			// Create a response filtering writer to intercept and filter the response
-			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method, annotationCache)
+			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method, annotationCache, passThroughTools)
 
 			// Call the next handler with the filtering writer
 			next.ServeHTTP(filteringWriter, r)

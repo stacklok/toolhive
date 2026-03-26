@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -23,7 +24,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		cfg             *config.IncomingAuthConfig
 		wantErr         bool
 		errContains     string
-		checkMiddleware func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, authInfo http.Handler)
+		checkMiddleware func(t *testing.T, authMw func(http.Handler) http.Handler, authorizer authorizers.Authorizer, authInfo http.Handler)
 	}{
 		{
 			name:        "nil_config_returns_error",
@@ -46,11 +47,11 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 				Type: "local",
 			},
 			wantErr: false,
-			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, authInfo http.Handler) {
+			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, a authorizers.Authorizer, authInfo http.Handler) {
 				t.Helper()
 
 				require.NotNil(t, authMw, "auth middleware should not be nil")
-				assert.Nil(t, authzMw, "authz middleware should be nil when no authz configured")
+				assert.Nil(t, a, "authorizer should be nil when no authz configured")
 				assert.Nil(t, authInfo, "local auth should not have authInfo handler")
 
 				// Test that middleware creates identity
@@ -76,11 +77,11 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 				Type: "anonymous",
 			},
 			wantErr: false,
-			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, authInfo http.Handler) {
+			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, a authorizers.Authorizer, authInfo http.Handler) {
 				t.Helper()
 
 				require.NotNil(t, authMw, "auth middleware should not be nil")
-				assert.Nil(t, authzMw, "authz middleware should be nil when no authz configured")
+				assert.Nil(t, a, "authorizer should be nil when no authz configured")
 				assert.Nil(t, authInfo, "anonymous auth should not have authInfo handler")
 
 				// Test that middleware creates identity
@@ -101,7 +102,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 			},
 		},
 		{
-			name: "anonymous_auth_with_cedar_returns_separate_authz",
+			name: "anonymous_auth_with_cedar_returns_authorizer",
 			cfg: &config.IncomingAuthConfig{
 				Type: "anonymous",
 				Authz: &config.AuthzConfig{
@@ -112,11 +113,11 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 				},
 			},
 			wantErr: false,
-			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, authzMw func(http.Handler) http.Handler, _ http.Handler) {
+			checkMiddleware: func(t *testing.T, authMw func(http.Handler) http.Handler, a authorizers.Authorizer, _ http.Handler) {
 				t.Helper()
 
 				require.NotNil(t, authMw, "auth middleware should not be nil")
-				require.NotNil(t, authzMw, "authz middleware should not be nil when Cedar is configured")
+				require.NotNil(t, a, "authorizer should not be nil when Cedar is configured")
 			},
 		},
 		{
@@ -133,7 +134,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg)
+			authMw, authorizer, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -141,13 +142,13 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 					assert.Contains(t, err.Error(), tt.errContains)
 				}
 				assert.Nil(t, authMw)
-				assert.Nil(t, authzMw)
+				assert.Nil(t, authorizer)
 				assert.Nil(t, authInfo)
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, authMw)
 				if tt.checkMiddleware != nil {
-					tt.checkMiddleware(t, authMw, authzMw, authInfo)
+					tt.checkMiddleware(t, authMw, authorizer, authInfo)
 				}
 			}
 		})

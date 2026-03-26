@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
@@ -123,6 +124,7 @@ func buildDecoratingFactory(
 	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error),
 	instruments *workflowExecutorInstruments,
 	terminateSession func(string) (bool, error),
+	authz authorizers.Authorizer,
 ) vmcpsession.MultiSessionFactory {
 	var decorators []vmcpsession.Decorator
 
@@ -130,7 +132,7 @@ func buildDecoratingFactory(
 		decorators = append(decorators, compositeToolsDecorator(cfg.WorkflowDefs, cfg.ComposerFactory, instruments))
 	}
 	if optimizerFactory != nil {
-		decorators = append(decorators, optimizerDecoratorFn(optimizerFactory, terminateSession))
+		decorators = append(decorators, optimizerDecoratorFn(optimizerFactory, terminateSession, authz))
 	}
 
 	return vmcpsession.NewDecoratingFactory(cfg.Base, decorators...)
@@ -174,6 +176,7 @@ func compositeToolsDecorator(
 func optimizerDecoratorFn(
 	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error),
 	terminateSession func(string) (bool, error),
+	authz authorizers.Authorizer,
 ) vmcpsession.Decorator {
 	return func(ctx context.Context, sess vmcpsession.MultiSession) (vmcpsession.MultiSession, error) {
 		sdkTools, err := adaptToolsForFactory(sess, terminateSession)
@@ -187,7 +190,7 @@ func optimizerDecoratorFn(
 		}
 
 		slog.Info("session capabilities decorated (optimizer mode)", "indexed_tool_count", len(sdkTools))
-		return optimizerdec.NewDecorator(sess, opt), nil
+		return optimizerdec.NewDecorator(sess, opt, authz), nil
 	}
 }
 

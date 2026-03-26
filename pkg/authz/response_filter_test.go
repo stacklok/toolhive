@@ -151,7 +151,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			rr := httptest.NewRecorder()
 
 			// Create the response filtering writer
-			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method, nil)
+			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method, nil, nil)
 			filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 			// Write the response data
@@ -257,7 +257,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer for a non-list operation
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/call", nil)
+	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/call", nil, nil)
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -299,7 +299,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil)
+	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -395,7 +395,7 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 
 		// Wrap the real ResponseWriter with ResponseFilteringWriter,
 		// exactly as the authz middleware does in middleware.go.
-		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil)
+		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil, nil)
 
 		// Proxy to the backend. ReverseProxy will call w.Header() to copy
 		// the backend's Content-Length into the response header map. Since
@@ -497,4 +497,167 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 	if len(toolsResult.Tools) > 0 {
 		assert.Equal(t, "weather", toolsResult.Tools[0].Name)
 	}
+}
+
+// TestOptimizerPassThroughToolsInResponseFilter verifies the scenario where an
+// operator enables the optimizer alongside Cedar authorization policies.
+//
+// Scenario:
+//   - The optimizer replaces real backend tools with two meta-tools: find_tool
+//     and call_tool. These appear in tools/list instead of real tool names.
+//   - The operator's Cedar policies only reference real backend tool names
+//     (e.g., Tool::"weather"), not the optimizer meta-tool names.
+//   - Without pass-through, Cedar default-deny filters out find_tool and
+//     call_tool from tools/list because no policy permits them, leaving the
+//     client with zero tools.
+//   - With pass-through, the meta-tools appear in tools/list regardless of
+//     Cedar policies. Cedar enforcement for the underlying backend tools is
+//     handled inside the optimizer decorator (find_tool filters results,
+//     call_tool gates invocations).
+//
+// See: https://github.com/stacklok/toolhive/issues/4373
+func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
+	t.Parallel()
+
+	// Cedar policy: only "weather" is permitted. No policy mentions find_tool or call_tool.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: "[]",
+	})
+	require.NoError(t, err)
+
+	// Build a tools/list response as the optimizer would produce it:
+	// only find_tool and call_tool, no real backend tools.
+	toolsList := mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "find_tool", Description: "Find a tool by description"},
+			{Name: "call_tool", Description: "Call a backend tool by name"},
+		},
+	}
+	result, err := json.Marshal(toolsList)
+	require.NoError(t, err)
+
+	response := &jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(result),
+	}
+	responseBytes, err := jsonrpc2.EncodeMessage(response)
+	require.NoError(t, err)
+
+	// Identity needed for Cedar evaluation.
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+
+	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+	require.NoError(t, err)
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	// Optimizer meta-tools that should pass through without policy checks.
+	passThroughTools := map[string]struct{}{
+		"find_tool": {},
+		"call_tool": {},
+	}
+
+	// decodeToolsListResponse is a helper that decodes a JSON-RPC response from
+	// the recorder and returns the tools list.
+	decodeToolsListResponse := func(t *testing.T, rr *httptest.ResponseRecorder) []mcp.Tool {
+		t.Helper()
+		msg, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+		require.NoError(t, err)
+		rpcResp, ok := msg.(*jsonrpc2.Response)
+		require.True(t, ok)
+		require.Nil(t, rpcResp.Error)
+		var result mcp.ListToolsResult
+		require.NoError(t, json.Unmarshal(rpcResp.Result, &result))
+		return result.Tools
+	}
+
+	t.Run("with pass-through both meta-tools appear in tools/list", func(t *testing.T) {
+		t.Parallel()
+
+		rr := httptest.NewRecorder()
+		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		tools := decodeToolsListResponse(t, rr)
+
+		// Both meta-tools should survive despite no Cedar policy permitting them.
+		require.Len(t, tools, 2, "both optimizer meta-tools must pass through")
+		names := []string{tools[0].Name, tools[1].Name}
+		assert.Contains(t, names, "find_tool")
+		assert.Contains(t, names, "call_tool")
+	})
+
+	t.Run("without pass-through both meta-tools are filtered out", func(t *testing.T) {
+		t.Parallel()
+
+		rr := httptest.NewRecorder()
+		// nil passThroughTools = no pass-through, standard Cedar filtering.
+		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		tools := decodeToolsListResponse(t, rr)
+
+		// Without pass-through, Cedar default-deny removes both meta-tools.
+		assert.Empty(t, tools,
+			"without pass-through, meta-tools should be filtered out by Cedar default-deny")
+	})
+
+	t.Run("pass-through only affects listed meta-tools not real tools", func(t *testing.T) {
+		t.Parallel()
+
+		// Mix of optimizer meta-tools and real backend tools in tools/list.
+		// In practice this shouldn't happen (optimizer replaces all real tools),
+		// but this validates that pass-through is selective.
+		mixedToolsList := mcp.ListToolsResult{
+			Tools: []mcp.Tool{
+				{Name: "find_tool", Description: "Find a tool"},
+				{Name: "call_tool", Description: "Call a tool"},
+				{Name: "weather", Description: "Get weather"},        // permitted by policy
+				{Name: "admin_tool", Description: "Admin only tool"}, // NOT permitted
+			},
+		}
+		mixedResult, err := json.Marshal(mixedToolsList)
+		require.NoError(t, err)
+		mixedResponse := &jsonrpc2.Response{
+			ID:     jsonrpc2.Int64ID(2),
+			Result: json.RawMessage(mixedResult),
+		}
+		mixedResponseBytes, err := jsonrpc2.EncodeMessage(mixedResponse)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err = fw.Write(mixedResponseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		tools := decodeToolsListResponse(t, rr)
+
+		// find_tool + call_tool pass through, weather is permitted, admin_tool is denied.
+		require.Len(t, tools, 3)
+		names := make([]string, len(tools))
+		for i, tool := range tools {
+			names[i] = tool.Name
+		}
+		assert.Contains(t, names, "find_tool")
+		assert.Contains(t, names, "call_tool")
+		assert.Contains(t, names, "weather")
+		assert.NotContains(t, names, "admin_tool",
+			"admin_tool has no permit policy and is not a pass-through tool")
+	})
 }

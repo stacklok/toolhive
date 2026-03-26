@@ -398,7 +398,7 @@ func TestMiddleware(t *testing.T) {
 			})
 
 			// Apply the middleware chain: MCP parsing first, then authorization
-			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler))
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
 
 			// Serve the request
 			middleware.ServeHTTP(rr, req)
@@ -430,7 +430,7 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 	})
 
 	// Apply the middleware chain: MCP parsing first, then authorization
-	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler))
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
 
 	// Create a GET request
 	req, err := http.NewRequest(http.MethodGet, "/messages", nil)
@@ -807,7 +807,7 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 					})
 				},
 				mcpparser.ParsingMiddleware,
-				func(h http.Handler) http.Handler { return Middleware(authorizer, h) },
+				func(h http.Handler) http.Handler { return Middleware(authorizer, h, nil) },
 			))
 			server, client, err := testkit.NewStreamableTestServer(opts...)
 			require.NoError(t, err)
@@ -977,7 +977,7 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 					})
 				},
 				mcpparser.ParsingMiddleware,
-				func(h http.Handler) http.Handler { return Middleware(authorizer, h) },
+				func(h http.Handler) http.Handler { return Middleware(authorizer, h, nil) },
 			))
 			server, client, err := testkit.NewStreamableTestServer(opts...)
 			require.NoError(t, err)

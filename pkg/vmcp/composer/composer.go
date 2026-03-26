@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -212,8 +213,13 @@ type StepResult struct {
 	// Status is the step status.
 	Status StepStatusType
 
-	// Output contains the step output data.
+	// Output contains the step output data (from StructuredContent or ContentArrayToMap fallback).
 	Output map[string]any
+
+	// Content holds the raw content array from the tool call result.
+	// This is exposed separately in templates via {{.steps.stepID.content.*}} so that
+	// structuredContent remains clean for outputSchema validation.
+	Content []vmcp.Content
 
 	// Error contains error information if the step failed.
 	Error error

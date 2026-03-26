@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 func TestTemplateExpander_Expand(t *testing.T) {
@@ -73,6 +75,40 @@ func TestTemplateExpander_Expand(t *testing.T) {
 			data:     map[string]any{"val": "{{.params.nonexistent}}"},
 			params:   map[string]any{},
 			expected: map[string]any{"val": "<no value>"},
+		},
+		{
+			name: "step content resource substitution",
+			data: map[string]any{"sbom": "{{.steps.fetch.content.resource}}"},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"format": "spdx"},
+					Content: []vmcp.Content{
+						{Type: vmcp.ContentTypeResource, Text: `{"spdxVersion":"SPDX-2.3"}`, URI: "file://sbom.json"},
+					},
+				},
+			},
+			expected: map[string]any{"sbom": `{"spdxVersion":"SPDX-2.3"}`},
+		},
+		{
+			name: "step output and content are independent namespaces",
+			data: map[string]any{
+				"format": "{{.steps.fetch.output.format}}",
+				"text":   "{{.steps.fetch.content.text}}",
+			},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"format": "spdx", "text": "structured text"},
+					Content: []vmcp.Content{
+						{Type: vmcp.ContentTypeText, Text: "content array text"},
+					},
+				},
+			},
+			expected: map[string]any{
+				"format": "spdx",
+				"text":   "content array text",
+			},
 		},
 	}
 
@@ -154,7 +190,7 @@ func TestWorkflowContext_Lifecycle(t *testing.T) {
 	assert.Equal(t, StepStatusRunning, ctx.Steps["s1"].Status)
 
 	time.Sleep(10 * time.Millisecond)
-	ctx.RecordStepSuccess("s1", map[string]any{"result": "ok"})
+	ctx.RecordStepSuccess("s1", map[string]any{"result": "ok"}, nil)
 	assert.Equal(t, StepStatusCompleted, ctx.Steps["s1"].Status)
 	assert.Greater(t, ctx.Steps["s1"].Duration, time.Duration(0))
 
@@ -185,12 +221,12 @@ func TestWorkflowContext_GetLastStepOutput(t *testing.T) {
 	// Add steps with different completion times
 	ctx.RecordStepStart("s1")
 	time.Sleep(5 * time.Millisecond)
-	ctx.RecordStepSuccess("s1", map[string]any{"order": 1})
+	ctx.RecordStepSuccess("s1", map[string]any{"order": 1}, nil)
 
 	time.Sleep(5 * time.Millisecond)
 	ctx.RecordStepStart("s2")
 	time.Sleep(5 * time.Millisecond)
-	ctx.RecordStepSuccess("s2", map[string]any{"order": 2})
+	ctx.RecordStepSuccess("s2", map[string]any{"order": 2}, nil)
 
 	// Should return latest (s2)
 	output := ctx.GetLastStepOutput()

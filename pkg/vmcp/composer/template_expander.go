@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/templates"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 const (
@@ -163,7 +164,10 @@ func (e *defaultTemplateExpander) expandString(
 }
 
 // buildStepsContext converts StepResult map to a template-friendly structure.
-// This provides access to step outputs via {{.steps.stepid.output.field}}.
+// This provides access to step outputs via:
+//   - {{.steps.stepid.output.field}} for structuredContent fields
+//   - {{.steps.stepid.content.text}} for text content from the content array
+//   - {{.steps.stepid.content.resource}} for embedded resource content from the content array
 func (*defaultTemplateExpander) buildStepsContext(workflowCtx *WorkflowContext) map[string]any {
 	// Acquire read lock to safely access Steps map during concurrent execution
 	workflowCtx.mu.RLock()
@@ -173,8 +177,9 @@ func (*defaultTemplateExpander) buildStepsContext(workflowCtx *WorkflowContext) 
 
 	for stepID, result := range workflowCtx.Steps {
 		stepData := map[string]any{
-			"status": string(result.Status),
-			"output": result.Output,
+			"status":  string(result.Status),
+			"output":  result.Output,
+			"content": conversion.ContentArrayToMap(result.Content),
 		}
 
 		// Add error information if step failed

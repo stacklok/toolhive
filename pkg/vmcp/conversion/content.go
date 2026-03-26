@@ -376,8 +376,10 @@ func ToMCPToolAnnotations(annotations *vmcp.ToolAnnotations) mcp.ToolAnnotation 
 //   - First text content: key="text"
 //   - Subsequent text content: key="text_1", "text_2", etc.
 //   - Image content: key="image_0", "image_1", etc.
+//   - First resource content: key="resource" (text resources use .Text, blob resources use .Data)
+//   - Subsequent resource content: key="resource_1", "resource_2", etc.
 //   - Audio content: ignored (not supported for template substitution)
-//   - Resource content: ignored (handled separately, not converted to map)
+//   - Resource links: ignored (not supported for template substitution)
 //   - Unknown content types: ignored (warnings logged at conversion boundaries)
 //
 // This ensures consistent behavior between client response handling and workflow step output processing.
@@ -389,6 +391,7 @@ func ContentArrayToMap(content []vmcp.Content) map[string]any {
 
 	textIndex := 0
 	imageIndex := 0
+	resourceIndex := 0
 
 	for _, item := range content {
 		switch item.Type {
@@ -405,10 +408,23 @@ func ContentArrayToMap(content []vmcp.Content) map[string]any {
 			result[key] = item.Data
 			imageIndex++
 
-		case vmcp.ContentTypeAudio, vmcp.ContentTypeResource, vmcp.ContentTypeLink:
+		case vmcp.ContentTypeResource:
+			key := "resource"
+			if resourceIndex > 0 {
+				key = fmt.Sprintf("resource_%d", resourceIndex)
+			}
+			// Text resources use .Text, blob resources use .Data
+			value := item.Text
+			if value == "" {
+				value = item.Data
+			}
+			result[key] = value
+			resourceIndex++
+
+		case vmcp.ContentTypeAudio, vmcp.ContentTypeLink:
 			// Purposely ignored for template substitution:
 			// - Audio content is ignored (not supported for template substitution)
-			// - Resource content/link is handled separately, not converted to map
+			// - Resource links are ignored (not supported for template substitution)
 		default:
 			// Unknown content types are ignored (warnings logged at conversion boundaries)
 		}

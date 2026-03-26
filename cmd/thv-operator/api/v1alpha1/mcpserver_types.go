@@ -79,6 +79,28 @@ const (
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 )
 
+// ConditionStdioReplicaCapped indicates spec.replicas was capped at 1 for stdio transport.
+const ConditionStdioReplicaCapped = "StdioReplicaCapped"
+
+const (
+	// ConditionReasonStdioReplicaCapped is set when spec.replicas > 1 for a stdio transport.
+	ConditionReasonStdioReplicaCapped = "StdioTransportCapAt1"
+	// ConditionReasonStdioReplicaCapNotActive is set when the stdio replica cap does not apply.
+	ConditionReasonStdioReplicaCapNotActive = "StdioReplicaCapNotActive"
+)
+
+// ConditionSessionStorageWarning indicates replicas > 1 but no Redis session storage is configured.
+const ConditionSessionStorageWarning = "SessionStorageWarning"
+
+const (
+	// ConditionReasonSessionStorageMissing is set when replicas > 1 and no Redis session storage is configured.
+	ConditionReasonSessionStorageMissing = "SessionStorageMissingForReplicas"
+	// ConditionReasonSessionStorageConfigured is set when replicas > 1 and Redis session storage is configured.
+	ConditionReasonSessionStorageConfigured = "SessionStorageConfigured"
+	// ConditionReasonSessionStorageNotApplicable is set when replicas is nil or <= 1 and the warning is not active.
+	ConditionReasonSessionStorageNotApplicable = "SessionStorageWarningNotApplicable"
+)
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server

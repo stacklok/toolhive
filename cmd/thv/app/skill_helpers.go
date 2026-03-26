@@ -4,6 +4,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -14,8 +15,9 @@ import (
 )
 
 // newSkillClient creates a new Skills API HTTP client using default settings.
-func newSkillClient() *skillclient.Client {
-	return skillclient.NewDefaultClient()
+// The context is used for server discovery; it is not stored.
+func newSkillClient(ctx context.Context) *skillclient.Client {
+	return skillclient.NewDefaultClient(ctx)
 }
 
 // completeSkillNames provides shell completion for installed skill names.
@@ -24,7 +26,7 @@ func completeSkillNames(cmd *cobra.Command, args []string, _ string) ([]string, 
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 	installed, err := c.List(cmd.Context(), skills.ListOptions{})
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError

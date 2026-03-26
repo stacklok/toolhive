@@ -47,7 +47,7 @@ func init() {
 }
 
 func skillListCmdFunc(cmd *cobra.Command, _ []string) error {
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	installed, err := c.List(cmd.Context(), skills.ListOptions{
 		Scope:       skills.Scope(skillListScope),

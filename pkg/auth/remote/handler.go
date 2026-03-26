@@ -333,7 +333,11 @@ func (h *Handler) discoverIssuerAndScopes(
 
 	// Priority 3: Fetch from resource metadata (RFC 9728)
 	if authInfo.ResourceMetadata != "" {
-		return h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
+		issuer, scopes, authServerInfo, err := h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
+		if err == nil {
+			return issuer, scopes, authServerInfo, nil
+		}
+		slog.Debug("Resource metadata discovery failed, falling through to well-known discovery", "error", err)
 	}
 
 	// Priority 4: Try to discover actual issuer from the server's well-known endpoint

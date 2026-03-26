@@ -6,6 +6,7 @@ package secrets_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -829,4 +830,79 @@ func TestUserProvider_Capabilities(t *testing.T) {
 
 	p := secrets.NewUserProvider(mock)
 	assert.Equal(t, expected, p.Capabilities())
+}
+
+// ---------------------------------------------------------------------------
+// ScopedProvider migration fallback tests
+// ---------------------------------------------------------------------------
+
+func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) { //nolint:paralleltest
+	notFoundErr := func(key string) error {
+		return fmt.Errorf("secret not found: %s", key)
+	}
+
+	tests := []struct {
+		name             string
+		scopedErr        error
+		scopedVal        string
+		expectBareLookup bool
+		bareVal          string
+		bareErr          error
+		wantVal          string
+		wantErr          bool
+	}{
+		{
+			name:             "bare key found when scoped key missing",
+			scopedErr:        notFoundErr("__thv_workloads_mykey"),
+			expectBareLookup: true,
+			bareVal:          "bare-value",
+			bareErr:          nil,
+			wantVal:          "bare-value",
+		},
+		{
+			name:             "scoped key found, no fallback",
+			scopedVal:        "scoped-value",
+			scopedErr:        nil,
+			expectBareLookup: false,
+			wantVal:          "scoped-value",
+		},
+		{
+			name:             "both keys missing returns original scoped error",
+			scopedErr:        notFoundErr("__thv_workloads_mykey"),
+			expectBareLookup: true,
+			bareErr:          notFoundErr("mykey"),
+			wantErr:          true,
+		},
+		{
+			name:             "non-not-found error on scoped key skips bare lookup",
+			scopedErr:        errors.New("backend connection failed"),
+			expectBareLookup: false,
+			wantErr:          true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+			ctx := t.Context()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mock := mocks.NewMockProvider(ctrl)
+			mock.EXPECT().GetSecret(ctx, "__thv_workloads_mykey").Return(tc.scopedVal, tc.scopedErr)
+			if tc.expectBareLookup {
+				mock.EXPECT().GetSecret(ctx, "mykey").Return(tc.bareVal, tc.bareErr)
+			}
+
+			p := secrets.NewScopedProvider(mock, secrets.ScopeWorkloads)
+			got, err := p.GetSecret(ctx, "mykey")
+
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantVal, got)
+			}
+		})
+	}
 }

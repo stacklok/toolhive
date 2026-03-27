@@ -148,15 +148,21 @@ func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefre
 // the vMCP server owns /.well-known/oauth-protected-resource (RFC 9728) on the same
 // mux. Adding a new AS /.well-known/ endpoint therefore requires an explicit entry here.
 //
+// Discovery paths are registered with both exact and trailing-slash (prefix) patterns.
+// The trailing-slash variants support RFC 8414 Section 3.1 path-based issuers, where
+// the client constructs /.well-known/oauth-authorization-server/{issuer-path}.
+//
 // The /oauth/ subtree is registered as a prefix, so new /oauth/* endpoints added to
 // the chi router are picked up automatically without changes to this method.
 func (e *EmbeddedAuthServer) Routes() map[string]http.Handler {
 	handler := e.Handler()
 	return map[string]http.Handler{
-		"/.well-known/openid-configuration":       handler,
-		"/.well-known/oauth-authorization-server": handler,
-		"/.well-known/jwks.json":                  handler,
-		"/oauth/":                                 handler,
+		"/.well-known/openid-configuration":        handler,
+		"/.well-known/openid-configuration/":       handler,
+		"/.well-known/oauth-authorization-server":  handler,
+		"/.well-known/oauth-authorization-server/": handler,
+		"/.well-known/jwks.json":                   handler,
+		"/oauth/":                                  handler,
 	}
 }
 

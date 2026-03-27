@@ -95,10 +95,17 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 // at least one discovery mechanism, with both supported for maximum interoperability:
 // - /.well-known/oauth-authorization-server (RFC 8414) for OAuth-only clients
 // - /.well-known/openid-configuration (OIDC Discovery 1.0) for OIDC clients
+//
+// The wildcard variants (/.well-known/oauth-authorization-server/*) handle RFC 8414
+// Section 3.1 path-based issuers, where clients insert /.well-known/ before the
+// issuer's path component (e.g., /.well-known/oauth-authorization-server/inject-test
+// for issuer https://example.com/inject-test).
 func (h *Handler) WellKnownRoutes(r chi.Router) {
 	r.Get("/.well-known/jwks.json", h.JWKSHandler)
 	r.Get("/.well-known/oauth-authorization-server", h.OAuthDiscoveryHandler)
+	r.Get("/.well-known/oauth-authorization-server/*", h.OAuthDiscoveryHandler)
 	r.Get("/.well-known/openid-configuration", h.OIDCDiscoveryHandler)
+	r.Get("/.well-known/openid-configuration/*", h.OIDCDiscoveryHandler)
 }
 
 // nextMissingUpstream returns the name of the next upstream provider in the

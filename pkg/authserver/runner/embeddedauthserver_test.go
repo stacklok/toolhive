@@ -1118,7 +1118,9 @@ func TestRoutes(t *testing.T) {
 
 	expectedKeys := []string{
 		"/.well-known/openid-configuration",
+		"/.well-known/openid-configuration/",
 		"/.well-known/oauth-authorization-server",
+		"/.well-known/oauth-authorization-server/",
 		"/.well-known/jwks.json",
 		"/oauth/",
 	}

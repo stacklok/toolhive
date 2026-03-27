@@ -273,6 +273,7 @@ _Appears in:_
 | `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  | Optional: \{\} <br /> |
 | `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  | Optional: \{\} <br /> |
 | `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes only find_tool and call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  | Optional: \{\} <br /> |
+| `sessionStorage` _[vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When provider is "redis", the operator injects Redis connection parameters<br />(address, db, keyPrefix) here. The Redis password is provided separately via<br />the THV_SESSION_REDIS_PASSWORD environment variable. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.ConflictResolutionConfig
@@ -494,6 +495,27 @@ _Appears in:_
 | `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  | Schemaless: \{\} <br />Optional: \{\} <br /> |
 
 
+#### vmcp.config.SessionStorageConfig
+
+
+
+SessionStorageConfig configures session storage for stateful horizontal scaling.
+The Redis password is not stored here; it is injected as the THV_SESSION_REDIS_PASSWORD
+environment variable by the operator when spec.sessionStorage.passwordRef is set.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `provider` _string_ | Provider is the session storage backend type. |  | Enum: [memory redis] <br />Required: \{\} <br /> |
+| `address` _string_ | Address is the Redis server address (required when provider is redis). |  | Optional: \{\} <br /> |
+| `db` _integer_ | DB is the Redis database number. | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
+| `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive. |  | Optional: \{\} <br /> |
+
+
 #### vmcp.config.StaticBackendConfig
 
 
@@ -614,11 +636,12 @@ This matches the proposal's step configuration (lines 180-255).
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
 - [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
+- [vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `id` _string_ | ID is the unique identifier for this step. |  | Required: \{\} <br /> |
-| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation] <br />Optional: \{\} <br /> |
+| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation forEach] <br />Optional: \{\} <br /> |
 | `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool" |  | Optional: \{\} <br /> |
 | `arguments` _[pkg.json.Map](#pkgjsonmap)_ | Arguments is a map of argument values with template expansion support.<br />Supports Go template syntax with .params and .steps for string values.<br />Non-string values (integers, booleans, arrays, objects) are passed as-is.<br />Note: the templating is only supported on the first level of the key-value pairs. |  | Type: object <br />Optional: \{\} <br /> |
 | `condition` _string_ | Condition is a template expression that determines if the step should execute |  | Optional: \{\} <br /> |
@@ -630,6 +653,11 @@ _Appears in:_
 | `onDecline` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  | Optional: \{\} <br /> |
 | `onCancel` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  | Optional: \{\} <br /> |
 | `defaultResults` _[pkg.json.Map](#pkgjsonmap)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br />Optional: \{\} <br /> |
+| `collection` _string_ | Collection is a Go template expression that resolves to a JSON array or a slice.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `itemVar` _string_ | ItemVar is the variable name used to reference the current item in forEach templates.<br />Defaults to "item" if not specified.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `maxParallel` _integer_ | MaxParallel limits the number of concurrent iterations in a forEach step.<br />Defaults to the DAG executor's maxParallel (10).<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `maxIterations` _integer_ | MaxIterations limits the number of items that can be iterated over.<br />Defaults to 100, hard cap at 1000.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
+| `step` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)_ | InnerStep defines the step to execute for each item in the collection.<br />Only used when Type is "forEach". Only tool-type inner steps are supported. |  | Type: object <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.WorkloadToolConfig
@@ -2684,10 +2712,8 @@ SessionStorageConfig defines session storage configuration for horizontal scalin
 This is the CRD/K8s-aware surface: it uses SecretKeyRef for secret resolution.
 The reconciler resolves PasswordRef to a plain string and builds a
 session.RedisConfig (pkg/transport/session) for the actual storage backend.
-
-vMCP process receives session storage config through the existing config injection
-path (same as Optimizer and Audit). The CRD type will remain separate because
-PasswordRef is K8s-specific and gets resolved away before the config-pkg type.
+The operator also populates pkg/vmcp/config.SessionStorageConfig (without PasswordRef)
+into the vMCP ConfigMap so the vMCP process receives connection parameters at startup.
 
 
 

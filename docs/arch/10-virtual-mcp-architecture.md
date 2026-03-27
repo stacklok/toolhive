@@ -157,6 +157,11 @@ graph LR
 
 Step dependencies form a DAG (Directed Acyclic Graph). Steps without dependencies execute in parallel, while dependent steps wait for prerequisites.
 
+Steps can be of three types:
+- **tool**: Execute a backend tool
+- **elicitation**: Request user input via MCP elicitation protocol
+- **forEach**: Iterate over a collection from a previous step, executing an inner tool step per item with bounded parallelism
+
 **Implementation**: `pkg/vmcp/composer/`
 
 ## Two-Boundary Authentication

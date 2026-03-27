@@ -41,6 +41,11 @@ func newDAGExecutor(maxParallel int) *dagExecutor {
 	}
 }
 
+// MaxParallel returns the configured maximum parallelism for the DAG executor.
+func (d *dagExecutor) MaxParallel() int {
+	return d.maxParallel
+}
+
 // executionLevel represents a group of steps that can be executed in parallel.
 type executionLevel struct {
 	steps []*WorkflowStep

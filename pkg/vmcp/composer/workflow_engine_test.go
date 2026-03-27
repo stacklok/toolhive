@@ -846,3 +846,64 @@ func TestWorkflowEngine_SessionEngine_ToolNotInList_ReturnsNilSchema(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 }
+
+func TestWorkflowEngine_EmbeddedResourceAccessibleFromTemplate(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	// Step 1: tool returns structuredContent (schema-conformant) + embedded resource in Content array.
+	// Step 2: accesses structuredContent via .output and content array via .content.
+	// This keeps structuredContent clean for outputSchema validation while making
+	// content array data (text, resources) accessible through a separate namespace.
+	def := simpleWorkflow("resource-chain",
+		toolStep("fetch", "registry.get_referrer_content", map[string]any{
+			"image": "ghcr.io/org/repo:latest",
+		}),
+		toolStepWithDeps("analyze", "sbom.analyze", map[string]any{
+			"sbom_data": "{{.steps.fetch.content.resource}}",
+			"format":    "{{.steps.fetch.output.format}}",
+		}, []string{"fetch"}),
+	)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:   "test-backend",
+		WorkloadName: "test",
+		BaseURL:      "http://test:8080",
+	}
+	te.Router.EXPECT().RouteTool(gomock.Any(), "registry.get_referrer_content").Return(target, nil)
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "registry.get_referrer_content",
+		map[string]any{"image": "ghcr.io/org/repo:latest"}, gomock.Any()).
+		Return(&vmcp.ToolCallResult{
+			StructuredContent: map[string]any{
+				"contentType": "sbom",
+				"format":      "spdx",
+				"size":        float64(5347),
+			},
+			Content: []vmcp.Content{
+				{Type: vmcp.ContentTypeText, Text: "summary of SBOM"},
+				{Type: vmcp.ContentTypeResource, Text: `{"spdxVersion":"SPDX-2.3","name":"mypackage"}`, URI: "file://sbom.json"},
+			},
+		}, nil)
+
+	// Step 2: verify the template-expanded args pull from the right namespaces.
+	te.Router.EXPECT().RouteTool(gomock.Any(), "sbom.analyze").Return(target, nil)
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "sbom.analyze", gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, args map[string]any, _ map[string]any) (*vmcp.ToolCallResult, error) {
+			// .content.resource comes from the Content array's embedded resource
+			assert.Equal(t, `{"spdxVersion":"SPDX-2.3","name":"mypackage"}`, args["sbom_data"])
+			// .output.format comes from structuredContent
+			assert.Equal(t, "spdx", args["format"])
+			return &vmcp.ToolCallResult{
+				StructuredContent: map[string]any{"result": "analyzed"},
+				Content:           []vmcp.Content{},
+			}, nil
+		})
+
+	result, err := execute(t, te.Engine, def, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	assert.Len(t, result.Steps, 2)
+	assert.Equal(t, StepStatusCompleted, result.Steps["fetch"].Status)
+	assert.Equal(t, StepStatusCompleted, result.Steps["analyze"].Status)
+}

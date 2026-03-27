@@ -49,12 +49,12 @@ ToolHive keeps you in control of your MCP estate. Integrate with popular clients
 
 ## Quick links
 
-- 📥 [Downloads](https://toolhive.dev/download/)
+- 📥 [Downloads](https://stacklok.com/download/)
 - 📚 [Documentation](https://docs.stacklok.com/toolhive/)
 - 🚀 Quickstart guides:
-  - [Desktop app](https://docs.stacklok.com/toolhive/tutorials/quickstart-ui)
-  - [CLI](https://docs.stacklok.com/toolhive/tutorials/quickstart-cli)
-  - [Kubernetes Operator](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s)
+  - [Desktop app](https://docs.stacklok.com/toolhive/guides-ui/quickstart)
+  - [CLI](https://docs.stacklok.com/toolhive/guides-cli/quickstart)
+  - [Kubernetes Operator](https://docs.stacklok.com/toolhive/guides-k8s/quickstart)
 - 💬 [Discord](https://discord.gg/stacklok)
 - 🤝 [Contributing](#contributing)
 - <img src="docs/images/stacklok-favicon.svg" width="20" height="20" style="vertical-align: middle" /> [Stacklok Enterprise](https://docs.stacklok.com/toolhive/enterprise)
@@ -131,8 +131,8 @@ Individual developers can get started in minutes with the desktop UI or CLI, the
 - Test and validate MCP servers using built-in tools like the official MCP Inspector
 - Optimize token usage and tool execution with the MCP Optimizer
 
-**Get started with the UI:** [Quickstart](https://docs.stacklok.com/toolhive/tutorials/quickstart-ui), [How-to guides](https://docs.stacklok.com/toolhive/guides-ui)  
-**Get started with the CLI:** [Quickstart](https://docs.stacklok.com/toolhive/tutorials/quickstart-cli), [How-to guides](https://docs.stacklok.com/toolhive/guides-cli), [Command reference](https://docs.stacklok.com/toolhive/reference/cli/thv)
+**Get started with the UI:** [Quickstart](https://docs.stacklok.com/toolhive/guides-ui/quickstart), [How-to guides](https://docs.stacklok.com/toolhive/guides-ui/)  
+**Get started with the CLI:** [Quickstart](https://docs.stacklok.com/toolhive/guides-cli/quickstart), [How-to guides](https://docs.stacklok.com/toolhive/guides-cli/), [Command reference](https://docs.stacklok.com/toolhive/reference/cli/thv)
 
 [**MCP guides**](https://docs.stacklok.com/toolhive/guides-mcp): learn how to run common MCP servers with ToolHive
 
@@ -148,7 +148,7 @@ Teams and organizations manage MCP servers and registries centrally using famili
 - Enterprise-grade security and observability: OIDC/OAuth SSO, secure token exchange, audit logging, OpenTelemetry, and Prometheus metrics
 - Hybrid registry server: curate from upstream registries, dynamically register local MCP servers, or proxy trusted remote services
 
-**Get started:** [Quickstart](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s), [How-to guides](https://docs.stacklok.com/toolhive/guides-k8s), [CRD reference](https://docs.stacklok.com/toolhive/reference/crd-spec), [Example manifests](./examples/operator/)
+**Get started:** [Quickstart](https://docs.stacklok.com/toolhive/guides-k8s/quickstart), [How-to guides](https://docs.stacklok.com/toolhive/guides-k8s/), [CRD reference](https://docs.stacklok.com/toolhive/reference/crd-spec), [Example manifests](./examples/operator/)
 
 ### Hybrid
 

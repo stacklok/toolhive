@@ -79,6 +79,31 @@ const (
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 )
 
+// ConditionStdioReplicaCapped indicates spec.replicas was capped at 1 for stdio transport.
+const ConditionStdioReplicaCapped = "StdioReplicaCapped"
+
+const (
+	// ConditionReasonStdioReplicaCapped is set when spec.replicas > 1 for a stdio transport.
+	ConditionReasonStdioReplicaCapped = "StdioTransportCapAt1"
+	// ConditionReasonStdioReplicaCapNotActive is set when the stdio replica cap does not apply.
+	ConditionReasonStdioReplicaCapNotActive = "StdioReplicaCapNotActive"
+)
+
+// ConditionSessionStorageWarning indicates replicas > 1 but no Redis session storage is configured.
+const ConditionSessionStorageWarning = "SessionStorageWarning"
+
+const (
+	// ConditionReasonSessionStorageMissing is set when replicas > 1 and no Redis session storage is configured.
+	ConditionReasonSessionStorageMissing = "SessionStorageMissingForReplicas"
+	// ConditionReasonSessionStorageConfigured is set when replicas > 1 and Redis session storage is configured.
+	ConditionReasonSessionStorageConfigured = "SessionStorageConfigured"
+	// ConditionReasonSessionStorageNotApplicable is set when replicas is nil or <= 1 and the warning is not active.
+	ConditionReasonSessionStorageNotApplicable = "SessionStorageWarningNotApplicable"
+)
+
+// SessionStorageProviderRedis is the provider name for Redis-backed session storage.
+const SessionStorageProviderRedis = "redis"
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
@@ -366,11 +391,8 @@ type SecretRef struct {
 // This is the CRD/K8s-aware surface: it uses SecretKeyRef for secret resolution.
 // The reconciler resolves PasswordRef to a plain string and builds a
 // session.RedisConfig (pkg/transport/session) for the actual storage backend.
-//
-// TODO: Add a corresponding SessionStorageConfig to pkg/vmcp/config.Config so the
-// vMCP process receives session storage config through the existing config injection
-// path (same as Optimizer and Audit). The CRD type will remain separate because
-// PasswordRef is K8s-specific and gets resolved away before the config-pkg type.
+// The operator also populates pkg/vmcp/config.SessionStorageConfig (without PasswordRef)
+// into the vMCP ConfigMap so the vMCP process receives connection parameters at startup.
 //
 // +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
 type SessionStorageConfig struct {

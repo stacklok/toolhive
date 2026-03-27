@@ -975,6 +975,11 @@ spec:
                                   Note: the templating is only supported on the first level of the key-value pairs.
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
+                              collection:
+                                description: |-
+                                  Collection is a Go template expression that resolves to a JSON array or a slice.
+                                  Only used when Type is "forEach".
+                                type: string
                               condition:
                                 description: Condition is a template expression that
                                   determines if the step should execute
@@ -996,6 +1001,24 @@ spec:
                                 description: ID is the unique identifier for this
                                   step.
                                 type: string
+                              itemVar:
+                                description: |-
+                                  ItemVar is the variable name used to reference the current item in forEach templates.
+                                  Defaults to "item" if not specified.
+                                  Only used when Type is "forEach".
+                                type: string
+                              maxIterations:
+                                description: |-
+                                  MaxIterations limits the number of items that can be iterated over.
+                                  Defaults to 100, hard cap at 1000.
+                                  Only used when Type is "forEach".
+                                type: integer
+                              maxParallel:
+                                description: |-
+                                  MaxParallel limits the number of concurrent iterations in a forEach step.
+                                  Defaults to the DAG executor's maxParallel (10).
+                                  Only used when Type is "forEach".
+                                type: integer
                               message:
                                 description: |-
                                   Message is the elicitation message
@@ -1066,6 +1089,12 @@ spec:
                                   schema for elicitation
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
+                              step:
+                                description: |-
+                                  InnerStep defines the step to execute for each item in the collection.
+                                  Only used when Type is "forEach". Only tool-type inner steps are supported.
+                                type: object
+                                x-kubernetes-preserve-unknown-fields: true
                               timeout:
                                 description: Timeout is the maximum execution time
                                   for this step
@@ -1083,6 +1112,7 @@ spec:
                                 enum:
                                 - tool
                                 - elicitation
+                                - forEach
                                 type: string
                             required:
                             - id
@@ -1537,6 +1567,36 @@ spec:
                         type: string
                     required:
                     - source
+                    type: object
+                  sessionStorage:
+                    description: |-
+                      SessionStorage configures session storage for stateful horizontal scaling.
+                      When provider is "redis", the operator injects Redis connection parameters
+                      (address, db, keyPrefix) here. The Redis password is provided separately via
+                      the THV_SESSION_REDIS_PASSWORD environment variable.
+                    properties:
+                      address:
+                        description: Address is the Redis server address (required
+                          when provider is redis).
+                        type: string
+                      db:
+                        default: 0
+                        description: DB is the Redis database number.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      keyPrefix:
+                        description: KeyPrefix is an optional prefix for all Redis
+                          keys used by ToolHive.
+                        type: string
+                      provider:
+                        description: Provider is the session storage backend type.
+                        enum:
+                        - memory
+                        - redis
+                        type: string
+                    required:
+                    - provider
                     type: object
                   telemetry:
                     description: |-

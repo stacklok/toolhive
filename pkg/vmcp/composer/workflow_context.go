@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // workflowContextManager manages workflow execution contexts.
@@ -87,13 +89,15 @@ func (ctx *WorkflowContext) RecordStepStart(stepID string) {
 
 // RecordStepSuccess records a successful step completion.
 // Thread-safe for concurrent step execution.
-func (ctx *WorkflowContext) RecordStepSuccess(stepID string, output map[string]any) {
+// The content parameter is optional (may be nil for non-tool steps like elicitation).
+func (ctx *WorkflowContext) RecordStepSuccess(stepID string, output map[string]any, content []vmcp.Content) {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 
 	if result, exists := ctx.Steps[stepID]; exists {
 		result.Status = StepStatusCompleted
 		result.Output = output
+		result.Content = content
 		result.EndTime = time.Now()
 		result.Duration = result.EndTime.Sub(result.StartTime)
 	}
@@ -207,10 +211,16 @@ func (ctx *WorkflowContext) Clone() *WorkflowContext {
 
 	// Clone step results
 	for stepID, result := range ctx.Steps {
+		var contentCopy []vmcp.Content
+		if result.Content != nil {
+			contentCopy = make([]vmcp.Content, len(result.Content))
+			copy(contentCopy, result.Content)
+		}
 		clone.Steps[stepID] = &StepResult{
 			StepID:     result.StepID,
 			Status:     result.Status,
 			Output:     cloneMap(result.Output),
+			Content:    contentCopy,
 			Error:      result.Error,
 			StartTime:  result.StartTime,
 			EndTime:    result.EndTime,

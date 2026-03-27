@@ -697,8 +697,8 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	}, deployment)
 	require.NoError(t, err)
 	assert.Equal(t, vmcp.Name, deployment.Name)
-	assert.NotNil(t, deployment.Spec.Replicas)
-	assert.Equal(t, int32(1), *deployment.Spec.Replicas)
+	// spec.replicas is nil — nil-passthrough for HPA compatibility
+	assert.Nil(t, deployment.Spec.Replicas)
 
 	// Verify container configuration
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
@@ -3146,4 +3146,164 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven verifies that when
+// spec.replicas is set, ensureDeployment updates the Deployment to match.
+func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
+	t.Parallel()
+
+	specReplicas := int32(3)
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vmcp-replica-sync",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config:   vmcpconfig.Config{Group: testGroupName},
+			Replicas: &specReplicas,
+		},
+	}
+
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
+		Status:     mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: "default",
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: testChecksumValue,
+			},
+		},
+		Data: map[string]string{"config.yaml": "{}"},
+	}
+
+	// Existing deployment has 1 replica — simulates a pre-existing state
+	existingReplicas := int32(1)
+	existingDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcp.Name,
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &existingReplicas,
+			Selector: &metav1.LabelSelector{MatchLabels: labelsForVirtualMCPServer(vmcp.Name)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labelsForVirtualMCPServer(vmcp.Name)},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "vmcp", Image: "test:latest"}}},
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, mcpGroup, configMap, existingDeployment).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	result, err := r.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	updated := &appsv1.Deployment{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: vmcp.Name, Namespace: vmcp.Namespace,
+	}, updated)
+	require.NoError(t, err)
+	require.NotNil(t, updated.Spec.Replicas)
+	assert.Equal(t, int32(3), *updated.Spec.Replicas)
+}
+
+// TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough verifies that when
+// spec.replicas is nil, ensureDeployment does not overwrite a live replica count (HPA-managed).
+func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vmcp-nil-passthrough",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config:   vmcpconfig.Config{Group: testGroupName},
+			Replicas: nil, // HPA manages replicas
+		},
+	}
+
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
+		Status:     mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: "default",
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: testChecksumValue,
+			},
+		},
+		Data: map[string]string{"config.yaml": "{}"},
+	}
+
+	// Existing deployment has 5 replicas — set by HPA
+	hpaReplicas := int32(5)
+	existingDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcp.Name,
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &hpaReplicas,
+			Selector: &metav1.LabelSelector{MatchLabels: labelsForVirtualMCPServer(vmcp.Name)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labelsForVirtualMCPServer(vmcp.Name)},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "vmcp", Image: "test:latest"}}},
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, mcpGroup, configMap, existingDeployment).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	result, err := r.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	updated := &appsv1.Deployment{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: vmcp.Name, Namespace: vmcp.Namespace,
+	}, updated)
+	require.NoError(t, err)
+	// HPA-managed replica count must not be overwritten
+	require.NotNil(t, updated.Spec.Replicas)
+	assert.Equal(t, int32(5), *updated.Spec.Replicas)
 }

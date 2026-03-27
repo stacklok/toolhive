@@ -74,34 +74,29 @@ var serveCmd = &cobra.Command{
 		if enableMCPServer {
 			fmt.Println("EXPERIMENTAL: Starting embedded MCP server")
 
-			// Create MCP server configuration
 			mcpConfig := &mcpserver.Config{
 				Host: mcpServerHost,
 				Port: mcpServerPort,
 			}
 
-			// Create and start the MCP server in a goroutine
-			mcpServer, err := mcpserver.New(ctx, mcpConfig)
-			if err != nil {
-				return fmt.Errorf("failed to create MCP server: %w", err)
-			}
-
 			go func() {
-				if err := mcpServer.Start(); err != nil {
-					slog.Error(fmt.Sprintf("MCP server error: %v", err))
+				mcpServer, err := mcpserver.New(ctx, mcpConfig)
+				if err != nil {
+					slog.Error("Failed to create MCP server, continuing without it", "error", err)
+					return
 				}
-			}()
 
-			// Ensure MCP server is shut down on context cancellation
-			go func() {
-				<-ctx.Done()
-				// Use Background context for MCP server shutdown. The parent context is already
-				// cancelled at this point, so we need a fresh context with its own timeout to
-				// ensure the shutdown operation completes successfully.
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer shutdownCancel()
-				if err := mcpServer.Shutdown(shutdownCtx); err != nil {
-					slog.Error(fmt.Sprintf("Failed to shutdown MCP server: %v", err))
+				go func() {
+					<-ctx.Done()
+					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer shutdownCancel()
+					if err := mcpServer.Shutdown(shutdownCtx); err != nil {
+						slog.Error("Failed to shutdown MCP server", "error", err)
+					}
+				}()
+
+				if err := mcpServer.Start(); err != nil {
+					slog.Error("MCP server error", "error", err)
 				}
 			}()
 		}

@@ -334,7 +334,43 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		statusManager.RemoveConditionsWithPrefix(mcpv1alpha1.ConditionTypeAuthServerConfigValidated, []string{})
 	}
 
+	// Advisory: warn when replicas > 1 but session storage is not Redis-backed.
+	r.validateSessionStorageForReplicas(vmcp, statusManager)
+
 	return true, nil
+}
+
+// validateSessionStorageForReplicas emits a SessionStorageWarning condition when
+// replicas > 1 but session storage is not configured with a Redis backend.
+// Reconciliation continues regardless; this is advisory only.
+func (*VirtualMCPServerReconciler) validateSessionStorageForReplicas(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	if vmcp.Spec.Replicas != nil && *vmcp.Spec.Replicas > 1 {
+		if vmcp.Spec.SessionStorage == nil || vmcp.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis {
+			statusManager.SetCondition(
+				mcpv1alpha1.ConditionSessionStorageWarning,
+				mcpv1alpha1.ConditionReasonSessionStorageMissing,
+				"replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas",
+				metav1.ConditionTrue,
+			)
+		} else {
+			statusManager.SetCondition(
+				mcpv1alpha1.ConditionSessionStorageWarning,
+				mcpv1alpha1.ConditionReasonSessionStorageConfigured,
+				"Redis session storage is configured",
+				metav1.ConditionFalse,
+			)
+		}
+	} else {
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionSessionStorageWarning,
+			mcpv1alpha1.ConditionReasonSessionStorageNotApplicable,
+			"session storage warning is not active",
+			metav1.ConditionFalse,
+		)
+	}
 }
 
 // validateAuthServerConfig validates inline AuthServerConfig and sets the
@@ -986,7 +1022,8 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		// - Update Spec.Template: Contains container spec, volumes, pod metadata (triggers rollout)
 		// - Update Labels: For label selectors and queries
 		// - Update Annotations: For metadata and tooling
-		// - Preserve Spec.Replicas: Allows HPA/VPA to manage scaling independently
+		// - Sync Spec.Replicas when spec.replicas is non-nil (operator authoritative)
+		// - Preserve Spec.Replicas when spec.replicas is nil (HPA or external controller manages scaling)
 		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
 		//
 		// Note: If update conflicts occur due to concurrent modifications, the reconcile
@@ -994,6 +1031,9 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+		if newDeployment.Spec.Replicas != nil {
+			deployment.Spec.Replicas = newDeployment.Spec.Replicas
+		}
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
@@ -1134,6 +1174,14 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 
 	if r.podTemplateSpecNeedsUpdate(ctx, deployment, vmcp, typedWorkloads) {
 		return true
+	}
+
+	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
+	// nil means hands-off mode (HPA or external controller manages replicas) and the live count is authoritative.
+	if vmcp.Spec.Replicas != nil {
+		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != *vmcp.Spec.Replicas {
+			return true
+		}
 	}
 
 	return false

@@ -193,6 +193,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --transport string                            Transport mode (sse, streamable-http or stdio)
       --trust-proxy-headers                         Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) (default false)
   -v, --volume stringArray                          Mount a volume into the container (format: host-path:container-path[:ro])
+      --webhook-config stringArray                  Path to webhook configuration file (can be specified multiple times to merge configs)
 ```
 
 ### Options inherited from parent commands

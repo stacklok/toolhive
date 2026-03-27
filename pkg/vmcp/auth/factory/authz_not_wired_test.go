@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -48,13 +47,10 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authorizer, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
-		require.NotNil(t, authorizer, "authorizer should not be nil")
-
-		// Build authz middleware from the authorizer (as server.go would do)
-		authzMw := authz.CreateMiddlewareFromAuthorizer(authorizer, nil)
+		require.NotNil(t, authzMw, "authz middleware should not be nil")
 
 		// Track if the handler is called
 		handlerCalled := false
@@ -109,13 +105,10 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authorizer, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
-		require.NotNil(t, authorizer, "authorizer should not be nil")
-
-		// Build authz middleware from the authorizer (as server.go would do)
-		authzMw := authz.CreateMiddlewareFromAuthorizer(authorizer, nil)
+		require.NotNil(t, authzMw, "authz middleware should not be nil")
 
 		handlerCalled := false
 		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -170,13 +163,10 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 		},
 	}
 
-	authMw, authorizer, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
+	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil)
 	require.NoError(t, err, "middleware creation should succeed")
 	require.NotNil(t, authMw, "auth middleware should not be nil")
-	require.NotNil(t, authorizer, "authorizer should not be nil")
-
-	// Build authz middleware from the authorizer (as server.go would do)
-	authzMw := authz.CreateMiddlewareFromAuthorizer(authorizer, nil)
+	require.NotNil(t, authzMw, "authz middleware should not be nil")
 
 	t.Run("list_tools_is_permitted", func(t *testing.T) {
 		t.Parallel()

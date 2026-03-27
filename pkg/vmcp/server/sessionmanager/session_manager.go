@@ -24,7 +24,6 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -82,7 +81,6 @@ func New(
 	storage *transportsession.Manager,
 	cfg *FactoryConfig,
 	backendRegistry vmcp.BackendRegistry,
-	authz authorizers.Authorizer,
 ) (*Manager, func(context.Context) error, error) {
 	if cfg == nil || cfg.Base == nil {
 		return nil, nil, fmt.Errorf("sessionmanager.New: FactoryConfig.Base (SessionFactory) is required")
@@ -120,7 +118,7 @@ func New(
 		backendRegistry: backendRegistry,
 	}
 
-	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, instruments, sm.Terminate, authz)
+	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, instruments, sm.Terminate)
 
 	return sm, optimizerCleanup, nil
 }

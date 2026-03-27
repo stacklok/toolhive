@@ -263,7 +263,7 @@ func TestCreateMiddleware(t *testing.T) {
 	})
 
 	// Create the middleware
-	middleware, err := CreateMiddlewareFromConfig(config, "testmodule")
+	middleware, err := CreateMiddlewareFromConfig(config, "testmodule", nil)
 	require.NoError(t, err, "Failed to create middleware")
 	require.NotNil(t, middleware, "Middleware is nil")
 
@@ -391,7 +391,7 @@ func TestGetMiddlewareFromFile(t *testing.T) {
 		tempFile.Close()
 
 		// Get middleware from file
-		middleware, err := GetMiddlewareFromFile("testserver", tempFile.Name())
+		middleware, err := GetMiddlewareFromFile("testserver", tempFile.Name(), nil)
 		require.NoError(t, err)
 		require.NotNil(t, middleware)
 	})
@@ -399,7 +399,7 @@ func TestGetMiddlewareFromFile(t *testing.T) {
 	t.Run("Non-existent file", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := GetMiddlewareFromFile("testserver", "/nonexistent/path/config.json")
+		_, err := GetMiddlewareFromFile("testserver", "/nonexistent/path/config.json", nil)
 		assert.Error(t, err)
 	})
 
@@ -417,7 +417,7 @@ func TestGetMiddlewareFromFile(t *testing.T) {
 		tempFile.Close()
 
 		// Get middleware from file should fail
-		_, err = GetMiddlewareFromFile("testserver", tempFile.Name())
+		_, err = GetMiddlewareFromFile("testserver", tempFile.Name(), nil)
 		assert.Error(t, err)
 	})
 }
@@ -433,98 +433,8 @@ func TestCreateMiddlewareFromConfigErrors(t *testing.T) {
 			Type:    "unsupported-type",
 		}
 
-		_, err := CreateMiddlewareFromConfig(config, "testserver")
+		_, err := CreateMiddlewareFromConfig(config, "testserver", nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported configuration type")
 	})
-}
-
-func TestCreateAuthorizerFromConfig(t *testing.T) {
-	t.Parallel()
-
-	t.Run("valid config returns authorizer", func(t *testing.T) {
-		t.Parallel()
-
-		config := mustNewConfig(t, cedar.Config{
-			Version: "1.0",
-			Type:    cedar.ConfigType,
-			Options: &cedar.ConfigOptions{
-				Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
-				EntitiesJSON: "[]",
-			},
-		})
-
-		a, err := CreateAuthorizerFromConfig(config, "testserver")
-		require.NoError(t, err)
-		require.NotNil(t, a)
-
-		// Verify the authorizer works by checking a tool call
-		ctx := auth.WithIdentity(t.Context(), &auth.Identity{
-			PrincipalInfo: auth.PrincipalInfo{Subject: "user1", Claims: map[string]interface{}{"sub": "user1"}},
-		})
-		authorized, err := a.AuthorizeWithJWTClaims(ctx, "tool", "call", "weather", nil)
-		require.NoError(t, err)
-		assert.True(t, authorized)
-	})
-
-	t.Run("unsupported config type returns error", func(t *testing.T) {
-		t.Parallel()
-
-		config := &Config{
-			Version: "1.0",
-			Type:    "unsupported-type",
-		}
-
-		a, err := CreateAuthorizerFromConfig(config, "testserver")
-		assert.Error(t, err)
-		assert.Nil(t, a)
-		assert.Contains(t, err.Error(), "unsupported configuration type")
-	})
-}
-
-func TestCreateMiddlewareFromAuthorizer(t *testing.T) {
-	t.Parallel()
-
-	config := mustNewConfig(t, cedar.Config{
-		Version: "1.0",
-		Type:    cedar.ConfigType,
-		Options: &cedar.ConfigOptions{
-			Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
-			EntitiesJSON: "[]",
-		},
-	})
-
-	a, err := CreateAuthorizerFromConfig(config, "testserver")
-	require.NoError(t, err)
-
-	mw := CreateMiddlewareFromAuthorizer(a, nil)
-	require.NotNil(t, mw)
-
-	// Verify middleware wraps a handler correctly
-	handlerCalled := false
-	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		handlerCalled = true
-		w.WriteHeader(http.StatusOK)
-	})
-
-	handler := mcpparser.ParsingMiddleware(mw(testHandler))
-
-	// Build a ping request (always allowed)
-	body, err := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "id": 1, "method": "ping", "params": map[string]interface{}{},
-	})
-	require.NoError(t, err)
-
-	req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(body))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user1", Claims: map[string]interface{}{"sub": "user1"}}}
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
-
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	assert.True(t, handlerCalled)
-	assert.Equal(t, http.StatusOK, rr.Code)
 }

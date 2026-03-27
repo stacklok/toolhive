@@ -34,6 +34,7 @@ import (
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
@@ -456,14 +457,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type))
 
-	authMiddleware, cedarAuthorizer, authInfoHandler, err :=
-		factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
-	if err != nil {
-		return fmt.Errorf("failed to create authentication middleware: %w", err)
-	}
-
-	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", cfg.IncomingAuth.Type))
-
 	// Create server configuration with flags
 	// Cobra validates flag types at parse time, so these values are safe to use directly
 	host, _ := cmd.Flags().GetString("host")
@@ -533,6 +526,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// When the optimizer is enabled, its meta-tools (find_tool, call_tool) must pass
+	// through the authz response filter so they appear in tools/list. Authorization
+	// for the underlying backend tools is enforced by the middleware's call_tool
+	// interception. See: https://github.com/stacklok/toolhive/issues/4373
+	var passThroughTools map[string]struct{}
+	if optCfg != nil {
+		passThroughTools = map[string]struct{}{
+			optimizerdec.FindToolName: {},
+			optimizerdec.CallToolName: {},
+		}
+	}
+
+	authMiddleware, authzMiddleware, authInfoHandler, err :=
+		factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth, passThroughTools)
+	if err != nil {
+		return fmt.Errorf("failed to create authentication middleware: %w", err)
+	}
+
+	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", cfg.IncomingAuth.Type))
+
 	serverCfg := &vmcpserver.Config{
 		Name:                    cfg.Name,
 		Version:                 getVersion(),
@@ -540,7 +553,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Host:                    host,
 		Port:                    port,
 		AuthMiddleware:          authMiddleware,
-		CedarAuthorizer:         cedarAuthorizer,
+		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             cfg.Audit,

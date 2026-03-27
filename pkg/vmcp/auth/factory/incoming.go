@@ -18,30 +18,40 @@ import (
 )
 
 // NewIncomingAuthMiddleware creates HTTP middleware for incoming authentication
-// and an optional Cedar authorizer based on the vMCP configuration.
+// and authorization based on the vMCP configuration.
 //
 // This factory handles all incoming auth types:
 //   - "oidc": OIDC token validation
 //   - "local": Local OS user authentication
 //   - "anonymous": Anonymous user (no authentication required)
 //
+// Authentication and authorization are returned as separate middleware to allow
+// the caller to insert discovery and annotation-enrichment middleware between them.
+// This ensures the authz middleware can access tool annotations populated by
+// the discovery pipeline.
+//
 // All middleware types now directly create and inject Identity into the context,
 // eliminating the need for a separate conversion layer.
 //
+// The passThroughTools parameter is optional (pass nil for none). Tool names in
+// this set bypass the response filter's policy check in tools/list responses.
+// This is used when the optimizer is enabled: its meta-tools (find_tool, call_tool)
+// would otherwise be rejected by Cedar default-deny since no policy references them
+// by name. Authorization for the underlying backend tools is enforced by the
+// middleware's call_tool interception.
+//
 // Returns:
 //   - authMw: Composed auth + MCP parser middleware (auth runs first, then parser)
-//   - authorizer: The underlying Authorizer instance (nil if authz is not configured).
-//     The caller (server.go) is responsible for building authz middleware from this
-//     authorizer, which allows it to configure pass-through rules (e.g., optimizer
-//     meta-tools) without needing the factory to know about optimizer concerns.
+//   - authzMw: Authorization middleware (nil if authz is not configured)
 //   - authInfoHandler: Handler for /.well-known/oauth-protected-resource endpoint (may be nil)
 //   - err: Error if middleware creation fails
 func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
+	passThroughTools map[string]struct{},
 ) (
 	authMw func(http.Handler) http.Handler,
-	authorizer authorizers.Authorizer,
+	authzMw func(http.Handler) http.Handler,
 	authInfoHandler http.Handler,
 	err error,
 ) {
@@ -66,14 +76,17 @@ func NewIncomingAuthMiddleware(
 		return nil, nil, nil, err
 	}
 
-	// If authorization is configured, create the Cedar authorizer.
-	// Only the authorizer is returned — the caller builds HTTP middleware from it.
+	// If authorization is configured, create authz middleware separately.
+	// Authz is returned as its own middleware so the caller can place it after
+	// discovery and annotation-enrichment in the middleware chain, giving
+	// Cedar policies access to discovered tool annotations.
+	var authzMiddleware func(http.Handler) http.Handler
 	if cfg.Authz != nil && cfg.Authz.Type == "cedar" && len(cfg.Authz.Policies) > 0 {
-		authorizer, err = newCedarAuthorizer(cfg.Authz)
+		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz, passThroughTools)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to create Cedar authorizer: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
 		}
-		slog.Debug("Cedar authorizer created", "policies", len(cfg.Authz.Policies))
+		slog.Info("authorization middleware enabled with Cedar policies")
 	}
 
 	// Auth middleware composes auth + parser.
@@ -84,17 +97,18 @@ func NewIncomingAuthMiddleware(
 		return authMiddleware(withParser)
 	}
 
-	return composedAuth, authorizer, authInfoHandler, nil
+	return composedAuth, authzMiddleware, authInfoHandler, nil
 }
 
-// newCedarAuthorizer creates a Cedar authorizer from vMCP config.
-// The caller is responsible for building HTTP middleware from the returned authorizer.
-func newCedarAuthorizer(authzCfg *config.AuthzConfig) (authorizers.Authorizer, error) {
+// newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
+func newCedarAuthzMiddleware(
+	authzCfg *config.AuthzConfig, passThroughTools map[string]struct{},
+) (func(http.Handler) http.Handler, error) {
 	if authzCfg == nil || len(authzCfg.Policies) == 0 {
 		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
 
-	slog.Debug("creating Cedar authorizer", "policies", len(authzCfg.Policies))
+	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
 	// Build the Cedar config structure expected by the authorizer factory
 	cedarConfig := cedar.Config{
@@ -112,12 +126,13 @@ func newCedarAuthorizer(authzCfg *config.AuthzConfig) (authorizers.Authorizer, e
 		return nil, fmt.Errorf("failed to create authz config: %w", err)
 	}
 
-	a, err := authz.CreateAuthorizerFromConfig(authzConfig, "vmcp")
+	// Create the middleware using the existing factory
+	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp", passThroughTools)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Cedar authorizer: %w", err)
+		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
 	}
 
-	return a, nil
+	return middlewareFn, nil
 }
 
 // newOIDCAuthMiddleware creates OIDC authentication middleware.

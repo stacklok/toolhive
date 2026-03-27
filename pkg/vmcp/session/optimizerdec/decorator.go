@@ -9,13 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authz"
-	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -28,6 +25,12 @@ const (
 	FindToolName = "find_tool"
 	// CallToolName is the tool name for routing a call to any backend tool.
 	CallToolName = "call_tool"
+	// CallToolArgToolName is the JSON argument key for the backend tool name in a call_tool request.
+	// It must match the json tag on optimizer.CallToolInput.ToolName.
+	CallToolArgToolName = "tool_name"
+	// CallToolArgParameters is the JSON argument key for the backend tool parameters in a call_tool request.
+	// It must match the json tag on optimizer.CallToolInput.Parameters.
+	CallToolArgParameters = "parameters"
 )
 
 // Pre-generated schemas for find_tool and call_tool, computed at init time.
@@ -43,21 +46,16 @@ var (
 type optimizerDecorator struct {
 	sessiontypes.MultiSession
 	opt            optimizer.Optimizer
-	authorizer     authorizers.Authorizer
 	optimizerTools []vmcp.Tool
 }
 
 // NewDecorator wraps sess with optimizer mode. Only find_tool and call_tool are
-// exposed via Tools(). find_tool calls opt.FindTool and filters results through
-// Cedar policies. call_tool checks Cedar authorization before invoking the backend tool.
-// The authz parameter is optional; pass nil to disable authorization filtering.
-func NewDecorator(
-	sess sessiontypes.MultiSession, opt optimizer.Optimizer, a authorizers.Authorizer,
-) sessiontypes.MultiSession {
+// exposed via Tools(). find_tool calls opt.FindTool. call_tool calls opt.CallTool,
+// which routes through the instrumented optimizer (telemetry, traces, metrics).
+func NewDecorator(sess sessiontypes.MultiSession, opt optimizer.Optimizer) sessiontypes.MultiSession {
 	return &optimizerDecorator{
 		MultiSession: sess,
 		opt:          opt,
-		authorizer:   a,
 		optimizerTools: []vmcp.Tool{
 			{
 				Name: FindToolName,
@@ -126,9 +124,6 @@ func (d *optimizerDecorator) handleFindTool(ctx context.Context, arguments map[s
 		return errorResult("find_tool: optimizer returned nil result"), nil
 	}
 
-	// Filter results through Cedar policies so unauthorized tools are not disclosed.
-	output.Tools = authz.FilterToolsByPolicy(ctx, d.authorizer, output.Tools)
-
 	jsonBytes, err := json.Marshal(output)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to marshal find_tool output: %v", err)), nil
@@ -151,16 +146,6 @@ func (d *optimizerDecorator) handleCallTool(
 	input, err := schema.Translate[optimizer.CallToolInput](arguments)
 	if err != nil {
 		return errorResult(fmt.Sprintf("invalid arguments: %v", err)), nil
-	}
-
-	// Check Cedar authorization for the actual backend tool before invoking it.
-	authorized, authErr := authz.AuthorizeToolCall(ctx, d.authorizer, input.ToolName, input.Parameters)
-	if authErr != nil {
-		slog.Warn("authorization check failed for tool", "tool", input.ToolName, "error", authErr)
-		return errorResult(fmt.Sprintf("authorization check failed for tool %q", input.ToolName)), nil
-	}
-	if !authorized {
-		return errorResult(fmt.Sprintf("not permitted to call tool %q", input.ToolName)), nil
 	}
 
 	mcpResult, err := d.opt.CallTool(ctx, input)

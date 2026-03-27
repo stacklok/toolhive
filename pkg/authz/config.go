@@ -26,50 +26,37 @@ var LoadConfig = authorizers.LoadConfig
 // NewConfig is an alias for authorizers.NewConfig for backward compatibility.
 var NewConfig = authorizers.NewConfig
 
-// CreateAuthorizerFromConfig creates an Authorizer from the configuration.
-func CreateAuthorizerFromConfig(c *Config, serverName string) (authorizers.Authorizer, error) {
+// CreateMiddlewareFromConfig creates an HTTP middleware from the configuration.
+// The passThroughTools parameter is optional (pass nil for none). Tool names in
+// this set bypass the response filter's policy check in tools/list responses.
+func CreateMiddlewareFromConfig(
+	c *Config, serverName string, passThroughTools map[string]struct{},
+) (types.MiddlewareFunction, error) {
+	// Get the factory for this config type
 	factory := authorizers.GetFactory(string(c.Type))
 	if factory == nil {
 		return nil, fmt.Errorf("unsupported configuration type: %s", c.Type)
 	}
 
+	// Create the authorizer using the factory, passing the full raw config
 	authz, err := factory.CreateAuthorizer(c.RawConfig(), serverName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create %s authorizer: %w", c.Type, err)
 	}
 
-	return authz, nil
-}
-
-// CreateMiddlewareFromAuthorizer wraps an existing Authorizer as HTTP middleware.
-// The passThroughTools parameter is optional; tool names in this set bypass the
-// response filter's policy check in tools/list responses. This is used when the
-// optimizer is enabled: its meta-tools (find_tool, call_tool) would otherwise be
-// rejected by Cedar default-deny since no policy references them by name.
-// Authorization for the underlying backend tools is handled inside the optimizer
-// decorator, so letting the meta-tools pass through is safe.
-func CreateMiddlewareFromAuthorizer(a authorizers.Authorizer, passThroughTools map[string]struct{}) types.MiddlewareFunction {
-	return func(handler http.Handler) http.Handler { return Middleware(a, handler, passThroughTools) }
-}
-
-// CreateMiddlewareFromConfig creates an HTTP middleware from the configuration.
-func CreateMiddlewareFromConfig(c *Config, serverName string) (types.MiddlewareFunction, error) {
-	authz, err := CreateAuthorizerFromConfig(c, serverName)
-	if err != nil {
-		return nil, err
-	}
-
-	return CreateMiddlewareFromAuthorizer(authz, nil), nil
+	// Return the middleware
+	return func(handler http.Handler) http.Handler { return Middleware(authz, handler, passThroughTools) }, nil
 }
 
 // GetMiddlewareFromFile loads the authorization configuration from a file and creates an HTTP middleware.
-func GetMiddlewareFromFile(serverName, path string) (func(http.Handler) http.Handler, error) {
-	// Load the configuration
+// The passThroughTools parameter is optional (pass nil for none). Tool names in
+// this set bypass the response filter's policy check in tools/list responses.
+func GetMiddlewareFromFile(serverName, path string, passThroughTools map[string]struct{}) (types.MiddlewareFunction, error) {
 	config, err := LoadConfig(path)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create the middleware
-	return CreateMiddlewareFromConfig(config, serverName)
+	return CreateMiddlewareFromConfig(config, serverName, passThroughTools)
 }

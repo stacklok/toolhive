@@ -88,6 +88,7 @@ func (alwaysFailStorage) Store(_ context.Context, _ transportsession.Session) er
 func (alwaysFailStorage) Load(_ context.Context, _ string) (transportsession.Session, error) {
 	return nil, errors.New("not found")
 }
+func (alwaysFailStorage) Peek(_ context.Context, _ string) (bool, error)     { return false, nil }
 func (alwaysFailStorage) Delete(_ context.Context, _ string) error           { return nil }
 func (alwaysFailStorage) DeleteExpired(_ context.Context, _ time.Time) error { return nil }
 func (alwaysFailStorage) Close() error                                       { return nil }

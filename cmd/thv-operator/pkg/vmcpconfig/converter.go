@@ -148,22 +148,7 @@ func (c *Converter) Convert(
 		config.Audit.Component = vmcp.Name
 	}
 
-	// Populate SessionStorage from the VirtualMCPServer spec.
-	// spec.sessionStorage is the authoritative source; always overwrite whatever
-	// the DeepCopy brought in from spec.config.sessionStorage.
-	// PasswordRef is K8s-specific and is resolved separately; the password is injected
-	// as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
-	if vmcp.Spec.SessionStorage != nil &&
-		vmcp.Spec.SessionStorage.Provider == mcpv1alpha1.SessionStorageProviderRedis {
-		config.SessionStorage = &vmcpconfig.SessionStorageConfig{
-			Provider:  vmcp.Spec.SessionStorage.Provider,
-			Address:   vmcp.Spec.SessionStorage.Address,
-			DB:        vmcp.Spec.SessionStorage.DB,
-			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
-		}
-	} else {
-		config.SessionStorage = nil
-	}
+	config.SessionStorage = convertSessionStorage(vmcp)
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
@@ -279,6 +264,24 @@ func mapResolvedOIDCToVmcpConfig(
 	}
 
 	return config
+}
+
+// convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
+// spec.sessionStorage is the authoritative source; always overwrite whatever
+// the DeepCopy brought in from spec.config.sessionStorage.
+// PasswordRef is K8s-specific and is resolved separately; the password is injected
+// as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
+func convertSessionStorage(vmcp *mcpv1alpha1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
+	if vmcp.Spec.SessionStorage != nil &&
+		vmcp.Spec.SessionStorage.Provider == mcpv1alpha1.SessionStorageProviderRedis {
+		return &vmcpconfig.SessionStorageConfig{
+			Provider:  vmcp.Spec.SessionStorage.Provider,
+			Address:   vmcp.Spec.SessionStorage.Address,
+			DB:        vmcp.Spec.SessionStorage.DB,
+			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
+		}
+	}
+	return nil
 }
 
 // convertAuthServerConfig converts the inline EmbeddedAuthServerConfig from the

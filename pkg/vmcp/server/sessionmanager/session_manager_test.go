@@ -161,7 +161,7 @@ func newTestSessionManager(
 ) (*Manager, *transportsession.Manager) {
 	t.Helper()
 	storage := newTestTransportManager(t)
-	sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry, nil)
+	sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
 	require.NoError(t, err)
 	return sm, storage
 }
@@ -207,7 +207,7 @@ func TestSessionManager_Generate(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		sess := newMockSession(t, ctrl, "placeholder", nil)
 		factory := newMockFactory(t, ctrl, sess)
-		sm, _, err := New(failingMgr, &FactoryConfig{Base: factory}, newFakeRegistry(), nil)
+		sm, _, err := New(failingMgr, &FactoryConfig{Base: factory}, newFakeRegistry())
 		require.NoError(t, err)
 
 		id := sm.Generate()
@@ -668,7 +668,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 			failingStorage,
 		)
 		t.Cleanup(func() { _ = storage.Stop() })
-		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry, nil)
+		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
 		require.NoError(t, err)
 
 		// Generate a placeholder (first Store, succeeds).
@@ -708,7 +708,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 			failingStorage,
 		)
 		t.Cleanup(func() { _ = storage.Stop() })
-		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry, nil)
+		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
 		require.NoError(t, err)
 
 		// Generate a placeholder (first Store, succeeds).

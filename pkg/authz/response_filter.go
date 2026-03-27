@@ -292,9 +292,9 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	// in tools/list instead of real backend tools. These meta-tools won't match
 	// any operator-written Cedar policy (which references real tool names), so
 	// default-deny would filter them out — leaving the client with zero tools.
-	// Authorization for the underlying backend tools is enforced inside the
-	// optimizer decorator itself (find_tool filters results, call_tool gates
-	// invocations), so the meta-tools can safely pass through the response filter.
+	// Authorization for the underlying backend tools is enforced by the authz
+	// middleware: call_tool requests are intercepted and the inner tool_name
+	// argument is authorized against Cedar policy before the request is served.
 	// See: https://github.com/stacklok/toolhive/issues/4373
 	passThrough := []mcp.Tool{}
 	regular := []mcp.Tool{}

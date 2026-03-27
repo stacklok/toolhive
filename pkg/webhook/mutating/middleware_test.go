@@ -551,34 +551,6 @@ func TestMutatingMiddleware_MalformedPatchJSON(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
-func TestConvertToJSONRPC2ID(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		input   interface{}
-		wantErr bool
-	}{
-		{name: "nil", input: nil, wantErr: false},
-		{name: "string", input: "req-123", wantErr: false},
-		{name: "int", input: int(42), wantErr: false},
-		{name: "int64", input: int64(99), wantErr: false},
-		{name: "float64", input: float64(7), wantErr: false},
-		{name: "unsupported bool", input: true, wantErr: true},
-		{name: "unsupported struct", input: struct{}{}, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := convertToJSONRPC2ID(tt.input)
-			if tt.wantErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
-}
-
 //nolint:paralleltest
 func TestMutatingMiddleware_StringRequestID(t *testing.T) {
 	// Tests that the middleware correctly handles a string JSON-RPC ID.
@@ -711,4 +683,133 @@ func TestExtractMCPRequest(t *testing.T) {
 			assert.JSONEq(t, tt.wantBody, string(result))
 		})
 	}
+}
+
+//nolint:paralleltest
+func TestMutatingMiddleware_ApplyPatchFailure_FailPolicy(t *testing.T) {
+	// Patch fails to apply because it removes a non-existent path
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		patch := []map[string]interface{}{{"op": "remove", "path": "/mcp_request/doesnotexist"}}
+		patchJSON, _ := json.Marshal(patch)
+		resp := webhook.MutatingResponse{
+			Response:  webhook.Response{Version: webhook.APIVersion, UID: "uid", Allowed: true},
+			PatchType: patchTypeJSONPatch,
+			Patch:     patchJSON,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cfg := makeConfig(server.URL, webhook.FailurePolicyFail)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+	rr := httptest.NewRecorder()
+	mw(nextHandler).ServeHTTP(rr, makeMCPRequest(t, []byte(`{"jsonrpc":"2.0","id":1}`)))
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+}
+
+//nolint:paralleltest
+func TestMutatingMiddleware_ApplyPatchFailure_IgnorePolicy(t *testing.T) {
+	const reqBody = `{"jsonrpc":"2.0","id":1}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		patch := []map[string]interface{}{{"op": "remove", "path": "/mcp_request/doesnotexist"}}
+		patchJSON, _ := json.Marshal(patch)
+		resp := webhook.MutatingResponse{
+			Response:  webhook.Response{Version: webhook.APIVersion, UID: "uid", Allowed: true},
+			PatchType: patchTypeJSONPatch,
+			Patch:     patchJSON,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cfg := makeConfig(server.URL, webhook.FailurePolicyIgnore)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+	rr := httptest.NewRecorder()
+	mw(nextHandler).ServeHTTP(rr, makeMCPRequest(t, []byte(reqBody)))
+
+	assert.True(t, nextCalled)
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+//nolint:paralleltest
+func TestMutatingMiddleware_ExtractFailure_FailPolicy(t *testing.T) {
+	// Patch removes /mcp_request, making extraction fail
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		patch := []map[string]interface{}{{"op": "remove", "path": "/mcp_request"}}
+		patchJSON, _ := json.Marshal(patch)
+		resp := webhook.MutatingResponse{
+			Response:  webhook.Response{Version: webhook.APIVersion, UID: "uid", Allowed: true},
+			PatchType: patchTypeJSONPatch,
+			Patch:     patchJSON,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cfg := makeConfig(server.URL, webhook.FailurePolicyFail)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+	rr := httptest.NewRecorder()
+	mw(nextHandler).ServeHTTP(rr, makeMCPRequest(t, []byte(`{"jsonrpc":"2.0","id":1}`)))
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+}
+
+//nolint:paralleltest
+func TestMutatingMiddleware_ExtractFailure_IgnorePolicy(t *testing.T) {
+	const reqBody = `{"jsonrpc":"2.0","id":1}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		patch := []map[string]interface{}{{"op": "remove", "path": "/mcp_request"}}
+		patchJSON, _ := json.Marshal(patch)
+		resp := webhook.MutatingResponse{
+			Response:  webhook.Response{Version: webhook.APIVersion, UID: "uid", Allowed: true},
+			PatchType: patchTypeJSONPatch,
+			Patch:     patchJSON,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cfg := makeConfig(server.URL, webhook.FailurePolicyIgnore)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+	var nextCalled bool
+	var capturedBody []byte
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		capturedBody, _ = io.ReadAll(r.Body)
+	})
+	rr := httptest.NewRecorder()
+	mw(nextHandler).ServeHTTP(rr, makeMCPRequest(t, []byte(reqBody)))
+
+	assert.True(t, nextCalled)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.JSONEq(t, reqBody, string(capturedBody))
+}
+
+func TestValidatePatchErrors(t *testing.T) {
+	t.Parallel()
+	invalidOps := []JSONPatchOp{
+		{Op: "copy", Path: "/mcp_request/a"}, // missing From
+		{Op: "move", Path: "/mcp_request/b"}, // missing From
+		{Op: "invalid_op", Path: "/mcp_request/c"},
+		{Op: "add", Path: ""}, // missing Path
+	}
+	err := ValidatePatch(invalidOps)
+	require.Error(t, err)
 }

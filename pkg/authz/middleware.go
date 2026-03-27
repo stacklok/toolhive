@@ -104,27 +104,6 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	return false
 }
 
-// convertToJSONRPC2ID converts an interface{} ID to jsonrpc2.ID
-func convertToJSONRPC2ID(id interface{}) (jsonrpc2.ID, error) {
-	if id == nil {
-		return jsonrpc2.ID{}, nil
-	}
-
-	switch v := id.(type) {
-	case string:
-		return jsonrpc2.StringID(v), nil
-	case int:
-		return jsonrpc2.Int64ID(int64(v)), nil
-	case int64:
-		return jsonrpc2.Int64ID(v), nil
-	case float64:
-		// JSON numbers are often unmarshaled as float64
-		return jsonrpc2.Int64ID(int64(v)), nil
-	default:
-		return jsonrpc2.ID{}, fmt.Errorf("unsupported ID type: %T", id)
-	}
-}
-
 // handleUnauthorized handles unauthorized requests.
 func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	// Create an error response
@@ -134,7 +113,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	}
 
 	// Create a JSON-RPC error response
-	id, err := convertToJSONRPC2ID(msgID)
+	id, err := mcp.ConvertToJSONRPC2ID(msgID)
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails
 	}

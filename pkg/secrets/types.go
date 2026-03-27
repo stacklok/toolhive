@@ -54,8 +54,8 @@ type Provider interface {
 	SetSecret(ctx context.Context, name, value string) error
 	DeleteSecret(ctx context.Context, name string) error
 	ListSecrets(ctx context.Context) ([]SecretDescription, error)
-	// BulkDeleteSecrets removes all named keys. Read-only providers treat this as a no-op.
-	BulkDeleteSecrets(ctx context.Context, keys []string) error
+	// DeleteSecrets removes all named keys. Read-only providers treat this as a no-op.
+	DeleteSecrets(ctx context.Context, keys []string) error
 	Cleanup() error
 	// Capabilities returns what operations this provider supports
 	Capabilities() ProviderCapabilities

@@ -58,8 +58,8 @@ func (*EnvironmentProvider) ListSecrets(_ context.Context) ([]SecretDescription,
 	return nil, errors.New("environment provider does not support listing secrets for security reasons")
 }
 
-// BulkDeleteSecrets is a no-op for the environment provider (read-only).
-func (*EnvironmentProvider) BulkDeleteSecrets(_ context.Context, _ []string) error {
+// DeleteSecrets is a no-op for the environment provider (read-only).
+func (*EnvironmentProvider) DeleteSecrets(_ context.Context, _ []string) error {
 	return nil
 }
 

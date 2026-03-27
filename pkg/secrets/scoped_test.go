@@ -293,14 +293,14 @@ func TestScopedProvider_Cleanup(t *testing.T) {
 
 		mock := mocks.NewMockProvider(ctrl)
 		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
-		mock.EXPECT().BulkDeleteSecrets(gomock.Any(), []string{"__thv_registry_key1"}).Return(nil)
+		mock.EXPECT().DeleteSecrets(gomock.Any(), []string{"__thv_registry_key1"}).Return(nil)
 
 		p := secrets.NewScopedProvider(mock, secrets.ScopeRegistry)
 		err := p.Cleanup()
 		require.NoError(t, err)
 	})
 
-	t.Run("returns error from BulkDeleteSecrets", func(t *testing.T) {
+	t.Run("returns error from DeleteSecrets", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -315,7 +315,7 @@ func TestScopedProvider_Cleanup(t *testing.T) {
 
 		mock := mocks.NewMockProvider(ctrl)
 		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
-		mock.EXPECT().BulkDeleteSecrets(gomock.Any(), []string{"__thv_registry_key1", "__thv_registry_key2"}).Return(bulkErr)
+		mock.EXPECT().DeleteSecrets(gomock.Any(), []string{"__thv_registry_key1", "__thv_registry_key2"}).Return(bulkErr)
 
 		p := secrets.NewScopedProvider(mock, secrets.ScopeRegistry)
 		err := p.Cleanup()
@@ -601,7 +601,7 @@ func TestUserProvider_Cleanup(t *testing.T) {
 
 		mock := mocks.NewMockProvider(ctrl)
 		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
-		mock.EXPECT().BulkDeleteSecrets(gomock.Any(), []string{"user-key1", "user-key2"}).Return(nil)
+		mock.EXPECT().DeleteSecrets(gomock.Any(), []string{"user-key1", "user-key2"}).Return(nil)
 
 		p := secrets.NewUserProvider(mock)
 		err := p.Cleanup()
@@ -644,7 +644,7 @@ func TestUserProvider_Cleanup(t *testing.T) {
 		assert.Equal(t, listErr, err)
 	})
 
-	t.Run("propagates BulkDeleteSecrets error", func(t *testing.T) {
+	t.Run("propagates DeleteSecrets error", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -655,7 +655,7 @@ func TestUserProvider_Cleanup(t *testing.T) {
 
 		mock := mocks.NewMockProvider(ctrl)
 		mock.EXPECT().ListSecrets(gomock.Any()).Return(inner, nil)
-		mock.EXPECT().BulkDeleteSecrets(gomock.Any(), []string{"user-key1"}).Return(bulkErr)
+		mock.EXPECT().DeleteSecrets(gomock.Any(), []string{"user-key1"}).Return(bulkErr)
 
 		p := secrets.NewUserProvider(mock)
 		err := p.Cleanup()
@@ -664,7 +664,7 @@ func TestUserProvider_Cleanup(t *testing.T) {
 	})
 }
 
-func TestScopedProvider_BulkDeleteSecrets(t *testing.T) {
+func TestScopedProvider_DeleteSecrets(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -702,10 +702,10 @@ func TestScopedProvider_BulkDeleteSecrets(t *testing.T) {
 			defer ctrl.Finish()
 
 			mock := mocks.NewMockProvider(ctrl)
-			mock.EXPECT().BulkDeleteSecrets(ctx, tc.expectKeys).Return(tc.innerErr)
+			mock.EXPECT().DeleteSecrets(ctx, tc.expectKeys).Return(tc.innerErr)
 
 			p := secrets.NewScopedProvider(mock, secrets.ScopeRegistry)
-			err := p.BulkDeleteSecrets(ctx, tc.inputNames)
+			err := p.DeleteSecrets(ctx, tc.inputNames)
 
 			if tc.wantErr {
 				require.Error(t, err)
@@ -717,7 +717,7 @@ func TestScopedProvider_BulkDeleteSecrets(t *testing.T) {
 	}
 }
 
-func TestUserProvider_BulkDeleteSecrets(t *testing.T) {
+func TestUserProvider_DeleteSecrets(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -758,11 +758,11 @@ func TestUserProvider_BulkDeleteSecrets(t *testing.T) {
 
 			mock := mocks.NewMockProvider(ctrl)
 			if tc.expectCall {
-				mock.EXPECT().BulkDeleteSecrets(ctx, tc.inputNames).Return(tc.innerErr)
+				mock.EXPECT().DeleteSecrets(ctx, tc.inputNames).Return(tc.innerErr)
 			}
 
 			p := secrets.NewUserProvider(mock)
-			err := p.BulkDeleteSecrets(ctx, tc.inputNames)
+			err := p.DeleteSecrets(ctx, tc.inputNames)
 
 			if tc.wantErr {
 				require.Error(t, err)

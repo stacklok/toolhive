@@ -41,18 +41,18 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
-// BulkDeleteSecrets mocks base method.
-func (m *MockProvider) BulkDeleteSecrets(ctx context.Context, keys []string) error {
+// DeleteSecrets mocks base method.
+func (m *MockProvider) DeleteSecrets(ctx context.Context, keys []string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BulkDeleteSecrets", ctx, keys)
+	ret := m.ctrl.Call(m, "DeleteSecrets", ctx, keys)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// BulkDeleteSecrets indicates an expected call of BulkDeleteSecrets.
-func (mr *MockProviderMockRecorder) BulkDeleteSecrets(ctx, keys any) *gomock.Call {
+// DeleteSecrets indicates an expected call of DeleteSecrets.
+func (mr *MockProviderMockRecorder) DeleteSecrets(ctx, keys any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkDeleteSecrets", reflect.TypeOf((*MockProvider)(nil).BulkDeleteSecrets), ctx, keys)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSecrets", reflect.TypeOf((*MockProvider)(nil).DeleteSecrets), ctx, keys)
 }
 
 // Capabilities mocks base method.

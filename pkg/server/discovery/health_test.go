@@ -84,7 +84,11 @@ func TestCheckHealth_TCP_NoNonceCheck(t *testing.T) {
 
 func TestCheckHealth_UnixSocket_Success(t *testing.T) {
 	t.Parallel()
-	socketDir := t.TempDir()
+	// Use os.MkdirTemp with a short name to stay under macOS's 104-char Unix socket path limit.
+	// t.TempDir() produces paths like /private/var/folders/.../TestCheckHealth.../001/ which are too long.
+	socketDir, err := os.MkdirTemp("", "thv-")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "test.sock")
 
 	listener, err := net.Listen("unix", socketPath)

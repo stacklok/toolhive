@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -511,6 +512,61 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 
 	slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 	return false, nil
+}
+
+// NotifyBackendExpired updates session metadata in storage to reflect that the
+// backend identified by workloadID is no longer connected. It removes the
+// per-backend session ID key and rebuilds MetadataKeyBackendIDs so that a
+// cross-pod RestoreSession call does not attempt to reconnect to the expired
+// backend session.
+//
+// This is a best-effort, metadata-only operation: no live MultiSession state
+// is mutated. If the session is absent from storage (not found or terminated)
+// the call is a silent no-op. Storage errors are logged but not returned.
+func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
+	ctx := context.Background()
+	metadata, err := sm.storage.Load(ctx, sessionID)
+	if err != nil {
+		if !errors.Is(err, transportsession.ErrSessionNotFound) {
+			slog.Warn("NotifyBackendExpired: failed to load session from storage",
+				"session_id", sessionID,
+				"workload_id", workloadID,
+				"error", err)
+		}
+		return
+	}
+	if metadata[MetadataKeyTerminated] == MetadataValTrue {
+		return
+	}
+
+	// Clear the per-backend session ID key.
+	delete(metadata, vmcpsession.MetadataKeyBackendSessionPrefix+workloadID)
+
+	// Rebuild MetadataKeyBackendIDs, removing the expired workload.
+	// Trim spaces and drop empty parts to handle any malformed metadata,
+	// consistent with filterBackendsByStoredIDs. When no backends remain,
+	// delete the key entirely to match populateBackendMetadata's contract.
+	if backendIDs := metadata[vmcpsession.MetadataKeyBackendIDs]; backendIDs != "" {
+		parts := strings.Split(backendIDs, ",")
+		remaining := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if t := strings.TrimSpace(p); t != "" && t != workloadID {
+				remaining = append(remaining, t)
+			}
+		}
+		if len(remaining) > 0 {
+			metadata[vmcpsession.MetadataKeyBackendIDs] = strings.Join(remaining, ",")
+		} else {
+			delete(metadata, vmcpsession.MetadataKeyBackendIDs)
+		}
+	}
+
+	if err := sm.storage.Store(ctx, sessionID, metadata); err != nil {
+		slog.Warn("NotifyBackendExpired: failed to persist backend expiry to storage",
+			"session_id", sessionID,
+			"workload_id", workloadID,
+			"error", err)
+	}
 }
 
 // GetMultiSession retrieves the fully-formed MultiSession for a given SDK session ID.

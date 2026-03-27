@@ -58,6 +58,9 @@ type AuthorizationServerConfig struct {
 	// This is advertised in /.well-known/openid-configuration and
 	// /.well-known/oauth-authorization-server discovery endpoints.
 	ScopesSupported []string
+	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
+	// in the discovery document. When empty, defaults to the issuer (AccessTokenIssuer).
+	AuthorizationEndpointBaseURL string
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -86,6 +89,9 @@ type AuthorizationServerParams struct {
 	AllowedAudiences []string
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	ScopesSupported []string
+	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
+	// in the discovery document. When empty, defaults to Issuer.
+	AuthorizationEndpointBaseURL string
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -141,45 +147,57 @@ func validateHMACSecrets(secrets *servercrypto.HMACSecrets) error {
 	return nil
 }
 
+// validateTokenLifespans validates that token lifespans are within allowed bounds.
+func validateTokenLifespans(cfg *AuthorizationServerParams) error {
+	if cfg.AccessTokenLifespan < MinAccessTokenLifespan || cfg.AccessTokenLifespan > MaxAccessTokenLifespan {
+		return fmt.Errorf("access token lifespan must be between %v and %v", MinAccessTokenLifespan, MaxAccessTokenLifespan)
+	}
+	if cfg.RefreshTokenLifespan < MinRefreshTokenLifespan || cfg.RefreshTokenLifespan > MaxRefreshTokenLifespan {
+		return fmt.Errorf("refresh token lifespan must be between %v and %v", MinRefreshTokenLifespan, MaxRefreshTokenLifespan)
+	}
+	if cfg.AuthCodeLifespan < MinAuthCodeLifespan || cfg.AuthCodeLifespan > MaxAuthCodeLifespan {
+		return fmt.Errorf("authorization code lifespan must be between %v and %v", MinAuthCodeLifespan, MaxAuthCodeLifespan)
+	}
+	return nil
+}
+
+// validateParams validates all fields on AuthorizationServerParams.
+func validateParams(cfg *AuthorizationServerParams) error {
+	if err := validateIssuerURL(cfg.Issuer); err != nil {
+		return err
+	}
+	if cfg.SigningKeyID == "" {
+		return fmt.Errorf("signing key ID is required")
+	}
+	if cfg.SigningKeyAlgorithm == "" {
+		return fmt.Errorf("signing key algorithm is required")
+	}
+	if cfg.SigningKey == nil {
+		return fmt.Errorf("signing key is required")
+	}
+	if err := validateHMACSecrets(cfg.HMACSecrets); err != nil {
+		return err
+	}
+	if err := servercrypto.ValidateAlgorithmForKey(cfg.SigningKeyAlgorithm, cfg.SigningKey); err != nil {
+		return fmt.Errorf("invalid signing configuration: %w", err)
+	}
+	if err := validateTokenLifespans(cfg); err != nil {
+		return err
+	}
+	if cfg.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(cfg.AuthorizationEndpointBaseURL); err != nil {
+			return fmt.Errorf("authorization endpoint base URL: %w", err)
+		}
+	}
+	return validateAllowedAudiences(cfg.AllowedAudiences)
+}
+
 // NewAuthorizationServerConfig creates an AuthorizationServerConfig from the provided configuration.
 func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*AuthorizationServerConfig, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-	if err := validateIssuerURL(cfg.Issuer); err != nil {
-		return nil, err
-	}
-	if cfg.SigningKeyID == "" {
-		return nil, fmt.Errorf("signing key ID is required")
-	}
-	if cfg.SigningKeyAlgorithm == "" {
-		return nil, fmt.Errorf("signing key algorithm is required")
-	}
-	if cfg.SigningKey == nil {
-		return nil, fmt.Errorf("signing key is required")
-	}
-	if err := validateHMACSecrets(cfg.HMACSecrets); err != nil {
-		return nil, err
-	}
-
-	// Validate algorithm matches key type
-	if err := servercrypto.ValidateAlgorithmForKey(cfg.SigningKeyAlgorithm, cfg.SigningKey); err != nil {
-		return nil, fmt.Errorf("invalid signing configuration: %w", err)
-	}
-
-	// Validate token lifespans are within reasonable bounds
-	if cfg.AccessTokenLifespan < MinAccessTokenLifespan || cfg.AccessTokenLifespan > MaxAccessTokenLifespan {
-		return nil, fmt.Errorf("access token lifespan must be between %v and %v", MinAccessTokenLifespan, MaxAccessTokenLifespan)
-	}
-	if cfg.RefreshTokenLifespan < MinRefreshTokenLifespan || cfg.RefreshTokenLifespan > MaxRefreshTokenLifespan {
-		return nil, fmt.Errorf("refresh token lifespan must be between %v and %v", MinRefreshTokenLifespan, MaxRefreshTokenLifespan)
-	}
-	if cfg.AuthCodeLifespan < MinAuthCodeLifespan || cfg.AuthCodeLifespan > MaxAuthCodeLifespan {
-		return nil, fmt.Errorf("authorization code lifespan must be between %v and %v", MinAuthCodeLifespan, MaxAuthCodeLifespan)
-	}
-
-	// Validate allowed audiences are valid RFC 8707 URIs
-	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
+	if err := validateParams(cfg); err != nil {
 		return nil, err
 	}
 
@@ -208,11 +226,12 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:           fositeConfig,
-		SigningKey:       &jwk,
-		SigningJWKS:      &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
-		AllowedAudiences: cfg.AllowedAudiences,
-		ScopesSupported:  cfg.ScopesSupported,
+		Config:                       fositeConfig,
+		SigningKey:                   &jwk,
+		SigningJWKS:                  &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
+		AllowedAudiences:             cfg.AllowedAudiences,
+		ScopesSupported:              cfg.ScopesSupported,
+		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
 	}, nil
 }
 
@@ -289,6 +308,15 @@ func (c *AuthorizationServerConfig) PublicJWKS() *jose.JSONWebKeySet {
 // This is an adapter method that wraps the embedded fosite.Config method.
 func (c *AuthorizationServerConfig) GetAccessTokenIssuer() string {
 	return c.AccessTokenIssuer
+}
+
+// GetAuthorizationEndpointBaseURL returns the base URL for the authorization endpoint.
+// If AuthorizationEndpointBaseURL is set, it is returned; otherwise falls back to the issuer.
+func (c *AuthorizationServerConfig) GetAuthorizationEndpointBaseURL() string {
+	if c.AuthorizationEndpointBaseURL != "" {
+		return c.AuthorizationEndpointBaseURL
+	}
+	return c.GetAccessTokenIssuer()
 }
 
 // GetAuthorizeCodeLifespan returns the lifetime for authorization codes.

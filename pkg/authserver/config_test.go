@@ -95,6 +95,11 @@ func TestConfigValidate(t *testing.T) {
 		{name: "missing allowed audiences", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams}, wantErr: true, errMsg: "at least one allowed audience is required"},
 		{name: "empty allowed audiences slice", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{}}, wantErr: true, errMsg: "at least one allowed audience is required"},
 
+		// AuthorizationEndpointBaseURL validation
+		{name: "invalid authorization_endpoint_base_url", config: Config{Issuer: "https://example.com", AuthorizationEndpointBaseURL: "ftp://bad.example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "authorization_endpoint_base_url"},
+		{name: "authorization_endpoint_base_url with trailing slash", config: Config{Issuer: "https://example.com", AuthorizationEndpointBaseURL: "https://login.example.com/", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "authorization_endpoint_base_url"},
+		{name: "valid authorization_endpoint_base_url", config: Config{Issuer: "https://example.com", AuthorizationEndpointBaseURL: "https://login.example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+
 		// OIDC upstream validation
 		{name: "OIDC nil oidc_config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOIDC}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oidc_config is required"},
 		{name: "unsupported upstream type", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderType("saml")}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "unsupported provider type"},

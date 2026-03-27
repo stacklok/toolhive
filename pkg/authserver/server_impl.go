@@ -98,16 +98,17 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:               cfg.Issuer,
-		AccessTokenLifespan:  cfg.AccessTokenLifespan,
-		RefreshTokenLifespan: cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:     cfg.AuthCodeLifespan,
-		HMACSecrets:          cfg.HMACSecrets,
-		SigningKeyID:         signingKey.KeyID,
-		SigningKeyAlgorithm:  signingKey.Algorithm,
-		SigningKey:           signingKey.Key,
-		ScopesSupported:      cfg.ScopesSupported,
-		AllowedAudiences:     cfg.AllowedAudiences,
+		Issuer:                       cfg.Issuer,
+		AccessTokenLifespan:          cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:         cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:             cfg.AuthCodeLifespan,
+		HMACSecrets:                  cfg.HMACSecrets,
+		SigningKeyID:                 signingKey.KeyID,
+		SigningKeyAlgorithm:          signingKey.Algorithm,
+		SigningKey:                   signingKey.Key,
+		ScopesSupported:              cfg.ScopesSupported,
+		AllowedAudiences:             cfg.AllowedAudiences,
+		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {

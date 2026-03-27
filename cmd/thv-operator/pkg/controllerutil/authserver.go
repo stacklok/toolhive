@@ -420,10 +420,11 @@ func buildEmbeddedAuthServerRunnerConfig(
 	oidcConfig *oidc.OIDCConfig,
 ) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
-		SchemaVersion:    authserver.CurrentSchemaVersion,
-		Issuer:           authConfig.Issuer,
-		AllowedAudiences: []string{oidcConfig.ResourceURL},
-		ScopesSupported:  oidcConfig.Scopes,
+		SchemaVersion:                authserver.CurrentSchemaVersion,
+		Issuer:                       authConfig.Issuer,
+		AuthorizationEndpointBaseURL: authConfig.AuthorizationEndpointBaseURL,
+		AllowedAudiences:             []string{oidcConfig.ResourceURL},
+		ScopesSupported:              oidcConfig.Scopes,
 	}
 
 	// Build signing key configuration

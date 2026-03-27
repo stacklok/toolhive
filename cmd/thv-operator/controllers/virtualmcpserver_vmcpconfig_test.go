@@ -44,7 +44,7 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfigconv.Converter {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient)
 	require.NoError(t, err)
@@ -233,7 +233,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 
 				// Create converter with fake client that has the external auth config
 				scheme := runtime.NewScheme()
-				_ = mcpv1alpha1.AddToScheme(scheme)
+				require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 				fakeClient := fake.NewClientBuilder().
 					WithScheme(scheme).
 					WithObjects(externalAuthConfig).
@@ -471,8 +471,8 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -1947,6 +1947,129 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 				require.NotNil(t, config.Optimizer, "Optimizer config should be present")
 				assert.Equal(t, tt.expectedURL, config.Optimizer.EmbeddingService,
 					"EmbeddingService should contain the full base URL from EmbeddingServer Status.URL")
+			}
+		})
+	}
+}
+
+// TestConfigMapContent_SessionStorage tests that ensureVmcpConfigConfigMap correctly
+// populates the sessionStorage section in the ConfigMap YAML based on spec.sessionStorage.
+func TestConfigMapContent_SessionStorage(t *testing.T) {
+	t.Parallel()
+
+	const (
+		testNamespace = "default"
+		testGroup     = "test-group"
+	)
+
+	tests := []struct {
+		name            string
+		sessionStorage  *mcpv1alpha1.SessionStorageConfig
+		expectedStorage *vmcpconfig.SessionStorageConfig
+		// noLeakStrings are substrings that must NOT appear in config.yaml (secret leakage check).
+		noLeakStrings []string
+	}{
+		{
+			name: "redis provider populates sessionStorage in ConfigMap YAML",
+			sessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+				Address:   "redis.default.svc:6379",
+				DB:        1,
+				KeyPrefix: "thv:",
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider:  "redis",
+				Address:   "redis.default.svc:6379",
+				DB:        1,
+				KeyPrefix: "thv:",
+			},
+		},
+		{
+			name:            "nil sessionStorage produces no sessionStorage section",
+			sessionStorage:  nil,
+			expectedStorage: nil,
+		},
+		{
+			name:            "memory provider produces no sessionStorage section",
+			sessionStorage:  &mcpv1alpha1.SessionStorageConfig{Provider: "memory"},
+			expectedStorage: nil,
+		},
+		{
+			// Protects against secret leakage: when passwordRef is set the operator injects
+			// the password via THV_SESSION_REDIS_PASSWORD env var; it must never appear in
+			// the ConfigMap YAML where any reader of the ConfigMap could see it.
+			name: "redis provider with passwordRef — secret name and key not in ConfigMap YAML",
+			sessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+				Address:   "redis.default.svc:6379",
+				DB:        1,
+				KeyPrefix: "thv:",
+				PasswordRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "redis-secret",
+					Key:  "redis-password",
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider:  "redis",
+				Address:   "redis.default.svc:6379",
+				DB:        1,
+				KeyPrefix: "thv:",
+			},
+			noLeakStrings: []string{"redis-secret", "redis-password"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			testScheme := createRunConfigTestScheme()
+
+			mcpGroup := &mcpv1alpha1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: testGroup, Namespace: testNamespace},
+				Spec:       mcpv1alpha1.MCPGroupSpec{},
+				Status:     mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+			}
+
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp-session", Namespace: testNamespace},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config:         vmcpconfig.Config{Group: testGroup},
+					SessionStorage: tt.sessionStorage,
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(vmcpServer, mcpGroup).
+				Build()
+
+			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+
+			workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testNamespace)
+			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testGroup)
+			require.NoError(t, err)
+
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+			err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusManager)
+			require.NoError(t, err)
+
+			configMap := &corev1.ConfigMap{}
+			err = fakeClient.Get(ctx, types.NamespacedName{
+				Name: vmcpConfigMapName(vmcpServer.Name), Namespace: testNamespace,
+			}, configMap)
+			require.NoError(t, err)
+
+			var config vmcpconfig.Config
+			err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.expectedStorage, config.SessionStorage)
+
+			for _, forbidden := range tt.noLeakStrings {
+				assert.NotContains(t, configMap.Data["config.yaml"], forbidden,
+					"config.yaml must not contain %q (secret leakage)", forbidden)
 			}
 		})
 	}

@@ -391,11 +391,8 @@ type SecretRef struct {
 // This is the CRD/K8s-aware surface: it uses SecretKeyRef for secret resolution.
 // The reconciler resolves PasswordRef to a plain string and builds a
 // session.RedisConfig (pkg/transport/session) for the actual storage backend.
-//
-// TODO: Add a corresponding SessionStorageConfig to pkg/vmcp/config.Config so the
-// vMCP process receives session storage config through the existing config injection
-// path (same as Optimizer and Audit). The CRD type will remain separate because
-// PasswordRef is K8s-specific and gets resolved away before the config-pkg type.
+// The operator also populates pkg/vmcp/config.SessionStorageConfig (without PasswordRef)
+// into the vMCP ConfigMap so the vMCP process receives connection parameters at startup.
 //
 // +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
 type SessionStorageConfig struct {

@@ -1627,3 +1627,80 @@ func TestConverter_TelemetryEndpointPrefixStripping(t *testing.T) {
 		})
 	}
 }
+
+func TestConverter_SessionStorage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		sessionStorage  *mcpv1alpha1.SessionStorageConfig
+		inlineConfig    *vmcpconfig.SessionStorageConfig
+		expectedStorage *vmcpconfig.SessionStorageConfig
+	}{
+		{
+			name: "redis provider populates SessionStorage",
+			sessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+				Address:   "redis:6379",
+				DB:        2,
+				KeyPrefix: "thv:",
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider:  "redis",
+				Address:   "redis:6379",
+				DB:        2,
+				KeyPrefix: "thv:",
+			},
+		},
+		{
+			name: "memory provider results in nil SessionStorage",
+			sessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				Provider: "memory",
+			},
+			expectedStorage: nil,
+		},
+		{
+			name:            "nil spec.sessionStorage results in nil SessionStorage",
+			sessionStorage:  nil,
+			expectedStorage: nil,
+		},
+		{
+			name:           "spec.config.sessionStorage is overwritten when spec.sessionStorage is nil",
+			sessionStorage: nil,
+			inlineConfig: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "sneaky:6379",
+			},
+			expectedStorage: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{
+						Group:          "test-group",
+						SessionStorage: tt.inlineConfig,
+					},
+					SessionStorage: tt.sessionStorage,
+				},
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+
+			config, err := converter.Convert(ctx, vmcpServer)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+
+			assert.Equal(t, tt.expectedStorage, config.SessionStorage)
+		})
+	}
+}

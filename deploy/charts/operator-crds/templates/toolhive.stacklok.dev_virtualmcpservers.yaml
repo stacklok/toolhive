@@ -1571,6 +1571,36 @@ spec:
                     required:
                     - source
                     type: object
+                  sessionStorage:
+                    description: |-
+                      SessionStorage configures session storage for stateful horizontal scaling.
+                      When provider is "redis", the operator injects Redis connection parameters
+                      (address, db, keyPrefix) here. The Redis password is provided separately via
+                      the THV_SESSION_REDIS_PASSWORD environment variable.
+                    properties:
+                      address:
+                        description: Address is the Redis server address (required
+                          when provider is redis).
+                        type: string
+                      db:
+                        default: 0
+                        description: DB is the Redis database number.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      keyPrefix:
+                        description: KeyPrefix is an optional prefix for all Redis
+                          keys used by ToolHive.
+                        type: string
+                      provider:
+                        description: Provider is the session storage backend type.
+                        enum:
+                        - memory
+                        - redis
+                        type: string
+                    required:
+                    - provider
+                    type: object
                   telemetry:
                     description: |-
                       Telemetry configures OpenTelemetry-based observability for the Virtual MCP server

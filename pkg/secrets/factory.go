@@ -283,7 +283,7 @@ func CreateUserSecretProvider(managerType ProviderType) (Provider, error) {
 
 // CreateScopedSecretProvider creates a Provider that namespaces all operations
 // under the given scope, suitable for internal callers.
-func CreateScopedSecretProvider(managerType ProviderType, scope string) (Provider, error) {
+func CreateScopedSecretProvider(managerType ProviderType, scope SecretScope) (Provider, error) {
 	inner, err := CreateSecretProvider(managerType)
 	if err != nil {
 		return nil, err

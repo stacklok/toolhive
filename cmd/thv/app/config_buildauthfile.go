@@ -299,4 +299,3 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 
 	return nil
 }
-

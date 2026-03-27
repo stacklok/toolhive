@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package main is the entry point for the ToolHive CLI.
@@ -61,6 +61,10 @@ func main() {
 		// Check and perform middleware telemetry migration if needed
 		// Ensures middleware-based telemetry configs are properly migrated
 		migration.CheckAndPerformMiddlewareTelemetryMigration()
+
+		// Check and perform secret scope migration if needed
+		// Renames bare system keys (BEARER_TOKEN_, REGISTRY_OAUTH_, etc.) to __thv_<scope>_ namespace
+		migration.CheckAndPerformSecretScopeMigration()
 
 		// Ensure default group exists (creates it for fresh installs, no-op otherwise)
 		migration.EnsureDefaultGroupExists()

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package secrets
@@ -269,6 +269,26 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 	}
 
 	return primary, nil
+}
+
+// CreateUserSecretProvider creates a Provider that filters out system-reserved keys,
+// suitable for user-facing callers (CLI, API, MCP tool server).
+func CreateUserSecretProvider(managerType ProviderType) (Provider, error) {
+	inner, err := CreateSecretProvider(managerType)
+	if err != nil {
+		return nil, err
+	}
+	return NewUserProvider(inner), nil
+}
+
+// CreateScopedSecretProvider creates a Provider that namespaces all operations
+// under the given scope, suitable for internal callers.
+func CreateScopedSecretProvider(managerType ProviderType, scope SecretScope) (Provider, error) {
+	inner, err := CreateSecretProvider(managerType)
+	if err != nil {
+		return nil, err
+	}
+	return NewScopedProvider(inner, scope), nil
 }
 
 // shouldEnableFallback determines if environment variable fallback should be enabled

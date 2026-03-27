@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -350,25 +351,7 @@ This command only works with the 'encrypted' secrets provider.`,
 }
 
 func getSecretsManager() (secrets.Provider, error) {
-	configProvider := config.NewDefaultProvider()
-	cfg := configProvider.GetConfig()
-
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
-	}
-
-	manager, err := secrets.CreateSecretProvider(providerType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
-	}
-
-	return manager, nil
+	return authsecrets.GetUserSecretsProvider()
 }
 
 func runSecretsSetup(cmd *cobra.Command, _ []string) error {

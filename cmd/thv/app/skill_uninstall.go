@@ -39,7 +39,7 @@ func init() {
 }
 
 func skillUninstallCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	err := c.Uninstall(cmd.Context(), skills.UninstallOptions{
 		Name:        args[0],

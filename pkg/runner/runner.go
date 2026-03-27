@@ -76,10 +76,11 @@ type Runner struct {
 	// Only initialized when Config.EmbeddedAuthServerConfig is set.
 	embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 
-	// upstreamTokenService is the upstream token service, created eagerly
-	// after the embedded auth server is initialized in Run().
+	// upstreamTokenReader provides read-only access to upstream tokens for
+	// identity enrichment in auth middleware. Set when the embedded auth
+	// server is initialized in Run().
 	// Nil when no embedded auth server is configured.
-	upstreamTokenService upstreamtoken.Service
+	upstreamTokenReader upstreamtoken.TokenReader
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -130,16 +131,11 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
-// GetUpstreamTokenService returns an accessor for the upstream token service.
-// The returned function should be called at request time; it returns nil if
-// the embedded auth server is not configured.
-//
-// This method always returns a non-nil function. Service availability is
-// determined at request time when the returned function is called.
-func (r *Runner) GetUpstreamTokenService() func() upstreamtoken.Service {
-	return func() upstreamtoken.Service {
-		return r.upstreamTokenService
-	}
+// GetUpstreamTokenReader returns the UpstreamTokenReader for identity
+// enrichment in the auth middleware. Returns nil if no embedded auth
+// server is configured.
+func (r *Runner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
+	return r.upstreamTokenReader
 }
 
 // GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
@@ -235,6 +231,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	// This must happen before middleware creation so that the upstream token
 	// service is available to middleware factories (e.g., upstreamswap).
 	if r.Config.EmbeddedAuthServerConfig != nil {
+		// Proxy runner supports only single-upstream configs; multi-upstream
+		// requires VirtualMCPServer.
+		if len(r.Config.EmbeddedAuthServerConfig.Upstreams) > 1 {
+			return fmt.Errorf(
+				"proxy runner does not support multiple upstream providers (found %d); "+
+					"use VirtualMCPServer for multi-upstream deployments",
+				len(r.Config.EmbeddedAuthServerConfig.Upstreams),
+			)
+		}
+
 		var err error
 		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
 		if err != nil {
@@ -248,17 +254,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		// InProcessService handles this gracefully (returns ErrNoRefreshToken).
 		stor := r.embeddedAuthServer.IDPTokenStorage()
 		refresher := r.embeddedAuthServer.UpstreamTokenRefresher()
-		r.upstreamTokenService = upstreamtoken.NewInProcessService(stor, refresher)
+		r.upstreamTokenReader = upstreamtoken.NewInProcessService(stor, refresher)
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
-		handler := r.embeddedAuthServer.Handler()
-		transportConfig.PrefixHandlers = map[string]http.Handler{
-			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
-			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
-			"/.well-known/openid-configuration":       handler, // OIDC Discovery
-			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
-		}
+		transportConfig.PrefixHandlers = r.embeddedAuthServer.Routes()
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
@@ -312,6 +312,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.Host,
 			r.Config.TargetPort,
 			r.Config.TargetHost,
+			r.Config.Publish,
 			scalingConfig,
 		)
 		if err != nil {
@@ -459,8 +460,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			slog.Warn("failed to cleanup telemetry", "error", err)
 		}
 
-		// Remove the PID file if it exists
-		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
+		// Remove the PID file if it exists. Use PID-guarded reset so that a
+		// dying process does not clobber the PID of a replacement process that
+		// started in the meantime (e.g. during thv rm + thv run).
+		if err := r.statusManager.ResetWorkloadPIDIfMatch(cleanupCtx, r.Config.BaseName, os.Getpid()); err != nil {
 			slog.Warn("failed to reset workload PID", "container", r.Config.ContainerName, "error", err)
 		}
 
@@ -538,8 +541,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Remove the old PID from the state file
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+		// Remove the old PID from the state file. Use PID-guarded reset to
+		// avoid clobbering a replacement process's PID.
+		if err := r.statusManager.ResetWorkloadPIDIfMatch(ctx, r.Config.BaseName, os.Getpid()); err != nil {
 			slog.Warn("failed to reset workload PID", "workload", r.Config.BaseName, "error", err)
 		}
 

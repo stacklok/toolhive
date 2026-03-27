@@ -20,6 +20,12 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
+// RedisPasswordEnvVar is the environment variable name for the Redis session storage password.
+// The operator injects this as a SecretKeyRef when sessionStorage.provider is "redis"
+// and passwordRef is set. The vMCP process reads this at startup to authenticate to Redis.
+// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+const RedisPasswordEnvVar = "THV_SESSION_REDIS_PASSWORD"
+
 // Transport type constants for static backend configuration.
 // These define the allowed network transport protocols for vMCP backends in static mode.
 const (
@@ -156,6 +162,13 @@ type Config struct {
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When provider is "redis", the operator injects Redis connection parameters
+	// (address, db, keyPrefix) here. The Redis password is provided separately via
+	// the THV_SESSION_REDIS_PASSWORD environment variable.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty" yaml:"sessionStorage,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -211,6 +224,12 @@ type OIDCConfig struct {
 	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
 	// Use with caution - only enable for trusted internal IDPs or testing
 	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIp,omitempty" yaml:"protectedResourceAllowPrivateIp,omitempty"` //nolint:lll
+
+	// JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.
+	// Enable when the embedded auth server runs on a loopback address and
+	// the OIDC middleware needs to fetch its JWKS from that address.
+	// Use with caution - only enable for trusted internal IDPs or testing.
+	JwksAllowPrivateIP bool `json:"jwksAllowPrivateIp,omitempty" yaml:"jwksAllowPrivateIp,omitempty"`
 
 	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
 	// WARNING: This is insecure and should NEVER be used in production
@@ -615,7 +634,7 @@ type WorkflowStepConfig struct {
 	ID string `json:"id" yaml:"id"`
 
 	// Type is the step type (tool, elicitation, etc.)
-	// +kubebuilder:validation:Enum=tool;elicitation
+	// +kubebuilder:validation:Enum=tool;elicitation;forEach
 	// +kubebuilder:default=tool
 	// +optional
 	Type string `json:"type,omitempty" yaml:"type,omitempty"`
@@ -679,6 +698,36 @@ type WorkflowStepConfig struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	DefaultResults thvjson.Map `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
+
+	// Collection is a Go template expression that resolves to a JSON array or a slice.
+	// Only used when Type is "forEach".
+	// +optional
+	Collection string `json:"collection,omitempty" yaml:"collection,omitempty"`
+
+	// ItemVar is the variable name used to reference the current item in forEach templates.
+	// Defaults to "item" if not specified.
+	// Only used when Type is "forEach".
+	// +optional
+	ItemVar string `json:"itemVar,omitempty" yaml:"itemVar,omitempty"`
+
+	// MaxParallel limits the number of concurrent iterations in a forEach step.
+	// Defaults to the DAG executor's maxParallel (10).
+	// Only used when Type is "forEach".
+	// +optional
+	MaxParallel int `json:"maxParallel,omitempty" yaml:"maxParallel,omitempty"`
+
+	// MaxIterations limits the number of items that can be iterated over.
+	// Defaults to 100, hard cap at 1000.
+	// Only used when Type is "forEach".
+	// +optional
+	MaxIterations int `json:"maxIterations,omitempty" yaml:"maxIterations,omitempty"`
+
+	// InnerStep defines the step to execute for each item in the collection.
+	// Only used when Type is "forEach". Only tool-type inner steps are supported.
+	// +optional
+	// +kubebuilder:validation:Type=object
+	// +kubebuilder:pruning:PreserveUnknownFields
+	InnerStep *WorkflowStepConfig `json:"step,omitempty" yaml:"step,omitempty"`
 }
 
 // StepErrorHandling defines error handling behavior for workflow steps.
@@ -820,6 +869,32 @@ type OptimizerConfig struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
 	// +optional
 	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
+}
+
+// SessionStorageConfig configures session storage for stateful horizontal scaling.
+// The Redis password is not stored here; it is injected as the THV_SESSION_REDIS_PASSWORD
+// environment variable by the operator when spec.sessionStorage.passwordRef is set.
+// +kubebuilder:object:generate=true
+// +gendoc
+type SessionStorageConfig struct {
+	// Provider is the session storage backend type.
+	// +kubebuilder:validation:Enum=memory;redis
+	// +kubebuilder:validation:Required
+	Provider string `json:"provider" yaml:"provider"`
+
+	// Address is the Redis server address (required when provider is redis).
+	// +optional
+	Address string `json:"address,omitempty" yaml:"address,omitempty"`
+
+	// DB is the Redis database number.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=0
+	// +optional
+	DB int32 `json:"db,omitempty" yaml:"db,omitempty"`
+
+	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
+	// +optional
+	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
 }
 
 // Validator validates configuration.

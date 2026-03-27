@@ -52,7 +52,6 @@ func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFacto
 		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
-			mock.EXPECT().Touch().AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
@@ -99,7 +98,6 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			}
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
-			mock.EXPECT().Touch().AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()

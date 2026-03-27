@@ -268,7 +268,7 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 }
 
 // runValidations runs all pre-reconciliation validations (PodTemplateSpec, GroupRef,
-// CompositeToolRefs, EmbeddingServerRef).
+// CompositeToolRefs, EmbeddingServerRef, AuthServerConfig).
 // Returns (true, nil) to continue reconciliation.
 // Returns (false, nil) for spec validation errors that should NOT trigger requeue
 // (user must fix the spec; next reconciliation is triggered by spec changes).
@@ -321,7 +321,102 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		}
 	}
 
+	// Validate inline AuthServerConfig (when specified).
+	if vmcp.Spec.AuthServerConfig != nil {
+		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
+			}
+			return false, nil
+		}
+	} else {
+		// Remove stale condition if AuthServerConfig was previously set then removed.
+		statusManager.RemoveConditionsWithPrefix(mcpv1alpha1.ConditionTypeAuthServerConfigValidated, []string{})
+	}
+
+	// Advisory: warn when replicas > 1 but session storage is not Redis-backed.
+	r.validateSessionStorageForReplicas(vmcp, statusManager)
+
 	return true, nil
+}
+
+// validateSessionStorageForReplicas emits a SessionStorageWarning condition when
+// replicas > 1 but session storage is not configured with a Redis backend.
+// Reconciliation continues regardless; this is advisory only.
+func (*VirtualMCPServerReconciler) validateSessionStorageForReplicas(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	if vmcp.Spec.Replicas != nil && *vmcp.Spec.Replicas > 1 {
+		if vmcp.Spec.SessionStorage == nil || vmcp.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis {
+			statusManager.SetCondition(
+				mcpv1alpha1.ConditionSessionStorageWarning,
+				mcpv1alpha1.ConditionReasonSessionStorageMissing,
+				"replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas",
+				metav1.ConditionTrue,
+			)
+		} else {
+			statusManager.SetCondition(
+				mcpv1alpha1.ConditionSessionStorageWarning,
+				mcpv1alpha1.ConditionReasonSessionStorageConfigured,
+				"Redis session storage is configured",
+				metav1.ConditionFalse,
+			)
+		}
+	} else {
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionSessionStorageWarning,
+			mcpv1alpha1.ConditionReasonSessionStorageNotApplicable,
+			"session storage warning is not active",
+			metav1.ConditionFalse,
+		)
+	}
+}
+
+// validateAuthServerConfig validates inline AuthServerConfig and sets the
+// AuthServerConfigValidated condition. Returns an error when validation fails
+// (caller should NOT requeue — user must fix the spec).
+func (*VirtualMCPServerReconciler) validateAuthServerConfig(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	cfg := vmcp.Spec.AuthServerConfig
+
+	if cfg.Issuer == "" {
+		message := "spec.authServerConfig.issuer is required"
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return fmt.Errorf("%s", message)
+	}
+
+	if len(cfg.UpstreamProviders) == 0 {
+		message := "spec.authServerConfig.upstreamProviders is required"
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return fmt.Errorf("%s", message)
+	}
+
+	// AuthServerConfig is valid
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1alpha1.ConditionReasonAuthServerConfigValid,
+		"AuthServerConfig is valid",
+		metav1.ConditionTrue,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return nil
 }
 
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
@@ -927,7 +1022,8 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		// - Update Spec.Template: Contains container spec, volumes, pod metadata (triggers rollout)
 		// - Update Labels: For label selectors and queries
 		// - Update Annotations: For metadata and tooling
-		// - Preserve Spec.Replicas: Allows HPA/VPA to manage scaling independently
+		// - Sync Spec.Replicas when spec.replicas is non-nil (operator authoritative)
+		// - Preserve Spec.Replicas when spec.replicas is nil (HPA or external controller manages scaling)
 		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
 		//
 		// Note: If update conflicts occur due to concurrent modifications, the reconcile
@@ -935,6 +1031,9 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+		if newDeployment.Spec.Replicas != nil {
+			deployment.Spec.Replicas = newDeployment.Spec.Replicas
+		}
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
@@ -1075,6 +1174,14 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 
 	if r.podTemplateSpecNeedsUpdate(ctx, deployment, vmcp, typedWorkloads) {
 		return true
+	}
+
+	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
+	// nil means hands-off mode (HPA or external controller manages replicas) and the live count is authoritative.
+	if vmcp.Spec.Replicas != nil {
+		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != *vmcp.Spec.Replicas {
+			return true
+		}
 	}
 
 	return false
@@ -2243,12 +2350,16 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 }
 
 // vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig.
-// It checks both inline references (in outgoingAuth spec) and discovered references (via MCPServers in the group).
+// It checks authServerConfigRef, inline references (in outgoingAuth spec), and discovered references
+// (via MCPServers in the group).
 func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
+	// Note: AuthServerConfig is inline (not a ref), so it doesn't reference
+	// MCPExternalAuthConfig resources. Only outgoing auth refs are checked here.
+
 	if vmcp.Spec.OutgoingAuth == nil {
 		return false
 	}

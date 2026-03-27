@@ -45,6 +45,7 @@ type RunFlags struct {
 	ProxyPort  int
 	TargetPort int
 	TargetHost string
+	Publish    []string
 
 	// Server configuration
 	Name              string
@@ -154,6 +155,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"target-host",
 		transport.LocalhostIPv4,
 		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
+	cmd.Flags().StringArrayVarP(&config.Publish, "publish", "p", []string{},
+		"Publish a container's port(s) to the host (format: hostPort:containerPort)")
 	cmd.Flags().StringVar(
 		&config.PermissionProfile,
 		"permission-profile",
@@ -191,7 +194,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.RuntimeImage, "runtime-image", "",
 		"Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)")
 	cmd.Flags().StringArrayVar(&config.RuntimeAddPackages, "runtime-add-package", []string{},
-		"Add additional packages to install in the builder stage (can be repeated)")
+		"Add additional packages to install in the builder and runtime stages (can be repeated)")
 	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
 			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
@@ -607,6 +610,7 @@ func buildRunnerConfig(
 			LoadGlobal:    runFlags.IgnoreGlobally,
 			PrintOverlays: runFlags.PrintOverlays,
 		}),
+		runner.WithPublish(runFlags.Publish),
 	}
 
 	// Load tools override configuration

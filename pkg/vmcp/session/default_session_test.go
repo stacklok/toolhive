@@ -47,14 +47,16 @@ func (m *mockConnectedBackend) ReadResource(ctx context.Context, uri string) (*v
 	if m.readResourceFunc != nil {
 		return m.readResourceFunc(ctx, uri)
 	}
-	return &vmcp.ResourceReadResult{Contents: []byte("data"), MimeType: "text/plain"}, nil
+	return &vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{{URI: "test://resource", MimeType: "text/plain", Text: "data"}}}, nil
 }
 
 func (m *mockConnectedBackend) GetPrompt(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
 	if m.getPromptFunc != nil {
 		return m.getPromptFunc(ctx, name, arguments)
 	}
-	return &vmcp.PromptGetResult{Messages: "hello"}, nil
+	return &vmcp.PromptGetResult{Messages: []vmcp.PromptMessage{
+		{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "hello"}},
+	}}, nil
 }
 
 func (m *mockConnectedBackend) SessionID() string { return m.sessID }
@@ -225,7 +227,7 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 			name: "successful read",
 			uri:  "file://readme",
 			mockFn: func(_ context.Context, _ string) (*vmcp.ResourceReadResult, error) {
-				return &vmcp.ResourceReadResult{Contents: []byte("hello"), MimeType: "text/plain"}, nil
+				return &vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{{URI: "file://readme", MimeType: "text/plain", Text: "hello"}}}, nil
 			},
 			wantData: "hello",
 		},
@@ -265,7 +267,8 @@ func TestDefaultSession_ReadResource(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantData, string(result.Contents))
+			require.NotEmpty(t, result.Contents)
+			assert.Equal(t, tt.wantData, result.Contents[0].Text)
 		})
 	}
 }
@@ -278,20 +281,24 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		prompt    string
-		mockFn    func(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
-		wantErr   bool
-		wantErrIs error
-		wantMsg   string
+		name         string
+		prompt       string
+		mockFn       func(ctx context.Context, name string, arguments map[string]any) (*vmcp.PromptGetResult, error)
+		wantErr      bool
+		wantErrIs    error
+		wantMessages []vmcp.PromptMessage
 	}{
 		{
 			name:   "successful get",
 			prompt: "greet",
 			mockFn: func(_ context.Context, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
-				return &vmcp.PromptGetResult{Messages: "hi there"}, nil
+				return &vmcp.PromptGetResult{Messages: []vmcp.PromptMessage{
+					{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "hi there"}},
+				}}, nil
 			},
-			wantMsg: "hi there",
+			wantMessages: []vmcp.PromptMessage{
+				{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "hi there"}},
+			},
 		},
 		{
 			name:      "prompt not in routing table",
@@ -328,7 +335,7 @@ func TestDefaultSession_GetPrompt(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantMsg, result.Messages)
+			assert.Equal(t, tt.wantMessages, result.Messages)
 		})
 	}
 }
@@ -377,8 +384,14 @@ func TestDefaultSession_Close(t *testing.T) {
 			[]vmcp.Tool{{Name: "slow"}}, nil, nil,
 		)
 
+		// callGoroutineDone is closed when the goroutine that called CallTool
+		// has fully exited (i.e. after callDone.Store). This is needed because
+		// Close() only waits for done() (wg.Done) inside CallTool, not for
+		// the calling goroutine to proceed past the call.
+		callGoroutineDone := make(chan struct{})
 		var callDone atomic.Bool
 		go func() {
+			defer close(callGoroutineDone)
 			_, _ = sess.CallTool(context.Background(), nil, "slow", nil, nil)
 			callDone.Store(true)
 		}()
@@ -401,6 +414,8 @@ func TestDefaultSession_Close(t *testing.T) {
 
 		close(callRelease) // let the call finish
 		require.NoError(t, <-closeDone)
+		// Wait for the goroutine to exit so callDone.Store has run.
+		<-callGoroutineDone
 		assert.True(t, callDone.Load())
 		assert.True(t, mock.closeCalled.Load())
 	})

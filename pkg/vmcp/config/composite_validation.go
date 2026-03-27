@@ -21,6 +21,7 @@ import (
 const (
 	WorkflowStepTypeToolCall    = "tool"
 	WorkflowStepTypeElicitation = "elicitation"
+	WorkflowStepTypeForEach     = "forEach"
 )
 
 // Constants for error actions
@@ -211,9 +212,10 @@ func ValidateStepType(pathPrefix string, index int, step *WorkflowStepConfig) er
 	validTypes := map[string]bool{
 		WorkflowStepTypeToolCall:    true,
 		WorkflowStepTypeElicitation: true,
+		WorkflowStepTypeForEach:     true,
 	}
 	if !validTypes[stepType] {
-		return fmt.Errorf("%s[%d].type must be one of: tool, elicitation", pathPrefix, index)
+		return fmt.Errorf("%s[%d].type must be one of: tool, elicitation, forEach", pathPrefix, index)
 	}
 
 	if stepType == WorkflowStepTypeToolCall {
@@ -229,7 +231,120 @@ func ValidateStepType(pathPrefix string, index int, step *WorkflowStepConfig) er
 		return fmt.Errorf("%s[%d].message is required when type is elicitation", pathPrefix, index)
 	}
 
+	if stepType == WorkflowStepTypeForEach {
+		if err := ValidateForEachStep(pathPrefix, index, step); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// MaxForEachIterations is the hard cap on forEach iterations.
+const MaxForEachIterations = 1000
+
+// ValidateForEachStep validates forEach-specific configuration.
+func ValidateForEachStep(pathPrefix string, index int, step *WorkflowStepConfig) error {
+	// forEach must not have tool or message fields
+	if step.Tool != "" {
+		return fmt.Errorf("%s[%d]: forEach step must not have 'tool' field", pathPrefix, index)
+	}
+	if step.Message != "" {
+		return fmt.Errorf("%s[%d]: forEach step must not have 'message' field", pathPrefix, index)
+	}
+
+	// collection is required and must be a valid template
+	if step.Collection == "" {
+		return fmt.Errorf("%s[%d].collection is required for forEach steps", pathPrefix, index)
+	}
+	if err := ValidateTemplate(step.Collection); err != nil {
+		return fmt.Errorf("%s[%d].collection: invalid template: %w", pathPrefix, index, err)
+	}
+
+	// inner step is required
+	if step.InnerStep == nil {
+		return fmt.Errorf("%s[%d].step is required for forEach steps", pathPrefix, index)
+	}
+
+	if err := validateForEachInnerStep(pathPrefix, index, step.InnerStep); err != nil {
+		return err
+	}
+
+	return validateForEachLimits(pathPrefix, index, step)
+}
+
+// validateForEachInnerStep validates the inner step of a forEach.
+func validateForEachInnerStep(pathPrefix string, index int, inner *WorkflowStepConfig) error {
+	innerType := inner.Type
+	if innerType == "" {
+		innerType = WorkflowStepTypeToolCall
+	}
+	if innerType != WorkflowStepTypeToolCall {
+		return fmt.Errorf(
+			"%s[%d].step.type must be 'tool' (got %q); only tool inner steps are supported",
+			pathPrefix, index, innerType)
+	}
+
+	if inner.Tool == "" {
+		return fmt.Errorf("%s[%d].step.tool is required for tool inner steps", pathPrefix, index)
+	}
+	if !IsValidToolReference(inner.Tool) {
+		return fmt.Errorf("%s[%d].step.tool must be a valid tool name", pathPrefix, index)
+	}
+
+	if !inner.Arguments.IsEmpty() {
+		args, err := inner.Arguments.ToMap()
+		if err != nil {
+			return fmt.Errorf("%s[%d].step.arguments: invalid JSON: %w", pathPrefix, index, err)
+		}
+		for argName, argValue := range args {
+			if strValue, ok := argValue.(string); ok {
+				if err := ValidateTemplate(strValue); err != nil {
+					return fmt.Errorf("%s[%d].step.arguments[%s]: invalid template: %w", pathPrefix, index, argName, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// maxForEachParallel is the hard cap on forEach parallelism.
+const maxForEachParallel = 50
+
+// validateForEachLimits validates itemVar, maxParallel, and maxIterations.
+func validateForEachLimits(pathPrefix string, index int, step *WorkflowStepConfig) error {
+	if step.ItemVar != "" {
+		if !isValidGoIdentifier(step.ItemVar) {
+			return fmt.Errorf("%s[%d].itemVar must be a valid Go identifier (got %q)", pathPrefix, index, step.ItemVar)
+		}
+		if step.ItemVar == "index" {
+			return fmt.Errorf("%s[%d].itemVar cannot be 'index' (reserved)", pathPrefix, index)
+		}
+	}
+	if step.MaxParallel < 0 {
+		return fmt.Errorf("%s[%d].maxParallel must be non-negative", pathPrefix, index)
+	}
+	if step.MaxParallel > maxForEachParallel {
+		return fmt.Errorf("%s[%d].maxParallel must be <= %d (got %d)",
+			pathPrefix, index, maxForEachParallel, step.MaxParallel)
+	}
+	if step.MaxIterations < 0 {
+		return fmt.Errorf("%s[%d].maxIterations must be non-negative", pathPrefix, index)
+	}
+	if step.MaxIterations > MaxForEachIterations {
+		return fmt.Errorf("%s[%d].maxIterations must be <= %d (got %d)",
+			pathPrefix, index, MaxForEachIterations, step.MaxIterations)
+	}
+	return nil
+}
+
+// goIdentifierRegex matches valid Go identifiers.
+var goIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// isValidGoIdentifier checks if s is a valid Go identifier.
+func isValidGoIdentifier(s string) bool {
+	return s != "" && goIdentifierRegex.MatchString(s)
 }
 
 // ValidateStepTemplates validates all template fields in a step.

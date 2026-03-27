@@ -356,6 +356,104 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 		})
 	})
 
+	Context("When creating an MCPServer with scaling configuration", func() {
+		It("Should populate ScalingConfig in RunConfig when backendReplicas and Redis session storage are set", func() {
+			namespace := "scaling-runconfig-ns"
+			mcpServerName := "scaling-runconfig-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			backendReplicas := int32(3)
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:           "example/mcp-server:latest",
+					Transport:       "stdio",
+					ProxyPort:       8080,
+					BackendReplicas: &backendReplicas,
+					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+						Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+						Address:   "redis:6379",
+						DB:        1,
+						KeyPrefix: "thv:",
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+
+			var runConfig runner.RunConfig
+			Expect(json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)).To(Succeed())
+
+			Expect(runConfig.ScalingConfig).NotTo(BeNil())
+			Expect(runConfig.ScalingConfig.BackendReplicas).NotTo(BeNil())
+			Expect(*runConfig.ScalingConfig.BackendReplicas).To(Equal(int32(3)))
+			Expect(runConfig.ScalingConfig.SessionRedis).NotTo(BeNil())
+			Expect(runConfig.ScalingConfig.SessionRedis.Address).To(Equal("redis:6379"))
+			Expect(runConfig.ScalingConfig.SessionRedis.DB).To(Equal(int32(1)))
+			Expect(runConfig.ScalingConfig.SessionRedis.KeyPrefix).To(Equal("thv:"))
+		})
+
+		It("Should omit ScalingConfig from RunConfig when no scaling fields are set", func() {
+			namespace := "scaling-absent-ns"
+			mcpServerName := "scaling-absent-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "example/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+
+			var runConfig runner.RunConfig
+			Expect(json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)).To(Succeed())
+
+			Expect(runConfig.ScalingConfig).To(BeNil())
+		})
+	})
+
 	Context("When creating MCPServer with complex configurations", func() {
 		It("Should handle MCPServer with telemetry configuration", func() {
 			namespace := "telemetry-test-ns"

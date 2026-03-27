@@ -172,7 +172,8 @@ func TestSessionFactory_Integration_ReadResource(t *testing.T) {
 	result, err := sess.ReadResource(context.Background(), nil, "test://data")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Equal(t, "hello", string(result.Contents))
+	require.NotEmpty(t, result.Contents)
+	assert.Equal(t, "hello", result.Contents[0].Text)
 }
 
 func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
@@ -194,8 +195,11 @@ func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
 	result, err := sess.GetPrompt(context.Background(), nil, "greet", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	// ConvertPromptMessages formats messages as "[role] text\n"
-	assert.Equal(t, "[user] Hello!\n", result.Messages)
+	// Messages preserve individual roles and content structure
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "user", result.Messages[0].Role)
+	assert.Equal(t, vmcp.ContentTypeText, result.Messages[0].Content.Type)
+	assert.Equal(t, "Hello!", result.Messages[0].Content.Text)
 }
 
 func TestSessionFactory_Integration_MultipleBackends(t *testing.T) {
@@ -298,7 +302,8 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 		result, err := sess.ReadResource(context.Background(), identity, "test://data")
 		require.NoError(t, err)
 		require.NotNil(t, result)
-		assert.Equal(t, "hello", string(result.Contents))
+		require.NotEmpty(t, result.Contents)
+		assert.Equal(t, "hello", result.Contents[0].Text)
 	})
 
 	t.Run("allows GetPrompt with correct token", func(t *testing.T) {
@@ -306,7 +311,9 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 		result, err := sess.GetPrompt(context.Background(), identity, "greet", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
-		assert.Equal(t, "[user] Hello!\n", result.Messages)
+		require.Len(t, result.Messages, 1)
+		assert.Equal(t, "user", result.Messages[0].Role)
+		assert.Equal(t, "Hello!", result.Messages[0].Content.Text)
 	})
 }
 

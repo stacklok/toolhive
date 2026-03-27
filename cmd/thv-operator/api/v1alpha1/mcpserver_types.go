@@ -68,6 +68,42 @@ const (
 	ConditionReasonCABundleRefInvalid = "CABundleRefInvalid"
 )
 
+const (
+	// ConditionTypeExternalAuthConfigValidated indicates whether the ExternalAuthConfig is valid
+	ConditionTypeExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+)
+
+const (
+	// ConditionReasonExternalAuthConfigMultiUpstream indicates the ExternalAuthConfig has multiple upstreams,
+	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
+	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+)
+
+// ConditionStdioReplicaCapped indicates spec.replicas was capped at 1 for stdio transport.
+const ConditionStdioReplicaCapped = "StdioReplicaCapped"
+
+const (
+	// ConditionReasonStdioReplicaCapped is set when spec.replicas > 1 for a stdio transport.
+	ConditionReasonStdioReplicaCapped = "StdioTransportCapAt1"
+	// ConditionReasonStdioReplicaCapNotActive is set when the stdio replica cap does not apply.
+	ConditionReasonStdioReplicaCapNotActive = "StdioReplicaCapNotActive"
+)
+
+// ConditionSessionStorageWarning indicates replicas > 1 but no Redis session storage is configured.
+const ConditionSessionStorageWarning = "SessionStorageWarning"
+
+const (
+	// ConditionReasonSessionStorageMissing is set when replicas > 1 and no Redis session storage is configured.
+	ConditionReasonSessionStorageMissing = "SessionStorageMissingForReplicas"
+	// ConditionReasonSessionStorageConfigured is set when replicas > 1 and Redis session storage is configured.
+	ConditionReasonSessionStorageConfigured = "SessionStorageConfigured"
+	// ConditionReasonSessionStorageNotApplicable is set when replicas is nil or <= 1 and the warning is not active.
+	ConditionReasonSessionStorageNotApplicable = "SessionStorageWarningNotApplicable"
+)
+
+// SessionStorageProviderRedis is the provider name for Redis-backed session storage.
+const SessionStorageProviderRedis = "redis"
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
@@ -215,6 +251,29 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=ClientIP
 	// +optional
 	SessionAffinity string `json:"sessionAffinity,omitempty"`
+
+	// Replicas is the desired number of proxy runner (thv run) pod replicas.
+	// MCPServer creates two separate Deployments: one for the proxy runner and one
+	// for the MCP server backend. This field controls the proxy runner Deployment.
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// BackendReplicas is the desired number of MCP server backend pod replicas.
+	// This controls the backend Deployment (the MCP server container itself),
+	// independent of the proxy runner controlled by Replicas.
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	BackendReplicas *int32 `json:"backendReplicas,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When nil, no session storage is configured.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -325,6 +384,41 @@ type SecretRef struct {
 	// If left unspecified, it defaults to the key
 	// +optional
 	TargetEnvName string `json:"targetEnvName,omitempty"`
+}
+
+// SessionStorageConfig defines session storage configuration for horizontal scaling.
+//
+// This is the CRD/K8s-aware surface: it uses SecretKeyRef for secret resolution.
+// The reconciler resolves PasswordRef to a plain string and builds a
+// session.RedisConfig (pkg/transport/session) for the actual storage backend.
+// The operator also populates pkg/vmcp/config.SessionStorageConfig (without PasswordRef)
+// into the vMCP ConfigMap so the vMCP process receives connection parameters at startup.
+//
+// +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
+type SessionStorageConfig struct {
+	// Provider is the session storage backend type
+	// +kubebuilder:validation:Enum=memory;redis
+	// +kubebuilder:validation:Required
+	Provider string `json:"provider"`
+
+	// Address is the Redis server address (required when provider is redis)
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Address string `json:"address,omitempty"`
+
+	// DB is the Redis database number
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=0
+	// +optional
+	DB int32 `json:"db,omitempty"`
+
+	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive
+	// +optional
+	KeyPrefix string `json:"keyPrefix,omitempty"`
+
+	// PasswordRef is a reference to a Secret key containing the Redis password
+	// +optional
+	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
 }
 
 // Permission profile types
@@ -632,18 +726,18 @@ type ConfigMapAuthzRef struct {
 	Key string `json:"key,omitempty"`
 }
 
-// ToolConfigRef defines a reference to a MCPToolConfig resource.
-// The referenced MCPToolConfig must be in the same namespace as the MCPServer.
-type ToolConfigRef struct {
-	// Name is the name of the MCPToolConfig resource in the same namespace
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-}
-
 // ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
 // The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
 type ExternalAuthConfigRef struct {
 	// Name is the name of the MCPExternalAuthConfig resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
+// ToolConfigRef defines a reference to a MCPToolConfig resource.
+// The referenced MCPToolConfig must be in the same namespace as the MCPServer.
+type ToolConfigRef struct {
+	// Name is the name of the MCPToolConfig resource in the same namespace
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }

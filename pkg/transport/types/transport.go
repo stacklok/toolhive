@@ -77,13 +77,9 @@ type MiddlewareRunner interface {
 	// GetConfig returns a config interface for middleware to access runner configuration
 	GetConfig() RunnerConfig
 
-	// GetUpstreamTokenService returns an accessor for the upstream token service.
-	// The returned function should be called at request time; it returns nil if
-	// the embedded auth server is not configured.
-	//
-	// This method always returns a non-nil function. Service availability is
-	// determined at request time when the returned function is called.
-	GetUpstreamTokenService() func() upstreamtoken.Service
+	// GetUpstreamTokenReader returns a TokenReader for identity enrichment.
+	// Returns nil if the embedded auth server is not configured.
+	GetUpstreamTokenReader() upstreamtoken.TokenReader
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration

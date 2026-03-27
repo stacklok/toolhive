@@ -866,6 +866,9 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		UpstreamNonce:        pending.UpstreamNonce,
 		UpstreamProviderName: pending.UpstreamProviderName,
 		SessionID:            pending.SessionID,
+		ResolvedUserID:       pending.ResolvedUserID,
+		ResolvedUserName:     pending.ResolvedUserName,
+		ResolvedUserEmail:    pending.ResolvedUserEmail,
 		CreatedAt:            pending.CreatedAt,
 	}
 
@@ -912,6 +915,9 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		UpstreamNonce:        pending.UpstreamNonce,
 		UpstreamProviderName: pending.UpstreamProviderName,
 		SessionID:            pending.SessionID,
+		ResolvedUserID:       pending.ResolvedUserID,
+		ResolvedUserName:     pending.ResolvedUserName,
+		ResolvedUserEmail:    pending.ResolvedUserEmail,
 		CreatedAt:            pending.CreatedAt,
 	}, nil
 }

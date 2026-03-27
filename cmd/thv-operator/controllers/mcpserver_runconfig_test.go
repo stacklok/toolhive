@@ -30,7 +30,6 @@ import (
 
 const (
 	testImage               = "test-image:latest"
-	stdioTransport          = "stdio"
 	sseProxyMode            = "sse"
 	streamableHTTPProxyMode = "streamable-http"
 )
@@ -1701,6 +1700,163 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 			// Verify basic RunConfig fields
 			assert.Equal(t, tc.mcpServer.Name, runConfig.Name)
 			assert.Equal(t, tc.mcpServer.Spec.Image, runConfig.Image)
+		})
+	}
+}
+
+// TestPopulateScalingConfig tests BackendReplicas and SessionRedis injection into RunConfig.
+func TestPopulateScalingConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		spec     mcpv1alpha1.MCPServerSpec
+		expected func(t *testing.T, sc *runner.ScalingConfig)
+	}{
+		{
+			name: "nil backendReplicas and nil sessionStorage — ScalingConfig stays nil",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     testImage,
+				Transport: stdioTransport,
+				ProxyPort: 8080,
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				assert.Nil(t, sc)
+			},
+		},
+		{
+			name: "backendReplicas set — written to ScalingConfig",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:           testImage,
+				Transport:       stdioTransport,
+				ProxyPort:       8080,
+				BackendReplicas: int32Ptr(3),
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.BackendReplicas)
+				assert.Equal(t, int32(3), *sc.BackendReplicas)
+			},
+		},
+		{
+			name: "backendReplicas zero — written (not nil) to ScalingConfig",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:           testImage,
+				Transport:       stdioTransport,
+				ProxyPort:       8080,
+				BackendReplicas: int32Ptr(0),
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.BackendReplicas)
+				assert.Equal(t, int32(0), *sc.BackendReplicas)
+			},
+		},
+		{
+			name: "sessionStorage nil — SessionRedis stays nil",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:           testImage,
+				Transport:       stdioTransport,
+				ProxyPort:       8080,
+				BackendReplicas: int32Ptr(2),
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				assert.Nil(t, sc.SessionRedis)
+			},
+		},
+		{
+			name: "sessionStorage memory — SessionRedis stays nil",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     testImage,
+				Transport: stdioTransport,
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: "memory",
+				},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				assert.Nil(t, sc)
+			},
+		},
+		{
+			name: "sessionStorage redis — address/db/keyPrefix written to SessionRedis",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     testImage,
+				Transport: stdioTransport,
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider:  "redis",
+					Address:   "redis.default.svc:6379",
+					DB:        2,
+					KeyPrefix: "thv:",
+				},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, "redis.default.svc:6379", sc.SessionRedis.Address)
+				assert.Equal(t, int32(2), sc.SessionRedis.DB)
+				assert.Equal(t, "thv:", sc.SessionRedis.KeyPrefix)
+			},
+		},
+		{
+			name: "sessionStorage redis with passwordRef — password NOT in SessionRedis",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     testImage,
+				Transport: stdioTransport,
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+					PasswordRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "redis-secret",
+						Key:  "password",
+					},
+				},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, "redis:6379", sc.SessionRedis.Address)
+				assert.Equal(t, int32(0), sc.SessionRedis.DB)
+				assert.Empty(t, sc.SessionRedis.KeyPrefix)
+				// Password must NOT be stored in the RunConfig (it's injected as pod env var).
+				// Verify neither the secret name nor the key leaks into the serialized config.
+				data, err := json.Marshal(sc)
+				require.NoError(t, err)
+				assert.NotContains(t, string(data), "redis-secret")
+				assert.NotContains(t, string(data), "password")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       tt.spec,
+			}
+
+			r := &MCPServerReconciler{
+				Client: fake.NewClientBuilder().
+					WithScheme(createRunConfigTestScheme()).
+					WithObjects(m).
+					Build(),
+			}
+
+			runConfig, err := r.createRunConfigFromMCPServer(m)
+			require.NoError(t, err)
+			tt.expected(t, runConfig.ScalingConfig)
 		})
 	}
 }

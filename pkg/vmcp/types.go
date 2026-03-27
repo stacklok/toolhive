@@ -380,6 +380,21 @@ const (
 	ContentTypeLink ContentType = "resource_link"
 )
 
+// ContentAnnotations describes per-content metadata annotations.
+// These are the vmcp-domain equivalents of mcp.Annotations, following the
+// Anti-Corruption Layer pattern (vmcp types are decoupled from mcp-go).
+type ContentAnnotations struct {
+	// Audience describes who the content is intended for.
+	// Valid values are the mcp.Role constants: "user" and "assistant".
+	Audience []string `json:"audience,omitempty"`
+	// Priority is a hint for display ordering in the closed interval [0.0, 1.0]
+	// per the MCP spec, where 0.0 is least important and 1.0 is most important.
+	// Nil means no priority hint was provided.
+	Priority *float64 `json:"priority,omitempty"`
+	// LastModified is an ISO 8601 timestamp (e.g., "2025-01-12T15:00:58Z").
+	LastModified string `json:"lastModified,omitempty"`
+}
+
 // Content represents MCP content (text, image, audio, embedded resource, resource link).
 // This is used by ToolCallResult to preserve the full content structure from backends.
 type Content struct {
@@ -403,6 +418,10 @@ type Content struct {
 
 	// Description is the resource description (for ResourceLink)
 	Description string
+
+	// Annotations contains per-content metadata (audience, priority, lastModified).
+	// Nil means no annotations were provided by the backend.
+	Annotations *ContentAnnotations
 }
 
 // ToolCallResult wraps a tool call response with metadata.
@@ -431,17 +450,26 @@ type ToolCallResult struct {
 	Meta map[string]any
 }
 
+// ResourceContent represents a single resource content item,
+// preserving the text vs blob distinction from the MCP protocol.
+type ResourceContent struct {
+	// URI is the resource URI.
+	URI string
+	// MimeType is the content type of this resource item.
+	MimeType string
+	// Text is the text content (non-empty for text resources).
+	Text string
+	// Blob is the base64-encoded binary content (non-empty for blob resources).
+	// Exactly one of Text or Blob should be set; Blob takes precedence in ToMCPResourceContents.
+	Blob string
+}
+
 // ResourceReadResult wraps a resource read response with metadata.
 // This preserves both the resource data AND the _meta field from the backend MCP server.
 type ResourceReadResult struct {
-	// Contents is the concatenated resource data.
-	// When a resource has multiple contents (text or blob), they are concatenated
-	// directly without separators. Text contents are converted to bytes, blob contents
-	// are base64-decoded before concatenation.
-	Contents []byte
-
-	// MimeType is the content type of the resource.
-	MimeType string
+	// Contents preserves individual resource content items with their
+	// per-item URIs, MIME types, and text/blob distinction.
+	Contents []ResourceContent
 
 	// Meta contains protocol-level metadata from the backend (_meta field).
 	// NOTE: Due to MCP SDK limitations, resources/read handlers cannot forward _meta
@@ -450,11 +478,22 @@ type ResourceReadResult struct {
 	Meta map[string]any
 }
 
+// PromptMessage represents a single message in a prompt response,
+// preserving the role and content structure from the backend.
+type PromptMessage struct {
+	// Role is the message role. The MCP spec defines "user" and "assistant";
+	// backends may also send other values which are relayed as-is.
+	Role string
+	// Content is the message content, supporting all MCP content types.
+	Content Content
+}
+
 // PromptGetResult wraps a prompt response with metadata.
 // This preserves both the prompt messages AND the _meta field from the backend MCP server.
 type PromptGetResult struct {
-	// Messages is the concatenated prompt text from all messages.
-	Messages string
+	// Messages preserves individual prompt messages with their roles
+	// and full content structure (text, images, audio, resources).
+	Messages []PromptMessage
 
 	// Description is an optional description of the prompt.
 	Description string

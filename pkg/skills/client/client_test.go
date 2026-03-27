@@ -564,7 +564,7 @@ func TestNewDefaultClient(t *testing.T) {
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
 
-		c := newDefaultClientWithEnv(mockEnv)
+		c := newDefaultClientWithEnv(t.Context(), mockEnv)
 		assert.Equal(t, defaultBaseURL, c.baseURL)
 	})
 
@@ -574,7 +574,7 @@ func TestNewDefaultClient(t *testing.T) {
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("http://localhost:9999")
 
-		c := newDefaultClientWithEnv(mockEnv)
+		c := newDefaultClientWithEnv(t.Context(), mockEnv)
 		assert.Equal(t, "http://localhost:9999", c.baseURL)
 	})
 
@@ -584,7 +584,7 @@ func TestNewDefaultClient(t *testing.T) {
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
 
-		c := newDefaultClientWithEnv(mockEnv, WithTimeout(5*time.Second))
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, WithTimeout(5*time.Second))
 		assert.Equal(t, 5*time.Second, c.httpClient.Timeout)
 	})
 }

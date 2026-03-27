@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive-core/env"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -36,15 +37,21 @@ type StatusManager interface {
 	// ResetWorkloadPID resets the PID of a workload to 0.
 	// This method will do nothing if the workload does not exist.
 	ResetWorkloadPID(ctx context.Context, workloadName string) error
+	// ResetWorkloadPIDIfMatch resets the PID of a workload to 0 only if the
+	// current PID in the status file matches expectedPID. This prevents a
+	// dying process from clobbering the PID written by a replacement process
+	// that started in the meantime.
+	ResetWorkloadPIDIfMatch(ctx context.Context, workloadName string, expectedPID int) error
 	// GetWorkloadPID retrieves the PID of a workload by its name.
 	// Returns 0 if the workload does not exist or if PID is not available.
 	GetWorkloadPID(ctx context.Context, workloadName string) (int, error)
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
-func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
+func NewStatusManagerFromRuntime(runtime rt.Runtime, runConfigStore state.Store) StatusManager {
 	return &runtimeStatusManager{
-		runtime: runtime,
+		runtime:        runtime,
+		runConfigStore: runConfigStore,
 	}
 }
 
@@ -59,7 +66,11 @@ func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
 // This allows for dependency injection of environment variable access for testing.
 func NewStatusManagerWithEnv(runtime rt.Runtime, envReader env.Reader) (StatusManager, error) {
 	if rt.IsKubernetesRuntimeWithEnv(envReader) {
-		return NewStatusManagerFromRuntime(runtime), nil
+		runConfigStore, err := state.NewRunConfigStore(state.DefaultAppName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create run config store: %w", err)
+		}
+		return NewStatusManagerFromRuntime(runtime, runConfigStore), nil
 	}
 	return NewFileStatusManager(runtime)
 }
@@ -68,7 +79,8 @@ func NewStatusManagerWithEnv(runtime rt.Runtime, envReader env.Reader) (StatusMa
 // returned by the underlying runtime. This reflects the existing behaviour of
 // ToolHive at the time of writing.
 type runtimeStatusManager struct {
-	runtime rt.Runtime
+	runtime        rt.Runtime
+	runConfigStore state.Store
 }
 
 func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
@@ -82,7 +94,7 @@ func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName str
 		return core.Workload{}, err
 	}
 
-	return types.WorkloadFromContainerInfo(&info)
+	return types.WorkloadFromContainerInfo(&info, r.runConfigStore)
 }
 
 func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
@@ -103,7 +115,7 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 	for _, c := range containers {
 		// If the caller did not set `listAll` to true, only include running containers.
 		if c.IsRunning() || listAll {
-			workload, err := types.WorkloadFromContainerInfo(&c)
+			workload, err := types.WorkloadFromContainerInfo(&c, r.runConfigStore)
 			if err != nil {
 				return nil, err
 			}
@@ -143,6 +155,13 @@ func (*runtimeStatusManager) SetWorkloadPID(_ context.Context, workloadName stri
 func (*runtimeStatusManager) ResetWorkloadPID(_ context.Context, workloadName string) error {
 	// Noop for runtime status manager
 	slog.Debug("workload PID reset (noop for runtime status manager)", "workload", workloadName)
+	return nil
+}
+
+func (*runtimeStatusManager) ResetWorkloadPIDIfMatch(_ context.Context, workloadName string, expectedPID int) error {
+	// Noop for runtime status manager
+	slog.Debug("workload PID conditional reset (noop for runtime status manager)",
+		"workload", workloadName, "expected_pid", expectedPID)
 	return nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
@@ -74,19 +76,58 @@ func NewClient(baseURL string, opts ...Option) *Client {
 	return c
 }
 
-// NewDefaultClient creates a Skills API client using the TOOLHIVE_API_URL
-// environment variable, falling back to http://127.0.0.1:8080.
-func NewDefaultClient(opts ...Option) *Client {
-	return newDefaultClientWithEnv(&env.OSReader{}, opts...)
+// NewDefaultClient creates a Skills API client by trying, in order:
+//  1. The TOOLHIVE_API_URL environment variable (explicit override)
+//  2. The server discovery file (auto-detected running server)
+//  3. The default URL http://127.0.0.1:8080
+//
+// The context is used for the server discovery health check; it is not stored.
+func NewDefaultClient(ctx context.Context, opts ...Option) *Client {
+	return newDefaultClientWithEnv(ctx, &env.OSReader{}, opts...)
 }
 
 // newDefaultClientWithEnv is the testable core of NewDefaultClient.
-func newDefaultClientWithEnv(envReader env.Reader, opts ...Option) *Client {
-	base := envReader.Getenv(envAPIURL)
-	if base == "" {
-		base = defaultBaseURL
+func newDefaultClientWithEnv(ctx context.Context, envReader env.Reader, opts ...Option) *Client {
+	// 1. Explicit env var override always wins.
+	if base := envReader.Getenv(envAPIURL); base != "" {
+		return NewClient(base, opts...)
 	}
-	return NewClient(base, opts...)
+
+	// 2. Try server discovery.
+	if base, httpOpts := resolveViaDiscovery(ctx); base != "" {
+		// Discovery opts go first so caller-supplied opts can override them
+		// (e.g. a caller-provided WithTimeout replaces the discovery default).
+		merged := make([]Option, 0, len(httpOpts)+len(opts))
+		merged = append(merged, httpOpts...)
+		merged = append(merged, opts...)
+		return NewClient(base, merged...)
+	}
+
+	// 3. Fall back to the default URL.
+	return NewClient(defaultBaseURL, opts...)
+}
+
+// resolveViaDiscovery attempts to find a running server via the discovery file.
+// It returns the base URL and any additional options (e.g. a Unix socket transport).
+// On failure it returns empty values and the caller falls back to the default.
+func resolveViaDiscovery(ctx context.Context) (string, []Option) {
+	result, err := discovery.Discover(ctx)
+	if err != nil {
+		slog.Debug("server discovery failed", "error", err)
+		return "", nil
+	}
+	if result.State != discovery.StateRunning {
+		return "", nil
+	}
+
+	client, baseURL, err := discovery.HTTPClientForURL(result.Info.URL)
+	if err != nil {
+		slog.Debug("invalid URL in discovery file", "url", result.Info.URL, "error", err)
+		return "", nil
+	}
+	client.Timeout = defaultTimeout
+
+	return baseURL, []Option{WithHTTPClient(client)}
 }
 
 // --- SkillService implementation ---

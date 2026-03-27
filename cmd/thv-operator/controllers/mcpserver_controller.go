@@ -129,6 +129,10 @@ const (
 	authzLabelValueInline = "inline"
 )
 
+const defaultTerminationGracePeriodSeconds = int64(30)
+
+const stdioTransport = "stdio"
+
 // detectPlatform detects the Kubernetes platform type (Kubernetes vs OpenShift)
 // It uses the shared platform detector to ensure detection is only performed once and cached
 func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Platform, error) {
@@ -188,6 +192,10 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Validate CABundleRef if specified
 	r.validateCABundleRef(ctx, mcpServer)
+
+	// Validate stdio replica cap and session storage requirements
+	r.validateStdioReplicaCap(ctx, mcpServer)
+	r.validateSessionStorageForReplicas(ctx, mcpServer)
 
 	// Validate PodTemplateSpec early - before other validations
 	// This ensures we fail fast if the spec is invalid
@@ -392,7 +400,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Enforce stdio transport replica cap: stdio requires 1:1 proxy-to-backend
 	// connections and cannot scale beyond 1. Other transports are hands-off
 	// to allow HPAs, KEDA, or manual kubectl scale to manage replicas freely.
-	if mcpServer.Spec.Transport == "stdio" &&
+	if mcpServer.Spec.Transport == stdioTransport &&
 		deployment.Spec.Replicas != nil && *deployment.Spec.Replicas > 1 {
 		deployment.Spec.Replicas = int32Ptr(1)
 		err = r.Update(ctx, deployment)
@@ -450,13 +458,18 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if the deployment spec changed
 	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum) {
-		// Update template and metadata only — preserve Spec.Replicas so that
-		// HPAs, KEDA, and manual scaling are not overwritten by the controller.
+		// Update template and metadata. Also sync Spec.Replicas when spec.replicas is
+		// explicitly set — this makes the operator authoritative for spec-driven scaling.
+		// When spec.replicas is nil, preserve the live count so HPAs, KEDA, and manual
+		// kubectl scale remain in control.
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Spec.Selector = newDeployment.Spec.Selector
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+		if newDeployment.Spec.Replicas != nil {
+			deployment.Spec.Replicas = newDeployment.Spec.Replicas
+		}
 		err = r.Update(ctx, deployment)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment",
@@ -931,7 +944,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	ctx context.Context, m *mcpv1alpha1.MCPServer, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPServer(m.Name)
-	replicas := int32(1)
 
 	// Prepare container args
 	args := []string{"run"}
@@ -1196,7 +1208,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas: resolveDeploymentReplicas(m.Spec.Transport, m.Spec.Replicas),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: ls, // Keep original labels for selector
 			},
@@ -1206,8 +1218,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: ctrlutil.ProxyRunnerServiceAccountName(m.Name),
-					ImagePullSecrets:   imagePullSecrets,
+					ServiceAccountName:            ctrlutil.ProxyRunnerServiceAccountName(m.Name),
+					ImagePullSecrets:              imagePullSecrets,
+					TerminationGracePeriodSeconds: int64Ptr(defaultTerminationGracePeriodSeconds),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -1694,6 +1707,15 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
+	// nil means hands-off mode (HPA/KEDA manages replicas) and the live count is authoritative.
+	expectedReplicas := resolveDeploymentReplicas(mcpServer.Spec.Transport, mcpServer.Spec.Replicas)
+	if expectedReplicas != nil {
+		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != *expectedReplicas {
+			return true
+		}
+	}
+
 	return false
 }
 
@@ -1827,6 +1849,25 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		return fmt.Errorf("MCPExternalAuthConfig %s not found", m.Spec.ExternalAuthConfigRef.Name)
 	}
 
+	// MCPServer supports only single-upstream embedded auth server configs.
+	// Multi-upstream requires VirtualMCPServer.
+	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeExternalAuthConfigValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonExternalAuthConfigMultiUpstream,
+			Message: fmt.Sprintf(
+				"MCPServer supports only one upstream provider (found %d); "+
+					"use VirtualMCPServer for multi-upstream",
+				len(embeddedCfg.UpstreamProviders)),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf(
+			"MCPServer %s/%s: embedded auth server has %d upstream providers, "+
+				"but only 1 is supported; use VirtualMCPServer",
+			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
+	}
+
 	// Check if the MCPExternalAuthConfig hash has changed
 	if m.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPServer",
@@ -1858,6 +1899,88 @@ func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1
 // int32Ptr returns a pointer to an int32
 func int32Ptr(i int32) *int32 {
 	return &i
+}
+
+// int64Ptr returns a pointer to an int64
+func int64Ptr(i int64) *int64 {
+	return &i
+}
+
+// resolveDeploymentReplicas returns the replica count to set on Deployment.Spec.Replicas.
+// Returns nil when spec.replicas is nil (hands-off mode for HPA/KEDA).
+// Enforces stdio cap at 1 as defense-in-depth (reconciler also enforces this via status condition).
+func resolveDeploymentReplicas(mcpTransport string, specReplicas *int32) *int32 {
+	if specReplicas == nil {
+		return nil
+	}
+	if mcpTransport == stdioTransport && *specReplicas > 1 {
+		return int32Ptr(1)
+	}
+	return specReplicas
+}
+
+// setStdioReplicaCappedCondition sets the StdioReplicaCapped status condition
+func setStdioReplicaCappedCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionStdioReplicaCapped,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+}
+
+// validateStdioReplicaCap checks if spec.replicas > 1 for stdio transport and sets a warning condition.
+// The deployment builder enforces the cap at 1 as defense-in-depth.
+// Clears the condition when transport or replica count no longer violates the cap.
+func (r *MCPServerReconciler) validateStdioReplicaCap(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	if mcpServer.Spec.Transport == stdioTransport && mcpServer.Spec.Replicas != nil && *mcpServer.Spec.Replicas > 1 {
+		setStdioReplicaCappedCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonStdioReplicaCapped,
+			"stdio transport requires exactly 1 replica; deployment will use 1 regardless of spec.replicas")
+	} else {
+		setStdioReplicaCappedCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonStdioReplicaCapNotActive,
+			"stdio replica cap is not active")
+	}
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPServer status after stdio replica cap validation")
+	}
+}
+
+// setSessionStorageCondition sets the SessionStorageWarning status condition
+func setSessionStorageCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionSessionStorageWarning,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+}
+
+// validateSessionStorageForReplicas emits a Warning condition when replicas > 1 but session storage
+// is not configured with a Redis backend. The deployment still proceeds; this is advisory only.
+// Clears the condition when replicas drop back to nil or <= 1.
+func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	if mcpServer.Spec.Replicas != nil && *mcpServer.Spec.Replicas > 1 {
+		if mcpServer.Spec.SessionStorage == nil || mcpServer.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis {
+			setSessionStorageCondition(mcpServer, metav1.ConditionTrue,
+				mcpv1alpha1.ConditionReasonSessionStorageMissing,
+				"replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas")
+		} else {
+			setSessionStorageCondition(mcpServer, metav1.ConditionFalse,
+				mcpv1alpha1.ConditionReasonSessionStorageConfigured,
+				"Redis session storage is configured")
+		}
+	} else {
+		setSessionStorageCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonSessionStorageNotApplicable,
+			"session storage warning is not active")
+	}
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPServer status after session storage validation")
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

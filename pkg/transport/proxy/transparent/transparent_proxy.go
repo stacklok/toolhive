@@ -148,6 +148,11 @@ const (
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	// This is primarily useful for testing with shorter intervals.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
+
+	// sessionMetadataBackendURL is the session metadata key that stores the backend pod URL.
+	// It is written on initialize and read in the Rewrite closure to route follow-up requests
+	// to the same backend pod that handled the session's initialize request.
+	sessionMetadataBackendURL = "backend_url"
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -215,6 +220,26 @@ func withShutdownTimeout(timeout time.Duration) Option {
 		if timeout > 0 {
 			p.shutdownTimeout = timeout
 		}
+	}
+}
+
+// WithSessionStorage injects a custom storage backend into the session manager.
+// When not provided, the proxy uses in-memory LocalStorage (single-replica default).
+// Provide a Redis-backed storage for multi-replica deployments so all replicas
+// share the same session store.
+func WithSessionStorage(storage session.Storage) Option {
+	return func(p *TransparentProxy) {
+		if storage == nil {
+			return
+		}
+		if p.sessionManager != nil {
+			_ = p.sessionManager.Stop()
+		}
+		p.sessionManager = session.NewManagerWithStorage(
+			session.DefaultSessionTTL,
+			func(id string) session.Session { return session.NewProxySession(id) },
+			storage,
+		)
 	}
 }
 
@@ -385,6 +410,35 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		sawInitialize = t.detectInitialize(reqBody)
 	}
 
+	// Guard: reject non-initialize requests with unknown session IDs.
+	// When multiple proxyrunner replicas share a Redis session store,
+	// a valid session will always be found. If it isn't, the session
+	// has expired or the request carries a stale/forged session ID.
+	if sid := req.Header.Get("Mcp-Session-Id"); sid != "" && !sawInitialize {
+		if _, err := t.p.sessionManager.GetWithError(normalizeSessionID(sid)); err != nil {
+			status := http.StatusBadRequest
+			body := "unknown session\n"
+			if !errors.Is(err, session.ErrSessionNotFound) {
+				// Storage error (e.g. Redis timeout) — client should retry.
+				status = http.StatusServiceUnavailable
+				body = "session store unavailable\n"
+				slog.Error("session store lookup failed", "error", err)
+			}
+			hdr := make(http.Header)
+			hdr.Set("Content-Type", "text/plain; charset=utf-8")
+			return &http.Response{
+				StatusCode: status,
+				Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+				Proto:      "HTTP/1.1",
+				ProtoMajor: 1,
+				ProtoMinor: 1,
+				Header:     hdr,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}
+	}
+
 	resp, err := t.forward(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -428,7 +482,16 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			slog.Debug("detected Mcp-Session-Id header", "session_id", ct)
 			internalID := normalizeSessionID(ct)
 			if _, ok := t.p.sessionManager.Get(internalID); !ok {
-				if err := t.p.sessionManager.AddWithID(internalID); err != nil {
+				sess := session.NewProxySession(internalID)
+				// Store targetURI as the default backend_url for this session.
+				// In single-replica deployments targetURI is already the pod address,
+				// so no override is needed. In multi-replica deployments the
+				// vMCP/operator layer is responsible for setting backend_url to the
+				// actual pod DNS name (e.g. http://mcp-server-0.mcp-server.default.svc:8080)
+				// before the request reaches this proxy; the Rewrite closure then reads
+				// that value and routes follow-up requests to the correct pod.
+				sess.SetMetadata(sessionMetadataBackendURL, t.p.targetURI)
+				if err := t.p.sessionManager.AddSession(sess); err != nil {
 					//nolint:gosec // G706: session ID from HTTP response header
 					slog.Error("failed to create session from header",
 						"session_id", ct, "error", err)
@@ -462,17 +525,33 @@ func readRequestBody(req *http.Request) []byte {
 }
 
 func (t *tracingTransport) detectInitialize(body []byte) bool {
-	var rpc struct {
+	type rpcMethod struct {
 		Method string `json:"method"`
 	}
-	if err := json.Unmarshal(body, &rpc); err != nil {
+
+	// Single JSON-RPC object.
+	var single rpcMethod
+	if err := json.Unmarshal(body, &single); err == nil {
+		if single.Method == "initialize" {
+			//nolint:gosec // G706: logging target URI from config
+			slog.Debug("detected initialize method call", "target", t.p.targetURI)
+			return true
+		}
+		return false
+	}
+
+	// JSON-RPC batch: array of objects. Return true if any member is initialize.
+	var batch []rpcMethod
+	if err := json.Unmarshal(body, &batch); err != nil {
 		slog.Debug("failed to parse JSON-RPC body", "error", err)
 		return false
 	}
-	if rpc.Method == "initialize" {
-		//nolint:gosec // G706: logging target URI from config
-		slog.Debug("detected initialize method call", "target", t.p.targetURI)
-		return true
+	for _, rpc := range batch {
+		if rpc.Method == "initialize" {
+			//nolint:gosec // G706: logging target URI from config
+			slog.Debug("detected initialize method call in batch", "target", t.p.targetURI)
+			return true
+		}
 	}
 	return false
 }
@@ -506,6 +585,27 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
 			pr.SetXForwarded()
+
+			// Route to the originating backend pod when session metadata contains backend_url.
+			// Falls back to static targetURL when the session doesn't exist or has no backend_url.
+			if sid := pr.In.Header.Get("Mcp-Session-Id"); sid != "" {
+				if sess, ok := p.sessionManager.Get(normalizeSessionID(sid)); ok {
+					if backendURLStr, exists := sess.GetMetadataValue(sessionMetadataBackendURL); exists && backendURLStr != "" {
+						parsed, parseErr := url.Parse(backendURLStr)
+						switch {
+						case parseErr != nil:
+							slog.Debug("failed to parse backend_url from session metadata; using static target",
+								sessionMetadataBackendURL, backendURLStr, "error", parseErr)
+						case parsed.Scheme == "" || parsed.Host == "":
+							slog.Debug("backend_url from session metadata is not an absolute URL; using static target",
+								sessionMetadataBackendURL, backendURLStr)
+						default:
+							pr.Out.URL.Scheme = parsed.Scheme
+							pr.Out.URL.Host = parsed.Host
+						}
+					}
+				}
+			}
 
 			// Stash the original inbound request in the outbound request's
 			// context so that ModifyResponse (SSE response processor) can
@@ -589,10 +689,11 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	// 4. Mount RFC 9728 OAuth Protected Resource discovery endpoint (no middlewares)
 	// Note: This is DIFFERENT from the auth server's /.well-known/oauth-authorization-server
-	// We mount at specific paths to allow prefix handlers to register other well-known paths.
-	if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
-		mux.Handle("/.well-known/oauth-protected-resource", wellKnownHandler)
-		mux.Handle("/.well-known/oauth-protected-resource/", wellKnownHandler)
+	// Always register so OAuth discovery gets a clean 404 JSON when auth is off,
+	// instead of falling through to the proxy catch-all.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
 		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
 	}
 
@@ -829,6 +930,14 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 		}
 		//nolint:gosec // G706: logging target URI from config
 		slog.Debug("server stopped successfully", "target", p.targetURI)
+	}
+
+	// Stop the session manager to terminate its cleanup goroutine and close any
+	// underlying storage connections (e.g. Redis client) opened via WithSessionStorage.
+	if p.sessionManager != nil {
+		if err := p.sessionManager.Stop(); err != nil {
+			slog.Warn("error stopping session manager", "error", err)
+		}
 	}
 
 	return nil

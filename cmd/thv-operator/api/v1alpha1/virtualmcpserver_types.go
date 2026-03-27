@@ -73,6 +73,30 @@ type VirtualMCPServerSpec struct {
 	// The referenced EmbeddingServer must exist in the same namespace and be ready.
 	// +optional
 	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
+
+	// AuthServerConfig configures an embedded OAuth authorization server.
+	// When set, the vMCP server acts as an OIDC issuer, drives users through
+	// upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
+	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig
+	// so that tokens it issues are accepted by the vMCP's incoming auth middleware.
+	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
+	// +optional
+	AuthServerConfig *EmbeddedAuthServerConfig `json:"authServerConfig,omitempty"`
+
+	// Replicas is the desired number of vMCP pod replicas.
+	// VirtualMCPServer creates a single Deployment for the vMCP aggregator process,
+	// so there is only one replicas field (unlike MCPServer which has separate
+	// Replicas and BackendReplicas for its two Deployments).
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When nil, no session storage is configured.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
 }
 
 // EmbeddingServerRef references an existing EmbeddingServer resource by name.
@@ -225,6 +249,9 @@ const (
 
 	// ConditionTypeEmbeddingServerReady indicates whether the EmbeddingServer is ready
 	ConditionTypeEmbeddingServerReady = "EmbeddingServerReady"
+
+	// ConditionTypeAuthServerConfigValidated indicates whether the AuthServerConfig has been validated
+	ConditionTypeAuthServerConfigValidated = "AuthServerConfigValidated"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -282,6 +309,12 @@ const (
 
 	// ConditionReasonEmbeddingServerNotReady indicates the referenced EmbeddingServer is not ready
 	ConditionReasonEmbeddingServerNotReady = "EmbeddingServerNotReady"
+
+	// ConditionReasonAuthServerConfigValid indicates the AuthServerConfig is valid
+	ConditionReasonAuthServerConfigValid = "AuthServerConfigValid"
+
+	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
+	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
 )
 
 // Backend authentication types
@@ -392,6 +425,9 @@ func (r *VirtualMCPServer) Validate() error {
 			return err
 		}
 	}
+
+	// Note: AuthServerConfig validation is handled by the reconciler (validateAuthServerConfig)
+	// so it can set the AuthServerConfigValidated condition on failure.
 
 	// Validate EmbeddingServer / EmbeddingServerRef
 	return r.validateEmbeddingServer()

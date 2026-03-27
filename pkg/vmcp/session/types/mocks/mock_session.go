@@ -129,6 +129,21 @@ func (mr *MockMultiSessionMockRecorder) GetMetadata() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMetadata", reflect.TypeOf((*MockMultiSession)(nil).GetMetadata))
 }
 
+// GetMetadataValue mocks base method.
+func (m *MockMultiSession) GetMetadataValue(key string) (string, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMetadataValue", key)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// GetMetadataValue indicates an expected call of GetMetadataValue.
+func (mr *MockMultiSessionMockRecorder) GetMetadataValue(key any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMetadataValue", reflect.TypeOf((*MockMultiSession)(nil).GetMetadataValue), key)
+}
+
 // GetPrompt mocks base method.
 func (m *MockMultiSession) GetPrompt(ctx context.Context, caller *auth.Identity, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
 	m.ctrl.T.Helper()
@@ -251,18 +266,6 @@ func (m *MockMultiSession) Tools() []vmcp.Tool {
 func (mr *MockMultiSessionMockRecorder) Tools() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tools", reflect.TypeOf((*MockMultiSession)(nil).Tools))
-}
-
-// Touch mocks base method.
-func (m *MockMultiSession) Touch() {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "Touch")
-}
-
-// Touch indicates an expected call of Touch.
-func (mr *MockMultiSessionMockRecorder) Touch() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Touch", reflect.TypeOf((*MockMultiSession)(nil).Touch))
 }
 
 // Type mocks base method.

@@ -18,7 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-// oauthTokenSource implements TokenSource using OAuth/OIDC browser-based flow.
+// oauthTokenSource implements TokenSource using an OIDC browser-based flow.
 type oauthTokenSource struct {
 	oauthCfg        *config.RegistryOAuthConfig
 	registryURL     string

@@ -464,6 +464,45 @@ func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName s
 	return f.SetWorkloadPID(ctx, workloadName, 0)
 }
 
+// ResetWorkloadPIDIfMatch resets the PID of a workload to 0 only if the
+// current PID in the status file matches expectedPID. This prevents a dying
+// process from clobbering a PID written by a replacement process.
+func (f *fileStatusManager) ResetWorkloadPIDIfMatch(ctx context.Context, workloadName string, expectedPID int) error {
+	// As a side effect, get rid of the PID file if any exists
+	if err := removePIDFile(workloadName); err != nil {
+		slog.Debug("no PID for workload was removed", "workload", workloadName)
+	}
+
+	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
+		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
+		}
+
+		statusFile, err := f.readStatusFile(statusFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read status for workload %s: %w", workloadName, err)
+		}
+
+		if statusFile.ProcessID != expectedPID {
+			slog.Debug("skipping PID reset: current PID does not match",
+				"workload", workloadName,
+				"current_pid", statusFile.ProcessID,
+				"expected_pid", expectedPID)
+			return nil
+		}
+
+		statusFile.ProcessID = 0
+		statusFile.UpdatedAt = time.Now()
+		return f.writeStatusFile(statusFilePath, *statusFile)
+	})
+	if err != nil {
+		slog.Error("error resetting workload PID", "workload", workloadName, "error", err)
+	}
+	return err
+}
+
 // GetWorkloadPID retrieves the PID of a workload from its status file.
 func (f *fileStatusManager) GetWorkloadPID(ctx context.Context, workloadName string) (int, error) {
 	var pid int
@@ -756,7 +795,7 @@ func (f *fileStatusManager) getWorkloadFromRuntime(ctx context.Context, workload
 		return core.Workload{}, fmt.Errorf("failed to get workload info from runtime: %w", err)
 	}
 
-	return types.WorkloadFromContainerInfo(&info)
+	return types.WorkloadFromContainerInfo(&info, f.runConfigStore)
 }
 
 // workloadWithPID holds a workload and its associated PID for internal processing
@@ -901,7 +940,7 @@ func (f *fileStatusManager) handleRuntimeMismatch(
 	}
 
 	// Convert to workload and return unhealthy status
-	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
+	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo, f.runConfigStore)
 	if err != nil {
 		return core.Workload{}, err
 	}
@@ -964,7 +1003,7 @@ func (f *fileStatusManager) isProxyUnhealthy(
 	}
 
 	// Convert to workload and return unhealthy status
-	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
+	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo, f.runConfigStore)
 	if err != nil {
 		slog.Warn("failed to convert container info for unhealthy workload", "workload", workloadName, "error", err)
 		return core.Workload{}, false // Return false to avoid double error handling
@@ -977,9 +1016,11 @@ func (f *fileStatusManager) isProxyUnhealthy(
 }
 
 // mergeHealthyWorkloadData merges runtime container data with file-based status information
-func (*fileStatusManager) mergeHealthyWorkloadData(containerInfo rt.ContainerInfo, result core.Workload) (core.Workload, error) {
+func (f *fileStatusManager) mergeHealthyWorkloadData(
+	containerInfo rt.ContainerInfo, result core.Workload,
+) (core.Workload, error) {
 	// Runtime and proxy confirm workload is healthy - use runtime data but preserve file-based status info
-	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
+	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo, f.runConfigStore)
 	if err != nil {
 		return core.Workload{}, err
 	}
@@ -998,7 +1039,7 @@ func (f *fileStatusManager) validateWorkloadInList(
 	// Only validate if file shows running status
 	if fileWorkload.Status != rt.WorkloadStatusRunning {
 		// For non-running workloads, just merge runtime data with file status
-		runtimeWorkload, err := types.WorkloadFromContainerInfo(&containerInfo)
+		runtimeWorkload, err := types.WorkloadFromContainerInfo(&containerInfo, f.runConfigStore)
 		if err != nil {
 			return core.Workload{}, err
 		}
@@ -1044,7 +1085,7 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 
 	// First, add all runtime workloads
 	for _, container := range runtimeContainers {
-		workload, err := types.WorkloadFromContainerInfo(&container)
+		workload, err := types.WorkloadFromContainerInfo(&container, f.runConfigStore)
 		if err != nil {
 			slog.Warn("failed to convert container info for workload", "workload", container.Name, "error", err)
 			continue

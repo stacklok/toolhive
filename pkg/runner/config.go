@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
 	workloadtypes "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -82,6 +83,9 @@ type RunConfig struct {
 
 	// TargetHost is the host to forward traffic to (only applicable to SSE transport)
 	TargetHost string `json:"target_host,omitempty" yaml:"target_host,omitempty"`
+
+	// Publish lists ports to publish to the host in format "hostPort:containerPort"
+	Publish []string `json:"publish,omitempty" yaml:"publish,omitempty"`
 
 	// PermissionProfileNameOrPath is the name or path of the permission profile
 	PermissionProfileNameOrPath string `json:"permission_profile_name_or_path,omitempty" yaml:"permission_profile_name_or_path,omitempty"` //nolint:lll
@@ -191,6 +195,9 @@ type RunConfig struct {
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
 
+	// ValidatingWebhooks contains the configuration for validating webhook middleware.
+	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
+
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port
 	existingPort int
@@ -227,9 +234,25 @@ type ScalingConfig struct {
 	// When set (including 0), the value is an explicit replica count.
 	BackendReplicas *int32 `json:"backend_replicas,omitempty" yaml:"backend_replicas,omitempty"`
 
-	// SessionCacheSize is the maximum number of sessions held in the local LRU cache.
-	// When nil, consuming code applies a sensible default (e.g. 1000).
-	SessionCacheSize *int32 `json:"session_cache_size,omitempty" yaml:"session_cache_size,omitempty"`
+	// SessionRedis holds non-sensitive Redis connection parameters for distributed session storage.
+	// Populated only when MCPServer.spec.sessionStorage.provider == "redis".
+	// The Redis password is not included — it is injected as env var THV_SESSION_REDIS_PASSWORD.
+	// +optional
+	SessionRedis *SessionRedisConfig `json:"session_redis,omitempty" yaml:"session_redis,omitempty"`
+}
+
+// SessionRedisConfig contains non-sensitive Redis connection parameters used for distributed
+// session storage when the operator is configured with sessionStorage.provider == "redis".
+// The Redis password is excluded and injected separately as env var THV_SESSION_REDIS_PASSWORD.
+type SessionRedisConfig struct {
+	// Address is the Redis server address (host:port).
+	Address string `json:"address,omitempty" yaml:"address,omitempty"`
+
+	// DB is the Redis database number.
+	DB int32 `json:"db,omitempty" yaml:"db,omitempty"`
+
+	// KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
+	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

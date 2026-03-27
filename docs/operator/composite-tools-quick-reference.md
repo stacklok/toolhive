@@ -24,7 +24,7 @@ spec:
 
   steps:                         # Required: workflow steps
     - id: step1
-      type: tool                 # tool|elicitation
+      type: tool                 # tool|elicitation|forEach
       tool: workload.tool_name
       arguments:
         key: "{{.params.param_name}}"
@@ -228,6 +228,33 @@ steps:
     dependsOn: [process_a, process_b]
 ```
 
+### ForEach Iteration
+
+```yaml
+steps:
+  - id: get_packages
+    type: tool
+    tool: oci.get_image_config
+    arguments:
+      image: "{{.params.image}}"
+
+  - id: check_vulns
+    type: forEach
+    collection: "{{json .steps.get_packages.output.packages}}"
+    itemVar: pkg                   # defaults to "item"
+    maxParallel: 5                 # defaults to DAG maxParallel (10)
+    step:                          # single inner step (tool only)
+      type: tool
+      tool: osv.query_vulnerability
+      arguments:
+        package_name: "{{.forEach.pkg.name}}"
+    dependsOn: [get_packages]
+    onError:
+      action: continue             # skip failed items, don't abort
+```
+
+**Output**: `{{.steps.check_vulns.output.iterations}}`, `.count`, `.completed`, `.failed`
+
 ### Retry with Fallback
 
 ```yaml
@@ -253,6 +280,10 @@ steps:
 - ✅ Tool format: `workload_id.tool_name`
 - ✅ Max retry count: 10 (runtime capped - values > 10 are silently reduced with warning)
 - ✅ Max workflow steps: 100 (runtime enforced - workflows > 100 steps fail validation)
+- ✅ forEach maxIterations: 1000 (hard cap), defaults to 100
+- ✅ forEach maxParallel: 50 (hard cap), defaults to DAG maxParallel (10)
+- ✅ forEach inner step must be type `tool` (no nested forEach or elicitation)
+- ✅ forEach `itemVar` cannot be `index` (reserved)
 
 **Note**: Max retry and max steps limits are currently enforced at runtime. Future work may add CRD-level validation (`+kubebuilder:validation:MaxItems=100`) and webhook validation to fail at submission time rather than execution time.
 

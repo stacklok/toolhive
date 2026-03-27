@@ -26,9 +26,10 @@ import (
 // Desktop clients (Studio) match on this value to display the correct UI.
 const RegistryAuthRequiredCode = "registry_auth_required"
 
-// registryAuthErrorResponse is the JSON body for HTTP 503 auth-required errors.
-// Studio uses the "code" field to detect this specific condition and prompt the user.
-type registryAuthErrorResponse struct {
+// registryErrorResponse is the JSON body for structured HTTP 503 error responses.
+// The "code" field allows clients (e.g. Studio) to distinguish between
+// "registry_auth_required" and "registry_unavailable" conditions.
+type registryErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
@@ -38,9 +39,25 @@ type registryAuthErrorResponse struct {
 // but thv serve itself lacks a valid registry credential. This is a server-side dependency
 // issue, not a client auth failure (which would be 401).
 func writeRegistryAuthRequiredError(w http.ResponseWriter) {
-	body := registryAuthErrorResponse{
+	body := registryErrorResponse{
 		Code:    RegistryAuthRequiredCode,
-		Message: "Registry authentication required. Run 'thv registry login' to authenticate.",
+		Message: "Registry authentication required. POST to /api/v1beta/registry/auth/login to authenticate.",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// RegistryUnavailableCode is the machine-readable error code returned in the
+// structured JSON 503 response when the upstream registry is unreachable.
+const RegistryUnavailableCode = "registry_unavailable"
+
+// writeRegistryUnavailableError writes a structured JSON 503 response when the
+// upstream registry cannot be reached or returns an unexpected error (e.g. 404).
+func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.UnavailableError) {
+	body := registryErrorResponse{
+		Code:    RegistryUnavailableCode,
+		Message: unavailableErr.Error(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
@@ -103,7 +120,8 @@ func (rr *RegistryRoutes) registryAuthLogin(w http.ResponseWriter, r *http.Reque
 
 	if err := auth.Login(r.Context(), rr.configProvider, secretsProvider, auth.LoginOptions{}); err != nil {
 		if isRegistryAuthError(err) {
-			http.Error(w, "Registry OAuth not configured; use 'thv config set-registry-auth' first", http.StatusBadRequest)
+			http.Error(w, "Registry OAuth not configured; call PUT /api/v1beta/registry/default with a client ID and "+
+				"issuer URL first", http.StatusBadRequest)
 			return
 		}
 		slog.Error("registry login failed", "error", err)
@@ -140,7 +158,8 @@ func (rr *RegistryRoutes) registryAuthLogout(w http.ResponseWriter, r *http.Requ
 
 	if err := auth.Logout(r.Context(), rr.configProvider, secretsProvider); err != nil {
 		if isRegistryAuthError(err) {
-			http.Error(w, "Registry OAuth not configured; use 'thv config set-registry-auth' first", http.StatusBadRequest)
+			http.Error(w, "Registry OAuth not configured; call PUT /api/v1beta/registry/default with a client ID and "+
+				"issuer URL first", http.StatusBadRequest)
 			return
 		}
 		slog.Error("registry logout failed", "error", err)
@@ -244,6 +263,12 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 			writeRegistryAuthRequiredError(w)
 			return nil, false
 		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
+			return nil, false
+		}
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
 		slog.Error("failed to get registry provider", "error", err)
 		return nil, false
@@ -342,6 +367,12 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 			writeRegistryAuthRequiredError(w)
 			return
 		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
+			return
+		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -417,6 +448,12 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 			writeRegistryAuthRequiredError(w)
 			return
 		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
+			return
+		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -483,36 +520,38 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Process the registry URL/path update.
-	// Call processRegistryUpdate when source fields are present, or when no fields
-	// at all are provided (which resets the registry to defaults).
-	hasSourceFields := req.URL != nil || req.APIURL != nil || req.LocalPath != nil
-	hasSourceUpdate := hasSourceFields || req.Auth == nil
 	var responseType string
-	if hasSourceUpdate {
-		var err error
-		responseType, err = rr.processRegistryUpdate(&req)
-		if err != nil {
-			// Check if it's a connectivity error - return 504 Gateway Timeout
-			var connErr *connectivityError
-			if errors.As(err, &connErr) {
-				http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
-				return
-			}
-			// Check if it's a validation error - return 502 Bad Gateway
-			if isValidationError(err) {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			// Other errors - return 400 Bad Request
+	registryType, err := rr.processRegistryUpdate(&req)
+	if err != nil {
+		// Check if it's a connectivity error - return 504 Gateway Timeout
+		var connErr *connectivityError
+		if errors.As(err, &connErr) {
+			http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
+			return
+		}
+		// Check if it's a validation error - return 502 Bad Gateway
+		if isValidationError(err) {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		// Other errors - return 400 Bad Request
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	responseType = registryType
+
+	// Always overwrite auth: if auth is provided, set it; if not, clear it.
+	// This prevents stale tokens from being sent to the wrong registry server.
+	if req.Auth != nil {
+		if err := rr.processAuthUpdate(r.Context(), req.Auth); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-	}
-
-	// Process auth configuration if provided
-	if req.Auth != nil {
-		if err := rr.processAuthUpdate(req.Auth); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+	} else {
+		authMgr := regpkg.NewAuthManager(rr.configProvider)
+		if err := authMgr.UnsetAuth(); err != nil {
+			slog.Error("failed to clear registry auth", "error", err)
+			http.Error(w, "Failed to clear registry auth", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -520,7 +559,8 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	// Reset the registry provider cache to pick up configuration changes
 	regpkg.ResetDefaultProvider()
 
-	// If no source update was performed, resolve the current type from config
+	// If registry was reset to default, responseType is already "default".
+	// Otherwise resolve from config.
 	if responseType == "" {
 		currentType, _ := rr.getRegistryInfo()
 		responseType = string(currentType)
@@ -549,12 +589,12 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 }
 
 // processAuthUpdate validates and applies OAuth configuration for registry auth.
-func (rr *RegistryRoutes) processAuthUpdate(authReq *UpdateRegistryAuthRequest) error {
+func (rr *RegistryRoutes) processAuthUpdate(ctx context.Context, authReq *UpdateRegistryAuthRequest) error {
 	if authReq.Issuer == "" || authReq.ClientID == "" {
 		return fmt.Errorf("auth.issuer and auth.client_id are required")
 	}
 	authMgr := regpkg.NewAuthManager(rr.configProvider)
-	if err := authMgr.SetOAuthAuth(authReq.Issuer, authReq.ClientID, authReq.Audience, authReq.Scopes); err != nil {
+	if err := authMgr.SetOAuthAuth(ctx, authReq.Issuer, authReq.ClientID, authReq.Audience, authReq.Scopes); err != nil {
 		return fmt.Errorf("failed to configure registry auth: %w", err)
 	}
 	return nil
@@ -658,6 +698,12 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if isRegistryAuthError(err) {
 			writeRegistryAuthRequiredError(w)
+			return
+		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
 			return
 		}
 		slog.Error("failed to get registry", "error", err)

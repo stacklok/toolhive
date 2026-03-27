@@ -24,6 +24,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -122,6 +123,11 @@ type Config struct {
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
+
+	// AuthServer is the optional embedded authorization server.
+	// When non-nil, the routes returned by Routes() are registered on the mux
+	// alongside the protected resource metadata endpoint.
+	AuthServer *asrunner.EmbeddedAuthServer
 
 	// TelemetryProvider is the optional telemetry provider.
 	// If nil, no telemetry is recorded.
@@ -463,11 +469,21 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		}
 	}
 
-	// Optional .well-known discovery endpoints (unauthenticated, RFC 9728 compliant)
-	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
-	if wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler); wellKnownHandler != nil {
-		mux.Handle("/.well-known/", wellKnownHandler)
-		slog.Info("rFC 9728 OAuth discovery endpoints enabled at /.well-known/")
+	// RFC 9728 protected resource metadata.
+	// Always register a .well-known handler so OAuth discovery requests get a
+	// clean response (404 JSON when auth is off) instead of falling through to
+	// the MCP handler, which rejects GETs with a 406 JSON-RPC error that
+	// breaks Claude Code's OAuth error parsing.
+	wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if s.config.AuthInfoHandler != nil {
+		slog.Debug("RFC 9728 OAuth protected resource metadata enabled")
+	}
+
+	// Register embedded auth server routes if configured
+	if s.config.AuthServer != nil {
+		s.config.AuthServer.RegisterHandlers(mux)
+		slog.Debug("embedded authorization server routes registered")
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):

@@ -242,7 +242,39 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
 	}
 
+	// Populate scaling config (BackendReplicas and Redis session storage).
+	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
+	populateScalingConfig(runConfig, m)
+
 	return runConfig, nil
+}
+
+// populateScalingConfig sets BackendReplicas and SessionRedis on the RunConfig from the MCPServer spec.
+// Fields are only set when present in the spec; nil means "not configured" and is left as-is.
+func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1alpha1.MCPServer) {
+	hasBackendReplicas := m.Spec.BackendReplicas != nil
+	hasRedis := m.Spec.SessionStorage != nil && m.Spec.SessionStorage.Provider == mcpv1alpha1.SessionStorageProviderRedis
+
+	if !hasBackendReplicas && !hasRedis {
+		return
+	}
+
+	if runConfig.ScalingConfig == nil {
+		runConfig.ScalingConfig = &runner.ScalingConfig{}
+	}
+
+	if hasBackendReplicas {
+		val := *m.Spec.BackendReplicas
+		runConfig.ScalingConfig.BackendReplicas = &val
+	}
+
+	if hasRedis {
+		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
+			Address:   m.Spec.SessionStorage.Address,
+			DB:        m.Spec.SessionStorage.DB,
+			KeyPrefix: m.Spec.SessionStorage.KeyPrefix,
+		}
+	}
 }
 
 // labelsForRunConfig returns labels for run config ConfigMap

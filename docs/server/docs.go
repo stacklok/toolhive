@@ -477,7 +477,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nCurrently only a single upstream is supported.",
+                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig"
                         },
@@ -740,7 +740,7 @@ const docTemplate = `{
                 "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
                 "properties": {
                     "additional_packages": {
-                        "description": "AdditionalPackages lists extra packages to install in builder stage\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
+                        "description": "AdditionalPackages lists extra packages to install in the builder and\nruntime stages.\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
                         "items": {
                             "type": "string"
                         },
@@ -748,7 +748,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
                         "type": "string"
                     }
                 },
@@ -1028,6 +1028,14 @@ const docTemplate = `{
                         ],
                         "type": "string"
                     },
+                    "publish": {
+                        "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
                     },
@@ -1103,6 +1111,14 @@ const docTemplate = `{
                     "upstream_swap_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config"
                     },
+                    "validating_webhooks": {
+                        "description": "ValidatingWebhooks contains the configuration for validating webhook middleware.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "volumes": {
                         "description": "Volumes are the directory mounts to pass to the container\nFormat: \"host-path:container-path[:ro]\"",
                         "items": {
@@ -1121,9 +1137,26 @@ const docTemplate = `{
                         "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
                         "type": "integer"
                     },
-                    "session_cache_size": {
-                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nWhen nil, consuming code applies a sensible default (e.g. 1000).",
+                    "session_redis": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig": {
+                "description": "SessionRedis holds non-sensitive Redis connection parameters for distributed session storage.\nPopulated only when MCPServer.spec.sessionStorage.provider == \"redis\".\nThe Redis password is not included — it is injected as env var THV_SESSION_REDIS_PASSWORD.\n+optional",
+                "properties": {
+                    "address": {
+                        "description": "Address is the Redis server address (host:port).",
+                        "type": "string"
+                    },
+                    "db": {
+                        "description": "DB is the Redis database number.",
                         "type": "integer"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -1381,6 +1414,67 @@ const docTemplate = `{
                     },
                     "useLegacyAttributes": {
                         "description": "UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names\nare emitted alongside the new standard attribute names. When true, spans include both\nold and new attribute names for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.Config": {
+                "properties": {
+                    "failure_policy": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.FailurePolicy"
+                    },
+                    "hmac_secret_ref": {
+                        "description": "HMACSecretRef is an optional reference to an HMAC secret for payload signing.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is a unique identifier for this webhook.",
+                        "type": "string"
+                    },
+                    "timeout": {
+                        "description": "Timeout is the maximum time to wait for a webhook response.",
+                        "type": "integer"
+                    },
+                    "tls_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.TLSConfig"
+                    },
+                    "url": {
+                        "description": "URL is the HTTPS endpoint to call.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.FailurePolicy": {
+                "description": "FailurePolicy determines behavior when the webhook call fails.",
+                "enum": [
+                    "fail",
+                    "ignore"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FailurePolicyFail",
+                    "FailurePolicyIgnore"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.TLSConfig": {
+                "description": "TLSConfig holds optional TLS configuration (CA bundles, client certs).",
+                "properties": {
+                    "ca_bundle_path": {
+                        "description": "CABundlePath is the path to a CA certificate bundle for server verification.",
+                        "type": "string"
+                    },
+                    "client_cert_path": {
+                        "description": "ClientCertPath is the path to a client certificate for mTLS.",
+                        "type": "string"
+                    },
+                    "client_key_path": {
+                        "description": "ClientKeyPath is the path to a client key for mTLS.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify disables server certificate verification.\nWARNING: This should only be used for development/testing.",
                         "type": "boolean"
                     }
                 },

@@ -28,6 +28,10 @@ var (
 // FindProcess finds a process by its ID and checks if it's running.
 // This function works on Windows.
 func FindProcess(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, fmt.Errorf("invalid PID: %d", pid)
+	}
+
 	// On Windows, we need to use Windows API to check if a process is running
 
 	// Open the process with PROCESS_QUERY_INFORMATION access right

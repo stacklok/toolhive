@@ -50,6 +50,11 @@ var (
 	// defaultHMACSecret is the fallback HMAC secret used when WithHMACSecret is not provided.
 	// WARNING: This is INSECURE and should ONLY be used for testing/development.
 	// Production deployments MUST provide a secure secret via WithHMACSecret option.
+	//
+	// NOTE: In multi-replica deployments, all replicas must use the same HMAC secret,
+	// injected via the VMCP_SESSION_HMAC_SECRET environment variable. If replicas use
+	// different secrets, cross-pod token validation will silently reject legitimate
+	// callers. The default insecure secret must NOT be used in production.
 	defaultHMACSecret = []byte("insecure-default-for-testing-only-change-in-production")
 )
 
@@ -511,6 +516,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 }
 
 // RestoreSession implements MultiSessionFactory.
+<<<<<<< HEAD
 // It reconnects to the backends whose IDs are listed in storedMetadata, rebuilds
 // the routing table, and reapplies the hijack-prevention decorator from the stored
 // token hash and salt — without recomputing them from a (unavailable) token.
@@ -582,7 +588,7 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 		return nil, fmt.Errorf("RestoreSession: token hash metadata key absent (corrupted session metadata)")
 	}
 	storedSalt := storedMetadata[sessiontypes.MetadataKeyTokenSalt]
-	restored, err := security.RestoreHijackPrevention(baseSession, f.hmacSecret, storedHash, storedSalt)
+	restored, err := security.RestoreHijackPrevention(baseSession, storedHash, storedSalt, f.hmacSecret)
 	if err != nil {
 		_ = baseSession.Close()
 		return nil, fmt.Errorf("RestoreSession: failed to restore hijack prevention: %w", err)

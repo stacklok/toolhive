@@ -836,7 +836,8 @@ func TestUserProvider_Capabilities(t *testing.T) {
 // ScopedProvider migration fallback tests
 // ---------------------------------------------------------------------------
 
-func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) { //nolint:paralleltest
+func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) {
+	t.Parallel()
 	notFoundErr := func(key string) error {
 		return fmt.Errorf("secret not found: %s", key)
 	}
@@ -882,7 +883,8 @@ func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) { //nolint:par
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) { //nolint:paralleltest
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := t.Context()
 
 			ctrl := gomock.NewController(t)

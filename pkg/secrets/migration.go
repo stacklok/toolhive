@@ -64,16 +64,16 @@ func DiscoverMigrations(ctx context.Context, provider Provider) ([]KeyMigration,
 		return nil, fmt.Errorf("migration discovery: listing secrets: %w", err)
 	}
 
-	var migrations []KeyMigration
+	var keyMigrations []KeyMigration
 	for _, desc := range all {
 		key := desc.Key
 		// Skip already-migrated keys.
-		if strings.HasPrefix(key, SystemKeyPrefix) {
+		if isSystemKey(key) {
 			continue
 		}
 		for _, mapping := range SystemKeyPrefixMappings {
 			if strings.HasPrefix(key, mapping.Prefix) {
-				migrations = append(migrations, KeyMigration{
+				keyMigrations = append(keyMigrations, KeyMigration{
 					OldKey: key,
 					NewKey: SystemKeyPrefix + string(mapping.Scope) + "_" + key,
 				})
@@ -81,5 +81,5 @@ func DiscoverMigrations(ctx context.Context, provider Provider) ([]KeyMigration,
 			}
 		}
 	}
-	return migrations, nil
+	return keyMigrations, nil
 }

@@ -38,6 +38,9 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
+// testNamespace is the Kubernetes namespace used by all VirtualMCP E2E tests.
+const testNamespace = "default"
+
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
 // and ensures at least one associated pod is actually running and ready.
 // This is used when waiting for a single expected pod (e.g., one replica deployment).
@@ -481,6 +484,85 @@ func CleanupMockServer(ctx context.Context, c client.Client, namespace, serverNa
 			ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName, Namespace: namespace},
 		})
 	}
+}
+
+// DeployRedis deploys a single unauthenticated Redis instance (Deployment + ClusterIP Service).
+// Within the same namespace the service is reachable at "{name}:6379".
+// The function blocks until the Redis pod is Running and Ready.
+func DeployRedis(ctx context.Context, c client.Client, namespace, name string) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app": name},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": name},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": name},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "redis",
+							Image: images.RedisImage,
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 6379, Name: "redis"},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt32(6379),
+									},
+								},
+								InitialDelaySeconds: 2,
+								PeriodSeconds:       3,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": name},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       6379,
+					TargetPort: intstr.FromInt32(6379),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
+
+	gomega.Eventually(func() bool {
+		dep := &appsv1.Deployment{}
+		err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep)
+		return err == nil && dep.Status.ReadyReplicas > 0
+	}, 3*time.Minute, 2*time.Second).Should(gomega.BeTrue(), "Redis should be ready")
+}
+
+// CleanupRedis removes the Redis Deployment and Service created by DeployRedis.
+func CleanupRedis(ctx context.Context, c client.Client, namespace, name string) {
+	_ = c.Delete(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
+	_ = c.Delete(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
 }
 
 // GetPodLogsForDeployment returns logs from pods for a deployment (for debugging)

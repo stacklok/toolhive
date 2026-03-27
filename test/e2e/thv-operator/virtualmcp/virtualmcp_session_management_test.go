@@ -33,7 +33,6 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 	const (
 		timeout           = time.Minute * 3
 		pollInterval      = time.Second * 2
-		defaultNamespace  = "default"
 		vmcpContainerName = "vmcp"
 	)
 
@@ -59,13 +58,13 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 			ginkgo.By("Creating MCPGroup")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Session management e2e group"},
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Creating yardstick backend MCPServer")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					GroupRef:  mcpGroupName,
 					Image:     images.YardstickServerImage,
@@ -77,7 +76,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 			ginkgo.By("Creating VirtualMCPServer")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: testNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
@@ -88,31 +87,31 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for VirtualMCPServer to be ready")
-			WaitForVirtualMCPServerReady(ctx, k8sClient, virtualMCPName, defaultNamespace, timeout, pollInterval)
+			WaitForVirtualMCPServerReady(ctx, k8sClient, virtualMCPName, testNamespace, timeout, pollInterval)
 
 			ginkgo.By("Getting NodePort")
-			vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, virtualMCPName, defaultNamespace, timeout, pollInterval)
+			vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, virtualMCPName, testNamespace, timeout, pollInterval)
 		})
 
 		ginkgo.AfterAll(func() {
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 			})
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: virtualMCPName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: virtualMCPName, Namespace: testNamespace}, &mcpv1alpha1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 
 			ginkgo.By("Verifying HMAC secret is garbage-collected via owner reference")
 			gomega.Eventually(func() bool {
 				secret := &corev1.Secret{}
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: expectedSecretName, Namespace: defaultNamespace}, secret)
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: expectedSecretName, Namespace: testNamespace}, secret)
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue(), "HMAC secret should be garbage-collected when VirtualMCPServer is deleted")
 		})
@@ -123,7 +122,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      expectedSecretName,
-					Namespace: defaultNamespace,
+					Namespace: testNamespace,
 				}, secret)
 			}, timeout, pollInterval).Should(gomega.Succeed())
 
@@ -135,7 +134,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      expectedSecretName,
-					Namespace: defaultNamespace,
+					Namespace: testNamespace,
 				}, secret)
 			}, timeout, pollInterval).Should(gomega.Succeed())
 
@@ -162,7 +161,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      expectedSecretName,
-					Namespace: defaultNamespace,
+					Namespace: testNamespace,
 				}, secret)
 			}, timeout, pollInterval).Should(gomega.Succeed())
 
@@ -190,7 +189,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      virtualMCPName,
-					Namespace: defaultNamespace,
+					Namespace: testNamespace,
 				}, deployment)
 			}, timeout, pollInterval).Should(gomega.Succeed())
 
@@ -300,13 +299,13 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 			ginkgo.By("Creating MCPGroup")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Default session management group"},
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Creating VirtualMCPServer with default configuration")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: testNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config:       vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
@@ -316,10 +315,10 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 		ginkgo.AfterAll(func() {
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 			})
 		})
 
@@ -327,7 +326,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      expectedSecretName,
-					Namespace: defaultNamespace,
+					Namespace: testNamespace,
 				}, &corev1.Secret{})
 			}, timeout, pollInterval).Should(gomega.Succeed(), "HMAC secret should be created when no session management flag is set (default is true)")
 		})
@@ -339,7 +338,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      virtualMCPName,
-					Namespace: defaultNamespace,
+					Namespace: testNamespace,
 				}, deployment)
 			}, timeout, pollInterval).Should(gomega.Succeed())
 
@@ -426,20 +425,20 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 			// ---- Deploy parameterized mock OIDC server ----
 			oidcIssuer, oidcNodePort, oidcCleanup = DeployParameterizedOIDCServer(
-				ctx, k8sClient, oidcServiceName, defaultNamespace, 3*time.Minute, pollInterval,
+				ctx, k8sClient, oidcServiceName, testNamespace, 3*time.Minute, pollInterval,
 			)
 
 			// ---- Deploy yardstick backend ----
 
 			ginkgo.By("Creating MCPGroup")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "Session hijacking test group"},
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Creating yardstick backend MCPServer")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					GroupRef:  mcpGroupName,
 					Image:     images.YardstickServerImage,
@@ -453,7 +452,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 			ginkgo.By("Creating VirtualMCPServer with OIDC incoming auth")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: testNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
@@ -476,27 +475,27 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for VirtualMCPServer to be ready")
-			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpName, defaultNamespace, timeout, pollInterval)
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpName, testNamespace, timeout, pollInterval)
 
 			ginkgo.By("Getting NodePort for VirtualMCPServer")
-			vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpName, defaultNamespace, timeout, pollInterval)
+			vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpName, testNamespace, timeout, pollInterval)
 		})
 
 		ginkgo.AfterAll(func() {
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 			})
 			oidcCleanup()
 
 			// Wait for the vMCP to be fully gone before the next test context starts.
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: testNamespace}, &mcpv1alpha1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})

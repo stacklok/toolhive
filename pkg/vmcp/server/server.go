@@ -171,6 +171,12 @@ type Config struct {
 	// SessionFactory creates MultiSessions for session management.
 	// Required; must not be nil.
 	SessionFactory vmcpsession.MultiSessionFactory
+
+	// SessionStorageConfig configures the session storage backend.
+	// When nil, an in-process local store is used (single-pod only).
+	// When non-nil, a Redis-backed store is used so that session metadata
+	// survives pod restarts, enabling horizontal scaling without sticky routing.
+	SessionStorageConfig *transportsession.RedisConfig
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -359,7 +365,26 @@ func New(
 	// It intentionally carries no vmcp-specific state — backend connections, routing
 	// tables, tool lists, and token binding all live in the separate sessionmanager.Manager,
 	// keyed by the same session ID.
-	sessionManager := transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
+	var sessionManager *transportsession.Manager
+	if cfg.SessionStorageConfig != nil {
+		sessionManager, err = transportsession.NewManagerWithRedis(
+			ctx, cfg.SessionTTL, transportsession.NewStreamableSession, *cfg.SessionStorageConfig,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Redis-backed session manager: %w", err)
+		}
+		slog.Info("using Redis-backed session storage", "addr", cfg.SessionStorageConfig.Addr)
+	} else {
+		sessionManager = transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
+	}
+	// Ensure sessionManager is stopped if New() fails after this point.
+	// This closes the Redis client and stops the background eviction goroutine.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = sessionManager.Stop()
+		}
+	}()
 
 	// Create handler factory (used by adapter and for future dynamic registration)
 	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
@@ -427,6 +452,7 @@ func New(
 		srv.handleSessionRegistration(ctx, session)
 	})
 
+	committed = true
 	return srv, nil
 }
 

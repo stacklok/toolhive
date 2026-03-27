@@ -97,4 +97,10 @@ const (
 	// PagerDutyMCPServerImage is used for testing multi-backend optimizer scenarios.
 	// Provides ~64 PagerDuty incident management tools (incidents, services, schedules, etc.).
 	PagerDutyMCPServerImage = pagerdutyMCPServerImageURL + ":" + pagerdutyMCPServerImageTag
+
+	redisImageURL = "redis"
+	redisImageTag = "7-alpine"
+	// RedisImage is used in E2E tests as the session storage backend for VirtualMCPServer
+	// horizontal scaling tests that verify cross-pod session continuity.
+	RedisImage = redisImageURL + ":" + redisImageTag
 )

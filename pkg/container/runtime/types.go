@@ -268,6 +268,12 @@ type DeployWorkloadOptions struct {
 	// ScalingConfig contains scaling-related configuration for the workload.
 	// Only applicable to Kubernetes deployments.
 	ScalingConfig *ScalingConfig
+
+	// AllowDockerGateway permits outbound connections to Docker gateway addresses
+	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// blocked by default in the egress proxy even when InsecureAllowAll is set.
+	// Only applicable to Docker deployments with network isolation enabled.
+	AllowDockerGateway bool
 }
 
 // ScalingConfig holds horizontal-scaling knobs threaded from RunConfig down to

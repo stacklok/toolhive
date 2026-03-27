@@ -88,7 +88,7 @@ func TestCreateSquidContainer_Basics(t *testing.T) {
 func TestCreateTempEgressSquidConf_AllowAllWhenNil(t *testing.T) {
 	t.Parallel()
 
-	fp, err := createTempEgressSquidConf(nil, "server")
+	fp, err := createTempEgressSquidConf(nil, "server", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -100,6 +100,15 @@ func TestCreateTempEgressSquidConf_AllowAllWhenNil(t *testing.T) {
 	assert.Contains(t, s, "http_port 3128")
 	assert.Contains(t, s, "http_access allow all")
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(s), "http_access deny all"))
+
+	// Docker gateway must be blocked even with nil permissions.
+	assert.Contains(t, s, "http_access deny docker_gateway_hosts")
+	assert.Contains(t, s, "http_access deny docker_gateway_ip")
+	// Deny must precede allow — Squid is first-match-wins.
+	assert.Less(t,
+		strings.Index(s, "http_access deny docker_gateway_hosts"),
+		strings.Index(s, "http_access allow all"),
+	)
 
 	info, err := os.Stat(fp)
 	require.NoError(t, err)
@@ -114,7 +123,7 @@ func TestCreateTempEgressSquidConf_AllowAllWhenInsecure(t *testing.T) {
 			InsecureAllowAll: true,
 		},
 	}
-	fp, err := createTempEgressSquidConf(cfg, "server")
+	fp, err := createTempEgressSquidConf(cfg, "server", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -126,6 +135,15 @@ func TestCreateTempEgressSquidConf_AllowAllWhenInsecure(t *testing.T) {
 	assert.Contains(t, s, "http_port 3128")
 	assert.Contains(t, s, "http_access allow all")
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(s), "http_access deny all"))
+
+	// InsecureAllowAll must NOT suppress the Docker gateway block.
+	assert.Contains(t, s, "http_access deny docker_gateway_hosts")
+	assert.Contains(t, s, "http_access deny docker_gateway_ip")
+	// Deny must precede allow — Squid is first-match-wins.
+	assert.Less(t,
+		strings.Index(s, "http_access deny docker_gateway_hosts"),
+		strings.Index(s, "http_access allow all"),
+	)
 
 	info, err := os.Stat(fp)
 	require.NoError(t, err)
@@ -142,7 +160,7 @@ func TestCreateTempEgressSquidConf_WithACLs(t *testing.T) {
 			AllowHost:        []string{"example.com", "api.github.com"},
 		},
 	}
-	fp, err := createTempEgressSquidConf(cfg, "edge")
+	fp, err := createTempEgressSquidConf(cfg, "edge", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -156,6 +174,15 @@ func TestCreateTempEgressSquidConf_WithACLs(t *testing.T) {
 	assert.Contains(t, s, "\n# Define http_access rules\n")
 	assert.Contains(t, s, "http_access allow allowed_ports allowed_dsts")
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(s), "http_access deny all"))
+
+	// Docker gateway must be blocked even with an explicit ACL allowlist.
+	assert.Contains(t, s, "http_access deny docker_gateway_hosts")
+	assert.Contains(t, s, "http_access deny docker_gateway_ip")
+	// Deny must precede the allow rule — Squid is first-match-wins.
+	assert.Less(t,
+		strings.Index(s, "http_access deny docker_gateway_hosts"),
+		strings.Index(s, "http_access allow allowed_ports allowed_dsts"),
+	)
 
 	info, err := os.Stat(fp)
 	require.NoError(t, err)
@@ -265,6 +292,116 @@ func TestCreateTempIngressSquidConf_EmptyInboundHosts(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 }
 
+func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		permissions        *permissions.NetworkPermissions
+		allowDockerGateway bool
+		expectDenyRule     bool
+		expectAllowAll     bool
+		expectContains     []string // additional substrings that must appear
+	}{
+		{
+			name:           "nil permissions blocks docker gateway",
+			permissions:    nil,
+			expectDenyRule: true,
+			expectAllowAll: true,
+		},
+		{
+			name: "InsecureAllowAll still blocks docker gateway",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					InsecureAllowAll: true,
+				},
+			},
+			expectDenyRule: true,
+			expectAllowAll: true,
+		},
+		{
+			name: "allow-docker-gateway opt-in removes deny rules",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					InsecureAllowAll: true,
+				},
+			},
+			allowDockerGateway: true,
+			expectDenyRule:     false,
+			expectAllowAll:     true,
+		},
+		{
+			name: "ACL-based outbound without opt-in blocks docker gateway",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+				},
+			},
+			expectDenyRule: true,
+			expectAllowAll: false,
+		},
+		{
+			name: "ACL-based outbound with allow-docker-gateway omits deny rules but keeps ACL allow",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+					AllowPort: []int{443},
+				},
+			},
+			allowDockerGateway: true,
+			expectDenyRule:     false,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_ports port 443",
+				"acl allowed_dsts dstdomain example.com",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fp, err := createTempEgressSquidConf(tt.permissions, "server", tt.allowDockerGateway, dockerDefaultBridgeGatewayIP)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.Remove(fp) })
+
+			b, err := os.ReadFile(fp)
+			require.NoError(t, err)
+			s := string(b)
+
+			if tt.expectDenyRule {
+				assert.Contains(t, s, "acl docker_gateway_hosts dstdomain host.docker.internal gateway.docker.internal")
+				assert.Contains(t, s, "acl docker_gateway_ip dst 172.17.0.1")
+				assert.Contains(t, s, "http_access deny docker_gateway_hosts")
+				assert.Contains(t, s, "http_access deny docker_gateway_ip")
+
+				// Deny must precede every allow rule — Squid is first-match-wins.
+				denyIdx := strings.Index(s, "http_access deny docker_gateway_hosts")
+				firstAllowIdx := strings.Index(s, "http_access allow ")
+				if firstAllowIdx != -1 {
+					assert.Less(t, denyIdx, firstAllowIdx,
+						"docker gateway deny must appear before any http_access allow")
+				}
+			} else {
+				assert.NotContains(t, s, "docker_gateway_hosts")
+				assert.NotContains(t, s, "docker_gateway_ip")
+			}
+
+			if tt.expectAllowAll {
+				assert.Contains(t, s, "http_access allow all")
+			}
+
+			for _, sub := range tt.expectContains {
+				assert.Contains(t, s, sub)
+			}
+
+			assert.True(t, strings.HasSuffix(strings.TrimSpace(s), "http_access deny all"))
+		})
+	}
+}
+
 func TestGetSquidImage(t *testing.T) {
 	t.Parallel()
 
@@ -290,7 +427,7 @@ func TestGetSquidImage(t *testing.T) {
 func TestTempFilesWrittenToSystemTempDir(t *testing.T) {
 	t.Parallel()
 
-	fp1, err := createTempEgressSquidConf(nil, "s1")
+	fp1, err := createTempEgressSquidConf(nil, "s1", false, dockerDefaultBridgeGatewayIP)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp1) })
 

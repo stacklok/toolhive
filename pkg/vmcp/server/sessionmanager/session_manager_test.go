@@ -1563,6 +1563,112 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// NotifyBackendExpired tests
+// ---------------------------------------------------------------------------
+
+func TestNotifyBackendExpired(t *testing.T) {
+	t.Parallel()
+
+	t.Run("calls RemoveBackendFromMetadata and upserts session", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		registry := newFakeRegistry()
+
+		// Use DoAndReturn to capture the real session ID assigned by Generate().
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		var createdSess *sessionmocks.MockMultiSession
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				createdSess = newMockSession(t, ctrl, id, nil)
+				createdSess.EXPECT().Close().Return(nil).AnyTimes()
+				return createdSess, nil
+			}).AnyTimes()
+
+		sm, storage := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		_, err := sm.CreateSession(t.Context(), sessionID)
+		require.NoError(t, err)
+
+		createdSess.EXPECT().RemoveBackendFromMetadata("workload-a").Times(1)
+		sm.NotifyBackendExpired(sessionID, "workload-a")
+
+		// Session must still be accessible after the notification.
+		_, ok := sm.GetMultiSession(sessionID)
+		assert.True(t, ok)
+
+		// Verify the session is still in storage (upsert didn't delete it).
+		_, exists := storage.Get(sessionID)
+		assert.True(t, exists)
+	})
+
+	t.Run("unknown session is silently ignored", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		registry := newFakeRegistry()
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		// Must not panic for an unknown session ID.
+		sm.NotifyBackendExpired("nonexistent-session", "workload-a")
+	})
+
+	t.Run("placeholder (not yet a MultiSession) is silently ignored", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		registry := newFakeRegistry()
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		// Generate creates a placeholder — not yet a MultiSession.
+		sessionID := sm.Generate()
+		sm.NotifyBackendExpired(sessionID, "workload-a")
+	})
+
+	t.Run("session terminated between GetMultiSession and UpsertSession: no resurrection", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		registry := newFakeRegistry()
+
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		var createdSess *sessionmocks.MockMultiSession
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				createdSess = newMockSession(t, ctrl, id, nil)
+				createdSess.EXPECT().Close().Return(nil).AnyTimes()
+				return createdSess, nil
+			}).AnyTimes()
+
+		sm, storage := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		_, err := sm.CreateSession(t.Context(), sessionID)
+		require.NoError(t, err)
+
+		// RemoveBackendFromMetadata fires, then Terminate deletes the session
+		// before UpsertSession. The re-check guard must prevent resurrection.
+		createdSess.EXPECT().RemoveBackendFromMetadata("workload-a").
+			DoAndReturn(func(_ string) {
+				// Simulate concurrent Terminate() deleting the session.
+				_, _ = sm.Terminate(sessionID)
+			}).Times(1)
+
+		sm.NotifyBackendExpired(sessionID, "workload-a")
+
+		// Session must NOT be present after NotifyBackendExpired: if the guard
+		// were absent, UpsertSession would have silently resurrected it.
+		_, exists := storage.Get(sessionID)
+		assert.False(t, exists, "terminated session must not be resurrected by NotifyBackendExpired")
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 

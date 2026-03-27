@@ -68,6 +68,7 @@ func (*backendAwareTestSession) Resources() []vmcp.Resource            { return 
 func (*backendAwareTestSession) Prompts() []vmcp.Prompt                { return nil }
 func (*backendAwareTestSession) BackendSessions() map[string]string    { return nil }
 func (s *backendAwareTestSession) GetRoutingTable() *vmcp.RoutingTable { return s.routingTable }
+func (*backendAwareTestSession) RemoveBackendFromMetadata(_ string)    {}
 func (*backendAwareTestSession) Close() error                          { return nil }
 
 func (s *backendAwareTestSession) CallTool(

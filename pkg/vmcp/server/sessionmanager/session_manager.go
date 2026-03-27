@@ -349,6 +349,39 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	return false, nil
 }
 
+// NotifyBackendExpired updates session metadata to reflect that the backend
+// identified by workloadID is no longer connected. It clears the per-backend
+// session ID key and refreshes MetadataKeyBackendIDs, then persists the change
+// to storage so that Redis reflects the current state.
+//
+// This is a best-effort call: if the session is not found or has already been
+// terminated, it is silently ignored. Storage errors are logged but not
+// returned since the caller typically has no way to recover from them.
+func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
+	multiSess, ok := sm.GetMultiSession(sessionID)
+	if !ok {
+		return
+	}
+	multiSess.RemoveBackendFromMetadata(workloadID)
+	// Re-check: guard against a race with Terminate() deleting the session
+	// between GetMultiSession (above) and UpsertSession (below). Without this,
+	// UpsertSession would silently resurrect a terminated session in storage.
+	// The narrow TOCTOU gap that remains between this re-check and the upsert
+	// is bounded: Terminate() already called Close() on the underlying
+	// MultiSession before deleting it, so any resurrected entry wraps an
+	// already-closed session and will fail on first use rather than leaking
+	// backend connections.
+	if _, ok := sm.GetMultiSession(sessionID); !ok {
+		return
+	}
+	if err := sm.storage.UpsertSession(multiSess); err != nil {
+		slog.Warn("NotifyBackendExpired: failed to persist backend expiry to storage",
+			"session_id", sessionID,
+			"workload_id", workloadID,
+			"error", err)
+	}
+}
+
 // GetMultiSession retrieves the fully-formed MultiSession for a given SDK session ID.
 // Returns (nil, false) if the session does not exist or has not yet been
 // upgraded from placeholder to MultiSession.

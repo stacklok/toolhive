@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sort"
+	"strings"
+	"sync"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -58,12 +61,17 @@ var (
 type defaultMultiSession struct {
 	transportsession.Session // embedded interface — provides ID, Type, timestamps, etc.
 
-	// All fields below are written once by MakeSession and are read-only thereafter.
-	connections     map[string]backend.Session
-	routingTable    *vmcp.RoutingTable
-	tools           []vmcp.Tool
-	resources       []vmcp.Resource
-	prompts         []vmcp.Prompt
+	// All fields below are written once by MakeSession and are read-only thereafter,
+	// except backendSessions which is also mutated by RemoveBackendFromMetadata.
+	connections  map[string]backend.Session
+	routingTable *vmcp.RoutingTable
+	tools        []vmcp.Tool
+	resources    []vmcp.Resource
+	prompts      []vmcp.Prompt
+
+	// backendSessions maps workload ID to backend-assigned session ID.
+	// Guarded by bsMu: written once at creation, then mutated by RemoveBackendFromMetadata.
+	bsMu            sync.RWMutex
 	backendSessions map[string]string
 
 	queue AdmissionQueue
@@ -92,6 +100,8 @@ func (s *defaultMultiSession) Prompts() []vmcp.Prompt {
 
 // BackendSessions returns a snapshot copy of backend-assigned session IDs.
 func (s *defaultMultiSession) BackendSessions() map[string]string {
+	s.bsMu.RLock()
+	defer s.bsMu.RUnlock()
 	result := make(map[string]string, len(s.backendSessions))
 	maps.Copy(result, s.backendSessions)
 	return result
@@ -194,6 +204,31 @@ func (s *defaultMultiSession) GetPrompt(
 		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}
 	return result, nil
+}
+
+// RemoveBackendFromMetadata clears the per-backend session ID metadata entry
+// for workloadID and refreshes MetadataKeyBackendIDs to reflect only remaining
+// connected backends. If workloadID is not present this is a no-op.
+func (s *defaultMultiSession) RemoveBackendFromMetadata(workloadID string) {
+	s.bsMu.Lock()
+	defer s.bsMu.Unlock()
+
+	if _, ok := s.backendSessions[workloadID]; !ok {
+		return
+	}
+	delete(s.backendSessions, workloadID)
+
+	remaining := make([]string, 0, len(s.backendSessions))
+	for id := range s.backendSessions {
+		remaining = append(remaining, id)
+	}
+	sort.Strings(remaining)
+
+	// SetMetadata on the embedded transport session is guarded by its own mutex;
+	// call it after releasing bsMu would risk a window where the map and metadata
+	// are inconsistent, so we call it here while holding bsMu.
+	s.SetMetadata(MetadataKeyBackendSessionPrefix+workloadID, "")
+	s.SetMetadata(MetadataKeyBackendIDs, strings.Join(remaining, ","))
 }
 
 // Close releases all resources. CloseAndDrain blocks until in-flight

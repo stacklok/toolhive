@@ -131,6 +131,13 @@ type MultiSession interface {
 	// Used by the discovery middleware to inject DiscoveredCapabilities into the
 	// request context so composite tool workflow steps can route backend tool calls.
 	GetRoutingTable() *vmcp.RoutingTable
+
+	// RemoveBackendFromMetadata clears the per-backend session ID metadata entry
+	// for workloadID and refreshes MetadataKeyBackendIDs to reflect only the
+	// remaining connected backends. This must be called when a backend session
+	// expires or is lost so that Redis metadata stays consistent with the actual
+	// set of connected backends. If workloadID is not present this is a no-op.
+	RemoveBackendFromMetadata(workloadID string)
 }
 
 const (

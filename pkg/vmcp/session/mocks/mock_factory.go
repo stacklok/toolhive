@@ -57,3 +57,18 @@ func (mr *MockMultiSessionFactoryMockRecorder) MakeSessionWithID(ctx, id, identi
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MakeSessionWithID", reflect.TypeOf((*MockMultiSessionFactory)(nil).MakeSessionWithID), ctx, id, identity, allowAnonymous, backends)
 }
+
+// RestoreSession mocks base method.
+func (m *MockMultiSessionFactory) RestoreSession(ctx context.Context, id string, metadata map[string]string, backends []*vmcp.Backend) (session.MultiSession, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RestoreSession", ctx, id, metadata, backends)
+	ret0, _ := ret[0].(session.MultiSession)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RestoreSession indicates an expected call of RestoreSession.
+func (mr *MockMultiSessionFactoryMockRecorder) RestoreSession(ctx, id, metadata, backends any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RestoreSession", reflect.TypeOf((*MockMultiSessionFactory)(nil).RestoreSession), ctx, id, metadata, backends)
+}

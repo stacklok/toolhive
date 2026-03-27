@@ -19,7 +19,7 @@ type KeyMigration struct {
 // Used by DiscoverMigrations to find keys that need migrating.
 var SystemKeyPrefixMappings = []struct {
 	Prefix string
-	Scope  string
+	Scope  SecretScope
 }{
 	{"BEARER_TOKEN_", ScopeWorkloads},
 	{"OAUTH_CLIENT_SECRET_", ScopeWorkloads},
@@ -75,7 +75,7 @@ func DiscoverMigrations(ctx context.Context, provider Provider) ([]KeyMigration,
 			if strings.HasPrefix(key, mapping.Prefix) {
 				migrations = append(migrations, KeyMigration{
 					OldKey: key,
-					NewKey: scopedKey(mapping.Scope, key),
+					NewKey: SystemKeyPrefix + string(mapping.Scope) + "_" + key,
 				})
 				break
 			}

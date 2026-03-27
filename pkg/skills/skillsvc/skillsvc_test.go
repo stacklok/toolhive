@@ -1783,7 +1783,7 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 			},
 			setupPR: func(pr *skillsmocks.MockPathResolver) {
 				pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
-				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(t.TempDir(), "my-skill"), nil)
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(tempDir(t), "my-skill"), nil)
 			},
 			setupGroupMock: func(gm *groupmocks.MockManager) {
 				gm.EXPECT().Get(gomock.Any(), "mygroup").
@@ -1800,7 +1800,7 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 			},
 			setupPR: func(pr *skillsmocks.MockPathResolver) {
 				pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
-				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(t.TempDir(), "my-skill"), nil)
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(tempDir(t), "my-skill"), nil)
 			},
 			setupGroupMock: func(gm *groupmocks.MockManager) {
 				gm.EXPECT().Get(gomock.Any(), groups.DefaultGroup).
@@ -1819,7 +1819,7 @@ func TestInstallAddsSkillToGroup(t *testing.T) {
 			},
 			setupPR: func(pr *skillsmocks.MockPathResolver) {
 				pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
-				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(t.TempDir(), "my-skill"), nil)
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(tempDir(t), "my-skill"), nil)
 			},
 			setupGroupMock: func(gm *groupmocks.MockManager) {
 				gm.EXPECT().Get(gomock.Any(), "badgroup").

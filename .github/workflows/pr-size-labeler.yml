@@ -2,7 +2,7 @@ name: PR Size Labeler - Calculate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read

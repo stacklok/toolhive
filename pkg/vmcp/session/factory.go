@@ -47,6 +47,11 @@ var (
 	// defaultHMACSecret is the fallback HMAC secret used when WithHMACSecret is not provided.
 	// WARNING: This is INSECURE and should ONLY be used for testing/development.
 	// Production deployments MUST provide a secure secret via WithHMACSecret option.
+	//
+	// NOTE: In multi-replica deployments, all replicas must use the same HMAC secret,
+	// injected via the VMCP_SESSION_HMAC_SECRET environment variable. If replicas use
+	// different secrets, cross-pod token validation will silently reject legitimate
+	// callers. The default insecure secret must NOT be used in production.
 	defaultHMACSecret = []byte("insecure-default-for-testing-only-change-in-production")
 )
 
@@ -70,6 +75,29 @@ type MultiSessionFactory interface {
 		id string,
 		identity *auth.Identity,
 		allowAnonymous bool,
+		backends []*vmcp.Backend,
+	) (MultiSession, error)
+
+	// RestoreSession reconstructs a MultiSession from metadata previously persisted
+	// to Redis. It is called by sessionmanager.Manager when a node receives a request
+	// for a session it does not hold in memory (e.g. after a pod restart or failover
+	// with sticky routing).
+	//
+	// The implementation must:
+	//  1. Parse MetadataKeyBackendIDs to determine which backends to reconnect.
+	//  2. For each backend, read MetadataKeyBackendSessionPrefix+workloadID to
+	//     get the backend session ID hint (passed to the connector).
+	//  3. Rebuild the routing table from fresh backend capability queries.
+	//  4. Re-apply the hijack-prevention decorator using MetadataKeyTokenHash /
+	//     MetadataKeyTokenSalt from metadata and the factory's hmacSecret.
+	//
+	// NOTE: In multi-replica deployments all replicas must share the same HMAC
+	// secret (see WithHMACSecret). If replicas use different secrets, cross-pod
+	// token validation will silently reject legitimate callers.
+	RestoreSession(
+		ctx context.Context,
+		id string,
+		metadata map[string]string,
 		backends []*vmcp.Backend,
 	) (MultiSession, error)
 }
@@ -492,4 +520,16 @@ func (f *defaultMultiSessionFactory) makeSession(
 	// The decorator implements MultiSession through pass-through methods, so it can
 	// be returned directly without a runtime cast.
 	return decorated, nil
+}
+
+// RestoreSession implements MultiSessionFactory.
+// Full backend reconnection and hijack-prevention restoration are deferred
+// to a future task; this returns an error until that work is complete.
+func (*defaultMultiSessionFactory) RestoreSession(
+	_ context.Context,
+	_ string,
+	_ map[string]string,
+	_ []*vmcp.Backend,
+) (MultiSession, error) {
+	return nil, fmt.Errorf("RestoreSession: not yet implemented")
 }

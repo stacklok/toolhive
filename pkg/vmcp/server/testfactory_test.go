@@ -31,3 +31,9 @@ func (*minimalTestFactory) MakeSessionWithID(
 ) (vmcpsession.MultiSession, error) {
 	return nil, fmt.Errorf("minimalTestFactory: MakeSessionWithID not implemented in test helper")
 }
+
+func (*minimalTestFactory) RestoreSession(
+	_ context.Context, _ string, _ map[string]string, _ []*vmcp.Backend,
+) (vmcpsession.MultiSession, error) {
+	return nil, fmt.Errorf("minimalTestFactory: RestoreSession not implemented in test helper")
+}

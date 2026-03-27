@@ -21,6 +21,7 @@ import (
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
@@ -345,6 +346,96 @@ func TestTokenBinding_DifferentSecretsProduceDifferentHashes(t *testing.T) {
 	assert.NotEmpty(t, hashB)
 	assert.NotEqual(t, hashA, hashB,
 		"different HMAC secrets must produce different token hashes for the same input token")
+}
+
+// TestRestoreHijackPrevention_Integration_RoundTrip verifies the full
+// store-then-restore flow across a real factory-created session:
+//
+//  1. Create a session via the factory (writes tokenHash + tokenSalt to metadata).
+//  2. Extract the persisted values.
+//  3. Wrap a fresh base session with RestoreHijackPrevention using those values.
+//  4. Confirm the restored decorator accepts the original token and rejects others.
+func TestRestoreHijackPrevention_Integration_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const rawToken = "integration-token"
+	hmacSecret := []byte("test-hmac-secret-exactly-32bytes")
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: rawToken}
+
+	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(hmacSecret))
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	// Extract persisted values — these simulate what would be read back from Redis.
+	meta := sess.GetMetadata()
+	persistedHash := meta[MetadataKeyTokenHash]
+	persistedSalt := meta[sessiontypes.MetadataKeyTokenSalt]
+	require.NotEmpty(t, persistedHash, "factory must write tokenHash to metadata")
+	require.NotEmpty(t, persistedSalt, "factory must write tokenSalt to metadata")
+
+	// Simulate "Pod B": restore the decorator from persisted metadata.
+	// We use a nil-connector session as the inner session (no real backend needed
+	// to test auth path).
+	innerSess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = innerSess.Close() })
+
+	restored, err := security.RestoreHijackPrevention(innerSess, persistedHash, persistedSalt, hmacSecret)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Original caller is accepted.
+	_, err = restored.CallTool(ctx, identity, "any-tool", nil, nil)
+	// ErrToolNotFound is expected (no backends), not an auth error.
+	require.NotErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
+	require.NotErrorIs(t, err, sessiontypes.ErrNilCaller)
+
+	// A different caller is rejected at the auth layer — before any backend routing.
+	wrongCaller := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "eve"}, Token: "eve-token"}
+	_, err = restored.CallTool(ctx, wrongCaller, "any-tool", nil, nil)
+	require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
+
+	// Nil caller is rejected at the auth layer.
+	_, err = restored.CallTool(ctx, nil, "any-tool", nil, nil)
+	require.ErrorIs(t, err, sessiontypes.ErrNilCaller)
+}
+
+// TestRestoreHijackPrevention_Integration_CrossReplicaSecretMismatch verifies
+// that a session restored on a replica with a different HMAC secret rejects
+// the original caller's token, documenting the operational requirement that
+// all replicas must share the same secret.
+func TestRestoreHijackPrevention_Integration_CrossReplicaSecretMismatch(t *testing.T) {
+	t.Parallel()
+
+	secretA := []byte("secret-A-exactly-32-bytes-long!!")
+	secretB := []byte("secret-B-exactly-32-bytes-long!!")
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: "alice-token"}
+
+	// Pod A creates the session with secretA, persisting the hash.
+	factoryA := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(secretA))
+	sessA, err := factoryA.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessA.Close() })
+
+	persistedHash := sessA.GetMetadata()[MetadataKeyTokenHash]
+	persistedSalt := sessA.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
+
+	// Pod B restores with secretB — the persisted hash was computed with secretA,
+	// so validation will produce a different HMAC and reject the caller.
+	factoryB := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(secretB))
+	innerSess, err := factoryB.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = innerSess.Close() })
+
+	restored, err := security.RestoreHijackPrevention(innerSess, persistedHash, persistedSalt, secretB)
+	require.NoError(t, err)
+
+	_, err = restored.CallTool(context.Background(), identity, "any-tool", nil, nil)
+	require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller,
+		"cross-replica secret mismatch must reject the original caller")
 }
 
 // TestTokenBinding_MetadataEncoding verifies that the token hash and salt stored

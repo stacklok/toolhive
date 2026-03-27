@@ -469,10 +469,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		}
 	}
 
-	// RFC 9728 protected resource metadata (explicit path, not catch-all)
-	if wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler); wellKnownHandler != nil {
-		mux.Handle("/.well-known/oauth-protected-resource", wellKnownHandler)
-		mux.Handle("/.well-known/oauth-protected-resource/", wellKnownHandler)
+	// RFC 9728 protected resource metadata.
+	// Always register a .well-known handler so OAuth discovery requests get a
+	// clean response (404 JSON when auth is off) instead of falling through to
+	// the MCP handler, which rejects GETs with a 406 JSON-RPC error that
+	// breaks Claude Code's OAuth error parsing.
+	wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if s.config.AuthInfoHandler != nil {
 		slog.Debug("RFC 9728 OAuth protected resource metadata enabled")
 	}
 

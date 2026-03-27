@@ -689,10 +689,11 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	// 4. Mount RFC 9728 OAuth Protected Resource discovery endpoint (no middlewares)
 	// Note: This is DIFFERENT from the auth server's /.well-known/oauth-authorization-server
-	// We mount at specific paths to allow prefix handlers to register other well-known paths.
-	if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
-		mux.Handle("/.well-known/oauth-protected-resource", wellKnownHandler)
-		mux.Handle("/.well-known/oauth-protected-resource/", wellKnownHandler)
+	// Always register so OAuth discovery gets a clean 404 JSON when auth is off,
+	// instead of falling through to the proxy catch-all.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
 		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
 	}
 

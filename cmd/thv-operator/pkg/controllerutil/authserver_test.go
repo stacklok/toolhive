@@ -696,20 +696,19 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 	}
 }
 
-func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
+func TestBuildAuthServerRunConfig(t *testing.T) {
 	t.Parallel()
 
-	// Default OIDC config used for most tests
-	defaultOIDCConfig := &oidc.OIDCConfig{
-		ResourceURL: "http://test-server.default.svc.cluster.local:8080",
-		Scopes:      []string{"openid", "offline_access"},
-	}
+	// Default audiences and scopes used for most tests
+	defaultAudiences := []string{"http://test-server.default.svc.cluster.local:8080"}
+	defaultScopes := []string{"openid", "offline_access"}
 
 	tests := []struct {
-		name       string
-		authConfig *mcpv1alpha1.EmbeddedAuthServerConfig
-		oidcConfig *oidc.OIDCConfig
-		checkFunc  func(t *testing.T, config *authserver.RunConfig)
+		name             string
+		authConfig       *mcpv1alpha1.EmbeddedAuthServerConfig
+		allowedAudiences []string
+		scopesSupported  []string
+		checkFunc        func(t *testing.T, config *authserver.RunConfig)
 	}{
 		{
 			name: "basic config with allowed audiences and scopes from OIDC config",
@@ -722,7 +721,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				assert.Equal(t, authserver.CurrentSchemaVersion, config.SchemaVersion)
@@ -749,7 +749,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.NotNil(t, config.SigningKeyConfig)
@@ -775,7 +776,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					AuthCodeLifespan:     "5m",
 				},
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.NotNil(t, config.TokenLifespans)
@@ -807,7 +809,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					},
 				},
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.Len(t, config.Upstreams, 1)
@@ -855,7 +858,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					},
 				},
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.Len(t, config.Upstreams, 1)
@@ -885,10 +889,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
-			oidcConfig: &oidc.OIDCConfig{
-				ResourceURL: "http://my-service.ns.svc.cluster.local:8080",
-				Scopes:      nil, // nil scopes should be passed through
-			},
+			allowedAudiences: []string{"http://my-service.ns.svc.cluster.local:8080"},
+			scopesSupported:  nil, // nil scopes should be passed through
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				assert.Equal(t, []string{"http://my-service.ns.svc.cluster.local:8080"}, config.AllowedAudiences)
@@ -906,10 +908,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
-			oidcConfig: &oidc.OIDCConfig{
-				ResourceURL: "http://custom-service.ns.svc.cluster.local:9000",
-				Scopes:      []string{"openid", "profile", "email", "custom:scope"},
-			},
+			allowedAudiences: []string{"http://custom-service.ns.svc.cluster.local:9000"},
+			scopesSupported:  []string{"openid", "profile", "email", "custom:scope"},
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				assert.Equal(t, []string{"http://custom-service.ns.svc.cluster.local:9000"}, config.AllowedAudiences)
@@ -957,7 +957,8 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					},
 				},
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.Len(t, config.Upstreams, 2)
@@ -985,7 +986,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			config, err := buildEmbeddedAuthServerRunnerConfig("default", "test-server", tt.authConfig, tt.oidcConfig)
+			config, err := BuildAuthServerRunConfig("default", "test-server", tt.authConfig, tt.allowedAudiences, tt.scopesSupported)
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
@@ -1520,7 +1521,7 @@ func TestBuildStorageRunConfig(t *testing.T) {
 	}
 }
 
-func TestBuildEmbeddedAuthServerRunnerConfig_WithRedisStorage(t *testing.T) {
+func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 	t.Parallel()
 
 	authConfig := &mcpv1alpha1.EmbeddedAuthServerConfig{
@@ -1546,12 +1547,11 @@ func TestBuildEmbeddedAuthServerRunnerConfig_WithRedisStorage(t *testing.T) {
 		},
 	}
 
-	oidcConfig := &oidc.OIDCConfig{
-		ResourceURL: "http://test-server.default.svc.cluster.local:8080",
-		Scopes:      []string{"openid"},
-	}
-
-	config, err := buildEmbeddedAuthServerRunnerConfig("default", "my-mcp-server", authConfig, oidcConfig)
+	config, err := BuildAuthServerRunConfig(
+		"default", "my-mcp-server", authConfig,
+		[]string{"http://test-server.default.svc.cluster.local:8080"},
+		[]string{"openid"},
+	)
 
 	require.NoError(t, err)
 	require.NotNil(t, config)

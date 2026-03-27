@@ -5,6 +5,7 @@ package process
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -14,6 +15,10 @@ import (
 // impose a deadline.
 // Returns nil when the process has exited, or an error on context cancellation.
 func WaitForExit(ctx context.Context, pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid PID: %d", pid)
+	}
+
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 

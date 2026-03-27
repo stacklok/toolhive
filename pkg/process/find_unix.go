@@ -14,6 +14,10 @@ import (
 // FindProcess finds a process by its ID and checks if it's running.
 // This function works on Unix systems (Linux and macOS).
 func FindProcess(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, fmt.Errorf("invalid PID: %d", pid)
+	}
+
 	// On Unix systems, os.FindProcess always succeeds regardless of whether
 	// the process exists or not. We need to send a signal to check if it's running.
 	proc, err := os.FindProcess(pid)

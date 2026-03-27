@@ -1063,13 +1063,9 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 
 		// Validate source path exists on host filesystem (CLI context only)
 		if b.buildContext == BuildContextCLI && !mount.IsResourceURI() {
-			absSource := source
-			if !filepath.IsAbs(source) {
-				cwd, err := os.Getwd()
-				if err != nil {
-					return fmt.Errorf("failed to resolve relative path %s: %w", source, err)
-				}
-				absSource = filepath.Join(cwd, source)
+			absSource, err := filepath.Abs(source)
+			if err != nil {
+				return fmt.Errorf("failed to resolve path %s: %w", source, err)
 			}
 			if _, err := os.Stat(absSource); err != nil {
 				if os.IsNotExist(err) {

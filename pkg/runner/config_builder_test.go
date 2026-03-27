@@ -713,6 +713,32 @@ func TestNewOperatorRunConfigBuilder(t *testing.T) {
 	assert.NotNil(t, config.ContainerLabels, "ContainerLabels should be initialized")
 }
 
+// TestOperatorContextSkipsVolumeValidation verifies that operator context does not
+// validate volume source paths on the host filesystem, since paths reference
+// Kubernetes node paths rather than the operator pod's filesystem.
+func TestOperatorContextSkipsVolumeValidation(t *testing.T) {
+	t.Parallel()
+
+	mockValidator := &mockEnvVarValidator{}
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
+			Name:  "test-image",
+			Tools: []string{"tool1"},
+		},
+	}
+
+	config, err := NewOperatorRunConfigBuilder(
+		context.Background(),
+		imageMetadata,
+		nil,
+		mockValidator,
+		WithVolumes([]string{"/nonexistent/node/path:/container"}),
+		WithPermissionProfile(permissions.BuiltinNoneProfile()),
+	)
+	require.NoError(t, err, "Operator context should not validate source paths")
+	assert.NotNil(t, config)
+}
+
 // TestWithEnvVars tests the WithEnvVars method
 func TestWithEnvVars(t *testing.T) {
 	t.Parallel()

@@ -447,6 +447,7 @@ func (r *VirtualMCPServerReconciler) handleSpecValidationError(
 	ctxLogger := log.FromContext(ctx)
 	if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 		ctxLogger.Error(applyErr, "Failed to apply status updates after spec validation error")
+		return applyErr
 	}
 	return nil
 }
@@ -651,32 +652,11 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	// Validate secret references before creating resources
-	// This catches configuration errors early, providing faster feedback than waiting for pod startup failures
-	if err := r.validateSecretReferences(ctx, vmcp); err != nil {
-		ctxLogger.Error(err, "Secret validation failed")
-		// Set AuthConfigured condition to False
-		statusManager.SetAuthConfiguredCondition(
-			mcpv1alpha1.ConditionReasonAuthInvalid,
-			fmt.Sprintf("Authentication configuration is invalid: %v", err),
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		// Record event for secret validation failure
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "SecretValidationFailed", "ValidateSecrets",
-				"Secret validation failed: %v", err)
-		}
+	// Validate secret references before creating resources.
+	// This catches configuration errors early, providing faster feedback than waiting for pod startup failures.
+	if err := r.ensureAuthSecretsValid(ctx, vmcp, statusManager); err != nil {
 		return ctrl.Result{}, err
 	}
-
-	// Authentication secrets validated successfully
-	statusManager.SetAuthConfiguredCondition(
-		mcpv1alpha1.ConditionReasonAuthValid,
-		"Authentication configuration is valid",
-		metav1.ConditionTrue,
-	)
-	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	// Check EmbeddingServer readiness before proceeding to Deployment.
 	// RequeueAfter provides a safety net in case the Watches() events
@@ -731,10 +711,14 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// Ensure vmcp Config ConfigMap.
 	// handleSpecValidationError converts SpecValidationError to nil (no requeue)
 	// after applying status conditions, while passing through transient errors.
-	if err := r.handleSpecValidationError(ctx, vmcp, statusManager,
-		r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager)); err != nil {
-		ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
-		return ctrl.Result{}, err
+	if specValidationErr := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager); specValidationErr != nil {
+		if err := r.handleSpecValidationError(ctx, vmcp, statusManager, specValidationErr); err != nil {
+			ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
+			return ctrl.Result{}, err
+		}
+		// SpecValidationError: status applied, stop reconciliation without requeue.
+		// Do not proceed to ensureDeployment — the ConfigMap was not created/updated.
+		return ctrl.Result{}, nil
 	}
 
 	// Ensure Deployment
@@ -754,6 +738,37 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// Update service URL in status
 	r.ensureServiceURL(vmcp, statusManager)
 	return ctrl.Result{}, nil
+}
+
+// ensureAuthSecretsValid validates secret references and sets the AuthConfigured condition.
+func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	if err := r.validateSecretReferences(ctx, vmcp); err != nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Secret validation failed")
+		statusManager.SetAuthConfiguredCondition(
+			mcpv1alpha1.ConditionReasonAuthInvalid,
+			fmt.Sprintf("Authentication configuration is invalid: %v", err),
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "SecretValidationFailed", "ValidateSecrets",
+				"Secret validation failed: %v", err)
+		}
+		return err
+	}
+
+	statusManager.SetAuthConfiguredCondition(
+		mcpv1alpha1.ConditionReasonAuthValid,
+		"Authentication configuration is valid",
+		metav1.ConditionTrue,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return nil
 }
 
 // ensureRBACResources ensures RBAC resources for VirtualMCPServer.

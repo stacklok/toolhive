@@ -1452,6 +1452,12 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's token to use as the
+                                    subject token. When set, the token is looked up from Identity.UpstreamTokens
+                                    instead of using Identity.Token.
+                                  type: string
                                 subjectTokenType:
                                   description: |-
                                     SubjectTokenType is the token type of the incoming subject token.
@@ -1541,6 +1547,12 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's token to use as the
+                                  subject token. When set, the token is looked up from Identity.UpstreamTokens
+                                  instead of using Identity.Token.
+                                type: string
                               subjectTokenType:
                                 description: |-
                                   SubjectTokenType is the token type of the incoming subject token.

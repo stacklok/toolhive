@@ -139,6 +139,11 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 		volumes = append(volumes, *authzVolume)
 	}
 
+	// Add OIDC CA bundle volumes if configured
+	caBundleVolumes, caBundleMounts := ctrlutil.AddOIDCCABundleVolumes(&proxy.Spec.OIDCConfig)
+	volumes = append(volumes, caBundleVolumes...)
+	volumeMounts = append(volumeMounts, caBundleMounts...)
+
 	return volumeMounts, volumes
 }
 

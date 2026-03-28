@@ -10,6 +10,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -137,6 +138,20 @@ func (rb *RemoteProxyBuilder) WithInlineOIDCConfig(issuer, audience string, inse
 			Issuer:            issuer,
 			Audience:          audience,
 			InsecureAllowHTTP: insecureAllowHTTP,
+		},
+	}
+	return rb
+}
+
+// WithCABundleRef sets a CA bundle ConfigMap reference on the inline OIDC config
+func (rb *RemoteProxyBuilder) WithCABundleRef(configMapName, key string) *RemoteProxyBuilder {
+	if rb.proxy.Spec.OIDCConfig.Inline == nil {
+		rb.proxy.Spec.OIDCConfig.Inline = &mcpv1alpha1.InlineOIDCConfig{}
+	}
+	rb.proxy.Spec.OIDCConfig.Inline.CABundleRef = &mcpv1alpha1.CABundleSource{
+		ConfigMapRef: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+			Key:                  key,
 		},
 	}
 	return rb

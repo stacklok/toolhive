@@ -178,6 +178,118 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 		})
 	})
 
+	Context("CA Bundle ConfigMap Reference Validation", func() {
+		It("should set CABundleRefValidated=True when CA bundle ConfigMap exists with correct key", func() {
+			By("creating a CA bundle ConfigMap")
+			configMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ca-bundle-valid",
+					Namespace: testNamespace,
+				},
+				Data: map[string]string{
+					"ca.crt": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, configMap)).To(Succeed())
+
+			By("creating an MCPRemoteProxy with valid CA bundle reference")
+			proxy := proxyHelper.NewRemoteProxyBuilder("test-valid-ca").
+				WithCABundleRef("ca-bundle-valid", "ca.crt").
+				Create(proxyHelper)
+
+			By("waiting for the CABundleRefValidated condition to be True")
+			statusHelper.WaitForCondition(
+				proxy.Name,
+				mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+				metav1.ConditionTrue,
+				MediumTimeout,
+			)
+
+			condition, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonCABundleRefValid))
+		})
+
+		It("should set CABundleRefValidated=False when CA bundle ConfigMap does not exist", func() {
+			By("creating an MCPRemoteProxy with non-existent CA bundle ConfigMap")
+			proxy := proxyHelper.NewRemoteProxyBuilder("test-missing-ca-cm").
+				WithCABundleRef("non-existent-ca-bundle", "ca.crt").
+				Create(proxyHelper)
+
+			By("waiting for the CABundleRefValidated condition to be False")
+			statusHelper.WaitForConditionReason(
+				proxy.Name,
+				mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+				mcpv1alpha1.ConditionReasonCABundleRefNotFound,
+				MediumTimeout,
+			)
+
+			condition, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Message).To(ContainSubstring("not found"))
+		})
+
+		It("should set CABundleRefValidated=False when CA bundle ConfigMap exists but key is missing", func() {
+			By("creating a CA bundle ConfigMap with a different key")
+			configMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ca-bundle-wrong-key",
+					Namespace: testNamespace,
+				},
+				Data: map[string]string{
+					"other-key": "some-data",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, configMap)).To(Succeed())
+
+			By("creating an MCPRemoteProxy referencing a non-existent key")
+			proxy := proxyHelper.NewRemoteProxyBuilder("test-wrong-key-ca").
+				WithCABundleRef("ca-bundle-wrong-key", "ca.crt").
+				Create(proxyHelper)
+
+			By("waiting for the CABundleRefValidated condition to be False")
+			statusHelper.WaitForConditionReason(
+				proxy.Name,
+				mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+				mcpv1alpha1.ConditionReasonCABundleRefInvalid,
+				MediumTimeout,
+			)
+
+			condition, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Message).To(ContainSubstring("ca.crt"))
+		})
+
+		It("should not set CABundleRefValidated condition when no CA bundle is configured", func() {
+			By("creating an MCPRemoteProxy without CA bundle reference")
+			proxy := proxyHelper.NewRemoteProxyBuilder("test-no-ca").
+				Create(proxyHelper)
+
+			By("waiting for the ConfigurationValid condition to be True")
+			statusHelper.WaitForCondition(
+				proxy.Name,
+				mcpv1alpha1.ConditionTypeConfigurationValid,
+				metav1.ConditionTrue,
+				MediumTimeout,
+			)
+
+			By("verifying the CABundleRefValidated condition is not set")
+			_, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not found"))
+		})
+	})
+
 	Context("Kubernetes Events", func() {
 		It("should emit a Warning event when OIDC issuer uses HTTP", func() {
 			By("creating an MCPRemoteProxy with HTTP OIDC issuer")

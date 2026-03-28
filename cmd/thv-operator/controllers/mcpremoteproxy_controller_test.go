@@ -92,6 +92,73 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 		// Note: "missing OIDC config" test removed - OIDCConfig is now a required value type
 		// with kubebuilder:validation:Required, so the API server prevents resources without it
 		{
+			name: "valid spec with Kubernetes OIDC config",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "k8s-oidc-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							Issuer:   "https://kubernetes.default.svc",
+							Audience: "toolhive",
+							JWKSURL:  "https://kubernetes.default.svc/openid/v1/jwks",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "Kubernetes OIDC with HTTP issuer rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "k8s-http-issuer",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							Issuer:   "http://kubernetes.default.svc",
+							Audience: "toolhive",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errContains: "HTTP scheme",
+		},
+		{
+			name: "Kubernetes OIDC with invalid JWKS URL rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "k8s-bad-jwks",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							Issuer:   "https://kubernetes.default.svc",
+							Audience: "toolhive",
+							JWKSURL:  "not-a-valid-url",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errContains: "JWKS URL",
+		},
+		{
 			name: "with valid external auth config",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -824,6 +891,269 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 	}
 }
 
+// TestMCPRemoteProxyValidateCABundleRef tests the CA bundle ref validation logic
+func TestMCPRemoteProxyValidateCABundleRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		proxy           *mcpv1alpha1.MCPRemoteProxy
+		configMap       *corev1.ConfigMap
+		expectCondition bool
+		expectedStatus  metav1.ConditionStatus
+		expectedReason  string
+	}{
+		{
+			name: "no CABundleRef configured",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-ca-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+				},
+			},
+			expectCondition: false,
+		},
+		{
+			name: "valid CABundleRef with existing ConfigMap and key",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "valid-ca-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle-cm"},
+									Key:                  "ca.crt",
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ca-bundle-cm",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"ca.crt": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+				},
+			},
+			expectCondition: true,
+			expectedStatus:  metav1.ConditionTrue,
+			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefValid,
+		},
+		{
+			name: "CABundleRef with nil ConfigMapRef",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nil-cmref-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: nil,
+							},
+						},
+					},
+				},
+			},
+			expectCondition: false,
+		},
+		{
+			name: "CABundleRef with empty ConfigMap name fails validation",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-name-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+									Key:                  "ca.crt",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectCondition: true,
+			expectedStatus:  metav1.ConditionFalse,
+			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefInvalid,
+		},
+		{
+			name: "valid CABundleRef with default key",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-key-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle-default"},
+									Key:                  "",
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ca-bundle-default",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"ca.crt": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+				},
+			},
+			expectCondition: true,
+			expectedStatus:  metav1.ConditionTrue,
+			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefValid,
+		},
+		{
+			name: "CABundleRef referencing non-existent ConfigMap",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "missing-cm-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "non-existent-cm"},
+									Key:                  "ca.crt",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectCondition: true,
+			expectedStatus:  metav1.ConditionFalse,
+			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefNotFound,
+		},
+		{
+			name: "CABundleRef with missing key in ConfigMap",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "missing-key-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle-cm"},
+									Key:                  "wrong-key",
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ca-bundle-cm",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"ca.crt": "cert-data",
+				},
+			},
+			expectCondition: true,
+			expectedStatus:  metav1.ConditionFalse,
+			expectedReason:  mcpv1alpha1.ConditionReasonCABundleRefInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := createRunConfigTestScheme()
+			objects := []runtime.Object{tt.proxy}
+			if tt.configMap != nil {
+				objects = append(objects, tt.configMap)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objects...).
+				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+				Build()
+
+			reconciler := &MCPRemoteProxyReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			reconciler.validateCABundleRef(context.TODO(), tt.proxy)
+
+			cond := meta.FindStatusCondition(tt.proxy.Status.Conditions,
+				mcpv1alpha1.ConditionTypeMCPRemoteProxyCABundleRefValidated)
+
+			if tt.expectCondition {
+				assert.NotNil(t, cond, "CABundleRefValidated condition should be set")
+				if cond != nil {
+					assert.Equal(t, tt.expectedStatus, cond.Status)
+					assert.Equal(t, tt.expectedReason, cond.Reason)
+				}
+			} else {
+				assert.Nil(t, cond, "CABundleRefValidated condition should not be set")
+			}
+		})
+	}
+}
+
 // TestLabelsForMCPRemoteProxy tests label generation
 func TestLabelsForMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
@@ -872,6 +1202,29 @@ func TestServiceNameGeneration(t *testing.T) {
 			assert.Equal(t, tt.expectedURL, serviceURL)
 		})
 	}
+}
+
+// TestServiceAccountNameForRemoteProxy tests service account name resolution
+func TestServiceAccountNameForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default service account", func(t *testing.T) {
+		t.Parallel()
+		proxy := &mcpv1alpha1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-proxy"},
+		}
+		assert.Equal(t, "my-proxy-remote-proxy-runner", serviceAccountNameForRemoteProxy(proxy))
+	})
+
+	t.Run("custom service account", func(t *testing.T) {
+		t.Parallel()
+		customSA := "my-custom-sa"
+		proxy := &mcpv1alpha1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-proxy"},
+			Spec:       mcpv1alpha1.MCPRemoteProxySpec{ServiceAccount: &customSA},
+		}
+		assert.Equal(t, "my-custom-sa", serviceAccountNameForRemoteProxy(proxy))
+	})
 }
 
 // TestEnsureRBACResources tests RBAC resource creation

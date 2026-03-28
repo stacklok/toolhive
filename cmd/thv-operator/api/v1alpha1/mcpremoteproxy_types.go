@@ -208,6 +208,9 @@ const (
 
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
+
+	// ConditionTypeMCPRemoteProxyCABundleRefValidated indicates whether the CABundleRef is valid
+	ConditionTypeMCPRemoteProxyCABundleRefValidated = "CABundleRefValidated"
 )
 
 // Condition reasons for MCPRemoteProxy

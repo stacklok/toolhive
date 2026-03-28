@@ -195,6 +195,61 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 			},
 		},
 		{
+			name: "with OIDC CA bundle volumes",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cabundle-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-bundle"},
+									Key:                  "ca.crt",
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				// Verify CA bundle volume exists
+				foundVolume := false
+				for _, vol := range dep.Spec.Template.Spec.Volumes {
+					if vol.Name == "oidc-ca-bundle-my-ca-bundle" {
+						foundVolume = true
+						require.NotNil(t, vol.ConfigMap)
+						assert.Equal(t, "my-ca-bundle", vol.ConfigMap.Name)
+						require.Len(t, vol.ConfigMap.Items, 1)
+						assert.Equal(t, "ca.crt", vol.ConfigMap.Items[0].Key)
+						break
+					}
+				}
+				assert.True(t, foundVolume, "CA bundle volume should be present")
+
+				// Verify CA bundle volume mount exists
+				container := dep.Spec.Template.Spec.Containers[0]
+				foundMount := false
+				for _, mount := range container.VolumeMounts {
+					if mount.Name == "oidc-ca-bundle-my-ca-bundle" {
+						foundMount = true
+						assert.Equal(t, "/config/certs/my-ca-bundle", mount.MountPath)
+						assert.True(t, mount.ReadOnly)
+						break
+					}
+				}
+				assert.True(t, foundMount, "CA bundle volume mount should be present")
+			},
+		},
+		{
 			name: "proxyPort takes precedence over port",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -682,6 +737,33 @@ func TestEnsureService(t *testing.T) {
 			},
 			existingService: nil,
 			expectRequeue:   true,
+		},
+		{
+			name: "update existing service with drifted session affinity",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "update-svc-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+				},
+			},
+			existingService: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      createProxyServiceName("update-svc-proxy"),
+					Namespace: "default",
+					Labels:    labelsForMCPRemoteProxy("update-svc-proxy"),
+				},
+				Spec: corev1.ServiceSpec{
+					SessionAffinity: corev1.ServiceAffinityNone,
+					Ports: []corev1.ServicePort{{
+						Port: 8080,
+					}},
+				},
+			},
+			expectRequeue: true,
 		},
 	}
 

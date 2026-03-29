@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/telemetry"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -601,6 +602,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 	}
+	redisCfg, err := buildRedisConfig(cfg.SessionStorage)
+	if err != nil {
+		return fmt.Errorf("invalid session storage configuration: %w", err)
+	}
+	serverCfg.SessionStorageConfig = redisCfg
 
 	// Convert composite tool configurations to workflow definitions
 	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
@@ -620,4 +626,35 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Start server (blocks until shutdown signal)
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
+}
+
+const defaultRedisKeyPrefix = "thv:session:"
+
+// buildRedisConfig converts a vmcp SessionStorageConfig into a transport-layer
+// RedisConfig. Returns (nil, nil) when sessionStorage is nil or provider is not "redis".
+// Returns an error when provider is "redis" but required fields are invalid.
+// The Redis password is read from the THV_SESSION_REDIS_PASSWORD environment variable.
+func buildRedisConfig(sessionStorage *config.SessionStorageConfig) (*transportsession.RedisConfig, error) {
+	if sessionStorage == nil || sessionStorage.Provider != "redis" {
+		return nil, nil
+	}
+	if sessionStorage.Address == "" {
+		return nil, fmt.Errorf("session storage provider is \"redis\" but address is empty")
+	}
+	keyPrefix := sessionStorage.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = defaultRedisKeyPrefix
+	}
+	if keyPrefix[len(keyPrefix)-1] != ':' {
+		return nil, fmt.Errorf("session storage key prefix %q must end with ':'", keyPrefix)
+	}
+	if sessionStorage.DB < 0 {
+		return nil, fmt.Errorf("session storage db must be non-negative, got %d", sessionStorage.DB)
+	}
+	return &transportsession.RedisConfig{
+		Addr:      sessionStorage.Address,
+		Password:  os.Getenv(config.RedisPasswordEnvVar),
+		DB:        int(sessionStorage.DB),
+		KeyPrefix: keyPrefix,
+	}, nil
 }

@@ -260,6 +260,14 @@ func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 	}
 }
 
+// WithAllowDockerGateway sets whether to allow outbound connections to Docker gateway addresses
+func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.AllowDockerGateway = allow
+		return nil
+	}
+}
+
 // WithTrustProxyHeaders sets whether to trust X-Forwarded-* headers from reverse proxies
 func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

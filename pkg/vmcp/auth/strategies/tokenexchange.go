@@ -119,13 +119,22 @@ func (s *TokenExchangeStrategy) Authenticate(
 		return fmt.Errorf("no identity found in context")
 	}
 
-	if identity.Token == "" {
-		return fmt.Errorf("identity has no token")
+	var subjectToken string
+	if config.SubjectProviderName != "" {
+		subjectToken = identity.UpstreamTokens[config.SubjectProviderName] // nil map safe in Go
+		if subjectToken == "" {
+			return fmt.Errorf("provider %q: %w", config.SubjectProviderName, authtypes.ErrUpstreamTokenNotFound)
+		}
+	} else {
+		if identity.Token == "" {
+			return fmt.Errorf("identity has no token")
+		}
+		subjectToken = identity.Token
 	}
 
 	// Get user-specific exchange config. This creates a fresh config instance
 	// with the current user's token. The underlying server config is cached.
-	exchangeConfig := s.createUserConfig(config, identity.Token)
+	exchangeConfig := s.createUserConfig(config, subjectToken)
 	tokenSource := exchangeConfig.TokenSource(ctx)
 
 	token, err := tokenSource.Token()
@@ -179,12 +188,13 @@ func (s *TokenExchangeStrategy) Validate(strategy *authtypes.BackendAuthStrategy
 
 // tokenExchangeConfig holds the parsed token exchange configuration.
 type tokenExchangeConfig struct {
-	TokenURL         string
-	ClientID         string
-	ClientSecret     string //nolint:gosec // G117: field legitimately holds sensitive data
-	Audience         string
-	Scopes           []string
-	SubjectTokenType string
+	TokenURL            string
+	ClientID            string
+	ClientSecret        string //nolint:gosec // G117: field legitimately holds sensitive data
+	Audience            string
+	Scopes              []string
+	SubjectTokenType    string
+	SubjectProviderName string
 }
 
 // parseClientSecret parses and validates ClientSecret or ClientSecretEnv from TokenExchangeConfig.
@@ -257,6 +267,9 @@ func (s *TokenExchangeStrategy) parseTokenExchangeConfig(strategy *authtypes.Bac
 		}
 		config.SubjectTokenType = normalized
 	}
+
+	// Optional: SubjectProviderName
+	config.SubjectProviderName = tokenExchangeCfg.SubjectProviderName
 
 	return config, nil
 }
@@ -337,6 +350,7 @@ func (s *TokenExchangeStrategy) createUserConfig(
 //   - audience: Target audience
 //   - scopes: Requested scopes (sorted for consistency)
 //   - subject_token_type: Type of subject token
+//   - subject_provider_name: Upstream provider for subject token selection
 //
 // Note: No user identity is included - server configs are shared across users.
 func buildCacheKey(config *tokenExchangeConfig) string {
@@ -367,12 +381,19 @@ func buildCacheKey(config *tokenExchangeConfig) string {
 		tokenType = nonePlaceholder
 	}
 
-	// Format: token_url:client_id:audience:scopes:subject_token_type
-	return fmt.Sprintf("%s:%s:%s:%s:%s",
+	// Handle subject_provider_name (empty becomes nonePlaceholder)
+	providerName := config.SubjectProviderName
+	if providerName == "" {
+		providerName = nonePlaceholder
+	}
+
+	// Format: token_url:client_id:audience:scopes:subject_token_type:subject_provider_name
+	return fmt.Sprintf("%s:%s:%s:%s:%s:%s",
 		config.TokenURL,
 		clientID,
 		audience,
 		scopesStr,
 		tokenType,
+		providerName,
 	)
 }

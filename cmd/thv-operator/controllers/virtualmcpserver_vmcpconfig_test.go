@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"testing"
 	"time"
@@ -83,7 +84,7 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, err := converter.Convert(context.Background(), tt.vmcp)
+			config, _, err := converter.Convert(context.Background(), tt.vmcp)
 
 			require.NoError(t, err)
 			assert.NotNil(t, config)
@@ -154,7 +155,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 			}
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
 			require.NotNil(t, config.OutgoingAuth)
@@ -245,7 +246,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				converter = newTestConverter(t, newNoOpMockResolver(t))
 			}
 
-			config, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
 			require.NotNil(t, config.OutgoingAuth)
@@ -339,7 +340,7 @@ func TestConvertAggregation(t *testing.T) {
 			}
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
 			require.NotNil(t, config.Aggregation)
@@ -432,7 +433,7 @@ func TestConvertCompositeTools(t *testing.T) {
 			}
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
 			tools := config.CompositeTools
@@ -1072,10 +1073,11 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 	results := make([]string, iterations)
 
 	for i := 0; i < iterations; i++ {
-		config, err := converter.Convert(context.Background(), testVmcp)
+		cfg, _, err := converter.Convert(context.Background(), testVmcp)
 		require.NoError(t, err)
 
-		yamlBytes, err := yaml.Marshal(config)
+		// Marshal the Config to YAML.
+		yamlBytes, err := yaml.Marshal(cfg)
 		require.NoError(t, err)
 
 		results[i] = string(yamlBytes)
@@ -2073,4 +2075,115 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError verifies that
+// ensureVmcpConfigConfigMap returns a SpecValidationError and sets the correct status
+// conditions when ValidateAuthServerIntegration fails.
+//
+// The test triggers the issuer-mismatch path: AuthServerConfig.Issuer differs from
+// IncomingAuth.OIDC.Issuer, causing validateAuthServerIncomingAuthConsistency to fail.
+func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		incomingIssuer    = "https://incoming-auth.example.com"
+		authServerIssuer  = "https://different-auth-server.example.com"
+		audience          = "https://api.example.com"
+		clientID          = "test-client-id"
+		upstreamIssuerURL = "https://upstream-idp.example.com"
+	)
+
+	testVmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-vmcp",
+			Namespace:  "default",
+			Generation: 3,
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "oidc",
+				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   incomingIssuer,
+						Audience: audience,
+						ClientID: clientID,
+					},
+				},
+			},
+			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: authServerIssuer,
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key-secret", Key: "key.pem"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "corporate-idp",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: upstreamIssuerURL,
+							ClientID:  "upstream-client-id",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPGroupSpec{},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(testVmcp, mcpGroup).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	ctx := context.Background()
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testVmcp.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.Config.Group)
+	require.NoError(t, err)
+
+	// Use a mock StatusManager so we can verify the exact conditions set on failure.
+	mockCtrl := gomock.NewController(t)
+	mockStatus := statusmocks.NewMockStatusManager(mockCtrl)
+
+	// processOutgoingAuth (discovered mode, no OutgoingAuth on CRD) cleans up stale conditions.
+	mockStatus.EXPECT().RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).Times(1)
+	mockStatus.EXPECT().RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).Times(1)
+	mockStatus.EXPECT().RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).Times(1)
+
+	// ValidateAuthServerIntegration failure: issuer mismatch sets Failed phase and condition.
+	mockStatus.EXPECT().SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed).Times(1)
+	mockStatus.EXPECT().SetMessage(gomock.Any()).Times(1).Do(func(message string) {
+		assert.Contains(t, message, "invalid auth server integration")
+	})
+	mockStatus.EXPECT().SetAuthServerConfigValidatedCondition(
+		mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+		gomock.Any(),
+		metav1.ConditionFalse,
+	).Times(1)
+	mockStatus.EXPECT().SetObservedGeneration(testVmcp.Generation).Times(1)
+
+	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames, mockStatus)
+
+	// Verify the error is a SpecValidationError with the expected message.
+	var specErr *SpecValidationError
+	require.True(t, stderrors.As(err, &specErr), "expected a *SpecValidationError, got %T: %v", err, err)
+	assert.Contains(t, specErr.Message, "invalid auth server integration")
 }

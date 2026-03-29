@@ -396,7 +396,10 @@ func AddEmbeddedAuthServerConfigOptions(
 	}
 
 	// Build the embedded auth server config for runner
-	embeddedConfig, err := buildEmbeddedAuthServerRunnerConfig(namespace, mcpServerName, authServerConfig, oidcConfig)
+	embeddedConfig, err := BuildAuthServerRunConfig(
+		namespace, mcpServerName, authServerConfig,
+		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)
 	}
@@ -407,23 +410,25 @@ func AddEmbeddedAuthServerConfigOptions(
 	return nil
 }
 
-// buildEmbeddedAuthServerRunnerConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
+// BuildAuthServerRunConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
 //
-// The oidcConfig parameter provides:
-//   - AllowedAudiences: from oidcConfig.ResourceURL (required, validated in AddEmbeddedAuthServerConfigOptions)
-//   - ScopesSupported: from oidcConfig.Scopes (optional, nil uses auth server defaults)
-func buildEmbeddedAuthServerRunnerConfig(
+// AllowedAudiences and ScopesSupported are caller-provided because different controllers
+// derive them from different sources (MCPServer uses oidcConfig.ResourceURL/Scopes;
+// VirtualMCPServer derives from the resolved vmcp Config).
+func BuildAuthServerRunConfig(
 	namespace string,
-	mcpServerName string,
+	name string,
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
-	oidcConfig *oidc.OIDCConfig,
+	allowedAudiences []string,
+	scopesSupported []string,
 ) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
-		SchemaVersion:    authserver.CurrentSchemaVersion,
-		Issuer:           authConfig.Issuer,
-		AllowedAudiences: []string{oidcConfig.ResourceURL},
-		ScopesSupported:  oidcConfig.Scopes,
+		SchemaVersion:                authserver.CurrentSchemaVersion,
+		Issuer:                       authConfig.Issuer,
+		AuthorizationEndpointBaseURL: authConfig.AuthorizationEndpointBaseURL,
+		AllowedAudiences:             allowedAudiences,
+		ScopesSupported:              scopesSupported,
 	}
 
 	// Build signing key configuration
@@ -465,7 +470,7 @@ func buildEmbeddedAuthServerRunnerConfig(
 	}
 
 	// Build storage configuration
-	storageCfg, err := buildStorageRunConfig(namespace, mcpServerName, authConfig)
+	storageCfg, err := buildStorageRunConfig(namespace, name, authConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build storage config: %w", err)
 	}

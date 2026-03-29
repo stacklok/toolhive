@@ -98,6 +98,7 @@ type deployOps interface {
 		exposedPorts map[string]struct{},
 		endpointsConfig map[string]*network.EndpointSettings,
 		perm *permissions.NetworkPermissions,
+		allowDockerGateway bool,
 	) (string, error)
 	createMcpContainer(
 		ctx context.Context,
@@ -165,8 +166,14 @@ func (c *Client) createEgressSquidContainer(
 	exposedPorts map[string]struct{},
 	endpointsConfig map[string]*network.EndpointSettings,
 	perm *permissions.NetworkPermissions,
+	allowDockerGateway bool,
 ) (string, error) {
-	return createEgressSquidContainer(ctx, c, containerName, squidContainerName, attachStdio, exposedPorts, endpointsConfig, perm)
+	gatewayIP := c.getDockerBridgeGatewayIP(ctx)
+	return createEgressSquidContainer(
+		ctx, c, containerName, squidContainerName,
+		attachStdio, exposedPorts, endpointsConfig, perm,
+		allowDockerGateway, gatewayIP,
+	)
 }
 
 // DeployWorkload creates and starts a workload.
@@ -243,6 +250,7 @@ func (c *Client) DeployWorkload(
 
 		// create egress container
 		egressContainerName := fmt.Sprintf("%s-egress", name)
+		allowDockerGateway := options != nil && options.AllowDockerGateway
 		_, err = c.ops.createEgressSquidContainer(
 			ctx,
 			name,
@@ -251,6 +259,7 @@ func (c *Client) DeployWorkload(
 			nil,
 			externalEndpointsConfig,
 			permissionProfile.Network,
+			allowDockerGateway,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create egress container: %w", err)
@@ -1165,6 +1174,27 @@ func (c *Client) createNetwork(
 		return err
 	}
 	return nil
+}
+
+// getDockerBridgeGatewayIP returns the gateway IP of the Docker default bridge
+// network by inspecting it at runtime. This handles platform differences:
+// Linux Docker Engine uses 172.17.0.1 by default, while Docker Desktop on macOS
+// uses 192.168.65.1 and Colima typically uses 192.168.5.1 or similar. Querying
+// the daemon directly is more accurate than hardcoding platform-specific IPs.
+// Falls back to dockerDefaultBridgeGatewayIP on any error.
+func (c *Client) getDockerBridgeGatewayIP(ctx context.Context) string {
+	nr, err := c.client.NetworkInspect(ctx, "bridge", network.InspectOptions{})
+	if err != nil {
+		slog.Debug("failed to inspect bridge network, using default gateway IP", "error", err)
+		return dockerDefaultBridgeGatewayIP
+	}
+	for _, cfg := range nr.IPAM.Config {
+		if cfg.Gateway != "" {
+			return cfg.Gateway
+		}
+	}
+	slog.Debug("bridge network has no gateway in IPAM config, using default gateway IP")
+	return dockerDefaultBridgeGatewayIP
 }
 
 // DeleteNetwork deletes a network by name.

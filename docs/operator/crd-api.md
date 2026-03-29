@@ -116,6 +116,7 @@ _Appears in:_
 | `audience` _string_ | Audience is the target audience for the exchanged token. |  |  |
 | `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
 | `subjectTokenType` _string_ | SubjectTokenType is the token type of the incoming subject token.<br />Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified. |  |  |
+| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />subject token. When set, the token is looked up from Identity.UpstreamTokens<br />instead of using Identity.Token. |  |  |
 
 
 #### auth.types.UpstreamInjectConfig
@@ -1005,6 +1006,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuer` _string_ | Issuer is the issuer identifier for this authorization server.<br />This will be included in the "iss" claim of issued tokens.<br />Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414). |  | Pattern: `^https?://[^\s?#]+[^/\s?#]$` <br />Required: \{\} <br /> |
+| `authorizationEndpointBaseUrl` _string_ | AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint<br />in the OAuth discovery document. When set, the discovery document will advertise<br />`\{authorizationEndpointBaseUrl\}/oauth/authorize` instead of `\{issuer\}/oauth/authorize`.<br />All other endpoints (token, registration, JWKS) remain derived from the issuer.<br />This is useful when the browser-facing authorization endpoint needs to be on a<br />different host than the issuer used for backend-to-backend calls.<br />Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash. |  | Pattern: `^https?://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
 | `signingKeySecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1alpha1.TokenLifespanConfig](#apiv1alpha1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |

@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
@@ -167,7 +168,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 
 			converter := newTestConverter(t, mockResolver)
 			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, err := converter.Convert(ctx, newTestVMCPServer(tt.oidcConfig))
+			config, _, err := converter.Convert(ctx, newTestVMCPServer(tt.oidcConfig))
 
 			tt.validate(t, config, err)
 		})
@@ -214,7 +215,7 @@ func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
-	config, err := converter.Convert(ctx, vmcpServer)
+	config, _, err := converter.Convert(ctx, vmcpServer)
 
 	require.NoError(t, err)
 	require.NotNil(t, config)
@@ -339,7 +340,7 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 
 			converter := newTestConverter(t, mockResolver)
 			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, err := converter.Convert(ctx, vmcpServer)
+			config, _, err := converter.Convert(ctx, vmcpServer)
 
 			require.NoError(t, err, tt.description)
 			require.NotNil(t, config, tt.description)
@@ -746,7 +747,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 			require.NoError(t, err)
 
 			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, err := converter.Convert(ctx, tt.vmcp)
+			config, _, err := converter.Convert(ctx, tt.vmcp)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -857,7 +858,7 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), logr.Discard())
-	cfg, err := converter.Convert(ctx, vmcpServer)
+	cfg, _, err := converter.Convert(ctx, vmcpServer)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	require.Len(t, cfg.CompositeTools, 1)
@@ -1358,7 +1359,7 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
-			config, err := converter.Convert(ctx, tt.vmcp)
+			config, _, err := converter.Convert(ctx, tt.vmcp)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -1417,7 +1418,7 @@ func TestConverter_TelemetryConfigPreserved(t *testing.T) {
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 
-	config, err := converter.Convert(ctx, vmcp)
+	config, _, err := converter.Convert(ctx, vmcp)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 
@@ -1520,7 +1521,7 @@ func TestConverter_TelemetryDefaults(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
-			config, err := converter.Convert(ctx, vmcp)
+			config, _, err := converter.Convert(ctx, vmcp)
 			require.NoError(t, err)
 			require.NotNil(t, config)
 
@@ -1552,7 +1553,7 @@ func TestConverter_TelemetryNil(t *testing.T) {
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 
-	config, err := converter.Convert(ctx, vmcp)
+	config, _, err := converter.Convert(ctx, vmcp)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	assert.Nil(t, config.Telemetry, "Telemetry should be nil when not configured")
@@ -1617,7 +1618,7 @@ func TestConverter_TelemetryEndpointPrefixStripping(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
-			config, err := converter.Convert(ctx, vmcp)
+			config, _, err := converter.Convert(ctx, vmcp)
 			require.NoError(t, err)
 			require.NotNil(t, config)
 			require.NotNil(t, config.Telemetry)
@@ -1696,11 +1697,199 @@ func TestConverter_SessionStorage(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
-			config, err := converter.Convert(ctx, vmcpServer)
+			config, _, err := converter.Convert(ctx, vmcpServer)
 			require.NoError(t, err)
 			require.NotNil(t, config)
 
 			assert.Equal(t, tt.expectedStorage, config.SessionStorage)
 		})
 	}
+}
+
+func TestDeriveAllowedAudiences(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   *vmcpconfig.Config
+		expected []string
+	}{
+		{
+			name:     "nil IncomingAuth returns nil",
+			config:   &vmcpconfig.Config{},
+			expected: nil,
+		},
+		{
+			name: "nil OIDC returns nil",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{Type: "oidc"},
+			},
+			expected: nil,
+		},
+		{
+			name: "Resource is used even when Audience is also set",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{
+					Type: "oidc",
+					OIDC: &vmcpconfig.OIDCConfig{
+						Resource: "https://resource.example.com",
+						Audience: "https://audience.example.com",
+					},
+				},
+			},
+			expected: []string{"https://resource.example.com"},
+		},
+		{
+			name: "Audience alone returns nil (only Resource is used)",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{
+					Type: "oidc",
+					OIDC: &vmcpconfig.OIDCConfig{
+						Audience: "https://audience.example.com",
+					},
+				},
+			},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := deriveAllowedAudiences(tt.config)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestDeriveScopesSupported(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   *vmcpconfig.Config
+		expected []string
+	}{
+		{
+			name:     "nil IncomingAuth returns nil",
+			config:   &vmcpconfig.Config{},
+			expected: nil,
+		},
+		{
+			name: "nil OIDC returns nil",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{Type: "oidc"},
+			},
+			expected: nil,
+		},
+		{
+			name: "empty scopes returns nil (triggers auth server defaults)",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{
+					Type: "oidc",
+					OIDC: &vmcpconfig.OIDCConfig{Scopes: []string{}},
+				},
+			},
+			expected: nil,
+		},
+		{
+			name: "populated scopes are returned as-is",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{
+					Type: "oidc",
+					OIDC: &vmcpconfig.OIDCConfig{Scopes: []string{"openid", "upstream:github"}},
+				},
+			},
+			expected: []string{"openid", "upstream:github"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := deriveScopesSupported(tt.config)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestConvert_AuthServerConfigIntegration is an integration-level test that exercises the
+// full Convert() path with an AuthServerConfig set on the VirtualMCPServer. It verifies that
+// the returned RunConfig has the correct Issuer, Upstreams, and AllowedAudiences derived
+// from the IncomingAuth OIDC audience, and that no secret values leak into the RunConfig.
+func TestConvert_AuthServerConfigIntegration(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	mockResolver := oidcmocks.NewMockResolver(ctrl)
+	mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&oidc.OIDCConfig{
+		Issuer:      "https://incoming-issuer.example.com",
+		Audience:    "https://my-vmcp.example.com",
+		ResourceURL: "https://resource.example.com",
+	}, nil)
+
+	k8sClient := newTestK8sClient(t)
+	converter, err := NewConverter(mockResolver, k8sClient)
+	require.NoError(t, err)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "oidc",
+				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://incoming-issuer.example.com",
+						Audience: "https://my-vmcp.example.com",
+					},
+				},
+			},
+			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "corp-idp",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://corp.example.com",
+							ClientID:  "corp-client-id",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "corp-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+	config, runConfig, err := converter.Convert(ctx, vmcp)
+
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.NotNil(t, runConfig, "RunConfig should be non-nil when AuthServerConfig is present")
+
+	// Verify Issuer comes from AuthServerConfig, not IncomingAuth
+	assert.Equal(t, "https://authserver.example.com", runConfig.Issuer)
+
+	// Verify AllowedAudiences derived from IncomingAuth OIDC Resource (takes precedence over Audience)
+	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.AllowedAudiences)
+
+	// Verify upstream is present and uses env var, not file path
+	require.Len(t, runConfig.Upstreams, 1)
+	assert.Equal(t, "corp-idp", runConfig.Upstreams[0].Name)
+	require.NotNil(t, runConfig.Upstreams[0].OIDCConfig)
+	assert.Empty(t, runConfig.Upstreams[0].OIDCConfig.ClientSecretFile,
+		"No file path for secret should be present; env var is used")
+	assert.Equal(t, controllerutil.UpstreamClientSecretEnvVar+"_CORP_IDP",
+		runConfig.Upstreams[0].OIDCConfig.ClientSecretEnvVar)
 }

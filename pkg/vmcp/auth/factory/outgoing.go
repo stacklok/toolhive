@@ -34,6 +34,7 @@ import (
 //   - "unauthenticated": Default fallback for backends without auth
 //   - "header_injection": Custom HTTP header injection
 //   - "token_exchange": RFC-8693 OAuth 2.0 token exchange
+//   - "upstream_inject": Per-upstream token injection from stored credentials
 //
 // Parameters:
 //   - ctx: Context for any initialization that requires it
@@ -64,6 +65,12 @@ func NewOutgoingAuthRegistry(
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeTokenExchange,
 		strategies.NewTokenExchangeStrategy(envReader),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeUpstreamInject,
+		strategies.NewUpstreamInjectStrategy(),
 	); err != nil {
 		return nil, err
 	}

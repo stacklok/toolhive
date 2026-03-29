@@ -6,6 +6,7 @@ package strategies
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,6 +45,15 @@ func createMockEnvReader(t *testing.T) *mocks.MockReader {
 
 func createContextWithIdentity(subject, token string) context.Context {
 	return auth.WithIdentity(context.Background(), createTestIdentity(subject, token))
+}
+
+func createContextWithUpstreamTokens(subject, token string, upstreamTokens map[string]string) context.Context {
+	identity := &auth.Identity{
+		PrincipalInfo:  auth.PrincipalInfo{Subject: subject},
+		Token:          token,
+		UpstreamTokens: upstreamTokens,
+	}
+	return auth.WithIdentity(context.Background(), identity)
 }
 
 func createTokenExchangeStrategy(tokenURL string, opts ...func(*authtypes.TokenExchangeConfig)) *authtypes.BackendAuthStrategy {
@@ -93,6 +103,7 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 		setupServer     func() *httptest.Server
 		expectError     bool
 		errorContains   string
+		checkSentinel   bool
 		checkAuthHeader func(t *testing.T, req *http.Request)
 	}{
 		{
@@ -303,6 +314,67 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 			expectError:   true,
 			errorContains: "empty access_token",
 		},
+		{
+			name: "exchanges upstream token when SubjectProviderName is set",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamTokens("upstream-user", "incoming-bearer-token",
+					map[string]string{"github": "github-upstream-token"})
+			},
+			setupServer: func() *httptest.Server {
+				return createSuccessfulTokenServer(t, "backend-token-xxx", func(t *testing.T, r *http.Request) {
+					t.Helper()
+					assert.Equal(t, "github-upstream-token", r.Form.Get("subject_token"),
+						"should use upstream token, not identity.Token")
+				})
+			},
+			strategy: func(server *httptest.Server) *authtypes.BackendAuthStrategy {
+				return createTokenExchangeStrategy(server.URL, func(cfg *authtypes.TokenExchangeConfig) {
+					cfg.SubjectProviderName = "github"
+				})
+			},
+			expectError: false,
+			checkAuthHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Equal(t, "Bearer backend-token-xxx", req.Header.Get("Authorization"))
+			},
+		},
+		{
+			name: "returns ErrUpstreamTokenNotFound when SubjectProviderName token is missing",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamTokens("upstream-user", "incoming-bearer-token", nil)
+			},
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+					t.Error("token endpoint should not be called")
+				}))
+			},
+			strategy: func(server *httptest.Server) *authtypes.BackendAuthStrategy {
+				return createTokenExchangeStrategy(server.URL, func(cfg *authtypes.TokenExchangeConfig) {
+					cfg.SubjectProviderName = "github"
+				})
+			},
+			expectError:   true,
+			errorContains: "upstream token not found",
+			checkSentinel: true,
+		},
+		{
+			name: "uses identity.Token when SubjectProviderName is empty",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamTokens("upstream-user", "original-bearer",
+					map[string]string{"github": "upstream-tok"})
+			},
+			setupServer: func() *httptest.Server {
+				return createSuccessfulTokenServer(t, "backend-token-yyy", func(t *testing.T, r *http.Request) {
+					t.Helper()
+					assert.Equal(t, "original-bearer", r.Form.Get("subject_token"),
+						"should use identity.Token, not upstream token")
+				})
+			},
+			strategy: func(server *httptest.Server) *authtypes.BackendAuthStrategy {
+				return createTokenExchangeStrategy(server.URL)
+			},
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -327,6 +399,10 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorContains)
+				if tt.checkSentinel {
+					assert.True(t, errors.Is(err, authtypes.ErrUpstreamTokenNotFound),
+						"expected error to wrap ErrUpstreamTokenNotFound, got: %v", err)
+				}
 				return
 			}
 

@@ -76,6 +76,17 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
+                  authorizationEndpointBaseUrl:
+                    description: |-
+                      AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+                      in the OAuth discovery document. When set, the discovery document will advertise
+                      `{authorizationEndpointBaseUrl}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
+                      All other endpoints (token, registration, JWKS) remain derived from the issuer.
+                      This is useful when the browser-facing authorization endpoint needs to be on a
+                      different host than the issuer used for backend-to-backend calls.
+                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+                    pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -1441,6 +1452,12 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's token to use as the
+                                    subject token. When set, the token is looked up from Identity.UpstreamTokens
+                                    instead of using Identity.Token.
+                                  type: string
                                 subjectTokenType:
                                   description: |-
                                     SubjectTokenType is the token type of the incoming subject token.
@@ -1530,6 +1547,12 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's token to use as the
+                                  subject token. When set, the token is looked up from Identity.UpstreamTokens
+                                  instead of using Identity.Token.
+                                type: string
                               subjectTokenType:
                                 description: |-
                                   SubjectTokenType is the token type of the incoming subject token.

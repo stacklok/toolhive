@@ -22,9 +22,21 @@ func TestNewWellKnownHandler(t *testing.T) {
 		testRequests    []testRequest
 	}{
 		{
-			name:            "nil authInfoHandler returns nil",
+			name:            "nil authInfoHandler returns 404 JSON for discovery path",
 			authInfoHandler: nil,
-			expectedNil:     true,
+			expectedNil:     false,
+			testRequests: []testRequest{
+				{
+					path:           "/.well-known/oauth-protected-resource",
+					expectedStatus: http.StatusNotFound,
+					expectedBody:   `{"error":"not_found"}`,
+				},
+				{
+					path:           "/.well-known/other",
+					expectedStatus: http.StatusNotFound,
+					expectedBody:   `{"error":"not_found"}`,
+				},
+			},
 		},
 		{
 			name: "exact path /.well-known/oauth-protected-resource routes to authInfoHandler",
@@ -82,12 +94,12 @@ func TestNewWellKnownHandler(t *testing.T) {
 				{
 					path:           "/.well-known/openid-configuration",
 					expectedStatus: http.StatusNotFound,
-					expectedBody:   "404 page not found\n",
+					expectedBody:   `{"error":"not_found"}`,
 				},
 				{
 					path:           "/.well-known/other",
 					expectedStatus: http.StatusNotFound,
-					expectedBody:   "404 page not found\n",
+					expectedBody:   `{"error":"not_found"}`,
 				},
 			},
 		},
@@ -249,13 +261,13 @@ func TestWellKnownHandler_EdgeCases(t *testing.T) {
 			name:           "different .well-known path returns 404",
 			path:           "/.well-known/jwks.json", // Different endpoint
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "404 page not found\n",
+			expectedBody:   `{"error":"not_found"}`,
 		},
 		{
 			name:           "path prefix match is not sufficient",
 			path:           "/.well-known/oauth", // Prefix but not full path
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "404 page not found\n",
+			expectedBody:   `{"error":"not_found"}`,
 		},
 	}
 

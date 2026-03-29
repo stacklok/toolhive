@@ -158,6 +158,17 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	Issuer string `json:"issuer"`
 
+	// AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+	// in the OAuth discovery document. When set, the discovery document will advertise
+	// `{authorizationEndpointBaseUrl}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
+	// All other endpoints (token, registration, JWKS) remain derived from the issuer.
+	// This is useful when the browser-facing authorization endpoint needs to be on a
+	// different host than the issuer used for backend-to-backend calls.
+	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
+	// +optional
+	AuthorizationEndpointBaseURL string `json:"authorizationEndpointBaseUrl,omitempty"`
+
 	// SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
 	// Supports key rotation by allowing multiple keys (oldest keys are used for verification only).
 	// If not specified, an ephemeral signing key will be auto-generated (development only -

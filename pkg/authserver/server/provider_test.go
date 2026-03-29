@@ -324,6 +324,80 @@ func TestNewAuthorizationServerConfig_InvalidConfig(t *testing.T) {
 	}
 }
 
+func TestGetAuthorizationEndpointBaseURL_Fallback(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	params := &AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: time.Hour * 24,
+		AuthCodeLifespan:     time.Minute * 10,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+	}
+
+	authzServerConfig, err := NewAuthorizationServerConfig(params)
+	require.NoError(t, err)
+
+	// When AuthorizationEndpointBaseURL is not set, should fall back to issuer
+	assert.Equal(t, "https://auth.example.com", authzServerConfig.GetAuthorizationEndpointBaseURL())
+}
+
+func TestGetAuthorizationEndpointBaseURL_Override(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	params := &AuthorizationServerParams{
+		Issuer:                       "https://auth.example.com",
+		AuthorizationEndpointBaseURL: "https://login.example.com",
+		AccessTokenLifespan:          time.Hour,
+		RefreshTokenLifespan:         time.Hour * 24,
+		AuthCodeLifespan:             time.Minute * 10,
+		HMACSecrets:                  servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:                 "key-1",
+		SigningKeyAlgorithm:          "RS256",
+		SigningKey:                   rsaKey,
+	}
+
+	authzServerConfig, err := NewAuthorizationServerConfig(params)
+	require.NoError(t, err)
+
+	// When AuthorizationEndpointBaseURL is set, should return the override
+	assert.Equal(t, "https://login.example.com", authzServerConfig.GetAuthorizationEndpointBaseURL())
+	// Issuer should still be the original
+	assert.Equal(t, "https://auth.example.com", authzServerConfig.GetAccessTokenIssuer())
+}
+
+func TestNewAuthorizationServerConfig_InvalidAuthorizationEndpointBaseURL(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	params := &AuthorizationServerParams{
+		Issuer:                       "https://auth.example.com",
+		AuthorizationEndpointBaseURL: "ftp://invalid.example.com",
+		AccessTokenLifespan:          time.Hour,
+		RefreshTokenLifespan:         time.Hour * 24,
+		AuthCodeLifespan:             time.Minute * 10,
+		HMACSecrets:                  servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:                 "key-1",
+		SigningKeyAlgorithm:          "RS256",
+		SigningKey:                   rsaKey,
+	}
+
+	_, err = NewAuthorizationServerConfig(params)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authorization endpoint base URL")
+}
+
 func TestNewAuthorizationServerConfig_WithRotatedSecrets(t *testing.T) {
 	t.Parallel()
 

@@ -436,6 +436,10 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "authorization_endpoint_base_url": {
+                        "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n`{authorization_endpoint_base_url}/oauth/authorize` instead of `{issuer}/oauth/authorize`.\nAll other endpoints remain derived from the issuer.",
+                        "type": "string"
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {
@@ -1038,6 +1042,10 @@
             },
             "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "audit_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
                     },

@@ -101,7 +101,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 			},
 		},
 		{
-			name: "anonymous_auth_with_cedar_returns_separate_authz",
+			name: "anonymous_auth_with_cedar_returns_authz_middleware",
 			cfg: &config.IncomingAuthConfig{
 				Type: "anonymous",
 				Authz: &config.AuthzConfig{
@@ -133,7 +133,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg)
+			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg, nil)
 
 			if tt.wantErr {
 				require.Error(t, err)

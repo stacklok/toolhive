@@ -24,28 +24,33 @@ var errBug = errors.New("there's a bug")
 // ResponseFilteringWriter wraps an http.ResponseWriter to intercept and filter responses
 type ResponseFilteringWriter struct {
 	http.ResponseWriter
-	authorizer      authorizers.Authorizer
-	request         *http.Request
-	method          string
-	buffer          *bytes.Buffer
-	statusCode      int
-	annotationCache *AnnotationCache
+	authorizer       authorizers.Authorizer
+	request          *http.Request
+	method           string
+	buffer           *bytes.Buffer
+	statusCode       int
+	annotationCache  *AnnotationCache
+	passThroughTools map[string]struct{}
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer.
 // The annotationCache parameter is optional; pass nil to disable annotation caching.
+// The passThroughTools parameter is optional; tools whose names appear in this set
+// bypass policy filtering because authorization is enforced elsewhere (e.g., inside
+// the optimizer decorator for find_tool/call_tool).
 func NewResponseFilteringWriter(
 	w http.ResponseWriter, authorizer authorizers.Authorizer, r *http.Request, method string,
-	annotationCache *AnnotationCache,
+	annotationCache *AnnotationCache, passThroughTools map[string]struct{},
 ) *ResponseFilteringWriter {
 	return &ResponseFilteringWriter{
-		ResponseWriter:  w,
-		authorizer:      authorizer,
-		request:         r,
-		method:          method,
-		buffer:          &bytes.Buffer{},
-		statusCode:      http.StatusOK,
-		annotationCache: annotationCache,
+		ResponseWriter:   w,
+		authorizer:       authorizer,
+		request:          r,
+		method:           method,
+		buffer:           &bytes.Buffer{},
+		statusCode:       http.StatusOK,
+		annotationCache:  annotationCache,
+		passThroughTools: passThroughTools,
 	}
 }
 
@@ -283,38 +288,31 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	// subsequent tools/call requests can look up annotations.
 	rfw.annotationCache.SetFromToolsList(listResult.Tools)
 
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	filteredTools := []mcp.Tool{}
-	for i, tool := range listResult.Tools {
-		// Inject this tool's annotations into the context so Cedar policies
-		// that use when clauses on resource attributes (e.g. resource.readOnlyHint)
-		// can evaluate correctly. Without this, the authorization check runs
-		// against a context with no annotations and all when clauses fail.
-		ctx := rfw.request.Context()
-		ann := &listResult.Tools[i].Annotations
-		if hasAnyHint(ann) {
-			ctx = authorizers.WithToolAnnotations(ctx, convertMCPAnnotation(ann))
-		}
-
-		// Check if the user is authorized to call this tool
-		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
-			ctx,
-			authorizers.MCPFeatureTool,
-			authorizers.MCPOperationCall,
-			tool.Name,
-			nil, // No arguments for the authorization check
-		)
-		if err != nil {
-			slog.Warn("Authorization check failed for tool, skipping",
-				"tool", tool.Name, "error", err)
-			continue
-		}
-
-		if authorized {
-			filteredTools = append(filteredTools, tool)
+	// When the optimizer is enabled, its meta-tools (find_tool, call_tool) appear
+	// in tools/list instead of real backend tools. These meta-tools won't match
+	// any operator-written Cedar policy (which references real tool names), so
+	// default-deny would filter them out — leaving the client with zero tools.
+	// Authorization for the underlying backend tools is enforced by the authz
+	// middleware: call_tool requests are intercepted and the inner tool_name
+	// argument is authorized against Cedar policy before the request is served.
+	// See: https://github.com/stacklok/toolhive/issues/4373
+	passThrough := []mcp.Tool{}
+	regular := []mcp.Tool{}
+	for _, t := range listResult.Tools {
+		if _, ok := rfw.passThroughTools[t.Name]; ok {
+			passThrough = append(passThrough, t)
+		} else {
+			regular = append(regular, t)
 		}
 	}
+
+	// FilterToolsByPolicy checks each tool against the caller's Cedar policies
+	// (injecting annotations into context for when-clause evaluation) and returns
+	// only tools the caller is authorized to call.
+	policyFiltered := FilterToolsByPolicy(rfw.request.Context(), rfw.authorizer, regular)
+	filteredTools := make([]mcp.Tool, 0, len(passThrough)+len(policyFiltered))
+	filteredTools = append(filteredTools, passThrough...)
+	filteredTools = append(filteredTools, policyFiltered...)
 
 	// Create a new result with filtered tools
 	filteredResult := mcp.ListToolsResult{

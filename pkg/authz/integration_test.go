@@ -257,7 +257,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 			})
 
 			// Apply the middleware chain: MCP parsing first, then authorization
-			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler))
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler, nil))
 
 			// Execute the request through the middleware
 			middleware.ServeHTTP(rr, req)
@@ -426,7 +426,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 			})
 
 			// Apply the middleware chain: MCP parsing first, then authorization
-			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler))
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler, nil))
 
 			// Execute the request through the middleware
 			middleware.ServeHTTP(rr, req)

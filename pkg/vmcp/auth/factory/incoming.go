@@ -33,6 +33,13 @@ import (
 // All middleware types now directly create and inject Identity into the context,
 // eliminating the need for a separate conversion layer.
 //
+// The passThroughTools parameter is optional (pass nil for none). Tool names in
+// this set bypass the response filter's policy check in tools/list responses.
+// This is used when the optimizer is enabled: its meta-tools (find_tool, call_tool)
+// would otherwise be rejected by Cedar default-deny since no policy references them
+// by name. Authorization for the underlying backend tools is enforced by the
+// middleware's call_tool interception.
+//
 // Returns:
 //   - authMw: Composed auth + MCP parser middleware (auth runs first, then parser)
 //   - authzMw: Authorization middleware (nil if authz is not configured)
@@ -41,6 +48,7 @@ import (
 func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
+	passThroughTools map[string]struct{},
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -74,7 +82,7 @@ func NewIncomingAuthMiddleware(
 	// Cedar policies access to discovered tool annotations.
 	var authzMiddleware func(http.Handler) http.Handler
 	if cfg.Authz != nil && cfg.Authz.Type == "cedar" && len(cfg.Authz.Policies) > 0 {
-		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz)
+		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz, passThroughTools)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
 		}
@@ -93,7 +101,9 @@ func NewIncomingAuthMiddleware(
 }
 
 // newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
-func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) http.Handler, error) {
+func newCedarAuthzMiddleware(
+	authzCfg *config.AuthzConfig, passThroughTools map[string]struct{},
+) (func(http.Handler) http.Handler, error) {
 	if authzCfg == nil || len(authzCfg.Policies) == 0 {
 		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
@@ -117,7 +127,7 @@ func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) h
 	}
 
 	// Create the middleware using the existing factory
-	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp")
+	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp", passThroughTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
 	}

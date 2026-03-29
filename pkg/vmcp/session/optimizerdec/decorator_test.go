@@ -6,6 +6,7 @@ package optimizerdec_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -196,4 +197,29 @@ func TestOptimizerDecorator_CallTool_CallTool(t *testing.T) {
 
 		require.Error(t, err)
 	})
+}
+
+// TestCallToolArgConstantsMatchStructTags verifies that CallToolArgToolName and
+// CallToolArgParameters match the json tags on optimizer.CallToolInput. The middleware
+// uses these constants to look up fields from parsed arguments; a mismatch causes an
+// authz bypass or parameters being silently dropped.
+func TestCallToolArgConstantsMatchStructTags(t *testing.T) {
+	t.Parallel()
+
+	typ := reflect.TypeOf(optimizer.CallToolInput{})
+
+	cases := []struct {
+		field    string
+		constant string
+	}{
+		{"ToolName", optimizerdec.CallToolArgToolName},
+		{"Parameters", optimizerdec.CallToolArgParameters},
+	}
+
+	for _, tc := range cases {
+		f, ok := typ.FieldByName(tc.field)
+		require.True(t, ok, "optimizer.CallToolInput must have a %s field", tc.field)
+		assert.Equal(t, tc.constant, f.Tag.Get("json"),
+			"constant for %s must match its json struct tag", tc.field)
+	}
 }

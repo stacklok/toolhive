@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/telemetry/providers"
@@ -236,7 +237,8 @@ type Provider struct {
 }
 
 // NewProvider creates a new OpenTelemetry provider with the given configuration.
-func NewProvider(ctx context.Context, config Config) (*Provider, error) {
+// Optional extra span processors (e.g. a Sentry bridge) can be registered via extraProcessors.
+func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace.SpanProcessor) (*Provider, error) {
 	// Validate configuration
 	if err := validateOtelConfig(config); err != nil {
 		return nil, err
@@ -261,6 +263,13 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		providers.WithSamplingRate(config.GetSamplingRateFloat()),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
 		providers.WithCustomAttributes(config.CustomAttributes),
+	}
+
+	// Merge globally registered processors (self-registered by integrations such
+	// as a Sentry bridge) with any explicitly passed ones.
+	allProcessors := append(registeredSpanProcessors(), extraProcessors...)
+	if len(allProcessors) > 0 {
+		telemetryOptions = append(telemetryOptions, providers.WithExtraSpanProcessors(allProcessors...))
 	}
 
 	telemetryProviders, err := providers.NewCompositeProvider(ctx, telemetryOptions...)

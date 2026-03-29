@@ -8,6 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/stacklok/toolhive-core/httperr"
 )
 
@@ -42,6 +45,9 @@ func ErrorHandler(fn HandlerWithError) http.HandlerFunc {
 		// For 5xx errors, log the full error but return a generic message
 		if code >= http.StatusInternalServerError {
 			slog.Error("internal server error", "error", err)
+			span := trace.SpanFromContext(r.Context())
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			http.Error(w, http.StatusText(code), code)
 			return
 		}

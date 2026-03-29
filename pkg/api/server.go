@@ -32,6 +32,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -72,6 +73,7 @@ type ServerBuilder struct {
 	enableDocs       bool
 	nonce            string
 	oidcConfig       *auth.TokenValidatorConfig
+	otelEnabled      bool
 	middlewares      []func(http.Handler) http.Handler
 	customRoutes     map[string]http.Handler
 	containerRuntime runtime.Runtime
@@ -128,6 +130,15 @@ func (b *ServerBuilder) WithOIDCConfig(oidcConfig *auth.TokenValidatorConfig) *S
 	return b
 }
 
+// WithOtelEnabled enables OTEL HTTP middleware for distributed tracing.
+// When enabled, the server extracts W3C traceparent headers from incoming requests
+// and creates child OTEL spans for each request. Requires OTEL to be initialized
+// (via telemetry.NewProvider) before the server starts.
+func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
+	b.otelEnabled = enabled
+	return b
+}
+
 // WithMiddleware adds middleware to the server
 func (b *ServerBuilder) WithMiddleware(mw ...func(http.Handler) http.Handler) *ServerBuilder {
 	b.middlewares = append(b.middlewares, mw...)
@@ -176,7 +187,28 @@ func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBui
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
 
-	// Apply recovery middleware first to catch panics from all other middleware and handlers
+	// OTEL middleware must be outermost so its span is still active when recovery
+	// middleware catches a panic. If recovery were outer, otelhttp's defer span.End()
+	// would fire during panic unwinding — before recover() — leaving the span ended
+	// and making span.RecordError a no-op. With otelhttp outer:
+	//   1. otelhttp starts span, calls next
+	//   2. recovery catches panic, calls span.RecordError, returns 500 normally
+	//   3. otelhttp's defer fires: span has error recorded + 500 status, then ends
+	// The span name uses chi's matched route pattern (e.g. "GET /api/v1beta/workloads/{name}")
+	// for clean grouping in Sentry and OTEL backends.
+	if b.otelEnabled {
+		r.Use(otelhttp.NewMiddleware("thv-api",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				if routeCtx := chi.RouteContext(r.Context()); routeCtx != nil && routeCtx.RoutePattern() != "" {
+					return r.Method + " " + routeCtx.RoutePattern()
+				}
+				return r.Method + " " + r.URL.Path
+			}),
+		))
+	}
+
+	// Recovery middleware is inner so it runs inside the OTEL span lifetime,
+	// allowing panic details to be recorded on the span before it ends.
 	r.Use(recovery.Middleware)
 
 	// Apply default middleware
@@ -757,6 +789,7 @@ func generateNonce() (string, error) {
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
 // If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
+// If otelEnabled is true, OTEL HTTP middleware is added for W3C traceparent extraction and distributed tracing.
 func Serve(
 	ctx context.Context,
 	address string,
@@ -764,6 +797,7 @@ func Serve(
 	debugMode bool,
 	enableDocs bool,
 	oidcConfig *auth.TokenValidatorConfig,
+	otelEnabled bool,
 	middlewares ...func(http.Handler) http.Handler,
 ) error {
 	nonce, err := generateNonce()
@@ -778,6 +812,7 @@ func Serve(
 		WithDocs(enableDocs).
 		WithNonce(nonce).
 		WithOIDCConfig(oidcConfig).
+		WithOtelEnabled(otelEnabled).
 		WithMiddleware(middlewares...)
 
 	server, err := NewServer(ctx, builder)

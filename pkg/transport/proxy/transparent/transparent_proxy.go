@@ -377,12 +377,97 @@ func (p *TransparentProxy) serverInitialized() bool {
 	return p.isServerInitialized.Load()
 }
 
+// maxRedirects is the maximum number of HTTP redirects the transport follows
+// before returning an error. Matches http.Client's default of 10.
+const maxRedirects = 10
+
 func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 	tr := t.base
 	if tr == nil {
 		tr = http.DefaultTransport
 	}
 	return tr.RoundTrip(req)
+}
+
+// forwardFollowingRedirects sends req and transparently follows 3xx redirects.
+//
+// Go's http.Transport.RoundTrip does not follow redirects (that is
+// http.Client's job), but httputil.ReverseProxy uses Transport directly.
+// Without this, upstream redirects (e.g. HTTPS→HTTP scheme changes, path
+// canonicalization, or API gateway routing) are returned to the MCP client
+// which cannot follow them through the proxy.
+//
+// 307/308 preserve method and body (RFC 7538). 301/302/303 change to GET.
+func (t *tracingTransport) forwardFollowingRedirects(req *http.Request, body []byte) (*http.Response, error) {
+	for range maxRedirects {
+		resp, err := t.forward(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if !isRedirectStatus(resp.StatusCode) {
+			return resp, nil
+		}
+
+		location := resp.Header.Get("Location")
+		if location == "" {
+			return resp, nil
+		}
+
+		redirectURL, err := req.URL.Parse(location)
+		if err != nil {
+			slog.Warn("unparsable redirect Location, returning raw redirect response",
+				"location", location, "error", err)
+			return resp, nil
+		}
+
+		slog.Warn("following upstream redirect",
+			"status", resp.StatusCode,
+			"from", req.URL.String(),
+			"to", redirectURL.String(),
+		)
+
+		// Drain and close the body so the TCP connection can be reused.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		newReq, err := http.NewRequestWithContext(req.Context(), req.Method, redirectURL.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build redirect request: %w", err)
+		}
+		newReq.Header = req.Header.Clone()
+		newReq.Host = redirectURL.Host
+
+		switch resp.StatusCode {
+		case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther:
+			// 301/302/303 → change to GET, drop body (RFC 7231)
+			newReq.Method = http.MethodGet
+			newReq.ContentLength = 0
+		default:
+			// 307/308 → preserve method and body (RFC 7538)
+			if len(body) > 0 {
+				newReq.Body = io.NopCloser(bytes.NewReader(body))
+				newReq.ContentLength = int64(len(body))
+			}
+		}
+
+		req = newReq
+	}
+
+	return nil, fmt.Errorf("upstream exceeded %d redirects", maxRedirects)
+}
+
+// isRedirectStatus returns true for HTTP 3xx codes that carry a Location header.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, // 301
+		http.StatusFound,             // 302
+		http.StatusSeeOther,          // 303
+		http.StatusTemporaryRedirect, // 307
+		http.StatusPermanentRedirect: // 308
+		return true
+	}
+	return false
 }
 
 // nolint:gocyclo // This function handles multiple request types and is complex by design
@@ -395,6 +480,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if req.URL.Host != req.Host {
 		req.Host = req.URL.Host
 	}
+
+	slog.Debug("outbound request to upstream",
+		"method", req.Method,
+		"url", req.URL.String(),
+		"host", req.Host,
+		"accept", req.Header.Get("Accept"),
+		"content_type", req.Header.Get("Content-Type"),
+	)
 
 	reqBody := readRequestBody(req)
 
@@ -439,7 +532,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
-	resp, err := t.forward(req)
+	resp, err := t.forwardFollowingRedirects(req, reqBody)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// Expected during shutdown or client disconnect—silently ignore
@@ -448,6 +541,13 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		slog.Error("failed to forward request", "error", err)
 		return nil, err
 	}
+
+	slog.Debug("upstream response received",
+		"status", resp.StatusCode,
+		"url", req.URL.String(),
+		"content_type", resp.Header.Get("Content-Type"),
+		"mcp_session_id", resp.Header.Get("Mcp-Session-Id"),
+	)
 
 	// Check for 401 Unauthorized response (bearer token authentication failure)
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -584,7 +684,15 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
-			pr.SetXForwarded()
+
+			// Only set X-Forwarded-* headers for local backends.
+			// For remote upstreams, these headers leak the proxy's hostname
+			// (X-Forwarded-Host) to third-party servers, which can cause
+			// 307 redirect loops when the upstream uses that header to
+			// construct redirect URLs pointing back to the proxy.
+			if !p.isRemote {
+				pr.SetXForwarded()
+			}
 
 			// Route to the originating backend pod when session metadata contains backend_url.
 			// Falls back to static targetURL when the session doesn't exist or has no backend_url.

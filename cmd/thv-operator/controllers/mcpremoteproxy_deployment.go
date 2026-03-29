@@ -154,42 +154,11 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		env = append(env, otelEnvVars...)
 	}
 
-	// Add token exchange environment variables
-	// Note: Embedded auth server env vars are added separately in deploymentForMCPRemoteProxy
-	// to avoid duplicate API calls.
-	if proxy.Spec.ExternalAuthConfigRef != nil {
-		tokenExchangeEnvVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
-			ctx,
-			r.Client,
-			proxy.Namespace,
-			proxy.Spec.ExternalAuthConfigRef,
-			ctrlutil.GetExternalAuthConfigByName,
-		)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate token exchange environment variables")
-		} else {
-			env = append(env, tokenExchangeEnvVars...)
-		}
-
-		// Add bearer token environment variables
-		bearerTokenEnvVars, err := ctrlutil.GenerateBearerTokenEnvVar(
-			ctx,
-			r.Client,
-			proxy.Namespace,
-			proxy.Spec.ExternalAuthConfigRef,
-			ctrlutil.GetExternalAuthConfigByName,
-		)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate bearer token environment variables")
-		} else {
-			env = append(env, bearerTokenEnvVars...)
-		}
-	}
+	// Add token exchange and bearer token environment variables
+	env = append(env, r.buildExternalAuthEnvVars(ctx, proxy)...)
 
 	// Add OIDC client secret environment variable if using inline config with secretRef
-	if proxy.Spec.OIDCConfig.Type == "inline" && proxy.Spec.OIDCConfig.Inline != nil {
+	if proxy.Spec.OIDCConfig != nil && proxy.Spec.OIDCConfig.Type == "inline" && proxy.Spec.OIDCConfig.Inline != nil {
 		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
 			ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfig.Inline.ClientSecretRef,
 		)
@@ -226,6 +195,40 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildExternalAuthEnvVars builds environment variables for external auth (token exchange and bearer token).
+// Note: Embedded auth server env vars are added separately in deploymentForMCPRemoteProxy
+// to avoid duplicate API calls.
+func (r *MCPRemoteProxyReconciler) buildExternalAuthEnvVars(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) []corev1.EnvVar {
+	if proxy.Spec.ExternalAuthConfigRef == nil {
+		return nil
+	}
+
+	ctxLogger := log.FromContext(ctx)
+	var env []corev1.EnvVar
+
+	tokenExchangeEnvVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, ctrlutil.GetExternalAuthConfigByName,
+	)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to generate token exchange environment variables")
+	} else {
+		env = append(env, tokenExchangeEnvVars...)
+	}
+
+	bearerTokenEnvVars, err := ctrlutil.GenerateBearerTokenEnvVar(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, ctrlutil.GetExternalAuthConfigByName,
+	)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to generate bearer token environment variables")
+	} else {
+		env = append(env, bearerTokenEnvVars...)
+	}
+
+	return env
 }
 
 // buildHeaderForwardSecretEnvVars builds environment variables for header forward secrets.

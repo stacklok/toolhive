@@ -190,8 +190,9 @@ spec:
                 type: object
               oidcConfig:
                 description: |-
-                  OIDCConfig defines OIDC authentication configuration for the proxy
-                  This validates incoming tokens from clients. Required for proxy mode.
+                  OIDCConfig defines OIDC authentication configuration for the proxy.
+                  When set, incoming requests are validated against the configured OIDC provider.
+                  When omitted, the proxy allows anonymous access (no authentication required).
                 properties:
                   configMap:
                     description: |-
@@ -684,7 +685,6 @@ spec:
                   and X-Forwarded-Prefix headers to construct endpoint URLs
                 type: boolean
             required:
-            - oidcConfig
             - remoteURL
             type: object
           status:

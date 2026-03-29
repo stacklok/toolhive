@@ -48,11 +48,12 @@ func (*TokenExchangeConverter) ConvertToStrategy(
 	}
 
 	tokenExchangeConfig := &authtypes.TokenExchangeConfig{
-		TokenURL:         tokenExchange.TokenURL,
-		ClientID:         tokenExchange.ClientID,
-		Audience:         tokenExchange.Audience,
-		Scopes:           tokenExchange.Scopes,
-		SubjectTokenType: subjectTokenType,
+		TokenURL:            tokenExchange.TokenURL,
+		ClientID:            tokenExchange.ClientID,
+		Audience:            tokenExchange.Audience,
+		Scopes:              tokenExchange.Scopes,
+		SubjectTokenType:    subjectTokenType,
+		SubjectProviderName: tokenExchange.SubjectProviderName,
 	}
 
 	// Note: ClientSecretEnv is set by the controller when used in operator-managed ConfigMaps.

@@ -213,6 +213,50 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			errMsg:    "oauth2Config must be set when type is 'oauth2'",
 		},
 		{
+			name: "valid upstreamInject type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &UpstreamInjectSpec{ProviderName: "github"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid upstreamInject with nil spec",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject-nil",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "upstreamInject configuration must be set if and only if type is 'upstreamInject'",
+		},
+		{
+			name: "invalid upstreamInject with empty providerName",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject-empty",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &UpstreamInjectSpec{ProviderName: ""},
+				},
+			},
+			expectErr: true,
+			errMsg:    "upstreamInject requires a non-empty providerName",
+		},
+		{
 			name: "invalid OIDC provider with oauth2Config instead",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{

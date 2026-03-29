@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package secrets
@@ -65,6 +65,11 @@ func (f *FallbackProvider) DeleteSecret(ctx context.Context, name string) error 
 // (env vars not listed in fallback mode for security)
 func (f *FallbackProvider) ListSecrets(ctx context.Context) ([]SecretDescription, error) {
 	return f.primary.ListSecrets(ctx)
+}
+
+// DeleteSecrets delegates to the primary provider.
+func (f *FallbackProvider) DeleteSecrets(ctx context.Context, keys []string) error {
+	return f.primary.DeleteSecrets(ctx, keys)
 }
 
 // Cleanup delegates to the primary provider

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package secrets
@@ -56,6 +56,11 @@ func (*EnvironmentProvider) DeleteSecret(_ context.Context, name string) error {
 // ListSecrets is not supported for environment variables for security reasons
 func (*EnvironmentProvider) ListSecrets(_ context.Context) ([]SecretDescription, error) {
 	return nil, errors.New("environment provider does not support listing secrets for security reasons")
+}
+
+// DeleteSecrets is a no-op for the environment provider (read-only).
+func (*EnvironmentProvider) DeleteSecrets(_ context.Context, _ []string) error {
+	return nil
 }
 
 // Cleanup is a no-op for environment provider

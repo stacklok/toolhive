@@ -82,7 +82,15 @@ func (f *FallbackProvider) Capabilities() ProviderCapabilities {
 	return f.primary.Capabilities()
 }
 
-// IsNotFoundError checks if an error indicates a secret was not found
+// IsNotFoundError checks if an error indicates a secret was not found.
+// It recognises errors by substring matching against the message forms used
+// by the built-in backends:
+//   - EncryptedManager: "secret not found: <name>"
+//   - EnvironmentProvider: "secret not found: <name>"
+//   - 1Password / external providers: errors containing "not found" or "does not exist"
+//
+// Any backend added in the future must return an error whose message contains
+// "not found" or "does not exist" to be recognised correctly by this function.
 func IsNotFoundError(err error) bool {
 	if err == nil {
 		return false

@@ -109,8 +109,8 @@
       "groupName": "kubernetes dependencies",
       "matchDatasources": ["go"],
       "matchPackageNames": [
-        "/^k8s\.io//",
-        "/^sigs\.k8s\.io//"
+        "/^k8s\\.io//",
+        "/^sigs\\.k8s\\.io//"
       ]
     },
     {
@@ -118,8 +118,8 @@
       "groupName": "opentelemetry and observability",
       "matchDatasources": ["go"],
       "matchPackageNames": [
-        "/^go\.opentelemetry\.io//",
-        "/^github\.com/prometheus//"
+        "/^go\\.opentelemetry\\.io//",
+        "/^github\\.com/prometheus//"
       ]
     },
     {
@@ -139,8 +139,8 @@
       "groupName": "signing and attestation libraries",
       "matchDatasources": ["go"],
       "matchPackageNames": [
-        "/^github\.com/sigstore//",
-        "/^github\.com/in-toto//"
+        "/^github\\.com/sigstore//",
+        "/^github\\.com/in-toto//"
       ]
     },
     {
@@ -148,10 +148,10 @@
       "groupName": "container and docker libraries",
       "matchDatasources": ["go"],
       "matchPackageNames": [
-        "/^github\.com/docker//",
-        "/^github\.com/google/go-containerregistry/",
-        "/^github\.com/containerd//",
-        "/^github\.com/opencontainers//"
+        "/^github\\.com/docker//",
+        "/^github\\.com/google/go-containerregistry/",
+        "/^github\\.com/containerd//",
+        "/^github\\.com/opencontainers//"
       ]
     },
     {
@@ -159,8 +159,8 @@
       "groupName": "cli and ui libraries",
       "matchDatasources": ["go"],
       "matchPackageNames": [
-        "/^github\.com/charmbracelet//",
-        "/^github\.com/spf13//"
+        "/^github\\.com/charmbracelet//",
+        "/^github\\.com/spf13//"
       ]
     },
     {
@@ -168,8 +168,8 @@
       "groupName": "testing libraries",
       "matchDatasources": ["go"],
       "matchPackageNames": [
-        "/^github\.com/onsi//",
-        "/^github\.com/stretchr/testify/"
+        "/^github\\.com/onsi//",
+        "/^github\\.com/stretchr/testify/"
       ]
     },
     {
@@ -231,7 +231,7 @@
       "customType": "regex",
       "description": "Update Go version in go.mod",
       "managerFilePatterns": [
-        "/(^|/)go\.mod$/"
+        "/(^|/)go\\.mod$/"
       ],
       "matchStrings": ["go (?<currentValue>\\d+\\.\\d+(\\.\\d+)?)"],
       "depNameTemplate": "golang",

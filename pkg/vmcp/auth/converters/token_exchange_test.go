@@ -217,6 +217,56 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "with subject provider name",
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "subject-provider-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL:            "https://auth.example.com/token",
+						Audience:            "https://api.example.com",
+						SubjectProviderName: "github",
+					},
+				},
+			},
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL:            "https://auth.example.com/token",
+					Audience:            "https://api.example.com",
+					SubjectProviderName: "github",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "subject provider name absent defaults to empty",
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-subject-provider-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://auth.example.com/token",
+						Audience: "https://api.example.com",
+					},
+				},
+			},
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+					Audience: "https://api.example.com",
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "nil token exchange config",
 			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{

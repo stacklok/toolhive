@@ -12,6 +12,7 @@ import (
 	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
+
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
@@ -435,7 +436,10 @@ func validateRuntimeConfig(runtimeConfig *templates.RuntimeConfig) error {
 	return nil
 }
 
-func runtimeConfigForImageBuild(req *createRequest, runtimeConfigOverride *templates.RuntimeConfig) (*templates.RuntimeConfig, error) {
+func runtimeConfigForImageBuild(
+	req *createRequest,
+	runtimeConfigOverride *templates.RuntimeConfig,
+) (*templates.RuntimeConfig, error) {
 	if runtimeConfigOverride == nil || req == nil {
 		return nil, nil
 	}

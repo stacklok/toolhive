@@ -28,34 +28,34 @@ func TestDeriveSecretKey(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		registryURL string
-		issuer      string
+		name       string
+		serviceURL string
+		issuer     string
 	}{
 		{
-			name:        "typical registry and issuer",
-			registryURL: "https://registry.example.com",
-			issuer:      "https://auth.example.com",
+			name:       "typical registry and issuer",
+			serviceURL: "https://registry.example.com",
+			issuer:     "https://auth.example.com",
 		},
 		{
-			name:        "empty strings",
-			registryURL: "",
-			issuer:      "",
+			name:       "empty strings",
+			serviceURL: "",
+			issuer:     "",
 		},
 		{
-			name:        "empty issuer",
-			registryURL: "https://registry.example.com",
-			issuer:      "",
+			name:       "empty issuer",
+			serviceURL: "https://registry.example.com",
+			issuer:     "",
 		},
 		{
-			name:        "empty registry URL",
-			registryURL: "",
-			issuer:      "https://auth.example.com",
+			name:       "empty registry URL",
+			serviceURL: "",
+			issuer:     "https://auth.example.com",
 		},
 		{
-			name:        "localhost registry",
-			registryURL: "http://localhost:5000",
-			issuer:      "http://localhost:8080",
+			name:       "localhost registry",
+			serviceURL: "http://localhost:5000",
+			issuer:     "http://localhost:8080",
 		},
 	}
 
@@ -63,7 +63,7 @@ func TestDeriveSecretKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			key := DeriveSecretKey(tt.registryURL, tt.issuer)
+			key := DeriveSecretKey(tt.serviceURL, tt.issuer)
 
 			// Must start with the correct prefix
 			require.True(t, len(key) > len("REGISTRY_OAUTH_"), "key too short")
@@ -82,7 +82,7 @@ func TestDeriveSecretKey(t *testing.T) {
 			}
 
 			// Verify the derivation formula: sha256(registryURL + "\x00" + issuer)[:4]
-			h := sha256.Sum256([]byte(tt.registryURL + "\x00" + tt.issuer))
+			h := sha256.Sum256([]byte(tt.serviceURL + "\x00" + tt.issuer))
 			expected := "REGISTRY_OAUTH_" + hex.EncodeToString(h[:4])
 			require.Equal(t, expected, key)
 		})
@@ -105,8 +105,8 @@ func TestDeriveSecretKey_UniquePerInputCombination(t *testing.T) {
 	t.Parallel()
 
 	combinations := []struct {
-		registryURL string
-		issuer      string
+		serviceURL string
+		issuer     string
 	}{
 		{"https://registry-a.example.com", "https://auth.example.com"},
 		{"https://registry-b.example.com", "https://auth.example.com"},
@@ -116,11 +116,11 @@ func TestDeriveSecretKey_UniquePerInputCombination(t *testing.T) {
 
 	keys := make(map[string]struct{}, len(combinations))
 	for _, combo := range combinations {
-		key := DeriveSecretKey(combo.registryURL, combo.issuer)
+		key := DeriveSecretKey(combo.serviceURL, combo.issuer)
 		_, alreadySeen := keys[key]
 		require.False(t, alreadySeen,
 			"DeriveSecretKey produced a duplicate key for registryURL=%q issuer=%q: %q",
-			combo.registryURL, combo.issuer, key,
+			combo.serviceURL, combo.issuer, key,
 		)
 		keys[key] = struct{}{}
 	}
@@ -144,7 +144,7 @@ func TestNewTokenSource(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		cfg        *config.RegistryOAuthConfig
+		cfg        *config.OAuthConfig
 		wantNil    bool
 		wantErrNil bool
 	}{
@@ -156,7 +156,7 @@ func TestNewTokenSource(t *testing.T) {
 		},
 		{
 			name: "non-nil config returns non-nil source",
-			cfg: &config.RegistryOAuthConfig{
+			cfg: &config.OAuthConfig{
 				Issuer:   "https://auth.example.com",
 				ClientID: "my-client-id",
 			},
@@ -165,11 +165,21 @@ func TestNewTokenSource(t *testing.T) {
 		},
 		{
 			name: "config with scopes and audience returns non-nil source",
-			cfg: &config.RegistryOAuthConfig{
+			cfg: &config.OAuthConfig{
 				Issuer:   "https://auth.example.com",
 				ClientID: "my-client-id",
 				Scopes:   []string{"openid", "profile"},
 				Audience: "api://my-api",
+			},
+			wantNil:    false,
+			wantErrNil: true,
+		},
+		{
+			name: "config with Resource field returns non-nil source",
+			cfg: &config.OAuthConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "my-client-id",
+				Resource: "https://api.example.com/resource",
 			},
 			wantNil:    false,
 			wantErrNil: true,
@@ -180,7 +190,7 @@ func TestNewTokenSource(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			src, err := NewTokenSource(tt.cfg, "https://registry.example.com", nil, false)
+			src, err := NewTokenSource(tt.cfg, "https://registry.example.com", nil, false, nil)
 
 			if tt.wantErrNil {
 				require.NoError(t, err)
@@ -231,11 +241,11 @@ func TestOAuthTokenSource_Token_NonInteractiveNoCache(t *testing.T) {
 			}
 
 			src := &oauthTokenSource{
-				oauthCfg: &config.RegistryOAuthConfig{
+				oauthCfg: &config.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "test-client",
 				},
-				registryURL:     "https://registry.example.com",
+				serviceURL:      "https://registry.example.com",
 				secretsProvider: provider,
 				interactive:     false,
 			}
@@ -277,12 +287,12 @@ func TestOAuthTokenSource_RefreshTokenKey(t *testing.T) {
 			t.Parallel()
 
 			src := &oauthTokenSource{
-				oauthCfg: &config.RegistryOAuthConfig{
+				oauthCfg: &config.OAuthConfig{
 					Issuer:                issuer,
 					ClientID:              "test-client",
 					CachedRefreshTokenRef: tt.cachedRefreshTokenRef,
 				},
-				registryURL: registryURL,
+				serviceURL: registryURL,
 			}
 
 			got := src.refreshTokenKey()
@@ -346,11 +356,11 @@ func TestOAuthTokenSource_Token_InMemoryCacheHit(t *testing.T) {
 	}
 
 	src := &oauthTokenSource{
-		oauthCfg: &config.RegistryOAuthConfig{
+		oauthCfg: &config.OAuthConfig{
 			Issuer:   "https://auth.example.com",
 			ClientID: "test-client",
 		},
-		registryURL:     "https://registry.example.com",
+		serviceURL:      "https://registry.example.com",
 		secretsProvider: nil, // should never be called
 		interactive:     false,
 		tokenSource:     &mockOAuth2TokenSource{token: validToken},
@@ -375,11 +385,11 @@ func TestOAuthTokenSource_Token_InMemoryCacheExpiredFallsThrough(t *testing.T) {
 	}
 
 	src := &oauthTokenSource{
-		oauthCfg: &config.RegistryOAuthConfig{
+		oauthCfg: &config.OAuthConfig{
 			Issuer:   "https://auth.example.com",
 			ClientID: "test-client",
 		},
-		registryURL:     "https://registry.example.com",
+		serviceURL:      "https://registry.example.com",
 		secretsProvider: nil,
 		interactive:     false,
 		tokenSource:     &mockOAuth2TokenSource{token: expiredToken},
@@ -400,11 +410,11 @@ func TestOAuthTokenSource_Token_InMemoryCacheErrorFallsThrough(t *testing.T) {
 	t.Parallel()
 
 	src := &oauthTokenSource{
-		oauthCfg: &config.RegistryOAuthConfig{
+		oauthCfg: &config.OAuthConfig{
 			Issuer:   "https://auth.example.com",
 			ClientID: "test-client",
 		},
-		registryURL:     "https://registry.example.com",
+		serviceURL:      "https://registry.example.com",
 		secretsProvider: nil,
 		interactive:     false,
 		tokenSource:     &mockOAuth2TokenSource{err: errors.New("token refresh failed")},
@@ -424,11 +434,11 @@ func TestOAuthTokenSource_TryRestoreFromCache_NilProvider(t *testing.T) {
 	t.Parallel()
 
 	src := &oauthTokenSource{
-		oauthCfg: &config.RegistryOAuthConfig{
+		oauthCfg: &config.OAuthConfig{
 			Issuer:   "https://auth.example.com",
 			ClientID: "test-client",
 		},
-		registryURL:     "https://registry.example.com",
+		serviceURL:      "https://registry.example.com",
 		secretsProvider: nil, // genuine nil interface — triggers the nil guard in tryRestoreFromCache
 	}
 
@@ -456,7 +466,7 @@ func TestOAuthTokenSource_TryRestoreFromCache(t *testing.T) {
 					Return("", errors.New("vault unavailable"))
 				return mock
 			},
-			wantErrContains: "failed to get cached refresh token",
+			wantErrContains: "failed to retrieve cached refresh token",
 		},
 		{
 			name: "GetSecret returns empty string",
@@ -479,11 +489,11 @@ func TestOAuthTokenSource_TryRestoreFromCache(t *testing.T) {
 			provider := tt.buildProvider(ctrl)
 
 			src := &oauthTokenSource{
-				oauthCfg: &config.RegistryOAuthConfig{
+				oauthCfg: &config.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "test-client",
 				},
-				registryURL:     "https://registry.example.com",
+				serviceURL:      "https://registry.example.com",
 				secretsProvider: provider,
 			}
 
@@ -509,11 +519,11 @@ func TestOAuthTokenSource_TryRestoreFromCache_WithOIDCServer(t *testing.T) {
 		Return("my-refresh-token", nil)
 
 	src := &oauthTokenSource{
-		oauthCfg: &config.RegistryOAuthConfig{
+		oauthCfg: &config.OAuthConfig{
 			Issuer:   srv.URL,
 			ClientID: "test-client",
 		},
-		registryURL:     "https://registry.example.com",
+		serviceURL:      "https://registry.example.com",
 		secretsProvider: mockProvider,
 	}
 
@@ -568,11 +578,11 @@ func TestOAuthTokenSource_CreateTokenPersister(t *testing.T) {
 			tt.setupMock(mockProvider)
 
 			src := &oauthTokenSource{
-				oauthCfg: &config.RegistryOAuthConfig{
+				oauthCfg: &config.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "test-client",
 				},
-				registryURL:     "https://registry.example.com",
+				serviceURL:      "https://registry.example.com",
 				secretsProvider: mockProvider,
 			}
 
@@ -589,4 +599,200 @@ func TestOAuthTokenSource_CreateTokenPersister(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildOAuthFlowConfig_ResourceVsAudience is the regression guard for the bug fix
+// that separates RFC 8707 Resource from the provider-specific Audience parameter.
+// Resource is passed directly to CreateOAuthConfigFromOIDC (and used at the token
+// endpoint), whereas Audience is injected into OAuthParams (authorization URL only).
+func TestBuildOAuthFlowConfig_ResourceVsAudience(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		audience          string
+		resource          string
+		wantAudienceParam string // expected value of OAuthParams["audience"], "" means absent
+		wantResourceParam bool   // true if we expect "resource" key in OAuthParams (should always be false)
+	}{
+		{
+			name:              "Audience set — appears in OAuthParams[audience]",
+			audience:          "https://api.auth0.com/",
+			resource:          "",
+			wantAudienceParam: "https://api.auth0.com/",
+			wantResourceParam: false,
+		},
+		{
+			name:              "Resource set, Audience empty — OAuthParams not polluted",
+			audience:          "",
+			resource:          "https://api.example.com/",
+			wantAudienceParam: "",
+			wantResourceParam: false,
+		},
+		{
+			name:              "Both Resource and Audience set — only Audience in OAuthParams",
+			audience:          "my-audience",
+			resource:          "https://api.example.com/",
+			wantAudienceParam: "my-audience",
+			wantResourceParam: false,
+		},
+		{
+			name:              "Neither set — OAuthParams is nil",
+			audience:          "",
+			resource:          "",
+			wantAudienceParam: "",
+			wantResourceParam: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := newOIDCTestServer(t)
+
+			src := &oauthTokenSource{
+				oauthCfg: &config.OAuthConfig{
+					Issuer:   srv.URL,
+					ClientID: "test-client",
+					Audience: tt.audience,
+					Resource: tt.resource,
+				},
+				serviceURL: "https://registry.example.com",
+			}
+
+			cfg, err := src.buildOAuthFlowConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			if tt.wantAudienceParam != "" {
+				require.NotNil(t, cfg.OAuthParams, "OAuthParams must be non-nil when audience is set")
+				require.Equal(t, tt.wantAudienceParam, cfg.OAuthParams["audience"],
+					"OAuthParams[audience] must match the configured Audience value")
+			} else {
+				// Either nil map or absent key — neither is acceptable as a spurious value.
+				if cfg.OAuthParams != nil {
+					_, hasAudience := cfg.OAuthParams["audience"]
+					require.False(t, hasAudience,
+						"OAuthParams must NOT contain 'audience' key when Audience is empty")
+				}
+			}
+
+			// Resource must never appear in OAuthParams; it travels through a separate
+			// channel (passed to CreateOAuthConfigFromOIDC and the token endpoint).
+			if cfg.OAuthParams != nil {
+				_, hasResource := cfg.OAuthParams["resource"]
+				require.False(t, hasResource,
+					"Resource must NOT be placed in OAuthParams; it is handled by CreateOAuthConfigFromOIDC")
+			}
+		})
+	}
+}
+
+// TestOAuthTokenSource_ConfigUpdater covers the injectable configUpdater callback and
+// the updateConfigTokenRef method that dispatches to it.
+func TestOAuthTokenSource_ConfigUpdater(t *testing.T) {
+	t.Parallel()
+
+	expiry := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("updateConfigTokenRef calls configUpdater when set", func(t *testing.T) {
+		t.Parallel()
+
+		var gotRef string
+		var gotExpiry time.Time
+
+		src := &oauthTokenSource{
+			oauthCfg: &config.OAuthConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "test-client",
+			},
+			serviceURL: "https://registry.example.com",
+			configUpdater: func(tokenRef string, exp time.Time) {
+				gotRef = tokenRef
+				gotExpiry = exp
+			},
+		}
+
+		src.updateConfigTokenRef("my-token-ref", expiry)
+
+		require.Equal(t, "my-token-ref", gotRef)
+		require.Equal(t, expiry, gotExpiry)
+	})
+
+	t.Run("updateConfigTokenRef is a no-op when configUpdater is nil", func(t *testing.T) {
+		t.Parallel()
+
+		src := &oauthTokenSource{
+			oauthCfg: &config.OAuthConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "test-client",
+			},
+			serviceURL:    "https://registry.example.com",
+			configUpdater: nil,
+		}
+
+		// Must not panic.
+		require.NotPanics(t, func() {
+			src.updateConfigTokenRef("my-token-ref", expiry)
+		})
+	})
+
+	t.Run("NewTokenSource stores non-nil configUpdater", func(t *testing.T) {
+		t.Parallel()
+
+		updater := func(_ string, _ time.Time) {}
+
+		ts, err := NewTokenSource(
+			&config.OAuthConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "my-client-id",
+			},
+			"https://registry.example.com",
+			nil,
+			false,
+			updater,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, ts)
+
+		src, ok := ts.(*oauthTokenSource)
+		require.True(t, ok, "returned TokenSource must be *oauthTokenSource")
+		require.NotNil(t, src.configUpdater)
+	})
+
+	t.Run("createTokenPersister with non-nil configUpdater calls it", func(t *testing.T) {
+		t.Parallel()
+
+		var gotRef string
+		var gotExpiry time.Time
+
+		ctrl := gomock.NewController(t)
+		mockProvider := secretsmocks.NewMockProvider(ctrl)
+		mockProvider.EXPECT().
+			SetSecret(gomock.Any(), "my-key", "refresh-token").
+			Return(nil)
+
+		src := &oauthTokenSource{
+			oauthCfg: &config.OAuthConfig{
+				Issuer:   "https://auth.example.com",
+				ClientID: "test-client",
+			},
+			serviceURL:      "https://registry.example.com",
+			secretsProvider: mockProvider,
+			configUpdater: func(tokenRef string, exp time.Time) {
+				gotRef = tokenRef
+				gotExpiry = exp
+			},
+		}
+
+		persister := src.createTokenPersister("my-key")
+		require.NotNil(t, persister)
+
+		err := persister("refresh-token", expiry)
+		require.NoError(t, err)
+
+		require.Equal(t, "my-key", gotRef)
+		require.Equal(t, expiry, gotExpiry)
+	})
 }

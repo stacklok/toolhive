@@ -141,7 +141,10 @@ func resolveTokenSource(cfg *config.Config, interactive bool) auth.TokenSource {
 		}
 	}
 
-	tokenSource, err := auth.NewTokenSource(cfg.RegistryAuth.OAuth, cfg.RegistryApiUrl, secretsProvider, interactive)
+	tokenSource, err := auth.NewTokenSource(
+		cfg.RegistryAuth.OAuth, cfg.RegistryApiUrl, secretsProvider,
+		interactive, auth.RegistryConfigUpdater(),
+	)
 	if err != nil {
 		slog.Warn("Failed to create registry auth token source", "error", err)
 		return nil

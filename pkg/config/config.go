@@ -57,17 +57,26 @@ type RegistryAuth struct {
 	Type string `yaml:"type,omitempty"`
 
 	// OAuth holds OAuth/OIDC authentication configuration.
-	OAuth *RegistryOAuthConfig `yaml:"oauth,omitempty"`
+	OAuth *OAuthConfig `yaml:"oauth,omitempty"`
 }
 
-// RegistryOAuthConfig holds OAuth/OIDC configuration for registry authentication.
+// OAuthConfig holds OAuth/OIDC configuration for browser-based authentication flows.
 // PKCE (S256) is always enforced per OAuth 2.1 requirements for public clients.
-type RegistryOAuthConfig struct {
-	Issuer       string   `yaml:"issuer"`
-	ClientID     string   `yaml:"client_id"`
-	Scopes       []string `yaml:"scopes,omitempty"`
-	Audience     string   `yaml:"audience,omitempty"`
-	CallbackPort int      `yaml:"callback_port,omitempty"`
+// Used for both registry auth and other service auth (e.g. enterprise config server).
+type OAuthConfig struct {
+	Issuer   string   `yaml:"issuer"`
+	ClientID string   `yaml:"client_id"`
+	Scopes   []string `yaml:"scopes,omitempty"`
+	// Audience is a provider-specific request parameter (e.g. Auth0) sent as an
+	// extra authorization URL parameter. It is distinct from the RFC 8707 Resource
+	// field — use Audience for providers that require an "audience" URL param, and
+	// Resource for standard RFC 8707 resource indicators.
+	Audience string `yaml:"audience,omitempty"`
+	// Resource is the RFC 8707 resource indicator sent to the token endpoint.
+	// It is distinct from Audience — use this for standard OAuth 2.0 resource
+	// indicators, not for provider-specific audience parameters.
+	Resource     string `yaml:"resource,omitempty"`
+	CallbackPort int    `yaml:"callback_port,omitempty"`
 
 	// Cached token references for session restoration across CLI invocations.
 	CachedRefreshTokenRef string    `yaml:"cached_refresh_token_ref,omitempty"`

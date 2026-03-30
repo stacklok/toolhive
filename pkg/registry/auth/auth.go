@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -25,16 +27,19 @@ type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 }
 
-// NewTokenSource creates a TokenSource from registry OAuth configuration.
+// NewTokenSource creates a TokenSource from OAuth configuration.
 // Returns nil, nil if oauth config is nil (no auth required).
-// The registryURL is used to derive a unique secret key for token storage.
+// The serviceURL is used to derive a unique secret key for token storage.
 // The secrets provider may be nil if secret storage is not available.
 // The interactive flag controls whether browser-based OAuth flows are allowed.
+// configUpdater is called whenever a token ref or expiry needs to be persisted
+// back to the caller's config store; pass nil to skip config persistence.
 func NewTokenSource(
-	cfg *config.RegistryOAuthConfig,
-	registryURL string,
+	cfg *config.OAuthConfig,
+	serviceURL string,
 	secretsProvider secrets.Provider,
 	interactive bool,
+	configUpdater func(tokenRef string, expiry time.Time),
 ) (TokenSource, error) {
 	if cfg == nil {
 		return nil, nil
@@ -42,10 +47,27 @@ func NewTokenSource(
 
 	return &oauthTokenSource{
 		oauthCfg:        cfg,
-		registryURL:     registryURL,
+		serviceURL:      serviceURL,
 		secretsProvider: secretsProvider,
 		interactive:     interactive,
+		configUpdater:   configUpdater,
 	}, nil
+}
+
+// RegistryConfigUpdater returns a configUpdater callback that persists OAuth
+// token references back to the toolhive on-disk config under RegistryAuth.OAuth.
+// Pass this to NewTokenSource when using it for registry authentication.
+func RegistryConfigUpdater() func(tokenRef string, expiry time.Time) {
+	return func(tokenRef string, expiry time.Time) {
+		if err := config.UpdateConfig(func(cfg *config.Config) {
+			if cfg.RegistryAuth.OAuth != nil {
+				cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = tokenRef
+				cfg.RegistryAuth.OAuth.CachedTokenExpiry = expiry
+			}
+		}); err != nil {
+			slog.Warn("Failed to update config with token reference", "error", err)
+		}
+	}
 }
 
 // DeriveSecretKey computes the secret key for storing a registry's refresh token.

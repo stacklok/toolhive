@@ -66,6 +66,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 		expectedInsecure                    bool
 		expectedEnablePrometheusMetricsPath bool
 		expectedUseLegacyAttributes         bool
+		expectedTracingEnabled              bool
+		expectedMetricsEnabled              bool
 	}{
 		{
 			name: "CLI flags provided, taking precedence over config file",
@@ -77,6 +79,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				cmd.Flags().Set("otel-env-vars", "CLI_VAR2=value2")
 				cmd.Flags().Set("otel-insecure", "true")
 				cmd.Flags().Set("otel-enable-prometheus-metrics-path", "true")
+				cmd.Flags().Set("otel-tracing-enabled", "true")
+				cmd.Flags().Set("otel-metrics-enabled", "false")
 			},
 			configOTEL: config.OpenTelemetryConfig{
 				Endpoint:                    "https://config-endpoint.example.com",
@@ -84,6 +88,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				EnvVars:                     []string{"CONFIG_VAR1=configvalue1", "CONFIG_VAR2=configvalue2"},
 				Insecure:                    false,
 				EnablePrometheusMetricsPath: false,
+				TracingEnabled:              boolPtr(false),
+				MetricsEnabled:              boolPtr(true),
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:                    "https://cli-endpoint.example.com",
@@ -91,6 +97,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				OtelEnvironmentVariables:        []string{"CLI_VAR1=value1", "CLI_VAR2=value2"},
 				OtelInsecure:                    true,
 				OtelEnablePrometheusMetricsPath: true,
+				OtelTracingEnabled:              true,
+				OtelMetricsEnabled:              false,
 				// Set other required fields to avoid nil pointer errors
 				Transport:         "sse",
 				ProxyMode:         "sse",
@@ -103,6 +111,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: true,
 			expectedUseLegacyAttributes:         false,
+			expectedTracingEnabled:              true,
+			expectedMetricsEnabled:              false,
 		},
 		{
 			name: "No CLI flags provided, config takes precedence",
@@ -117,6 +127,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				Insecure:                    true,
 				EnablePrometheusMetricsPath: true,
 				UseLegacyAttributes:         boolPtr(true),
+				TracingEnabled:              boolPtr(false),
+				MetricsEnabled:              boolPtr(false),
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:                    "",
@@ -124,6 +136,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				OtelEnvironmentVariables:        nil,
 				OtelInsecure:                    false,
 				OtelEnablePrometheusMetricsPath: false,
+				OtelTracingEnabled:              true, // CLI default
+				OtelMetricsEnabled:              true, // CLI default
 				Transport:                       "sse",
 				ProxyMode:                       "sse",
 				Host:                            "localhost",
@@ -135,6 +149,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: true,
 			expectedUseLegacyAttributes:         true,
+			expectedTracingEnabled:              false,
+			expectedMetricsEnabled:              false,
 		},
 		{
 			name: "Partial CLI flags provided, mix of CLI and config values",
@@ -156,6 +172,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				OtelEnvironmentVariables:        nil,
 				OtelInsecure:                    true,
 				OtelEnablePrometheusMetricsPath: false,
+				OtelTracingEnabled:              true, // CLI default
+				OtelMetricsEnabled:              true, // CLI default
 				Transport:                       "sse",
 				ProxyMode:                       "sse",
 				Host:                            "localhost",
@@ -166,6 +184,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEnvironmentVariables:        []string{"CONFIG_VAR1=configvalue1"},
 			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: true,
+			expectedTracingEnabled:              true, // CLI default (not changed, config nil)
+			expectedMetricsEnabled:              true, // CLI default (not changed, config nil)
 		},
 		{
 			name: "Empty config values, CLI flags should be used",
@@ -184,6 +204,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				OtelSamplingRate:         0.9,
 				OtelEnvironmentVariables: nil,
 				OtelInsecure:             true,
+				OtelTracingEnabled:       true, // CLI default
+				OtelMetricsEnabled:       true, // CLI default
 				Transport:                "sse",
 				ProxyMode:                "sse",
 				Host:                     "localhost",
@@ -194,6 +216,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEnvironmentVariables:        nil,
 			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: false,
+			expectedTracingEnabled:              true, // CLI flag set
+			expectedMetricsEnabled:              true, // CLI default (not changed, config nil)
 		},
 		{
 			name: "Config disables legacy attributes, CLI flag unchanged",
@@ -205,12 +229,16 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			},
 			runFlags: &RunFlags{
 				OtelUseLegacyAttributes: true, // CLI default
+				OtelTracingEnabled:      true, // CLI default
+				OtelMetricsEnabled:      true, // CLI default
 				Transport:               "sse",
 				ProxyMode:               "sse",
 				Host:                    "localhost",
 				PermissionProfile:       "none",
 			},
 			expectedUseLegacyAttributes: false,
+			expectedTracingEnabled:      true, // CLI default (config nil)
+			expectedMetricsEnabled:      true, // CLI default (config nil)
 		},
 		{
 			name: "Config not set (nil), CLI default true should be used",
@@ -222,12 +250,98 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			},
 			runFlags: &RunFlags{
 				OtelUseLegacyAttributes: true, // CLI default
+				OtelTracingEnabled:      true, // CLI default
+				OtelMetricsEnabled:      true, // CLI default
 				Transport:               "sse",
 				ProxyMode:               "sse",
 				Host:                    "localhost",
 				PermissionProfile:       "none",
 			},
 			expectedUseLegacyAttributes: true,
+			expectedTracingEnabled:      true, // CLI default (config nil)
+			expectedMetricsEnabled:      true, // CLI default (config nil)
+		},
+		{
+			name: "Config disables tracing and metrics, CLI flags unchanged",
+			setupFlags: func(_ *cobra.Command) {
+				// Don't set any flags - config values should take effect
+			},
+			configOTEL: config.OpenTelemetryConfig{
+				Endpoint:       "https://config-endpoint.example.com",
+				TracingEnabled: boolPtr(false),
+				MetricsEnabled: boolPtr(false),
+			},
+			runFlags: &RunFlags{
+				OtelTracingEnabled: true, // CLI default
+				OtelMetricsEnabled: true, // CLI default
+				Transport:          "sse",
+				ProxyMode:          "sse",
+				Host:               "localhost",
+				PermissionProfile:  "none",
+			},
+			expectedEndpoint:       "https://config-endpoint.example.com",
+			expectedTracingEnabled: false,
+			expectedMetricsEnabled: false,
+		},
+		{
+			name: "Config enables tracing and metrics explicitly",
+			setupFlags: func(_ *cobra.Command) {
+				// Don't set any flags
+			},
+			configOTEL: config.OpenTelemetryConfig{
+				TracingEnabled: boolPtr(true),
+				MetricsEnabled: boolPtr(true),
+			},
+			runFlags: &RunFlags{
+				OtelTracingEnabled: true, // CLI default
+				OtelMetricsEnabled: true, // CLI default
+				Transport:          "sse",
+				ProxyMode:          "sse",
+				Host:               "localhost",
+				PermissionProfile:  "none",
+			},
+			expectedTracingEnabled: true,
+			expectedMetricsEnabled: true,
+		},
+		{
+			name: "Config nil (never set), CLI defaults to enabled",
+			setupFlags: func(_ *cobra.Command) {
+				// Don't set any flags
+			},
+			configOTEL: config.OpenTelemetryConfig{
+				// TracingEnabled and MetricsEnabled not set — remain nil
+			},
+			runFlags: &RunFlags{
+				OtelTracingEnabled: true, // CLI default
+				OtelMetricsEnabled: true, // CLI default
+				Transport:          "sse",
+				ProxyMode:          "sse",
+				Host:               "localhost",
+				PermissionProfile:  "none",
+			},
+			expectedTracingEnabled: true,
+			expectedMetricsEnabled: true,
+		},
+		{
+			name: "CLI flag overrides config for tracing/metrics",
+			setupFlags: func(cmd *cobra.Command) {
+				cmd.Flags().Set("otel-tracing-enabled", "true")
+				cmd.Flags().Set("otel-metrics-enabled", "true")
+			},
+			configOTEL: config.OpenTelemetryConfig{
+				TracingEnabled: boolPtr(false),
+				MetricsEnabled: boolPtr(false),
+			},
+			runFlags: &RunFlags{
+				OtelTracingEnabled: true,
+				OtelMetricsEnabled: true,
+				Transport:          "sse",
+				ProxyMode:          "sse",
+				Host:               "localhost",
+				PermissionProfile:  "none",
+			},
+			expectedTracingEnabled: true,
+			expectedMetricsEnabled: true,
 		},
 	}
 
@@ -242,7 +356,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			})
 			defer cleanup()
 			configInstance := configProvider.GetConfig()
-			finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath, finalUseLegacyAttributes := getTelemetryFromFlags(
+			finalTelemetry := getTelemetryFromFlags(
 				cmd,
 				configInstance,
 				tt.runFlags.OtelEndpoint,
@@ -251,15 +365,19 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				tt.runFlags.OtelInsecure,
 				tt.runFlags.OtelEnablePrometheusMetricsPath,
 				tt.runFlags.OtelUseLegacyAttributes,
+				tt.runFlags.OtelTracingEnabled,
+				tt.runFlags.OtelMetricsEnabled,
 			)
 
 			// Assert the results
-			assert.Equal(t, tt.expectedEndpoint, finalEndpoint, "OTEL endpoint should match expected value")
-			assert.Equal(t, tt.expectedSamplingRate, finalSamplingRate, "OTEL sampling rate should match expected value")
-			assert.Equal(t, tt.expectedEnvironmentVariables, finalEnvVars, "OTEL environment variables should match expected value")
-			assert.Equal(t, tt.expectedInsecure, finalInsecure, "OTEL insecure setting should match expected value")
-			assert.Equal(t, tt.expectedEnablePrometheusMetricsPath, finalEnablePrometheusMetricsPath, "OTEL enable Prometheus metrics path setting should match expected value")
-			assert.Equal(t, tt.expectedUseLegacyAttributes, finalUseLegacyAttributes, "OTEL use legacy attributes setting should match expected value")
+			assert.Equal(t, tt.expectedEndpoint, finalTelemetry.OtelEndpoint, "OTEL endpoint should match expected value")
+			assert.Equal(t, tt.expectedSamplingRate, finalTelemetry.OtelSamplingRate, "OTEL sampling rate should match expected value")
+			assert.Equal(t, tt.expectedEnvironmentVariables, finalTelemetry.OtelEnvironmentVariables, "OTEL environment variables should match expected value")
+			assert.Equal(t, tt.expectedInsecure, finalTelemetry.OtelInsecure, "OTEL insecure setting should match expected value")
+			assert.Equal(t, tt.expectedEnablePrometheusMetricsPath, finalTelemetry.OtelEnablePrometheusMetricsPath, "OTEL enable Prometheus metrics path setting should match expected value")
+			assert.Equal(t, tt.expectedUseLegacyAttributes, finalTelemetry.OtelUseLegacyAttributes, "OTEL use legacy attributes setting should match expected value")
+			assert.Equal(t, tt.expectedTracingEnabled, finalTelemetry.OtelTracingEnabled, "OTEL tracing enabled should match expected value")
+			assert.Equal(t, tt.expectedMetricsEnabled, finalTelemetry.OtelMetricsEnabled, "OTEL metrics enabled should match expected value")
 		})
 	}
 }
@@ -384,7 +502,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	defer cleanup()
 
 	configInstance := configProvider.GetConfig()
-	finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath, finalUseLegacyAttributes := getTelemetryFromFlags(
+	finalTelemetry := getTelemetryFromFlags(
 		cmd,
 		configInstance,
 		runFlags.OtelEndpoint,
@@ -393,15 +511,87 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 		runFlags.OtelInsecure,
 		runFlags.OtelEnablePrometheusMetricsPath,
 		runFlags.OtelUseLegacyAttributes,
+		runFlags.OtelTracingEnabled,
+		runFlags.OtelMetricsEnabled,
 	)
 
 	// Verify that CLI values take precedence
-	assert.Equal(t, "https://integration-test.example.com", finalEndpoint, "CLI endpoint should take precedence over config")
-	assert.Equal(t, 0.7, finalSamplingRate, "CLI sampling rate should take precedence over config")
-	assert.Equal(t, []string{"CONFIG_VAR=value"}, finalEnvVars, "Environment variables should fall back to config when not set via CLI")
-	assert.Equal(t, false, finalInsecure, "Insecure setting should use runFlags value when not set via CLI")
-	assert.Equal(t, true, finalUseLegacyAttributes, "UseLegacyAttributes should default to true when not set via CLI or config")
-	assert.Equal(t, false, finalEnablePrometheusMetricsPath, "Enable Prometheus metrics path should use runFlags value when not set via CLI")
+	assert.Equal(t, "https://integration-test.example.com", finalTelemetry.OtelEndpoint, "CLI endpoint should take precedence over config")
+	assert.Equal(t, 0.7, finalTelemetry.OtelSamplingRate, "CLI sampling rate should take precedence over config")
+	assert.Equal(t, []string{"CONFIG_VAR=value"}, finalTelemetry.OtelEnvironmentVariables, "Environment variables should fall back to config when not set via CLI")
+	assert.Equal(t, false, finalTelemetry.OtelInsecure, "Insecure setting should use runFlags value when not set via CLI")
+	assert.Equal(t, true, finalTelemetry.OtelUseLegacyAttributes, "UseLegacyAttributes should default to true when not set via CLI or config")
+	assert.Equal(t, false, finalTelemetry.OtelEnablePrometheusMetricsPath, "Enable Prometheus metrics path should use runFlags value when not set via CLI")
+	assert.Equal(t, true, finalTelemetry.OtelTracingEnabled, "TracingEnabled should use CLI default when not set via CLI or config")
+	assert.Equal(t, true, finalTelemetry.OtelMetricsEnabled, "MetricsEnabled should use CLI default when not set via CLI or config")
+}
+
+func TestCreateTelemetryConfig_DisabledSignals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                        string
+		endpoint                    string
+		tracingEnabled              bool
+		metricsEnabled              bool
+		enablePrometheusMetricsPath bool
+		expectNil                   bool
+	}{
+		{
+			name:           "both disabled with endpoint returns nil",
+			endpoint:       "https://otel.example.com",
+			tracingEnabled: false,
+			metricsEnabled: false,
+			expectNil:      true,
+		},
+		{
+			name:           "tracing enabled returns config",
+			endpoint:       "https://otel.example.com",
+			tracingEnabled: true,
+			metricsEnabled: false,
+			expectNil:      false,
+		},
+		{
+			name:           "metrics enabled returns config",
+			endpoint:       "https://otel.example.com",
+			tracingEnabled: false,
+			metricsEnabled: true,
+			expectNil:      false,
+		},
+		{
+			name:                        "both disabled but prometheus enabled returns config",
+			endpoint:                    "https://otel.example.com",
+			tracingEnabled:              false,
+			metricsEnabled:              false,
+			enablePrometheusMetricsPath: true,
+			expectNil:                   false,
+		},
+		{
+			name:           "no endpoint and both disabled returns nil",
+			endpoint:       "",
+			tracingEnabled: false,
+			metricsEnabled: false,
+			expectNil:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := createTelemetryConfig(
+				tt.endpoint, tt.enablePrometheusMetricsPath,
+				"test-service", tt.tracingEnabled, tt.metricsEnabled,
+				1.0, nil, false, nil, "", true,
+			)
+
+			if tt.expectNil {
+				assert.Nil(t, result, "expected nil telemetry config")
+			} else {
+				assert.NotNil(t, result, "expected non-nil telemetry config")
+			}
+		})
+	}
 }
 
 func TestResolveTransportType(t *testing.T) {

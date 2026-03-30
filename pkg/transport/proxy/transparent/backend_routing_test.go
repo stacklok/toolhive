@@ -5,6 +5,7 @@ package transparent
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -159,9 +160,10 @@ func TestRewriteFallsBackToStaticTargetForNonAbsoluteBackendURL(t *testing.T) {
 	assert.True(t, defaultHit.Load(), "request should have fallen back to the static defaultBackend")
 }
 
-// TestRoundTripReturns400ForUnknownSession verifies that a non-initialize
-// request with an unrecognized session ID is rejected with HTTP 400.
-func TestRoundTripReturns400ForUnknownSession(t *testing.T) {
+// TestRoundTripReturns404ForUnknownSession verifies that a non-initialize
+// request with an unrecognized session ID is rejected with HTTP 404 and a
+// JSON-RPC error body containing code -32001 for MCP session recovery.
+func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 	t.Parallel()
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -185,8 +187,12 @@ func TestRoundTripReturns400ForUnknownSession(t *testing.T) {
 
 	resp, err := tt.RoundTrip(req)
 	require.NoError(t, err)
-	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	_ = resp.Body.Close()
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	assert.Contains(t, string(body), `"code":-32001`)
 }
 
 // TestRoundTripAllowsInitializeWithUnknownSession verifies that an initialize

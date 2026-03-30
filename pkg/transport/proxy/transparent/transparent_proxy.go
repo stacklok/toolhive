@@ -509,26 +509,23 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// has expired or the request carries a stale/forged session ID.
 	if sid := req.Header.Get("Mcp-Session-Id"); sid != "" && !sawInitialize {
 		if _, err := t.p.sessionManager.GetWithError(normalizeSessionID(sid)); err != nil {
-			status := http.StatusBadRequest
-			body := "unknown session\n"
 			if !errors.Is(err, session.ErrSessionNotFound) {
 				// Storage error (e.g. Redis timeout) — client should retry.
-				status = http.StatusServiceUnavailable
-				body = "session store unavailable\n"
 				slog.Error("session store lookup failed", "error", err)
+				hdr := make(http.Header)
+				hdr.Set("Content-Type", "text/plain; charset=utf-8")
+				return &http.Response{
+					StatusCode: http.StatusServiceUnavailable,
+					Status:     fmt.Sprintf("%d %s", http.StatusServiceUnavailable, http.StatusText(http.StatusServiceUnavailable)),
+					Proto:      "HTTP/1.1",
+					ProtoMajor: 1,
+					ProtoMinor: 1,
+					Header:     hdr,
+					Body:       io.NopCloser(strings.NewReader("session store unavailable\n")),
+					Request:    req,
+				}, nil
 			}
-			hdr := make(http.Header)
-			hdr.Set("Content-Type", "text/plain; charset=utf-8")
-			return &http.Response{
-				StatusCode: status,
-				Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
-				Proto:      "HTTP/1.1",
-				ProtoMajor: 1,
-				ProtoMinor: 1,
-				Header:     hdr,
-				Body:       io.NopCloser(strings.NewReader(body)),
-				Request:    req,
-			}, nil
+			return session.NotFoundResponse(req), nil
 		}
 	}
 

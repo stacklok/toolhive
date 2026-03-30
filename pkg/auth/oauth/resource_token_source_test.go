@@ -567,3 +567,69 @@ func TestResourceTokenSource_RFC8707Compliance(t *testing.T) {
 		}
 	})
 }
+
+func TestResourceTokenSource_ScopeInRefresh(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		scopes        []string
+		expectedScope string
+	}{
+		{"multiple scopes", []string{"read", "write", "admin"}, "read write admin"},
+		{"single scope", []string{"openid"}, "openid"},
+		{"no scopes", nil, ""},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var capturedForm url.Values
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				require.NoError(t, err)
+				capturedForm = r.Form
+
+				response := map[string]interface{}{
+					"access_token":  "new-token",
+					"refresh_token": "new-refresh",
+					"token_type":    "Bearer",
+					"expires_in":    3600,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+
+			config := &oauth2.Config{
+				ClientID: "test-client",
+				Scopes:   tc.scopes,
+				Endpoint: oauth2.Endpoint{
+					TokenURL: server.URL,
+				},
+			}
+
+			expiredToken := &oauth2.Token{
+				AccessToken:  "old",
+				RefreshToken: "refresh",
+				Expiry:       time.Now().Add(-1 * time.Hour),
+			}
+
+			ts := NewResourceTokenSource(config, expiredToken, "https://api.example.com")
+			_, err := ts.Token()
+			require.NoError(t, err)
+
+			require.NotNil(t, capturedForm)
+			if tc.expectedScope == "" {
+				assert.Empty(t, capturedForm.Get("scope"),
+					"scope parameter must not be present when config.Scopes is empty")
+			} else {
+				assert.Equal(t, tc.expectedScope, capturedForm.Get("scope"),
+					"scope parameter must match space-separated config.Scopes")
+			}
+			assert.Equal(t, "refresh_token", capturedForm.Get("grant_type"))
+			assert.Equal(t, "https://api.example.com", capturedForm.Get("resource"))
+		})
+	}
+}

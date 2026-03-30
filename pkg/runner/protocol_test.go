@@ -5,9 +5,11 @@ package runner
 
 import (
 	"context"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/container/templates"
 )
@@ -444,44 +446,29 @@ func TestCreateTemplateData(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeConfig_MergesMissingOverrideFields(t *testing.T) {
+func TestLoadRuntimeConfig_UsesBaseConfigWhenOverrideNil(t *testing.T) {
 	t.Parallel()
 
 	base := loadRuntimeConfig(templates.TransportTypeGO, nil)
-	if base == nil {
-		t.Fatal("loadRuntimeConfig returned nil base config")
-		return
-	}
-	if base.BuilderImage == "" {
-		t.Fatal("base runtime config has empty builder image")
-	}
+	require.NotNil(t, base)
+	assert.NotEmpty(t, base.BuilderImage)
+}
+
+func TestLoadRuntimeConfig_ReplacesBaseConfigWithOverride(t *testing.T) {
+	t.Parallel()
 
 	override := &templates.RuntimeConfig{
+		BuilderImage:       "golang:1.24-alpine",
 		AdditionalPackages: []string{"curl"},
 	}
 	got := loadRuntimeConfig(templates.TransportTypeGO, override)
-	if got == nil {
-		t.Fatal("loadRuntimeConfig returned nil merged config")
-		return
-	}
+	require.NotNil(t, got)
+	assert.Equal(t, override.BuilderImage, got.BuilderImage)
+	assert.Equal(t, override.AdditionalPackages, got.AdditionalPackages)
 
-	// Missing builder image in override should inherit the base builder image.
-	if got.BuilderImage != base.BuilderImage {
-		t.Fatalf("BuilderImage = %q, want base %q", got.BuilderImage, base.BuilderImage)
-	}
-
-	// Additional packages should be appended to base defaults.
-	expectedPackages := append([]string{}, base.AdditionalPackages...)
-	expectedPackages = append(expectedPackages, "curl")
-	if !reflect.DeepEqual(got.AdditionalPackages, expectedPackages) {
-		t.Fatalf("AdditionalPackages = %v, want %v", got.AdditionalPackages, expectedPackages)
-	}
-
-	// Ensure merged config is detached from input slices.
+	// Ensure the returned config is detached from input slices.
 	override.AdditionalPackages[0] = "git"
-	if got.AdditionalPackages[len(got.AdditionalPackages)-1] != "curl" {
-		t.Fatalf("AdditionalPackages mutated via override input: got %v", got.AdditionalPackages)
-	}
+	assert.Equal(t, []string{"curl"}, got.AdditionalPackages)
 }
 
 func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
@@ -491,11 +478,7 @@ func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
 	got := loadRuntimeConfig(templates.TransportTypeGO, &templates.RuntimeConfig{
 		BuilderImage: customImage,
 	})
-	if got == nil {
-		t.Fatal("loadRuntimeConfig returned nil config")
-		return
-	}
-	if got.BuilderImage != customImage {
-		t.Fatalf("BuilderImage = %q, want %q", got.BuilderImage, customImage)
-	}
+	require.NotNil(t, got)
+	assert.Equal(t, customImage, got.BuilderImage)
+	assert.Empty(t, got.AdditionalPackages)
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
+	"github.com/stacklok/toolhive/pkg/runner"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -233,5 +234,92 @@ func TestRuntimeConfigFromRequest(t *testing.T) {
 		// Verify a copy is made for slice fields.
 		req.RuntimeConfig.AdditionalPackages[0] = "curl"
 		assert.Equal(t, []string{"git"}, result.AdditionalPackages)
+	})
+}
+
+func TestRuntimeConfigForImageBuild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil override returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := runtimeConfigForImageBuild(
+			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
+			nil,
+		)
+		require.NoError(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("rejects non protocol image", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := runtimeConfigForImageBuild(
+			&createRequest{updateRequest: updateRequest{Image: "nginx:latest"}},
+			&templates.RuntimeConfig{BuilderImage: "golang:1.24-alpine"},
+		)
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "runtime_config is only supported for protocol-scheme images")
+	})
+
+	t.Run("rejects remote url requests", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := runtimeConfigForImageBuild(
+			&createRequest{updateRequest: updateRequest{URL: "https://example.com"}},
+			&templates.RuntimeConfig{BuilderImage: "golang:1.24-alpine"},
+		)
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "runtime_config is only supported for protocol-scheme images")
+	})
+
+	t.Run("rejects invalid builder image", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := runtimeConfigForImageBuild(
+			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
+			&templates.RuntimeConfig{BuilderImage: "not a valid image ref"},
+		)
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "runtime_config.builder_image must be a valid container image reference")
+	})
+
+	t.Run("rejects invalid additional package names", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := runtimeConfigForImageBuild(
+			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
+			&templates.RuntimeConfig{AdditionalPackages: []string{"curl;rm -rf /"}},
+		)
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "runtime_config.additional_packages contains invalid package name")
+	})
+
+	t.Run("merges override with base defaults for protocol images", func(t *testing.T) {
+		t.Parallel()
+
+		override := &templates.RuntimeConfig{
+			BuilderImage:       "golang:1.24-alpine",
+			AdditionalPackages: []string{"curl"},
+		}
+		result, err := runtimeConfigForImageBuild(
+			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
+			override,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, "golang:1.24-alpine", result.BuilderImage)
+
+		base := runner.GetBaseRuntimeConfig(templates.TransportTypeGO)
+		expectedPackages := append([]string{}, base.AdditionalPackages...)
+		expectedPackages = append(expectedPackages, "curl")
+		assert.Equal(t, expectedPackages, result.AdditionalPackages)
+
+		override.AdditionalPackages[0] = "git"
+		assert.Equal(t, expectedPackages, result.AdditionalPackages)
 	})
 }

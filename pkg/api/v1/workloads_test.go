@@ -153,13 +153,42 @@ func TestCreateWorkload(t *testing.T) {
 						return nil
 					})
 			},
-			expectedRuntimeConfig: &templates.RuntimeConfig{
-				BuilderImage:       "golang:1.24-alpine",
-				AdditionalPackages: []string{"ca-certificates"},
+			expectedRuntimeConfig: func() *templates.RuntimeConfig {
+				base := runner.GetBaseRuntimeConfig(templates.TransportTypeGO)
+				return &templates.RuntimeConfig{
+					BuilderImage:       "golang:1.24-alpine",
+					AdditionalPackages: append(append([]string{}, base.AdditionalPackages...), "ca-certificates"),
+				}
+			}(),
+			expectedServerOrImage: "go://github.com/example/server",
+			expectedStatus:        http.StatusCreated,
+			expectedBody:          "test-workload",
+		},
+		{
+			name:        "empty runtime config is ignored",
+			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", "runtime_config": {}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Nil(t, runConfig.RuntimeConfig)
+						return nil
+					})
 			},
 			expectedServerOrImage: "go://github.com/example/server",
 			expectedStatus:        http.StatusCreated,
 			expectedBody:          "test-workload",
+		},
+		{
+			name:        "runtime config with non protocol image is rejected",
+			requestBody: `{"name": "test-workload", "image": "nginx:latest", "runtime_config": {"builder_image": "golang:1.24-alpine"}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "runtime_config is only supported for protocol-scheme images",
 		},
 		{
 			name:        "with tool filters",
@@ -420,6 +449,35 @@ func TestUpdateWorkload(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "tool override for actual-tool must have either Name or Description set",
+		},
+		{
+			name:         "runtime config omitted on update clears stored override",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image"}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Nil(t, runConfig.RuntimeConfig)
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:         "runtime config with non protocol image is rejected",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "nginx:latest", "runtime_config": {"builder_image": "golang:1.24-alpine"}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "runtime_config is only supported for protocol-scheme images",
 		},
 	}
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	nameref "github.com/google/go-containerregistry/pkg/name"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
@@ -33,6 +34,23 @@ const (
 	// Set to 10 minutes to handle large images (1GB+) on slower connections
 	imageRetrievalTimeout = 10 * time.Minute
 )
+
+func isValidRuntimePackageName(pkg string) bool {
+	if pkg == "" {
+		return false
+	}
+	for _, r := range pkg {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.', r == '+', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // WorkloadService handles business logic for workload operations
 type WorkloadService struct {
@@ -165,6 +183,10 @@ func (s *WorkloadService) BuildFullRunConfig(
 	var imageMetadata *regtypes.ImageMetadata
 	var serverMetadata regtypes.ServerMetadata
 	runtimeConfigOverride := runtimeConfigFromRequest(req)
+	retrievalRuntimeConfig, err := runtimeConfigForImageBuild(req, runtimeConfigOverride)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", retriever.ErrInvalidRunConfig, err)
+	}
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
@@ -184,7 +206,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			"", // We do not let the user specify a CA cert path here.
 			retriever.VerifyImageWarn,
 			"", // TODO Add support for registry groups lookups for API
-			runtimeConfigOverride,
+			retrievalRuntimeConfig,
 		)
 		if err != nil {
 			// Check if the error is due to context timeout
@@ -390,6 +412,57 @@ func runtimeConfigFromRequest(req *createRequest) *templates.RuntimeConfig {
 	}
 
 	return runtimeConfig
+}
+
+func validateRuntimeConfig(runtimeConfig *templates.RuntimeConfig) error {
+	if runtimeConfig == nil {
+		return nil
+	}
+
+	if runtimeConfig.BuilderImage != "" {
+		if _, err := nameref.ParseReference(runtimeConfig.BuilderImage); err != nil {
+			return fmt.Errorf("runtime_config.builder_image must be a valid container image reference")
+		}
+	}
+
+	for _, pkg := range runtimeConfig.AdditionalPackages {
+		if !isValidRuntimePackageName(pkg) {
+			return fmt.Errorf("runtime_config.additional_packages contains invalid package name %q", pkg)
+		}
+	}
+
+	return nil
+}
+
+func runtimeConfigForImageBuild(req *createRequest, runtimeConfigOverride *templates.RuntimeConfig) (*templates.RuntimeConfig, error) {
+	if runtimeConfigOverride == nil || req == nil {
+		return nil, nil
+	}
+	if err := validateRuntimeConfig(runtimeConfigOverride); err != nil {
+		return nil, err
+	}
+	if req.URL != "" || !runner.IsImageProtocolScheme(req.Image) {
+		return nil, fmt.Errorf("runtime_config is only supported for protocol-scheme images")
+	}
+
+	transportType, _, err := runner.ParseProtocolScheme(req.Image)
+	if err != nil {
+		return nil, err
+	}
+
+	baseConfig := runner.GetBaseRuntimeConfig(transportType)
+	merged := &templates.RuntimeConfig{
+		BuilderImage:       baseConfig.BuilderImage,
+		AdditionalPackages: append([]string{}, baseConfig.AdditionalPackages...),
+	}
+	if runtimeConfigOverride.BuilderImage != "" {
+		merged.BuilderImage = runtimeConfigOverride.BuilderImage
+	}
+	if len(runtimeConfigOverride.AdditionalPackages) > 0 {
+		merged.AdditionalPackages = append(merged.AdditionalPackages, runtimeConfigOverride.AdditionalPackages...)
+	}
+
+	return merged, nil
 }
 
 // GetWorkloadNamesFromRequest gets workload names from either the names field or group

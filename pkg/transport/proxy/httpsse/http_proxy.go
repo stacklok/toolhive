@@ -458,7 +458,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	// Check if the session exists in the distributed store.
 	_, exists := p.sessionManager.Get(sessionID)
 	if !exists {
-		http.Error(w, "Could not find session", http.StatusNotFound)
+		session.WriteNotFound(w, nil)
 		return
 	}
 

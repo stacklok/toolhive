@@ -451,7 +451,7 @@ func runtimeConfigForImageBuild(req *createRequest, runtimeConfigOverride *templ
 		return nil, err
 	}
 
-	baseConfig := runner.GetBaseRuntimeConfig(transportType)
+	baseConfig := getBaseRuntimeConfig(transportType)
 	merged := &templates.RuntimeConfig{
 		BuilderImage:       baseConfig.BuilderImage,
 		AdditionalPackages: append([]string{}, baseConfig.AdditionalPackages...),
@@ -464,6 +464,22 @@ func runtimeConfigForImageBuild(req *createRequest, runtimeConfigOverride *templ
 	}
 
 	return merged, nil
+}
+
+func getBaseRuntimeConfig(transportType templates.TransportType) *templates.RuntimeConfig {
+	provider := config.NewProvider()
+	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
+		return &templates.RuntimeConfig{
+			BuilderImage:       userConfig.BuilderImage,
+			AdditionalPackages: append([]string{}, userConfig.AdditionalPackages...),
+		}
+	}
+
+	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
+	return &templates.RuntimeConfig{
+		BuilderImage:       defaultConfig.BuilderImage,
+		AdditionalPackages: append([]string{}, defaultConfig.AdditionalPackages...),
+	}
 }
 
 // GetWorkloadNamesFromRequest gets workload names from either the names field or group

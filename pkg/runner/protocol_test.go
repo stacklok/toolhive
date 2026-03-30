@@ -563,36 +563,49 @@ func TestCreateTemplateData(t *testing.T) {
 func TestLoadRuntimeConfig_UsesBaseConfigWhenOverrideNil(t *testing.T) {
 	t.Parallel()
 
-	base := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	base, err := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	require.NoError(t, err)
 	require.NotNil(t, base)
 	assert.NotEmpty(t, base.BuilderImage)
 }
 
-func TestLoadRuntimeConfig_ReplacesBaseConfigWithOverride(t *testing.T) {
+func TestLoadRuntimeConfig_MergesBaseConfigWithOverride(t *testing.T) {
 	t.Parallel()
+
+	base, err := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	require.NoError(t, err)
+	require.NotNil(t, base)
 
 	override := &templates.RuntimeConfig{
 		BuilderImage:       "golang:1.24-alpine",
 		AdditionalPackages: []string{"curl"},
 	}
-	got := loadRuntimeConfig(templates.TransportTypeGO, override)
+	got, err := loadRuntimeConfig(templates.TransportTypeGO, override)
+	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, override.BuilderImage, got.BuilderImage)
-	assert.Equal(t, override.AdditionalPackages, got.AdditionalPackages)
+	expectedPackages := append([]string{}, base.AdditionalPackages...)
+	expectedPackages = append(expectedPackages, "curl")
+	assert.Equal(t, expectedPackages, got.AdditionalPackages)
 
 	// Ensure the returned config is detached from input slices.
 	override.AdditionalPackages[0] = "git"
-	assert.Equal(t, []string{"curl"}, got.AdditionalPackages)
+	assert.Equal(t, expectedPackages, got.AdditionalPackages)
 }
 
 func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
 	t.Parallel()
 
+	base, err := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	require.NoError(t, err)
+	require.NotNil(t, base)
+
 	customImage := "golang:1.24-alpine"
-	got := loadRuntimeConfig(templates.TransportTypeGO, &templates.RuntimeConfig{
+	got, err := loadRuntimeConfig(templates.TransportTypeGO, &templates.RuntimeConfig{
 		BuilderImage: customImage,
 	})
+	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, customImage, got.BuilderImage)
-	assert.Empty(t, got.AdditionalPackages)
+	assert.Equal(t, base.AdditionalPackages, got.AdditionalPackages)
 }

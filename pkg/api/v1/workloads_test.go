@@ -149,7 +149,7 @@ func TestCreateWorkload(t *testing.T) {
 					})
 			},
 			expectedRuntimeConfig: func() *templates.RuntimeConfig {
-				base := runner.GetBaseRuntimeConfig(templates.TransportTypeGO)
+				base := getBaseRuntimeConfig(templates.TransportTypeGO)
 				return &templates.RuntimeConfig{
 					BuilderImage:       "golang:1.24-alpine",
 					AdditionalPackages: append(append([]string{}, base.AdditionalPackages...), "ca-certificates"),

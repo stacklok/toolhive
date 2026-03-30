@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
-	"github.com/stacklok/toolhive/pkg/runner"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -326,7 +325,7 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		require.NotNil(t, result)
 		assert.Equal(t, "golang:1.24-alpine", result.BuilderImage)
 
-		base := runner.GetBaseRuntimeConfig(templates.TransportTypeGO)
+		base := getBaseRuntimeConfig(templates.TransportTypeGO)
 		expectedPackages := append([]string{}, base.AdditionalPackages...)
 		expectedPackages = append(expectedPackages, "curl")
 		assert.Equal(t, expectedPackages, result.AdditionalPackages)

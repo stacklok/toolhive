@@ -144,7 +144,14 @@ func buildServerConfig(
 
 	// Build the configuration
 	envVarValidator := &runner.DetachedEnvVarValidator{}
-	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
+	cfg, err := runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Record which runtime owns this workload for cross-runtime reconciliation.
+	cfg.RuntimeName = rt.Name()
+	return cfg, nil
 }
 
 // configureTransport sets up transport configuration from metadata

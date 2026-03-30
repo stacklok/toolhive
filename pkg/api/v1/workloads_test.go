@@ -206,6 +206,7 @@ func TestCreateWorkload(t *testing.T) {
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 
+			mockRuntime.EXPECT().Name().Return("docker").AnyTimes()
 			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
 
 			mockRetriever := makeMockRetriever(t,
@@ -221,10 +222,11 @@ func TestCreateWorkload(t *testing.T) {
 				groupManager:     mockGroupManager,
 				debugMode:        false,
 				workloadService: &WorkloadService{
-					groupManager:    mockGroupManager,
-					workloadManager: mockWorkloadManager,
-					imageRetriever:  mockRetriever,
-					appConfig:       &config.Config{},
+					groupManager:     mockGroupManager,
+					workloadManager:  mockWorkloadManager,
+					containerRuntime: mockRuntime,
+					imageRetriever:   mockRetriever,
+					appConfig:        &config.Config{},
 				},
 			}
 
@@ -412,10 +414,11 @@ func TestUpdateWorkload(t *testing.T) {
 				groupManager:     mockGroupManager,
 				debugMode:        false,
 				workloadService: &WorkloadService{
-					groupManager:    mockGroupManager,
-					workloadManager: mockWorkloadManager,
-					imageRetriever:  mockRetriever,
-					appConfig:       &config.Config{},
+					groupManager:     mockGroupManager,
+					workloadManager:  mockWorkloadManager,
+					containerRuntime: mockRuntime,
+					imageRetriever:   mockRetriever,
+					appConfig:        &config.Config{},
 				},
 			}
 

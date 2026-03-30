@@ -232,6 +232,20 @@ func (mr *MockRuntimeMockRecorder) ListWorkloads(ctx any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloads", reflect.TypeOf((*MockRuntime)(nil).ListWorkloads), ctx)
 }
 
+// Name mocks base method.
+func (m *MockRuntime) Name() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Name")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// Name indicates an expected call of Name.
+func (mr *MockRuntimeMockRecorder) Name() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Name", reflect.TypeOf((*MockRuntime)(nil).Name))
+}
+
 // RemoveWorkload mocks base method.
 func (m *MockRuntime) RemoveWorkload(ctx context.Context, workloadName string) error {
 	m.ctrl.T.Helper()

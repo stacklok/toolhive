@@ -74,6 +74,38 @@ type fileStatusManager struct {
 	runConfigStore state.Store
 }
 
+// isOwnedByActiveRuntime checks whether the named workload was created by the
+// currently active runtime. It loads the runtime_name field from the persisted
+// RunConfig and compares it against f.runtime.Name(). Legacy workloads that
+// predate the runtime_name field (empty string) are conservatively treated as
+// owned by the active runtime so that existing validation behaviour is preserved.
+func (f *fileStatusManager) isOwnedByActiveRuntime(ctx context.Context, workloadName string) bool {
+	reader, err := f.runConfigStore.GetReader(ctx, workloadName)
+	if err != nil {
+		// RunConfig missing or unreadable -- assume ours so we don't silently
+		// skip validation for workloads we should be checking.
+		return true
+	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			slog.Warn("failed to close reader", "error", err)
+		}
+	}()
+
+	var config struct {
+		RuntimeName string `json:"runtime_name"`
+	}
+	if err := json.NewDecoder(reader).Decode(&config); err != nil {
+		return true // can't determine ownership -- assume ours
+	}
+
+	// Empty means legacy workload; treat as owned by active runtime.
+	if config.RuntimeName == "" {
+		return true
+	}
+	return config.RuntimeName == f.runtime.Name()
+}
+
 // isRemoteWorkload checks if a workload is remote by attempting to load its run configuration
 // and checking if it has a RemoteURL field set.
 // TODO: This is a temporary solution to check if a workload is remote
@@ -910,6 +942,12 @@ func (f *fileStatusManager) validateRunningWorkload(
 		return result, nil
 	}
 
+	// Skip validation for workloads owned by a different runtime to avoid
+	// corrupting their status files (see #4432).
+	if !f.isOwnedByActiveRuntime(ctx, workloadName) {
+		return result, nil
+	}
+
 	// Get raw container info from runtime (before label filtering)
 	containerInfo, err := f.runtime.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
@@ -961,6 +999,12 @@ func (f *fileStatusManager) handleRuntimeMissing(
 	if fileWorkload.Remote {
 		// Remote workloads don't exist in the container runtime, so it's normal for them to be missing
 		// Don't mark them as unhealthy
+		return fileWorkload, nil
+	}
+
+	// Skip reconciliation for workloads owned by a different runtime to avoid
+	// corrupting their status files (see #4432).
+	if !f.isOwnedByActiveRuntime(ctx, workloadName) {
 		return fileWorkload, nil
 	}
 

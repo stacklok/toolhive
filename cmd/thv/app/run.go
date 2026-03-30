@@ -243,6 +243,10 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 		return err
 	}
 
+	// Record which runtime owns this workload so that reconciliation logic
+	// does not corrupt its status file when a different runtime is active.
+	runnerConfig.RuntimeName = rt.Name()
+
 	// Enforce policy in the main process before saving state or spawning a
 	// detached worker, so violations surface synchronously with a non-zero
 	// exit code rather than silently failing in the background log.
@@ -469,6 +473,7 @@ func runFromConfigFile(ctx context.Context) error {
 
 	// Set the runtime in the config
 	runConfig.Deployer = rt
+	runConfig.RuntimeName = rt.Name()
 
 	// Create workload manager
 	workloadManager, err := workloads.NewManagerFromRuntime(rt)

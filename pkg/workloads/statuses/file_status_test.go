@@ -2229,3 +2229,127 @@ func TestJSONRecovery_MultipleExtraClosingBraces(t *testing.T) {
 	assert.Equal(t, rt.WorkloadStatusRunning, statusFile.Status)
 	assert.Equal(t, 12345, statusFile.ProcessID)
 }
+
+func TestFileStatusManager_CrossRuntimeProtection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// runtimeName is what the active runtime reports via Name()
+		runtimeName string
+		// runConfigJSON is the JSON returned by GetReader for the workload's RunConfig.
+		// It controls what runtime_name the workload was created with.
+		runConfigJSON string
+		// operation selects which code path to exercise: "list" or "get"
+		operation string
+		// expectUnhealthy indicates whether we expect the workload to be marked unhealthy
+		expectUnhealthy bool
+		// expectRuntimeGetWorkloadInfo indicates whether GetWorkloadInfo should be called (for "get" operation)
+		expectRuntimeGetWorkloadInfo bool
+	}{
+		{
+			name:            "workload owned by different runtime is not marked unhealthy during list",
+			runtimeName:     "docker",
+			runConfigJSON:   `{"runtime_name": "go-microvm"}`,
+			operation:       "list",
+			expectUnhealthy: false,
+		},
+		{
+			name:            "workload owned by active runtime IS marked unhealthy when missing from runtime",
+			runtimeName:     "docker",
+			runConfigJSON:   `{"runtime_name": "docker"}`,
+			operation:       "list",
+			expectUnhealthy: true,
+		},
+		{
+			name:            "legacy workload without runtime_name IS validated normally",
+			runtimeName:     "docker",
+			runConfigJSON:   `{"name": "test-workload"}`,
+			operation:       "list",
+			expectUnhealthy: true,
+		},
+		{
+			name:                         "workload owned by different runtime is not validated during GetWorkload",
+			runtimeName:                  "docker",
+			runConfigJSON:                `{"runtime_name": "go-microvm"}`,
+			operation:                    "get",
+			expectUnhealthy:              false,
+			expectRuntimeGetWorkloadInfo: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+			ctx := t.Context()
+
+			workloadName := "test-workload"
+
+			// Create a running workload status file
+			err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "container started")
+			require.NoError(t, err)
+
+			// Mock runtime name
+			mockRuntime.EXPECT().Name().Return(tt.runtimeName).AnyTimes()
+
+			// Mock run config store -- returns the test-specific RunConfig JSON.
+			// Both isRemoteWorkload (via getWorkloadsFromFiles) and isOwnedByActiveRuntime
+			// read from GetReader, so we use AnyTimes with a fresh reader per call.
+			mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(true, nil).AnyTimes()
+			mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(tt.runConfigJSON)), nil
+			}).AnyTimes()
+
+			switch tt.operation {
+			case "list":
+				// Runtime returns no containers -- workload exists only in file
+				mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
+
+				workloads, listErr := manager.ListWorkloads(ctx, true, nil)
+				require.NoError(t, listErr)
+				require.Len(t, workloads, 1, "expected exactly one workload in list")
+
+				if tt.expectUnhealthy {
+					assert.Equal(t, rt.WorkloadStatusUnhealthy, workloads[0].Status,
+						"workload should be marked unhealthy")
+				} else {
+					assert.Equal(t, rt.WorkloadStatusRunning, workloads[0].Status,
+						"workload should remain running (cross-runtime protection)")
+
+					// Verify the status file on disk was NOT modified
+					statusFilePath := filepath.Join(manager.baseDir, workloadName+".json")
+					data, readErr := os.ReadFile(statusFilePath)
+					require.NoError(t, readErr)
+
+					var statusFile workloadStatusFile
+					require.NoError(t, json.Unmarshal(data, &statusFile))
+					assert.Equal(t, rt.WorkloadStatusRunning, statusFile.Status,
+						"status file on disk should still show running")
+				}
+
+			case "get":
+				if tt.expectRuntimeGetWorkloadInfo {
+					mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(rt.ContainerInfo{}, errors.New("not found"))
+				}
+				// If we do NOT expect GetWorkloadInfo to be called, the mock controller
+				// will fail the test if it is called unexpectedly.
+
+				workload, getErr := manager.GetWorkload(ctx, workloadName)
+				require.NoError(t, getErr)
+
+				if tt.expectUnhealthy {
+					assert.Equal(t, rt.WorkloadStatusUnhealthy, workload.Status,
+						"workload should be marked unhealthy")
+				} else {
+					assert.Equal(t, rt.WorkloadStatusRunning, workload.Status,
+						"workload should remain running (cross-runtime protection)")
+				}
+			}
+		})
+	}
+}

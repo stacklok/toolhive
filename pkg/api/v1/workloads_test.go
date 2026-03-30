@@ -261,6 +261,7 @@ func TestCreateWorkload(t *testing.T) {
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 
+			mockRuntime.EXPECT().Name().Return("docker").AnyTimes()
 			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
 			expectedServerOrImage := tt.expectedServerOrImage
 			if expectedServerOrImage == "" {
@@ -281,6 +282,7 @@ func TestCreateWorkload(t *testing.T) {
 				workloadService: &WorkloadService{
 					groupManager:      mockGroupManager,
 					workloadManager:   mockWorkloadManager,
+					containerRuntime:  mockRuntime,
 					imageRetriever:    mockRetriever,
 					imagePuller:       func(_ context.Context, _ string) error { return nil },
 					configProvider:    config.NewDefaultProvider(),
@@ -502,6 +504,7 @@ func TestUpdateWorkload(t *testing.T) {
 				workloadService: &WorkloadService{
 					groupManager:      mockGroupManager,
 					workloadManager:   mockWorkloadManager,
+					containerRuntime:  mockRuntime,
 					imageRetriever:    mockRetriever,
 					imagePuller:       func(_ context.Context, _ string) error { return nil },
 					configProvider:    config.NewDefaultProvider(),

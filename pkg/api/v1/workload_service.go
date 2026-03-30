@@ -100,6 +100,9 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 		return nil, err
 	}
 
+	// Record which runtime owns this workload for cross-runtime reconciliation.
+	runConfig.RuntimeName = s.containerRuntime.Name()
+
 	// Enforce policy before saving state or starting the workload, so
 	// violations are returned as API errors rather than creating the server
 	// in a broken state.

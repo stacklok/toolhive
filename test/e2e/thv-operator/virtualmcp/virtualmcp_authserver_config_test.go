@@ -47,7 +47,13 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
+						Type: "oidc",
+						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+							Type: "inline",
+							Inline: &mcpv1alpha1.InlineOIDCConfig{
+								Issuer: "http://localhost:9090",
+							},
+						},
 					},
 					Config: vmcpconfig.Config{Group: mcpGroupName},
 					AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{

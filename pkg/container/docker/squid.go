@@ -21,6 +21,15 @@ import (
 
 const defaultSquidImage = "ghcr.io/stacklok/toolhive/egress-proxy:latest"
 
+// dockerGateway* are Docker-specific addresses that resolve to the host network
+// interface from inside a container. They are blocked by default to prevent
+// containers from reaching host services unintentionally.
+const (
+	dockerGatewayHostname        = "host.docker.internal"
+	dockerAltGatewayHostname     = "gateway.docker.internal"
+	dockerDefaultBridgeGatewayIP = "172.17.0.1"
+)
+
 type proxyDirection int
 
 const (
@@ -69,8 +78,10 @@ func createEgressSquidContainer(
 	exposedPorts map[string]struct{},
 	endpointsConfig map[string]*network.EndpointSettings,
 	perm *permissions.NetworkPermissions,
+	allowDockerGateway bool,
+	gatewayIP string,
 ) (string, error) {
-	squidConfPath, err := createTempEgressSquidConf(perm, containerName)
+	squidConfPath, err := createTempEgressSquidConf(perm, containerName, allowDockerGateway, gatewayIP)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary squid.conf: %w", err)
 	}
@@ -173,13 +184,45 @@ func createSquidContainer(
 	return squidContainerId, nil
 }
 
+// writeDockerGatewayDenyRules emits Squid ACL definitions and http_access deny
+// rules that block the Docker gateway addresses. These rules MUST be written
+// before any http_access allow rules: Squid evaluates access control in
+// first-match-wins order, so a deny placed after an allow is never reached.
+//
+// gatewayIP is the bridge network gateway IP resolved at runtime via
+// getDockerBridgeGatewayIP. It differs across platforms: 172.17.0.1 on Linux,
+// 192.168.65.1 on Docker Desktop for macOS, and varies on Colima/Rancher Desktop.
+// dockerGatewayHostname and dockerAltGatewayHostname cover hostname-based access;
+// the dst rule covers direct-IP access that bypasses DNS.
+// Note: gateway.docker.internal is Docker Desktop (macOS) specific; blocking it
+// on Linux is harmless since the name does not resolve there.
+func writeDockerGatewayDenyRules(sb *strings.Builder, gatewayIP string) {
+	sb.WriteString(
+		"# Block Docker gateway addresses — opt in with --allow-docker-gateway\n" +
+			"acl docker_gateway_hosts dstdomain " +
+			dockerGatewayHostname + " " + dockerAltGatewayHostname + "\n" +
+			"acl docker_gateway_ip dst " + gatewayIP + "\n" +
+			"http_access deny docker_gateway_hosts\n" +
+			"http_access deny docker_gateway_ip\n\n",
+	)
+}
+
 func createTempEgressSquidConf(
 	networkPermissions *permissions.NetworkPermissions,
 	serverHostname string,
+	allowDockerGateway bool,
+	gatewayIP string,
 ) (string, error) {
 	var sb strings.Builder
 
 	writeCommonConfig(&sb, serverHostname, proxyEgress)
+
+	// Always block Docker gateway addresses unless the caller explicitly opts
+	// in via --allow-docker-gateway. MUST precede any http_access allow —
+	// Squid is first-match-wins.
+	if !allowDockerGateway {
+		writeDockerGatewayDenyRules(&sb, gatewayIP)
+	}
 
 	if networkPermissions == nil || (networkPermissions.Outbound != nil && networkPermissions.Outbound.InsecureAllowAll) {
 		sb.WriteString("# Allow all traffic\nhttp_access allow all\n")

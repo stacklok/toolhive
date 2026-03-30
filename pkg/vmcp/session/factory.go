@@ -36,6 +36,11 @@ const (
 	// a comma-separated, sorted list of successfully-connected backend IDs.
 	// The key is omitted entirely when no backends connected.
 	MetadataKeyBackendIDs = "vmcp.backend.ids"
+
+	// MetadataKeyBackendSessionPrefix is the key prefix for per-backend session IDs.
+	// Full key: MetadataKeyBackendSessionPrefix + workloadID → backend_session_id.
+	// Used by RestoreSession to reconnect backends with the correct session hint.
+	MetadataKeyBackendSessionPrefix = "vmcp.backend.session."
 )
 
 var (
@@ -349,13 +354,22 @@ func validateSessionID(id string) error {
 	return nil
 }
 
-// populateBackendMetadata adds backend IDs to session metadata.
-// IDs are extracted from the already-sorted results slice to avoid a second sort.
+// populateBackendMetadata writes backend metadata to the transport session.
+// It writes MetadataKeyBackendIDs (comma-separated, sorted workload IDs) and,
+// for each backend that reports a non-empty session ID,
+// MetadataKeyBackendSessionPrefix+workloadID. Backends with an empty session ID
+// (e.g. SSE transports) are included in MetadataKeyBackendIDs but have no
+// per-session-ID key, so downstream restore logic can treat key presence as a
+// usable hint. IDs are extracted from the already-sorted results slice to avoid
+// a second sort.
 func populateBackendMetadata(transportSess transportsession.Session, results []initResult) {
 	if len(results) > 0 {
 		ids := make([]string, len(results))
 		for i, r := range results {
 			ids[i] = r.target.WorkloadID
+			if sessID := r.conn.SessionID(); sessID != "" {
+				transportSess.SetMetadata(MetadataKeyBackendSessionPrefix+r.target.WorkloadID, sessID)
+			}
 		}
 		transportSess.SetMetadata(MetadataKeyBackendIDs, strings.Join(ids, ","))
 	}

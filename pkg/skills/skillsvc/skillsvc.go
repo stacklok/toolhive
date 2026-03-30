@@ -509,6 +509,22 @@ const ociPullTimeout = 5 * time.Minute
 // malicious artifact from causing OOM before the decompression limits kick in.
 const maxCompressedLayerSize int64 = 50 * 1024 * 1024 // 50 MB
 
+// qualifiedOCIRef returns the full OCI reference string including the tag or
+// digest. When the user omits a tag (e.g. "ghcr.io/org/skill"),
+// go-containerregistry's ParseReference defaults to "latest" internally but
+// String() omits it. This function only appends the implicit tag when the
+// original string does not already include one.
+func qualifiedOCIRef(ref nameref.Reference) string {
+	s := ref.String()
+	if _, ok := ref.(nameref.Digest); ok {
+		return s // already has @sha256:...
+	}
+	if strings.Contains(s, ":") {
+		return s // already has an explicit tag
+	}
+	return s + ":" + ref.Identifier()
+}
+
 func parseOCIReference(name string) (nameref.Reference, bool, error) {
 	// Structural check: skill names never contain '/', ':', or '@'.
 	// OCI references always require at least one of these.
@@ -544,7 +560,7 @@ func (s *service) installFromOCI(
 		)
 	}
 
-	ociRef := opts.Name
+	ociRef := qualifiedOCIRef(ref)
 
 	pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
 	defer cancel()
@@ -553,7 +569,7 @@ func (s *service) installFromOCI(
 	if err != nil {
 		return nil, httperr.WithCode(
 			fmt.Errorf("pulling OCI artifact %q: %w", ociRef, err),
-			http.StatusBadGateway,
+			http.StatusBadRequest,
 		)
 	}
 

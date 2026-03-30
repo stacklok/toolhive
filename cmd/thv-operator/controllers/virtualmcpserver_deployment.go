@@ -126,6 +126,15 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	args := r.buildContainerArgsForVmcp(vmcp)
 	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
 	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+
+	// Add embedded auth server volumes and env vars if configured (inline config)
+	if vmcp.Spec.AuthServerConfig != nil {
+		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		authServerEnvVars := ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
+	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)

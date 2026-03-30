@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/stacklok/toolhive/pkg/container/templates"
 )
 
@@ -555,4 +558,41 @@ func TestCreateTemplateData(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadRuntimeConfig_UsesBaseConfigWhenOverrideNil(t *testing.T) {
+	t.Parallel()
+
+	base := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	require.NotNil(t, base)
+	assert.NotEmpty(t, base.BuilderImage)
+}
+
+func TestLoadRuntimeConfig_ReplacesBaseConfigWithOverride(t *testing.T) {
+	t.Parallel()
+
+	override := &templates.RuntimeConfig{
+		BuilderImage:       "golang:1.24-alpine",
+		AdditionalPackages: []string{"curl"},
+	}
+	got := loadRuntimeConfig(templates.TransportTypeGO, override)
+	require.NotNil(t, got)
+	assert.Equal(t, override.BuilderImage, got.BuilderImage)
+	assert.Equal(t, override.AdditionalPackages, got.AdditionalPackages)
+
+	// Ensure the returned config is detached from input slices.
+	override.AdditionalPackages[0] = "git"
+	assert.Equal(t, []string{"curl"}, got.AdditionalPackages)
+}
+
+func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
+	t.Parallel()
+
+	customImage := "golang:1.24-alpine"
+	got := loadRuntimeConfig(templates.TransportTypeGO, &templates.RuntimeConfig{
+		BuilderImage: customImage,
+	})
+	require.NotNil(t, got)
+	assert.Equal(t, customImage, got.BuilderImage)
+	assert.Empty(t, got.AdditionalPackages)
 }

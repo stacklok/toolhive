@@ -979,7 +979,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				},
 				DisableUpstreamTokenInjection: true,
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				assert.True(t, config.DisableUpstreamTokenInjection,
@@ -997,7 +998,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
-			oidcConfig: defaultOIDCConfig,
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				assert.False(t, config.DisableUpstreamTokenInjection,

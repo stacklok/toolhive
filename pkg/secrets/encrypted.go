@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package secrets
@@ -116,6 +116,29 @@ func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, 
 	})
 
 	return secretNames, nil
+}
+
+// DeleteSecrets removes all named keys from the store.
+func (e *EncryptedManager) DeleteSecrets(_ context.Context, keys []string) error {
+	return fileutils.WithFileLock(e.filePath, func() error {
+		// Re-read the file inside the lock to avoid losing changes made
+		// by other processes since this manager was created.
+		current, err := e.readFileSecrets()
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			delete(current, key)
+		}
+		if err := e.writeFileSecrets(current); err != nil {
+			return err
+		}
+		// Update in-memory cache after the disk write.
+		for _, key := range keys {
+			e.secrets.Delete(key)
+		}
+		return nil
+	})
 }
 
 // Cleanup removes all secrets managed by this manager.

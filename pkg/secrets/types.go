@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package secrets contains the secrets management logic for ToolHive.
@@ -54,6 +54,8 @@ type Provider interface {
 	SetSecret(ctx context.Context, name, value string) error
 	DeleteSecret(ctx context.Context, name string) error
 	ListSecrets(ctx context.Context) ([]SecretDescription, error)
+	// DeleteSecrets removes all named keys. Read-only providers treat this as a no-op.
+	DeleteSecrets(ctx context.Context, keys []string) error
 	Cleanup() error
 	// Capabilities returns what operations this provider supports
 	Capabilities() ProviderCapabilities

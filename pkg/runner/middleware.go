@@ -11,7 +11,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
@@ -147,9 +149,13 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Authorization middleware (if enabled)
 	if config.AuthzConfig != nil {
+		authzCfgData, err := injectUpstreamProviderIfNeeded(config.AuthzConfig, config.EmbeddedAuthServerConfig)
+		if err != nil {
+			return fmt.Errorf("failed to inject upstream provider into authorization config: %w", err)
+		}
 		authzParams := authz.FactoryMiddlewareParams{
 			ConfigPath: config.AuthzConfigPath, // Keep for backwards compatibility
-			ConfigData: config.AuthzConfig,     // Use the loaded config data
+			ConfigData: authzCfgData,           // Use the (possibly-enriched) config data
 		}
 		authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams)
 		if err != nil {
@@ -320,6 +326,30 @@ func addUpstreamSwapMiddleware(
 		return nil, fmt.Errorf("failed to create upstream swap middleware config: %w", err)
 	}
 	return append(middlewares, *upstreamSwapMwConfig), nil
+}
+
+// injectUpstreamProviderIfNeeded enriches an authz.Config with the
+// PrimaryUpstreamProvider derived from the embedded auth server config.
+// When the embedded auth server is active, Cedar policies should evaluate
+// claims from the upstream IDP token rather than the ToolHive-issued JWT.
+// If embeddedCfg is nil the original authzCfg is returned unchanged.
+func injectUpstreamProviderIfNeeded(
+	authzCfg *authz.Config,
+	embeddedCfg *authserver.RunConfig,
+) (*authz.Config, error) {
+	if embeddedCfg == nil {
+		return authzCfg, nil
+	}
+
+	// Derive the provider name using the same logic as addUpstreamSwapMiddleware.
+	providerName := func() string {
+		if len(embeddedCfg.Upstreams) > 0 && embeddedCfg.Upstreams[0].Name != "" {
+			return embeddedCfg.Upstreams[0].Name
+		}
+		return authserver.DefaultUpstreamName
+	}()
+
+	return cedar.InjectUpstreamProvider(authzCfg, providerName)
 }
 
 // addAWSStsMiddleware adds AWS STS middleware if configured.

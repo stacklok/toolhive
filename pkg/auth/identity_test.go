@@ -12,6 +12,134 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestExtractGroupsFromClaims tests the ExtractGroupsFromClaims function.
+func TestExtractGroupsFromClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		claims          jwt.MapClaims
+		customClaimName string
+		wantGroups      []string
+	}{
+		{
+			name: "groups_claim_string_slice",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []string{"admin", "developers"},
+			},
+			wantGroups: []string{"admin", "developers"},
+		},
+		{
+			name: "groups_claim_interface_slice",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"reader", "writer"},
+			},
+			wantGroups: []string{"reader", "writer"},
+		},
+		{
+			name: "roles_claim_string_slice",
+			claims: jwt.MapClaims{
+				"sub":   "user1",
+				"roles": []string{"viewer"},
+			},
+			wantGroups: []string{"viewer"},
+		},
+		{
+			name: "cognito_groups_claim",
+			claims: jwt.MapClaims{
+				"sub":            "user1",
+				"cognito:groups": []string{"pool-admins"},
+			},
+			wantGroups: []string{"pool-admins"},
+		},
+		{
+			name: "custom_claim_name_takes_priority",
+			claims: jwt.MapClaims{
+				"sub":                        "user1",
+				"https://example.com/groups": []string{"eng", "platform"},
+				"groups":                     []string{"other"},
+			},
+			customClaimName: "https://example.com/groups",
+			wantGroups:      []string{"eng", "platform"},
+		},
+		{
+			name: "custom_claim_name_falls_back_to_well_known",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []string{"fallback-group"},
+			},
+			customClaimName: "https://example.com/nonexistent",
+			wantGroups:      []string{"fallback-group"},
+		},
+		{
+			name: "no_group_claim_present",
+			claims: jwt.MapClaims{
+				"sub":  "user1",
+				"name": "Alice",
+			},
+			wantGroups: nil,
+		},
+		{
+			name: "empty_groups_claim_ignored",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []string{},
+			},
+			wantGroups: nil,
+		},
+		{
+			name: "empty_interface_slice_ignored",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{},
+			},
+			wantGroups: nil,
+		},
+		{
+			name: "non_string_interface_elements_skipped",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"valid", 42, true, "also-valid"},
+			},
+			wantGroups: []string{"valid", "also-valid"},
+		},
+		{
+			name: "groups_claim_wrong_type_skipped",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": "not-a-slice",
+			},
+			wantGroups: nil,
+		},
+		{
+			name:       "empty_claims_map",
+			claims:     jwt.MapClaims{},
+			wantGroups: nil,
+		},
+		{
+			name: "groups_claim_prioritised_over_roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []string{"grp-a"},
+				"roles":  []string{"role-b"},
+			},
+			// defaultGroupClaimNames checks "groups" first; "groups" is found, so
+			// "roles" should not be returned.
+			wantGroups: []string{"grp-a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ExtractGroupsFromClaims(tt.claims, tt.customClaimName)
+			assert.Equal(t, tt.wantGroups, got)
+		})
+	}
+}
+
 func TestClaimsToIdentity(t *testing.T) {
 	t.Parallel()
 

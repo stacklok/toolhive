@@ -16,22 +16,41 @@ func NewEntityFactory() *EntityFactory {
 	return &EntityFactory{}
 }
 
-// CreatePrincipalEntity creates a principal entity with the given ID and attributes.
+// CreatePrincipalEntity creates a principal entity with the given ID, attributes,
+// and group memberships. Each group is added as a parent entity so that Cedar's
+// in operator works for group-based policies (e.g. principal in THVGroup::"engineering").
+// Returns the principal UID, the principal entity, and a slice of group entities
+// (one per group) that must also be added to the entity map.
 func (*EntityFactory) CreatePrincipalEntity(
 	principalType, principalID string,
 	attributes map[string]interface{},
-) (cedar.EntityUID, cedar.Entity) {
+	groups []string,
+) (cedar.EntityUID, cedar.Entity, []cedar.Entity) {
 	uid := cedar.NewEntityUID(cedar.EntityType(principalType), cedar.String(principalID))
 	attrs := convertMapToCedarRecord(attributes)
 
+	// Build parent UIDs and group entities from the groups slice.
+	parentUIDs := make([]cedar.EntityUID, 0, len(groups))
+	var groupEntities []cedar.Entity
+	for _, g := range groups {
+		groupUID := cedar.NewEntityUID("THVGroup", cedar.String(g))
+		parentUIDs = append(parentUIDs, groupUID)
+		groupEntities = append(groupEntities, cedar.Entity{
+			UID:        groupUID,
+			Parents:    cedar.NewEntityUIDSet(),
+			Attributes: cedar.NewRecord(cedar.RecordMap{}),
+			Tags:       cedar.NewRecord(cedar.RecordMap{}),
+		})
+	}
+
 	entity := cedar.Entity{
 		UID:        uid,
-		Parents:    cedar.NewEntityUIDSet(),
+		Parents:    cedar.NewEntityUIDSet(parentUIDs...),
 		Attributes: attrs,
 		Tags:       cedar.NewRecord(cedar.RecordMap{}),
 	}
 
-	return uid, entity
+	return uid, entity, groupEntities
 }
 
 // CreateActionEntity creates an action entity with the given ID and attributes.
@@ -85,10 +104,14 @@ func (*EntityFactory) CreateResourceEntity(
 }
 
 // CreateEntitiesForRequest creates entities for a specific authorization request.
+// groups is an optional slice of group names; when non-empty, group parent entities
+// are created and the principal entity's Parents set is populated accordingly so that
+// Cedar's in operator works for group-membership policies.
 func (f *EntityFactory) CreateEntitiesForRequest(
 	principal, action, resource string,
 	claimsMap map[string]interface{},
 	attributes map[string]interface{},
+	groups []string,
 ) (cedar.EntityMap, error) {
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
@@ -109,9 +132,14 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 	// Create Cedar entities
 	entities := make(cedar.EntityMap)
 
-	// Create principal entity
-	principalUID, principalEntity := f.CreatePrincipalEntity(principalType, principalID, claimsMap)
+	// Create principal entity with group parents
+	principalUID, principalEntity, groupEntities := f.CreatePrincipalEntity(principalType, principalID, claimsMap, groups)
 	entities[principalUID] = principalEntity
+
+	// Add group entities so Cedar can resolve the parent hierarchy
+	for _, ge := range groupEntities {
+		entities[ge.UID] = ge
+	}
 
 	// Create action entity
 	actionUID, actionEntity := f.CreateActionEntity(actionType, actionID, nil)

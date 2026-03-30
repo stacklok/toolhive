@@ -15,6 +15,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
+// makeUnsignedJWT creates a JWT with the given claims using the "none" algorithm.
+// This is only used in tests; the production code parses without verification.
+func makeUnsignedJWT(claims jwt.MapClaims) string {
+	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
+	signed, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		panic("makeUnsignedJWT: " + err.Error())
+	}
+	return signed
+}
+
 // TestNewCedarAuthorizer tests the creation of a new Cedar authorizer with different configurations.
 func TestNewCedarAuthorizer(t *testing.T) {
 	t.Parallel()
@@ -776,9 +787,9 @@ func TestEntityOperations(t *testing.T) {
 	require.NotNil(t, factory)
 
 	// Create a test entity using the factory
-	uid, entity := factory.CreatePrincipalEntity("Client", "testuser", map[string]interface{}{
+	uid, entity, _ := factory.CreatePrincipalEntity("Client", "testuser", map[string]interface{}{
 		"name": "Test User",
-	})
+	}, nil)
 
 	// Add entity
 	cedarAuthorizer.AddEntity(entity)
@@ -813,7 +824,7 @@ func TestGetEntityNotFound(t *testing.T) {
 
 	// Create a UID that doesn't exist
 	factory := cedarAuthorizer.GetEntityFactory()
-	uid, _ := factory.CreatePrincipalEntity("Client", "nonexistent", nil)
+	uid, _, _ := factory.CreatePrincipalEntity("Client", "nonexistent", nil, nil)
 
 	// Try to get it
 	_, found := cedarAuthorizer.GetEntity(uid)
@@ -938,6 +949,7 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 		"Tool::weather",
 		map[string]interface{}{"name": "Test User"},
 		map[string]interface{}{"name": "weather"},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -951,4 +963,472 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 	)
 	assert.NoError(t, err)
 	assert.True(t, authorized)
+}
+
+// TestParseUpstreamJWTClaims tests the parseUpstreamJWTClaims helper.
+func TestParseUpstreamJWTClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		token       string
+		wantErr     bool
+		errContains string
+		checkClaims func(t *testing.T, claims jwt.MapClaims)
+	}{
+		{
+			name: "valid_jwt_with_groups_claim",
+			token: makeUnsignedJWT(jwt.MapClaims{
+				"sub":    "upstream-user",
+				"groups": []interface{}{"eng", "platform"},
+			}),
+			wantErr: false,
+			checkClaims: func(t *testing.T, claims jwt.MapClaims) {
+				t.Helper()
+				sub, err := claims.GetSubject()
+				require.NoError(t, err)
+				assert.Equal(t, "upstream-user", sub)
+				_, ok := claims["groups"]
+				assert.True(t, ok, "expected 'groups' claim to be present")
+			},
+		},
+		{
+			name: "valid_jwt_minimal_claims",
+			token: makeUnsignedJWT(jwt.MapClaims{
+				"sub": "user42",
+				"iss": "https://idp.example.com",
+			}),
+			wantErr: false,
+			checkClaims: func(t *testing.T, claims jwt.MapClaims) {
+				t.Helper()
+				sub, err := claims.GetSubject()
+				require.NoError(t, err)
+				assert.Equal(t, "user42", sub)
+			},
+		},
+		{
+			name:        "opaque_token_returns_error",
+			token:       "opaque-token-not-a-jwt",
+			wantErr:     true,
+			errContains: "upstream token is not a parseable JWT",
+		},
+		{
+			name:        "empty_string_returns_error",
+			token:       "",
+			wantErr:     true,
+			errContains: "upstream token is not a parseable JWT",
+		},
+		{
+			name:        "random_base64_not_jwt",
+			token:       "aGVsbG8=.d29ybGQ=",
+			wantErr:     true,
+			errContains: "upstream token is not a parseable JWT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			claims, err := parseUpstreamJWTClaims(tt.token)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				assert.Nil(t, claims)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, claims)
+			if tt.checkClaims != nil {
+				tt.checkClaims(t, claims)
+			}
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_UpstreamProvider tests AuthorizeWithJWTClaims
+// when primaryUpstreamProvider is set, exercising the upstream token path.
+func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "github"
+
+	// Policy that allows a call only when the upstream claim_sub matches.
+	policy := `
+		permit(
+			principal,
+			action == Action::"call_tool",
+			resource == Tool::"deploy"
+		)
+		when {
+			context.claim_sub == "upstream-user"
+		};
+	`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:                []string{policy},
+		EntitiesJSON:            `[]`,
+		PrimaryUpstreamProvider: providerName,
+	})
+	require.NoError(t, err)
+
+	upstreamToken := makeUnsignedJWT(jwt.MapClaims{
+		"sub": "upstream-user",
+		"iss": "https://idp.example.com",
+	})
+
+	tests := []struct {
+		name          string
+		identity      *auth.Identity
+		wantAuthorize bool
+		wantErr       bool
+		errContains   string
+	}{
+		{
+			name: "upstream_token_present_and_authorized",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: upstreamToken,
+				},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name: "upstream_token_present_but_wrong_sub",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub": "different-upstream-user",
+					}),
+				},
+			},
+			wantAuthorize: false,
+		},
+		{
+			name: "upstream_token_missing_from_identity",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{},
+			},
+			wantErr:     true,
+			errContains: "upstream token for provider",
+		},
+		{
+			name: "upstream_token_opaque_not_parseable",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: "opaque-token-cannot-be-parsed",
+				},
+			},
+			wantErr:     true,
+			errContains: "failed to parse upstream token",
+		},
+		{
+			name: "upstream_tokens_nil_map",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "upstream token for provider",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := auth.WithIdentity(context.Background(), tt.identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_GroupMembership verifies that Cedar policies using
+// "principal in THVGroup::..." are enforced when groups are present in the claims.
+func TestAuthorizeWithJWTClaims_GroupMembership(t *testing.T) {
+	t.Parallel()
+
+	// Policy: only members of "engineering" may call the deploy tool.
+	policy := `
+		permit(
+			principal in THVGroup::"engineering",
+			action == Action::"call_tool",
+			resource == Tool::"deploy"
+		);
+	`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{policy},
+		EntitiesJSON: `[]`,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name          string
+		claims        jwt.MapClaims
+		wantAuthorize bool
+	}{
+		{
+			name: "member_of_engineering_is_authorized",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"engineering", "platform"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name: "non_member_is_denied",
+			claims: jwt.MapClaims{
+				"sub":    "user2",
+				"groups": []interface{}{"marketing"},
+			},
+			wantAuthorize: false,
+		},
+		{
+			name: "no_groups_claim_is_denied",
+			claims: jwt.MapClaims{
+				"sub": "user3",
+			},
+			wantAuthorize: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			identity := &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: tt.claims["sub"].(string),
+					Claims:  map[string]any(tt.claims),
+				},
+			}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_PopulatesIdentityGroups verifies that
+// AuthorizeWithJWTClaims populates identity.Groups with the extracted groups.
+func TestAuthorizeWithJWTClaims_PopulatesIdentityGroups(t *testing.T) {
+	t.Parallel()
+
+	policy := `permit(principal, action, resource);`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{policy},
+		EntitiesJSON: `[]`,
+	})
+	require.NoError(t, err)
+
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user1",
+			Claims: map[string]any{
+				"sub":    "user1",
+				"groups": []interface{}{"devs", "ops"},
+			},
+		},
+	}
+	ctx := auth.WithIdentity(context.Background(), identity)
+
+	_, err = authorizer.AuthorizeWithJWTClaims(
+		ctx,
+		authorizers.MCPFeatureTool,
+		authorizers.MCPOperationCall,
+		"any-tool",
+		nil,
+	)
+	require.NoError(t, err)
+
+	// Groups should have been written back to the identity pointer.
+	retrieved, ok := auth.IdentityFromContext(ctx)
+	require.True(t, ok)
+	assert.Equal(t, []string{"devs", "ops"}, retrieved.Groups)
+}
+
+// TestAuthorizeWithJWTClaims_CustomGroupClaimName tests that GroupClaimName
+// is respected when resolving group membership.
+func TestAuthorizeWithJWTClaims_CustomGroupClaimName(t *testing.T) {
+	t.Parallel()
+
+	policy := `
+		permit(
+			principal in THVGroup::"platform",
+			action == Action::"call_tool",
+			resource
+		);
+	`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:       []string{policy},
+		EntitiesJSON:   `[]`,
+		GroupClaimName: "https://example.com/groups",
+	})
+	require.NoError(t, err)
+
+	// The custom claim holds "platform"; the well-known "groups" key holds other groups.
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user1",
+			Claims: map[string]any{
+				"sub":                        "user1",
+				"https://example.com/groups": []interface{}{"platform"},
+				"groups":                     []interface{}{"other"},
+			},
+		},
+	}
+	ctx := auth.WithIdentity(context.Background(), identity)
+
+	authorized, err := authorizer.AuthorizeWithJWTClaims(
+		ctx,
+		authorizers.MCPFeatureTool,
+		authorizers.MCPOperationCall,
+		"some-tool",
+		nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, authorized, "expected authorization via custom group claim")
+}
+
+// TestInjectUpstreamProvider tests the InjectUpstreamProvider helper.
+func TestInjectUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	baseCedarConfig := Config{
+		Version: "1.0",
+		Type:    ConfigType,
+		Options: &ConfigOptions{
+			Policies:     []string{`permit(principal, action, resource);`},
+			EntitiesJSON: "[]",
+		},
+	}
+
+	tests := []struct {
+		name         string
+		setup        func(t *testing.T) *authorizers.Config
+		providerName string
+		wantErr      bool
+		checkResult  func(t *testing.T, result *authorizers.Config)
+	}{
+		{
+			name: "injects_provider_name",
+			setup: func(t *testing.T) *authorizers.Config {
+				t.Helper()
+				cfg, err := authorizers.NewConfig(baseCedarConfig)
+				require.NoError(t, err)
+				return cfg
+			},
+			providerName: "github",
+			wantErr:      false,
+			checkResult: func(t *testing.T, result *authorizers.Config) {
+				t.Helper()
+				extracted, err := ExtractConfig(result)
+				require.NoError(t, err)
+				assert.Equal(t, "github", extracted.Options.PrimaryUpstreamProvider)
+				// Other options should be preserved.
+				assert.NotEmpty(t, extracted.Options.Policies)
+			},
+		},
+		{
+			name: "empty_provider_name_returns_src_unchanged",
+			setup: func(t *testing.T) *authorizers.Config {
+				t.Helper()
+				cfg, err := authorizers.NewConfig(baseCedarConfig)
+				require.NoError(t, err)
+				return cfg
+			},
+			providerName: "",
+			wantErr:      false,
+			checkResult: func(t *testing.T, result *authorizers.Config) {
+				t.Helper()
+				extracted, err := ExtractConfig(result)
+				require.NoError(t, err)
+				assert.Empty(t, extracted.Options.PrimaryUpstreamProvider)
+			},
+		},
+		{
+			name: "nil_src_returns_nil",
+			setup: func(t *testing.T) *authorizers.Config {
+				t.Helper()
+				return nil
+			},
+			providerName: "github",
+			wantErr:      false,
+			checkResult: func(t *testing.T, result *authorizers.Config) {
+				t.Helper()
+				assert.Nil(t, result)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			src := tt.setup(t)
+			result, err := InjectUpstreamProvider(src, tt.providerName)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			if tt.checkResult != nil {
+				tt.checkResult(t, result)
+			}
+		})
+	}
 }

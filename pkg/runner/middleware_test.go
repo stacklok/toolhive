@@ -14,6 +14,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -570,4 +573,112 @@ func TestPopulateMiddlewareConfigs_AWSStsOrdering(t *testing.T) {
 	require.True(t, ok, "recovery middleware should be present")
 	assert.Less(t, awsStsIdx, recoveryIdx,
 		"awssts must appear before recovery middleware")
+}
+
+// makeCedarAuthzConfig is a helper that creates a valid Cedar authz.Config.
+func makeCedarAuthzConfig(t *testing.T) *authz.Config {
+	t.Helper()
+	cfg, err := authorizers.NewConfig(cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:     []string{`permit(principal, action, resource);`},
+			EntitiesJSON: "[]",
+		},
+	})
+	require.NoError(t, err)
+	return cfg
+}
+
+// TestInjectUpstreamProviderIfNeeded tests the injectUpstreamProviderIfNeeded helper.
+func TestInjectUpstreamProviderIfNeeded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		authzCfg         *authz.Config
+		embeddedCfg      *authserver.RunConfig
+		wantErr          bool
+		wantProviderName string
+		wantSamePointer  bool
+	}{
+		{
+			name:            "nil_embedded_config_returns_authz_unchanged",
+			authzCfg:        nil,
+			embeddedCfg:     nil,
+			wantErr:         false,
+			wantSamePointer: true, // returns authzCfg unchanged (nil == nil)
+		},
+		{
+			name:            "non_nil_authz_nil_embedded_returns_unchanged",
+			authzCfg:        nil, // set in-test
+			embeddedCfg:     nil,
+			wantErr:         false,
+			wantSamePointer: true,
+		},
+		{
+			name: "named_upstream_is_used_as_provider",
+			embeddedCfg: &authserver.RunConfig{
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "github"},
+				},
+			},
+			wantErr:          false,
+			wantProviderName: "github",
+		},
+		{
+			name: "unnamed_upstream_falls_back_to_default",
+			embeddedCfg: &authserver.RunConfig{
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: ""},
+				},
+			},
+			wantErr:          false,
+			wantProviderName: authserver.DefaultUpstreamName,
+		},
+		{
+			name: "empty_upstreams_falls_back_to_default",
+			embeddedCfg: &authserver.RunConfig{
+				Upstreams: []authserver.UpstreamRunConfig{},
+			},
+			wantErr:          false,
+			wantProviderName: authserver.DefaultUpstreamName,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Build a real Cedar authz.Config if the test case didn't override it.
+			authzCfg := tt.authzCfg
+			if authzCfg == nil && !tt.wantSamePointer {
+				authzCfg = makeCedarAuthzConfig(t)
+			}
+			if tt.name == "non_nil_authz_nil_embedded_returns_unchanged" {
+				authzCfg = makeCedarAuthzConfig(t)
+			}
+
+			result, err := injectUpstreamProviderIfNeeded(authzCfg, tt.embeddedCfg)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+
+			if tt.wantSamePointer {
+				assert.Same(t, authzCfg, result)
+				return
+			}
+
+			require.NotNil(t, result)
+
+			// Verify the injected provider name is in the Cedar config.
+			extracted, err := cedar.ExtractConfig(result)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProviderName, extracted.Options.PrimaryUpstreamProvider)
+		})
+	}
 }

@@ -11,6 +11,154 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestCreatePrincipalEntity_WithGroups tests that CreatePrincipalEntity
+// correctly builds group parent entities and populates the Parents set.
+func TestCreatePrincipalEntity_WithGroups(t *testing.T) {
+	t.Parallel()
+
+	factory := NewEntityFactory()
+
+	tests := []struct {
+		name        string
+		groups      []string
+		wantParents int
+		wantGroups  int
+	}{
+		{
+			name:        "no_groups",
+			groups:      nil,
+			wantParents: 0,
+			wantGroups:  0,
+		},
+		{
+			name:        "empty_groups_slice",
+			groups:      []string{},
+			wantParents: 0,
+			wantGroups:  0,
+		},
+		{
+			name:        "single_group",
+			groups:      []string{"engineering"},
+			wantParents: 1,
+			wantGroups:  1,
+		},
+		{
+			name:        "multiple_groups",
+			groups:      []string{"engineering", "platform", "security"},
+			wantParents: 3,
+			wantGroups:  3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			uid, entity, groupEntities := factory.CreatePrincipalEntity(
+				"Client", "user1",
+				map[string]interface{}{"name": "Test User"},
+				tt.groups,
+			)
+
+			// UID must be correct.
+			assert.Equal(t, "Client", string(uid.Type))
+			assert.Equal(t, "user1", string(uid.ID))
+
+			// Entity UID must match.
+			assert.Equal(t, uid, entity.UID)
+
+			// Parents set must contain one entry per group.
+			assert.Equal(t, tt.wantParents, entity.Parents.Len(),
+				"expected %d parent(s) in entity.Parents", tt.wantParents)
+
+			// Returned group-entity slice must have the right length.
+			assert.Len(t, groupEntities, tt.wantGroups)
+
+			// Each group entity must be a THVGroup with the correct ID.
+			for i, g := range tt.groups {
+				ge := groupEntities[i]
+				assert.Equal(t, "THVGroup", string(ge.UID.Type))
+				assert.Equal(t, g, string(ge.UID.ID))
+				// Group entities have no parents of their own.
+				assert.Equal(t, 0, ge.Parents.Len())
+
+				// The principal's Parents set must contain this group UID.
+				assert.True(t, entity.Parents.Contains(ge.UID),
+					"expected parent %v to be in entity.Parents", ge.UID)
+			}
+		})
+	}
+}
+
+// TestCreateEntitiesForRequest_WithGroups verifies that group entities are
+// added to the entity map when groups are supplied, and that the principal
+// entity's Parents set references them.
+func TestCreateEntitiesForRequest_WithGroups(t *testing.T) {
+	t.Parallel()
+
+	factory := NewEntityFactory()
+
+	tests := []struct {
+		name          string
+		groups        []string
+		wantEntityLen int // principal + action + resource + N groups
+		wantGroupUIDs []string
+	}{
+		{
+			name:          "no_groups",
+			groups:        nil,
+			wantEntityLen: 3,
+			wantGroupUIDs: nil,
+		},
+		{
+			name:          "one_group",
+			groups:        []string{"engineering"},
+			wantEntityLen: 4,
+			wantGroupUIDs: []string{"engineering"},
+		},
+		{
+			name:          "two_groups",
+			groups:        []string{"engineering", "platform"},
+			wantEntityLen: 5,
+			wantGroupUIDs: []string{"engineering", "platform"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			entities, err := factory.CreateEntitiesForRequest(
+				"Client::user1",
+				"Action::call_tool",
+				"Tool::weather",
+				map[string]interface{}{"sub": "user1"},
+				map[string]interface{}{"name": "weather"},
+				tt.groups,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, entities)
+
+			assert.Len(t, entities, tt.wantEntityLen)
+
+			principalUID := cedar.NewEntityUID("Client", cedar.String("user1"))
+			principalEntity, found := entities[principalUID]
+			require.True(t, found, "principal entity not found in map")
+
+			// Verify group entities are present and principal has them as parents.
+			for _, g := range tt.wantGroupUIDs {
+				groupUID := cedar.NewEntityUID("THVGroup", cedar.String(g))
+
+				_, groupFound := entities[groupUID]
+				assert.True(t, groupFound, "THVGroup::%q entity not found in map", g)
+
+				assert.True(t, principalEntity.Parents.Contains(groupUID),
+					"expected THVGroup::%q in principal.Parents", g)
+			}
+		})
+	}
+}
+
 // TestCreateCedarEntities tests the createCedarEntities function.
 func TestCreateCedarEntities(t *testing.T) {
 	t.Parallel()
@@ -101,8 +249,8 @@ func TestCreateCedarEntities(t *testing.T) {
 			// Create entity factory
 			factory := NewEntityFactory()
 
-			// Create Cedar entities
-			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes)
+			// Create Cedar entities (no groups for these test cases)
+			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes, nil)
 
 			// Check error expectations
 			if tc.expectErr {

@@ -61,6 +61,27 @@ func ExtractConfig(authzConfig *authorizers.Config) (*Config, error) {
 	return &config, nil
 }
 
+// InjectUpstreamProvider returns a new authorizers.Config that is identical to
+// src except that the Cedar options' PrimaryUpstreamProvider field is set to
+// providerName. This is used by the runner middleware when the embedded auth
+// server is active to wire the upstream provider into Cedar evaluation.
+//
+// If src is not a Cedar config, or providerName is empty, src is returned
+// unchanged.
+func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*authorizers.Config, error) {
+	if src == nil || providerName == "" {
+		return src, nil
+	}
+
+	cedarCfg, err := ExtractConfig(src)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract Cedar config for upstream provider injection: %w", err)
+	}
+
+	cedarCfg.Options.PrimaryUpstreamProvider = providerName
+	return authorizers.NewConfig(cedarCfg)
+}
+
 // Factory implements the authorizers.AuthorizerFactory interface for Cedar.
 type Factory struct{}
 
@@ -122,6 +143,13 @@ type Authorizer struct {
 	entityFactory *EntityFactory
 	// Mutex for thread safety
 	mu sync.RWMutex
+	// primaryUpstreamProvider names the upstream IDP provider whose access token
+	// should be used as the source of JWT claims for Cedar evaluation.
+	// When empty, claims from the ToolHive-issued token are used.
+	primaryUpstreamProvider string
+	// groupClaimName is the JWT claim key that contains group membership.
+	// When empty, the well-known defaults are checked ("groups", "roles", etc.).
+	groupClaimName string
 }
 
 // ConfigOptions represents the Cedar-specific authorization configuration options.
@@ -131,14 +159,29 @@ type ConfigOptions struct {
 
 	// EntitiesJSON is the JSON string representing Cedar entities
 	EntitiesJSON string `json:"entities_json" yaml:"entities_json"`
+
+	// PrimaryUpstreamProvider names the upstream IDP provider whose access
+	// token should be used as the source of JWT claims for Cedar evaluation.
+	// When empty, claims from the ToolHive-issued token are used (current behaviour).
+	// Must match an entry in identity.UpstreamTokens (e.g. "default", "github").
+	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
+
+	// GroupClaimName is the JWT claim key that contains group membership for the
+	// principal. When set, it takes priority over the well-known defaults
+	// ("groups", "roles", "cognito:groups"). Use this for IDPs that place groups
+	// under a URI-style claim (e.g. "https://example.com/groups" in Auth0/Okta).
+	// When empty, only the well-known claim names are checked.
+	GroupClaimName string `json:"group_claim_name,omitempty" yaml:"group_claim_name,omitempty"`
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
 func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
 	authorizer := &Authorizer{
-		policySet:     cedar.NewPolicySet(),
-		entities:      cedar.EntityMap{},
-		entityFactory: NewEntityFactory(),
+		policySet:               cedar.NewPolicySet(),
+		entities:                cedar.EntityMap{},
+		entityFactory:           NewEntityFactory(),
+		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
+		groupClaimName:          options.GroupClaimName,
 	}
 
 	// Load policies
@@ -242,6 +285,13 @@ func (a *Authorizer) GetEntityFactory() *EntityFactory {
 // - action: The operation being performed (e.g., "Action::call_tool")
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
+//
+// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") only
+// work when entities are constructed via AuthorizeWithJWTClaims, which calls
+// CreateEntitiesForRequest with the extracted groups slice and adds THVGroup
+// parent entities. Callers that bypass AuthorizeWithJWTClaims and pass their
+// own entity map must include THVGroup entities manually for group policies to
+// evaluate correctly.
 // - entities: Optional Cedar entity map with attributes
 func (a *Authorizer) IsAuthorized(
 	principal, action, resource string,
@@ -326,6 +376,23 @@ func (a *Authorizer) IsAuthorized(
 	return decision == cedar.Allow, nil
 }
 
+// parseUpstreamJWTClaims parses JWT claims from an upstream access token without
+// verifying the signature. The token was already validated by the upstream IDP
+// during the OAuth 2.0 code exchange; we only need its claims for Cedar evaluation.
+// Returns an error if the token is not a parseable JWT (e.g. opaque token).
+func parseUpstreamJWTClaims(tokenStr string) (jwt.MapClaims, error) {
+	parser := jwt.NewParser()
+	token, _, err := parser.ParseUnverified(tokenStr, jwt.MapClaims{})
+	if err != nil {
+		return nil, fmt.Errorf("upstream token is not a parseable JWT: %w", err)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("upstream token has unexpected claims type")
+	}
+	return claims, nil
+}
+
 // extractClientIDFromClaims extracts the client ID from JWT claims.
 // By default, it uses the "sub" (subject) claim as the client ID.
 // This can be customized based on your JWT token structure.
@@ -396,6 +463,7 @@ func (a *Authorizer) authorizeToolCall(
 	clientID, toolName string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -420,7 +488,7 @@ func (a *Authorizer) authorizeToolCall(
 	})
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -438,6 +506,7 @@ func (a *Authorizer) authorizePromptGet(
 	clientID, promptName string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -456,7 +525,7 @@ func (a *Authorizer) authorizePromptGet(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -474,6 +543,7 @@ func (a *Authorizer) authorizeResourceRead(
 	clientID, resourceURI string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -494,7 +564,7 @@ func (a *Authorizer) authorizeResourceRead(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -513,6 +583,7 @@ func (a *Authorizer) authorizeFeatureList(
 	feature authorizers.MCPFeature,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -531,7 +602,7 @@ func (a *Authorizer) authorizeFeatureList(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -591,34 +662,60 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		return false, ErrMissingPrincipal
 	}
 
-	// Extract client ID from Identity claims
-	claims := jwt.MapClaims(identity.Claims)
-	clientID, ok := extractClientIDFromClaims(claims)
+	// Resolve the claims source: upstream IDP token or ToolHive-issued token.
+	resolvedClaims, err := func() (jwt.MapClaims, error) {
+		if a.primaryUpstreamProvider != "" {
+			// Embedded auth server path: use the upstream IDP token's claims.
+			upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
+			if !tokenFound || upstreamToken == "" {
+				// The upstream token must be present if the authorizer is configured to use it.
+				// Missing token means the session has no upstream credential; deny.
+				return nil, fmt.Errorf("upstream token for provider %q not found in identity",
+					a.primaryUpstreamProvider)
+			}
+			parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
+					a.primaryUpstreamProvider, err)
+			}
+			return parsedClaims, nil
+		}
+		// Default path: use ToolHive-issued token claims.
+		return jwt.MapClaims(identity.Claims), nil
+	}()
+	if err != nil {
+		return false, err
+	}
+
+	// Extract client ID from the resolved claims.
+	clientID, ok := extractClientIDFromClaims(resolvedClaims)
 	if !ok {
 		return false, ErrMissingPrincipal
 	}
 
+	// Extract groups from the resolved claims and store them on the identity so
+	// that other middleware (audit, future authz layers) can read them, then pass
+	// them into the entity factory to build THVGroup parent entities.
+	groups := auth.ExtractGroupsFromClaims(resolvedClaims, a.groupClaimName)
+	identity.Groups = groups
+
 	// Preprocess claims and arguments
-	processedClaims := preprocessClaims(claims)
+	processedClaims := preprocessClaims(resolvedClaims)
 	processedArgs := preprocessArguments(arguments)
 
 	// Authorize based on the feature and operation
 	switch {
 	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
-		// Use the authorizeToolCall function for tool call operations
-		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs)
+		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs, groups)
 
 	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
-		// Use the authorizePromptGet function for prompt get operations
-		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs)
+		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs, groups)
 
 	case feature == authorizers.MCPFeatureResource && operation == authorizers.MCPOperationRead:
-		// Use the authorizeResourceRead function for resource read operations
-		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs)
+		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs, groups)
 
 	case operation == authorizers.MCPOperationList:
-		// Use the authorizeFeatureList function for list operations
-		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs)
+		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs, groups)
 
 	default:
 		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)

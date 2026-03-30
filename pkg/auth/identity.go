@@ -7,6 +7,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -148,8 +149,9 @@ var defaultGroupClaimNames = []string{"groups", "roles", "cognito:groups"}
 
 // ExtractGroupsFromClaims looks for group membership claims in the provided JWT
 // claims map. It checks customClaimName first (if non-empty), then falls back to
-// the well-known names "groups", "roles", and "cognito:groups". Returns the first
-// non-empty string-slice match, or nil when no group claim is found.
+// the well-known names "groups", "roles", and "cognito:groups". Returns the
+// string-slice value of the first matching claim key (which may be empty), or nil
+// when no group claim key is found.
 //
 // Passing a non-empty customClaimName allows callers to support IDPs that use
 // URI-style claim names (e.g. "https://example.com/groups" used by Auth0/Okta).
@@ -173,14 +175,14 @@ func ExtractGroupsFromClaims(claims jwt.MapClaims, customClaimName string) []str
 					groups = append(groups, s)
 				}
 			}
-			if len(groups) > 0 {
-				return groups
-			}
+			return groups
 		case []string:
-			if len(v) > 0 {
-				return v
-			}
+			return v
 		}
+		// Claim key exists but has an unrecognized type; stop searching.
+		slog.Warn("group claim has unrecognized type, ignoring",
+			"claim", name, "type", fmt.Sprintf("%T", val))
+		return nil
 	}
 	return nil
 }

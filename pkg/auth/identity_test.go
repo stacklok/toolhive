@@ -82,20 +82,29 @@ func TestExtractGroupsFromClaims(t *testing.T) {
 			wantGroups: nil,
 		},
 		{
-			name: "empty_groups_claim_ignored",
+			name: "empty_groups_claim_returns_empty",
 			claims: jwt.MapClaims{
 				"sub":    "user1",
 				"groups": []string{},
 			},
-			wantGroups: nil,
+			wantGroups: []string{},
 		},
 		{
-			name: "empty_interface_slice_ignored",
+			name: "empty_interface_slice_returns_empty",
 			claims: jwt.MapClaims{
 				"sub":    "user1",
 				"groups": []interface{}{},
 			},
-			wantGroups: nil,
+			wantGroups: []string{},
+		},
+		{
+			name: "empty_groups_does_not_fall_through_to_roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []string{},
+				"roles":  []string{"should-not-match"},
+			},
+			wantGroups: []string{},
 		},
 		{
 			name: "non_string_interface_elements_skipped",
@@ -106,10 +115,19 @@ func TestExtractGroupsFromClaims(t *testing.T) {
 			wantGroups: []string{"valid", "also-valid"},
 		},
 		{
-			name: "groups_claim_wrong_type_skipped",
+			name: "groups_claim_wrong_type_returns_nil",
 			claims: jwt.MapClaims{
 				"sub":    "user1",
 				"groups": "not-a-slice",
+			},
+			wantGroups: nil,
+		},
+		{
+			name: "wrong_type_does_not_fall_through_to_roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": "not-a-slice",
+				"roles":  []string{"should-not-match"},
 			},
 			wantGroups: nil,
 		},

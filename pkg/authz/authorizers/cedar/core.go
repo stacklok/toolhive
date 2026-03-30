@@ -84,6 +84,8 @@ func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*auth
 		// src is not a Cedar config (e.g. a future HTTP authorizer); treat as a
 		// no-op so callers can apply this unconditionally without needing to
 		// know the authorizer type ahead of time.
+		slog.Debug("skipping upstream provider injection for non-Cedar config",
+			"provider", providerName, "type", src.Type)
 		return src, nil
 	}
 
@@ -154,7 +156,8 @@ type Authorizer struct {
 	mu sync.RWMutex
 	// primaryUpstreamProvider names the upstream IDP provider whose access token
 	// should be used as the source of JWT claims for Cedar evaluation.
-	// When empty, claims from the ToolHive-issued token are used.
+	// When empty, claims from the token on the original client request are used,
+	// which may be a ToolHive-issued token or any other bearer token.
 	primaryUpstreamProvider string
 	// groupClaimName is the JWT claim key that contains group membership.
 	// When empty, the well-known defaults are checked ("groups", "roles", etc.).
@@ -383,6 +386,32 @@ func (a *Authorizer) IsAuthorized(
 		return false, fmt.Errorf("authorization error: %v", diagnostic.Errors)
 	}
 	return decision == cedar.Allow, nil
+}
+
+// resolveClaims determines which JWT claims to use for Cedar policy evaluation.
+// When primaryUpstreamProvider is set, claims are extracted from the upstream
+// IDP token stored in the identity. Otherwise, claims from the token on the
+// original client request are used, which may be a ToolHive-issued token or
+// any other bearer token.
+func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, error) {
+	if a.primaryUpstreamProvider != "" {
+		// Embedded auth server path: use the upstream IDP token's claims.
+		upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
+		if !tokenFound || upstreamToken == "" {
+			// The upstream token must be present if the authorizer is configured to use it.
+			// Missing token means the session has no upstream credential; deny.
+			return nil, fmt.Errorf("upstream token for provider %q not found in identity",
+				a.primaryUpstreamProvider)
+		}
+		parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
+				a.primaryUpstreamProvider, err)
+		}
+		return parsedClaims, nil
+	}
+	// Default path: use claims from the original client request's token.
+	return jwt.MapClaims(identity.Claims), nil
 }
 
 // parseUpstreamJWTClaims parses JWT claims from an upstream access token without
@@ -671,27 +700,8 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		return false, ErrMissingPrincipal
 	}
 
-	// Resolve the claims source: upstream IDP token or ToolHive-issued token.
-	resolvedClaims, err := func() (jwt.MapClaims, error) {
-		if a.primaryUpstreamProvider != "" {
-			// Embedded auth server path: use the upstream IDP token's claims.
-			upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
-			if !tokenFound || upstreamToken == "" {
-				// The upstream token must be present if the authorizer is configured to use it.
-				// Missing token means the session has no upstream credential; deny.
-				return nil, fmt.Errorf("upstream token for provider %q not found in identity",
-					a.primaryUpstreamProvider)
-			}
-			parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
-					a.primaryUpstreamProvider, err)
-			}
-			return parsedClaims, nil
-		}
-		// Default path: use ToolHive-issued token claims.
-		return jwt.MapClaims(identity.Claims), nil
-	}()
+	// Resolve the claims source: upstream IDP token or the original request's token.
+	resolvedClaims, err := a.resolveClaims(identity)
 	if err != nil {
 		return false, err
 	}

@@ -210,13 +210,10 @@ type Server struct {
 	// For dynamic mode (K8s), this is a DynamicRegistry updated by the operator.
 	backendRegistry vmcp.BackendRegistry
 
-	// Session manager for tracking MCP protocol sessions
-	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
-	// used by streamable proxy for MCP session tracking. It handles:
-	//   - Session storage and retrieval
-	//   - TTL-based cleanup of inactive sessions
-	//   - Session lifecycle management
-	sessionManager *transportsession.Manager
+	// sessionDataStorage stores serialisable session metadata for TTL management,
+	// cross-pod visibility, and session validation. Live MultiSession objects
+	// (backend connections, routing tables) are managed by vmcpSessionMgr instead.
+	sessionDataStorage transportsession.DataStorage
 
 	// Capability adapter for converting aggregator types to SDK types
 	capabilityAdapter *adapter.CapabilityAdapter
@@ -359,30 +356,26 @@ func New(
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
-	// Create session manager using StreamableSession as the transport-layer placeholder.
-	// StreamableSession is a lightweight implementation of transportsession.Session that
-	// handles disconnect tracking, TTL, and metadata for Streamable HTTP connections.
-	// It intentionally carries no vmcp-specific state — backend connections, routing
-	// tables, tool lists, and token binding all live in the separate sessionmanager.Manager,
-	// keyed by the same session ID.
-	var sessionManager *transportsession.Manager
+	// Create session data storage for serialisable session metadata (TTL management,
+	// cross-pod visibility, session validation). Live MultiSession objects are managed
+	// separately by the vmcpSessionMgr.
+	var sessionDataStorage transportsession.DataStorage
 	if cfg.SessionStorageConfig != nil {
-		sessionManager, err = transportsession.NewManagerWithRedis(
-			ctx, cfg.SessionTTL, transportsession.NewStreamableSession, *cfg.SessionStorageConfig,
+		sessionDataStorage, err = transportsession.NewRedisSessionDataStorage(
+			ctx, *cfg.SessionStorageConfig, cfg.SessionTTL,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create Redis-backed session manager: %w", err)
+			return nil, fmt.Errorf("failed to create Redis-backed session data storage: %w", err)
 		}
 		slog.Info("using Redis-backed session storage", "addr", cfg.SessionStorageConfig.Addr)
 	} else {
-		sessionManager = transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
+		sessionDataStorage = transportsession.NewLocalSessionDataStorage(cfg.SessionTTL)
 	}
-	// Ensure sessionManager is stopped if New() fails after this point.
-	// This closes the Redis client and stops the background eviction goroutine.
+	// Ensure sessionDataStorage is closed if New() fails after this point.
 	committed := false
 	defer func() {
 		if !committed {
-			_ = sessionManager.Stop()
+			_ = sessionDataStorage.Close()
 		}
 	}()
 
@@ -420,26 +413,26 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 	}
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionManager, sessMgrCfg, backendRegistry)
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionTTL, sessMgrCfg, backendRegistry)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backendRegistry:   backendRegistry,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
-		statusReporter:    cfg.StatusReporter,
-		vmcpSessionMgr:    vmcpSessMgr,
+		config:             cfg,
+		mcpServer:          mcpServer,
+		router:             rt,
+		backendClient:      backendClient,
+		handlerFactory:     handlerFactory,
+		discoveryMgr:       discoveryMgr,
+		backendRegistry:    backendRegistry,
+		sessionDataStorage: sessionDataStorage,
+		capabilityAdapter:  capabilityAdapter,
+		ready:              make(chan struct{}),
+		healthMonitor:      healthMon,
+		statusReporter:     cfg.StatusReporter,
+		vmcpSessionMgr:     vmcpSessMgr,
 	}
 
 	if optimizerCleanup != nil {
@@ -571,7 +564,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		healthStatusProvider = healthMon
 	}
 	mcpHandler = discovery.Middleware(
-		s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider,
+		s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
 		discovery.WithSessionScopedRouting(),
 	)(mcpHandler)
 	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
@@ -756,10 +749,21 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listener = nil
 	s.listenerMu.Unlock()
 
-	// Stop session manager after HTTP server shutdown
-	if s.sessionManager != nil {
-		if err := s.sessionManager.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
+	// Run shutdown functions before closing storage. shutdownFuncs includes the
+	// sessionmanager cleanup, which stops the eviction goroutine. The goroutine
+	// calls storage.Exists() on every tick, so it must be stopped before the
+	// storage client is closed — otherwise it would call into a closed Redis
+	// client and produce noisy errors or races.
+	for _, shutdown := range s.shutdownFuncs {
+		if err := shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to execute shutdown function: %w", err))
+		}
+	}
+
+	// Close session data storage after all background workers that use it are stopped.
+	if s.sessionDataStorage != nil {
+		if err := s.sessionDataStorage.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close session data storage: %w", err))
 		}
 	}
 
@@ -771,13 +775,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	if healthMon != nil {
 		if err := healthMon.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
-		}
-	}
-
-	// Run shutdown functions (e.g., status reporter cleanup, future components)
-	for _, shutdown := range s.shutdownFuncs {
-		if err := shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to execute shutdown function: %w", err))
 		}
 	}
 
@@ -903,10 +900,10 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SessionManager returns the session manager instance.
+// SessionManager returns the session data storage instance.
 // This is useful for testing and monitoring.
-func (s *Server) SessionManager() *transportsession.Manager {
-	return s.sessionManager
+func (s *Server) SessionManager() transportsession.DataStorage {
+	return s.sessionDataStorage
 }
 
 // Ready returns a channel that is closed when the server is ready to accept connections.

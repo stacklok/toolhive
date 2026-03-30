@@ -90,12 +90,12 @@ func (s *LocalStorage) Load(_ context.Context, id string) (Session, error) {
 	return entry.session, nil
 }
 
-// Peek reports whether a session exists in local storage without updating its
+// Exists reports whether a session exists in local storage without updating its
 // last-access timestamp. This avoids extending the TTL of idle sessions during
 // eviction-loop probes.
-func (s *LocalStorage) Peek(_ context.Context, id string) (bool, error) {
+func (s *LocalStorage) Exists(_ context.Context, id string) (bool, error) {
 	if id == "" {
-		return false, fmt.Errorf("cannot peek session with empty ID")
+		return false, fmt.Errorf("cannot check session existence with empty ID")
 	}
 	_, ok := s.sessions.Load(id)
 	return ok, nil

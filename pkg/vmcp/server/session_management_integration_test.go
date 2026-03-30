@@ -386,10 +386,9 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 		"Close() should have been called on the MultiSession after termination")
 
 	// Subsequent requests with the terminated session ID are rejected.
-	// After Terminate() deletes the session from storage, the discovery middleware's
-	// handleSubsequentRequest finds no session and returns HTTP 401 before the SDK
-	// even calls Validate(). The 401 is consistent with the existing behaviour for
-	// all expired/unknown sessions in the discovery middleware.
+	// After Terminate() deletes the session from storage, GetMultiSession returns
+	// (nil, false) and the discovery middleware skips capability injection. The SDK
+	// then calls Validate() which also returns "session not found", causing a 404.
 	toolCallReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -401,7 +400,7 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	}
 	postResp := postMCP(t, ts.URL, toolCallReq, sessionID)
 	defer postResp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, postResp.StatusCode,
+	assert.Equal(t, http.StatusNotFound, postResp.StatusCode,
 		"request with terminated session ID should be rejected")
 }
 

@@ -252,9 +252,9 @@ func TestIntegration_RealBackend_Termination(t *testing.T) {
 
 	// Subsequent requests with the terminated session ID are rejected.
 	// After Terminate() deletes the session from storage, the discovery middleware
-	// returns HTTP 401 ("session not found") before the SDK's Validate() is invoked.
+	// skips injection (session not found) and the SDK returns HTTP 404 for the unknown session.
 	postResp := client.CallTool("echo", map[string]any{"input": "should fail"})
 	defer postResp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, postResp.StatusCode,
+	assert.Equal(t, http.StatusNotFound, postResp.StatusCode,
 		"request with terminated session ID should be rejected")
 }

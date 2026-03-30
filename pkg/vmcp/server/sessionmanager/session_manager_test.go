@@ -77,44 +77,59 @@ func newMockFactoryWithError(t *testing.T, ctrl *gomock.Controller, err error) *
 	return factory
 }
 
-// alwaysFailStorage is a transportsession.Storage whose Store() always returns an
+// alwaysFailDataStorage is a SessionDataStorage whose Store() always returns an
 // error. It is used to exercise the Generate() double-failure path (UUID collision
-// simulation — both attempts to AddWithID fail, so Generate() must return "").
-type alwaysFailStorage struct{}
+// simulation — both attempts to Store fail, so Generate() must return "").
+type alwaysFailDataStorage struct{}
 
-func (alwaysFailStorage) Store(_ context.Context, _ transportsession.Session) error {
+func (alwaysFailDataStorage) Store(_ context.Context, _ string, _ map[string]string) error {
 	return errors.New("storage unavailable")
 }
-func (alwaysFailStorage) Load(_ context.Context, _ string) (transportsession.Session, error) {
-	return nil, errors.New("not found")
+func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]string, error) {
+	return nil, transportsession.ErrSessionNotFound
 }
-func (alwaysFailStorage) Peek(_ context.Context, _ string) (bool, error)     { return false, nil }
-func (alwaysFailStorage) Delete(_ context.Context, _ string) error           { return nil }
-func (alwaysFailStorage) DeleteExpired(_ context.Context, _ time.Time) error { return nil }
-func (alwaysFailStorage) Close() error                                       { return nil }
+func (alwaysFailDataStorage) Exists(_ context.Context, _ string) (bool, error) {
+	return false, errors.New("storage unavailable")
+}
+func (alwaysFailDataStorage) StoreIfAbsent(_ context.Context, _ string, _ map[string]string) (bool, error) {
+	return false, errors.New("storage unavailable")
+}
+func (alwaysFailDataStorage) Delete(_ context.Context, _ string) error { return nil }
+func (alwaysFailDataStorage) Close() error                             { return nil }
 
-// configurableFailStorage wraps a real storage and allows injecting failures
-// for specific operations. Used to test fallback behavior in Terminate().
-type configurableFailStorage struct {
-	transportsession.Storage
+// configurableFailDataStorage wraps a real SessionDataStorage and allows injecting
+// failures for specific operations. Used to test fallback behavior in Terminate().
+type configurableFailDataStorage struct {
+	transportsession.DataStorage
 	storeCallCount int
-	failStoreAfter int // fail Store after this many successful calls (0 = never fail, -1 = always fail)
+	failStoreAfter int // fail Store/StoreIfAbsent after this many successful calls (0 = never fail, -1 = always fail)
 	failDelete     bool
 }
 
-func (s *configurableFailStorage) Store(ctx context.Context, sess transportsession.Session) error {
+func (s *configurableFailDataStorage) shouldFail() bool {
 	s.storeCallCount++
-	if s.failStoreAfter == -1 || (s.failStoreAfter >= 0 && s.storeCallCount > s.failStoreAfter) {
-		return errors.New("injected Store failure")
-	}
-	return s.Storage.Store(ctx, sess)
+	return s.failStoreAfter == -1 || (s.failStoreAfter >= 0 && s.storeCallCount > s.failStoreAfter)
 }
 
-func (s *configurableFailStorage) Delete(ctx context.Context, id string) error {
+func (s *configurableFailDataStorage) Store(ctx context.Context, id string, metadata map[string]string) error {
+	if s.shouldFail() {
+		return errors.New("injected Store failure")
+	}
+	return s.DataStorage.Store(ctx, id, metadata)
+}
+
+func (s *configurableFailDataStorage) StoreIfAbsent(ctx context.Context, id string, metadata map[string]string) (bool, error) {
+	if s.shouldFail() {
+		return false, errors.New("injected Store failure")
+	}
+	return s.DataStorage.StoreIfAbsent(ctx, id, metadata)
+}
+
+func (s *configurableFailDataStorage) Delete(ctx context.Context, id string) error {
 	if s.failDelete {
 		return errors.New("injected Delete failure")
 	}
-	return s.Storage.Delete(ctx, id)
+	return s.DataStorage.Delete(ctx, id)
 }
 
 // fakeBackendRegistry is a simple BackendRegistry for tests.
@@ -145,13 +160,13 @@ func (r *fakeBackendRegistry) Count() int {
 	return len(r.backends)
 }
 
-// newTestTransportManager creates a transportsession.Manager backed by local storage
-// with a long TTL. The cleanup goroutine is stopped via t.Cleanup.
-func newTestTransportManager(t *testing.T) *transportsession.Manager {
+// newTestSessionDataStorage creates a LocalSessionDataStorage with a long TTL.
+// The cleanup goroutine is stopped via t.Cleanup.
+func newTestSessionDataStorage(t *testing.T) *transportsession.LocalSessionDataStorage {
 	t.Helper()
-	mgr := transportsession.NewTypedManager(30*time.Minute, transportsession.SessionTypeStreamable)
-	t.Cleanup(func() { _ = mgr.Stop() })
-	return mgr
+	storage := transportsession.NewLocalSessionDataStorage(30 * time.Minute)
+	t.Cleanup(func() { _ = storage.Close() })
+	return storage
 }
 
 // newTestSessionManager is a convenience constructor for tests.
@@ -159,11 +174,12 @@ func newTestSessionManager(
 	t *testing.T,
 	factory vmcpsession.MultiSessionFactory,
 	registry vmcp.BackendRegistry,
-) (*Manager, *transportsession.Manager) {
+) (*Manager, transportsession.DataStorage) {
 	t.Helper()
-	storage := newTestTransportManager(t)
-	sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
+	storage := newTestSessionDataStorage(t)
+	sm, stop, err := New(storage, 30*time.Minute, &FactoryConfig{Base: factory}, registry)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = stop(context.Background()) })
 	return sm, storage
 }
 
@@ -189,8 +205,8 @@ func TestSessionManager_Generate(t *testing.T) {
 		assert.Contains(t, sessionID, "-", "expected UUID format")
 
 		// Placeholder must exist in storage.
-		_, exists := storage.Get(sessionID)
-		assert.True(t, exists, "placeholder should be stored in transport manager")
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		assert.NoError(t, loadErr, "placeholder should be stored in transport manager")
 	})
 
 	t.Run("returns empty string when storage always fails", func(t *testing.T) {
@@ -198,18 +214,12 @@ func TestSessionManager_Generate(t *testing.T) {
 
 		// Use a Manager backed by storage that always fails Store(), forcing both
 		// UUID attempts inside Generate() to fail so it must return "".
-		failingMgr := transportsession.NewManagerWithStorage(
-			time.Hour,
-			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
-			alwaysFailStorage{},
-		)
-		t.Cleanup(func() { _ = failingMgr.Stop() })
-
 		ctrl := gomock.NewController(t)
 		sess := newMockSession(t, ctrl, "placeholder", nil)
 		factory := newMockFactory(t, ctrl, sess)
-		sm, _, err := New(failingMgr, &FactoryConfig{Base: factory}, newFakeRegistry())
+		sm, stop, err := New(alwaysFailDataStorage{}, time.Hour, &FactoryConfig{Base: factory}, newFakeRegistry())
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
 
 		id := sm.Generate()
 		assert.Empty(t, id, "Generate() should return '' when storage is unavailable")
@@ -275,11 +285,12 @@ func TestSessionManager_CreateSession(t *testing.T) {
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
 
-		// Storage must now hold the MultiSession (not just a placeholder).
-		stored, exists := storage.Get(sessionID)
-		require.True(t, exists, "session should still exist in storage")
-		_, isMulti := stored.(vmcpsession.MultiSession)
-		assert.True(t, isMulti, "stored session should be a MultiSession")
+		// Session metadata must still exist in storage and the live session
+		// must be accessible via GetMultiSession.
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		require.NoError(t, loadErr, "session metadata should still exist in storage")
+		_, isMulti := sm.GetMultiSession(sessionID)
+		assert.True(t, isMulti, "session should be retrievable as a MultiSession")
 	})
 
 	t.Run("returns error for empty session ID", func(t *testing.T) {
@@ -339,7 +350,7 @@ func TestSessionManager_CreateSession(t *testing.T) {
 		// TTL expiry or a client DELETE that removes the record before the hook fires.
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
-		require.NoError(t, storage.Delete(sessionID))
+		require.NoError(t, storage.Delete(context.Background(), sessionID))
 
 		// CreateSession must fail fast before opening any backend connections.
 		_, createErr := sm.CreateSession(context.Background(), sessionID)
@@ -612,15 +623,15 @@ func TestSessionManager_Terminate(t *testing.T) {
 		require.NoError(t, err)
 
 		// Session must exist before termination.
-		_, existsBefore := storage.Get(sessionID)
-		assert.True(t, existsBefore)
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		assert.NoError(t, loadErr, "session should exist before termination")
 
 		_, err = sm.Terminate(sessionID)
 		require.NoError(t, err)
 
 		// Session must be removed from storage.
-		_, existsAfter := storage.Get(sessionID)
-		assert.False(t, existsAfter, "session should be deleted from storage after Terminate")
+		_, loadErr2 := storage.Load(context.Background(), sessionID)
+		assert.ErrorIs(t, loadErr2, transportsession.ErrSessionNotFound, "session should be deleted from storage after Terminate")
 	})
 
 	t.Run("placeholder session is marked terminated (not deleted)", func(t *testing.T) {
@@ -641,9 +652,9 @@ func TestSessionManager_Terminate(t *testing.T) {
 		assert.False(t, isNotAllowed)
 
 		// Placeholder should still be in storage but marked terminated.
-		sess2, exists := storage.Get(sessionID)
-		require.True(t, exists, "placeholder should remain in storage (TTL will clean it)")
-		assert.Equal(t, MetadataValTrue, sess2.GetMetadata()[MetadataKeyTerminated])
+		metadata, loadErr := storage.Load(context.Background(), sessionID)
+		require.NoError(t, loadErr, "placeholder should remain in storage (TTL will clean it)")
+		assert.Equal(t, MetadataValTrue, metadata[MetadataKeyTerminated])
 	})
 
 	t.Run("placeholder termination falls back to delete when upsert fails", func(t *testing.T) {
@@ -655,22 +666,18 @@ func TestSessionManager_Terminate(t *testing.T) {
 		registry := newFakeRegistry()
 
 		// Create a storage that succeeds on the first Store (Generate creates
-		// placeholder) but fails on the second Store (Terminate tries to upsert).
-		// Delete succeeds. This tests the fallback path in Terminate().
-		baseStorage := transportsession.NewLocalStorage()
-		failingStorage := &configurableFailStorage{
-			Storage:        baseStorage,
+		// placeholder) but fails on the second Store (Terminate tries to store
+		// terminated flag). Delete succeeds. This tests the fallback path in Terminate().
+		baseStorage := transportsession.NewLocalSessionDataStorage(time.Hour)
+		t.Cleanup(func() { _ = baseStorage.Close() })
+		failingStorage := &configurableFailDataStorage{
+			DataStorage:    baseStorage,
 			failStoreAfter: 1, // fail after 1 successful Store
 			failDelete:     false,
 		}
-		storage := transportsession.NewManagerWithStorage(
-			time.Hour,
-			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
-			failingStorage,
-		)
-		t.Cleanup(func() { _ = storage.Stop() })
-		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
+		sm, stop, err := New(failingStorage, time.Hour, &FactoryConfig{Base: factory}, registry)
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
 
 		// Generate a placeholder (first Store, succeeds).
 		sessionID := sm.Generate()
@@ -682,8 +689,8 @@ func TestSessionManager_Terminate(t *testing.T) {
 		assert.False(t, isNotAllowed)
 
 		// Placeholder should be deleted (not just marked terminated).
-		_, exists := storage.Get(sessionID)
-		assert.False(t, exists, "placeholder should be deleted when upsert fails")
+		_, loadErr := baseStorage.Load(context.Background(), sessionID)
+		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound, "placeholder should be deleted when upsert fails")
 	})
 
 	t.Run("placeholder termination fails when both upsert and delete fail", func(t *testing.T) {
@@ -695,22 +702,18 @@ func TestSessionManager_Terminate(t *testing.T) {
 		registry := newFakeRegistry()
 
 		// Create a storage that succeeds on the first Store (Generate creates
-		// placeholder) but fails on the second Store (Terminate tries to upsert)
-		// and also fails on Delete. This forces the error path.
-		baseStorage := transportsession.NewLocalStorage()
-		failingStorage := &configurableFailStorage{
-			Storage:        baseStorage,
+		// placeholder) but fails on the second Store (Terminate tries to store
+		// terminated flag) and also fails on Delete. This forces the error path.
+		baseStorage := transportsession.NewLocalSessionDataStorage(time.Hour)
+		t.Cleanup(func() { _ = baseStorage.Close() })
+		failingStorage := &configurableFailDataStorage{
+			DataStorage:    baseStorage,
 			failStoreAfter: 1, // fail after 1 successful Store
 			failDelete:     true,
 		}
-		storage := transportsession.NewManagerWithStorage(
-			time.Hour,
-			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
-			failingStorage,
-		)
-		t.Cleanup(func() { _ = storage.Stop() })
-		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
+		sm, stop, err := New(failingStorage, time.Hour, &FactoryConfig{Base: factory}, registry)
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
 
 		// Generate a placeholder (first Store, succeeds).
 		sessionID := sm.Generate()
@@ -721,7 +724,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, isNotAllowed)
 		assert.ErrorContains(t, err, "failed to persist terminated flag and delete placeholder")
-		assert.ErrorContains(t, err, "upsertErr=")
+		assert.ErrorContains(t, err, "storeErr=")
 		assert.ErrorContains(t, err, "deleteErr=")
 	})
 }
@@ -793,6 +796,155 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		assert.Equal(t, sessionID, multiSess.ID())
 		require.Len(t, multiSess.Tools(), 1)
 		assert.Equal(t, "hello", multiSess.Tools()[0].Name)
+	})
+
+	// The following tests cover the cache-miss path — the scenario that was
+	// broken before this fix. When Redis is the storage backend and a request
+	// arrives on a pod that has never seen the session (cold local cache),
+	// GetMultiSession must fall back to storage.Load + factory.RestoreSession
+	// to reconstruct the live MultiSession. Without this path, every session
+	// dies on its second request when served by a different pod.
+
+	t.Run("cold cache: restores session from storage via RestoreSession", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate the "other pod wrote this session" scenario: inject metadata
+		// directly into storage, bypassing Generate/CreateSession, and create a
+		// fresh manager whose multiSessions cache is empty.
+		storage := newTestSessionDataStorage(t)
+		const sessionID = "cold-cache-session"
+		storedMeta := map[string]string{
+			vmcpsession.MetadataKeyBackendIDs: "backend-1",
+		}
+		require.NoError(t, storage.Store(context.Background(), sessionID, storedMeta))
+
+		tools := []vmcp.Tool{{Name: "restored-tool", Description: "from restore"}}
+		ctrl := gomock.NewController(t)
+		restoredSess := newMockSession(t, ctrl, sessionID, tools)
+
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		// MakeSessionWithID must NOT be called — this is a cold-cache restore, not a new session.
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, storedMeta, gomock.Any()).
+			Return(restoredSess, nil).
+			Times(1)
+
+		sm, stop, err := New(storage, 30*time.Minute, &FactoryConfig{Base: factory}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
+
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		require.True(t, ok, "should restore session from storage on cache miss")
+		require.NotNil(t, multiSess)
+		assert.Equal(t, sessionID, multiSess.ID())
+		require.Len(t, multiSess.Tools(), 1)
+		assert.Equal(t, "restored-tool", multiSess.Tools()[0].Name)
+	})
+
+	t.Run("cold cache: restored session is cached so RestoreSession is only called once", func(t *testing.T) {
+		t.Parallel()
+
+		storage := newTestSessionDataStorage(t)
+		const sessionID = "cache-after-restore-session"
+		storedMeta := map[string]string{
+			vmcpsession.MetadataKeyBackendIDs: "backend-1",
+		}
+		require.NoError(t, storage.Store(context.Background(), sessionID, storedMeta))
+
+		ctrl := gomock.NewController(t)
+		restoredSess := newMockSession(t, ctrl, sessionID, nil)
+
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, storedMeta, gomock.Any()).
+			Return(restoredSess, nil).
+			Times(1) // must be called exactly once despite multiple GetMultiSession calls
+
+		sm, stop, err := New(storage, 30*time.Minute, &FactoryConfig{Base: factory}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
+
+		// First call: cache miss, RestoreSession is invoked.
+		sess1, ok1 := sm.GetMultiSession(sessionID)
+		require.True(t, ok1)
+
+		// Second call: hits the node-local cache, RestoreSession must NOT be called again.
+		sess2, ok2 := sm.GetMultiSession(sessionID)
+		require.True(t, ok2)
+		assert.Same(t, sess1, sess2, "second lookup should return the cached instance")
+	})
+
+	t.Run("cold cache: placeholder (no BackendIDs) is not restored", func(t *testing.T) {
+		t.Parallel()
+
+		storage := newTestSessionDataStorage(t)
+		const sessionID = "placeholder-session"
+		// Placeholder: metadata exists but BackendIDs is empty.
+		require.NoError(t, storage.Store(context.Background(), sessionID, map[string]string{}))
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		sm, stop, err := New(storage, 30*time.Minute, &FactoryConfig{Base: factory}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
+
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "placeholder should not be restored")
+		assert.Nil(t, multiSess)
+	})
+
+	t.Run("cold cache: terminated session is not restored", func(t *testing.T) {
+		t.Parallel()
+
+		storage := newTestSessionDataStorage(t)
+		const sessionID = "terminated-session"
+		require.NoError(t, storage.Store(context.Background(), sessionID, map[string]string{
+			vmcpsession.MetadataKeyBackendIDs: "backend-1",
+			MetadataKeyTerminated:             MetadataValTrue,
+		}))
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		sm, stop, err := New(storage, 30*time.Minute, &FactoryConfig{Base: factory}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
+
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "terminated session should not be restored")
+		assert.Nil(t, multiSess)
+	})
+
+	t.Run("cold cache: RestoreSession error returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		storage := newTestSessionDataStorage(t)
+		const sessionID = "restore-error-session"
+		storedMeta := map[string]string{
+			vmcpsession.MetadataKeyBackendIDs: "backend-1",
+		}
+		require.NoError(t, storage.Store(context.Background(), sessionID, storedMeta))
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, storedMeta, gomock.Any()).
+			Return(nil, errors.New("backend unreachable")).
+			Times(1)
+
+		sm, stop, err := New(storage, 30*time.Minute, &FactoryConfig{Base: factory}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
+
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "RestoreSession error should result in (nil, false)")
+		assert.Nil(t, multiSess)
 	})
 }
 
@@ -1560,6 +1712,89 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 		// The session must not be resurrected.
 		_, ok := sm.GetMultiSession(sessionID)
 		assert.False(t, ok, "terminated session must not be resurrected by DecorateSession")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Tests: evictExpiredMultiSessions
+// ---------------------------------------------------------------------------
+
+func TestSessionManager_EvictExpiredMultiSessions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("evicts session absent from storage and calls Close", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				sess := newMockSession(t, ctrl, id, nil)
+				sess.EXPECT().Close().Return(nil).Times(1)
+				return sess, nil
+			}).Times(1)
+
+		sm, storage := newTestSessionManager(t, factory, newFakeRegistry())
+
+		sessionID := sm.Generate()
+		require.NotEmpty(t, sessionID)
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		// Simulate TTL expiry: remove from storage while leaving in multiSessions.
+		require.NoError(t, storage.Delete(context.Background(), sessionID))
+
+		sm.evictExpiredMultiSessions()
+
+		_, stillPresent := sm.multiSessions.Load(sessionID)
+		assert.False(t, stillPresent, "evicted session must be removed from node-local map")
+	})
+
+	t.Run("retains session present in storage", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				return newMockSession(t, ctrl, id, nil), nil
+			}).Times(1)
+
+		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+
+		sessionID := sm.Generate()
+		require.NotEmpty(t, sessionID)
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		// Storage still contains the session — eviction must leave it alone.
+		sm.evictExpiredMultiSessions()
+
+		_, stillPresent := sm.multiSessions.Load(sessionID)
+		assert.True(t, stillPresent, "live session must remain in node-local map")
+	})
+
+	t.Run("skips session when storage returns an error", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		// alwaysFailDataStorage.Exists returns an error, so eviction must skip the entry.
+		// Close() is intentionally not configured — any call would fail the test.
+		sess := newMockSession(t, ctrl, "error-sess", nil)
+		sm, stop, err := New(alwaysFailDataStorage{}, time.Hour, &FactoryConfig{Base: newMockFactory(t, ctrl, sess)}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stop(context.Background()) })
+
+		// Directly plant the session to bypass Generate/CreateSession
+		// (both of which would fail against alwaysFailDataStorage).
+		sm.multiSessions.Store("error-sess", sess)
+
+		sm.evictExpiredMultiSessions()
+
+		_, stillPresent := sm.multiSessions.Load("error-sess")
+		assert.True(t, stillPresent, "session must not be evicted when storage.Exists returns an error")
 	})
 }
 

@@ -16,19 +16,32 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessionmocks "github.com/stacklok/toolhive/pkg/vmcp/session/types/mocks"
 )
 
-// createTestSessionManager creates a session manager with StreamableSession factory for testing.
-func createTestSessionManager(t *testing.T) *transportsession.Manager {
-	t.Helper()
-	sessionMgr := transportsession.NewManager(30*time.Minute, transportsession.NewStreamableSession)
-	t.Cleanup(func() { _ = sessionMgr.Stop() })
-	return sessionMgr
+// stubMultiSessionGetter is a simple in-memory MultiSessionGetter for tests.
+type stubMultiSessionGetter struct {
+	sessions map[string]vmcpsession.MultiSession
+}
+
+func (s *stubMultiSessionGetter) GetMultiSession(id string) (vmcpsession.MultiSession, bool) {
+	if s.sessions == nil {
+		return nil, false
+	}
+	sess, ok := s.sessions[id]
+	return sess, ok
+}
+
+func newStubGetter(sessions ...vmcpsession.MultiSession) *stubMultiSessionGetter {
+	m := make(map[string]vmcpsession.MultiSession, len(sessions))
+	for _, s := range sessions {
+		m[s.ID()] = s
+	}
+	return &stubMultiSessionGetter{sessions: m}
 }
 
 // unorderedBackendsMatcher is a gomock matcher that compares backend slices without caring about order.
@@ -134,7 +147,7 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 
 	// Wrap handler with middleware
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backendRegistry, &stubMultiSessionGetter{}, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request (no session ID header)
@@ -186,9 +199,6 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 		_, _ = w.Write([]byte("success"))
 	})
 
-	// Create session manager and store routing table in a MultiSession
-	sessionMgr := createTestSessionManager(t)
-
 	// Create a routing table for this session
 	routingTable := &vmcp.RoutingTable{
 		Tools:     map[string]*vmcp.BackendTarget{"tool1": {WorkloadID: "backend1"}},
@@ -196,24 +206,18 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 		Prompts:   make(map[string]*vmcp.BackendTarget),
 	}
 
-	// Add a MockMultiSession with the routing table
+	// Create a MockMultiSession with the routing table
 	mockSess := sessionmocks.NewMockMultiSession(ctrl)
 	mockSess.EXPECT().ID().Return("dddddddd-1001-1001-1001-000000000001").AnyTimes()
 	mockSess.EXPECT().GetRoutingTable().Return(routingTable).AnyTimes()
 	mockSess.EXPECT().Tools().Return(nil).AnyTimes()
-	mockSess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
-	mockSess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
-	mockSess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
-	mockSess.EXPECT().GetData().Return(nil).AnyTimes()
-	mockSess.EXPECT().SetData(gomock.Any()).AnyTimes()
-	mockSess.EXPECT().GetMetadata().Return(nil).AnyTimes()
-	mockSess.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
-	err := sessionMgr.AddSession(mockSess)
-	require.NoError(t, err, "failed to add session")
+
+	// Build the stub getter with the session pre-registered
+	sessionGetter := newStubGetter(mockSess)
 
 	// Wrap handler with middleware
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, sessionMgr, nil)
+	middleware := Middleware(mockMgr, backendRegistry, sessionGetter, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create subsequent request (with session ID header)
@@ -254,7 +258,7 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backendRegistry, &stubMultiSessionGetter{}, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -295,7 +299,7 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backendRegistry, &stubMultiSessionGetter{}, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -396,7 +400,7 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backendRegistry, &stubMultiSessionGetter{}, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -461,7 +465,7 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backendRegistry, &stubMultiSessionGetter{}, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request with user context (as auth middleware would)
@@ -513,7 +517,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil, WithDiscoveryTimeout(testTimeout))
+	middleware := Middleware(mockMgr, backendRegistry, &stubMultiSessionGetter{}, nil, WithDiscoveryTimeout(testTimeout))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen

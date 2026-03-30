@@ -41,6 +41,7 @@ import (
 func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
+	opts ...auth.TokenValidatorOption,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -55,10 +56,16 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, opts...)
 	case "local":
+		if len(opts) > 0 {
+			slog.Warn("token validator options provided but ignored for non-OIDC auth type", "type", cfg.Type)
+		}
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
+		if len(opts) > 0 {
+			slog.Warn("token validator options provided but ignored for non-OIDC auth type", "type", cfg.Type)
+		}
 		authMiddleware, authInfoHandler, err = newAnonymousAuthMiddleware()
 	default:
 		return nil, nil, nil, fmt.Errorf("unsupported incoming auth type: %s (supported: oidc, local, anonymous)", cfg.Type)
@@ -131,6 +138,7 @@ func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) h
 func newOIDCAuthMiddleware(
 	ctx context.Context,
 	oidcCfg *config.OIDCConfig,
+	opts ...auth.TokenValidatorOption,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -154,7 +162,7 @@ func newOIDCAuthMiddleware(
 	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
-	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
 	}

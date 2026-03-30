@@ -12,11 +12,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
-// FilterToolsByPolicy filters tools based on Cedar authorization policies.
+// filterToolsByPolicy filters tools based on Cedar authorization policies.
 // For each tool, it checks whether the caller (identified by JWT claims in ctx)
 // is authorized to call that tool. Only authorized tools are returned.
 // If authorizer is nil, all tools are returned unmodified.
-func FilterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []mcp.Tool {
+func filterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []mcp.Tool {
 	if a == nil {
 		return tools
 	}
@@ -35,7 +35,7 @@ func FilterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []
 			toolCtx = authorizers.WithToolAnnotations(toolCtx, convertMCPAnnotation(ann))
 		}
 
-		authorized, err := AuthorizeToolCall(toolCtx, a, tool.Name, nil)
+		authorized, err := authorizeToolCall(toolCtx, a, tool.Name, nil)
 		if err != nil {
 			slog.Warn("Authorization check failed for tool, skipping",
 				"tool", tool.Name, "error", err)
@@ -50,10 +50,10 @@ func FilterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []
 	return filtered
 }
 
-// AuthorizeToolCall checks whether the caller is authorized to call a specific tool
+// authorizeToolCall checks whether the caller is authorized to call a specific tool
 // with the given arguments. Returns true if authorized, false if denied.
 // If authorizer is nil, returns true (no-op).
-func AuthorizeToolCall(
+func authorizeToolCall(
 	ctx context.Context, a authorizers.Authorizer, toolName string, arguments map[string]interface{},
 ) (bool, error) {
 	if a == nil {

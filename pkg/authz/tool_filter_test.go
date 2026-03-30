@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package authz_test
+package authz
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 )
@@ -57,8 +56,6 @@ func (m *mockAuthorizer) AuthorizeWithJWTClaims(
 	}
 	return r.authorized, r.err
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 func makeTool(name string, ann *mcp.ToolAnnotation) mcp.Tool {
 	t := mcp.Tool{Name: name}
@@ -138,7 +135,7 @@ func TestFilterToolsByPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := authz.FilterToolsByPolicy(context.Background(), tc.authorizer, tc.tools)
+			got := filterToolsByPolicy(context.Background(), tc.authorizer, tc.tools)
 
 			gotNames := make([]string, len(got))
 			for i, tool := range got {
@@ -157,7 +154,7 @@ func TestFilterToolsByPolicy_CallsAuthorizerCorrectly(t *testing.T) {
 	}}
 
 	tools := []mcp.Tool{makeTool("tool1", nil)}
-	authz.FilterToolsByPolicy(context.Background(), mock, tools)
+	filterToolsByPolicy(context.Background(), mock, tools)
 
 	require.Len(t, mock.calls, 1)
 	assert.Equal(t, authorizers.MCPFeatureTool, mock.calls[0].feature)
@@ -196,7 +193,7 @@ func TestFilterToolsByPolicy_WithCedarAuthorizer(t *testing.T) {
 			{Name: "translator", Description: "Translate text"},
 		}
 
-		got := authz.FilterToolsByPolicy(cedarCtx(t), cedarAuth, tools)
+		got := filterToolsByPolicy(cedarCtx(t), cedarAuth, tools)
 
 		require.Len(t, got, 1)
 		assert.Equal(t, "weather", got[0].Name)
@@ -211,7 +208,7 @@ func TestFilterToolsByPolicy_WithCedarAuthorizer(t *testing.T) {
 			{Name: "translator", Description: "Translate text"},
 		}
 
-		got := authz.FilterToolsByPolicy(cedarCtx(t), cedarAuth, tools)
+		got := filterToolsByPolicy(cedarCtx(t), cedarAuth, tools)
 
 		assert.Empty(t, got)
 	})
@@ -231,7 +228,7 @@ func TestAuthorizeToolCall_WithCedarAuthorizer(t *testing.T) {
 	t.Run("permits authorized tool", func(t *testing.T) {
 		t.Parallel()
 
-		ok, err := authz.AuthorizeToolCall(cedarCtx(t), cedarAuth, "weather", nil)
+		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "weather", nil)
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
@@ -239,7 +236,7 @@ func TestAuthorizeToolCall_WithCedarAuthorizer(t *testing.T) {
 	t.Run("denies unauthorized tool", func(t *testing.T) {
 		t.Parallel()
 
-		ok, err := authz.AuthorizeToolCall(cedarCtx(t), cedarAuth, "calculator", nil)
+		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "calculator", nil)
 		require.NoError(t, err)
 		assert.False(t, ok)
 	})
@@ -262,7 +259,7 @@ func TestAuthorizeToolCall_WithArguments(t *testing.T) {
 		t.Parallel()
 
 		args := map[string]interface{}{"mode": "safe"}
-		ok, err := authz.AuthorizeToolCall(cedarCtx(t), cedarAuth, "deploy", args)
+		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "deploy", args)
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
@@ -271,7 +268,7 @@ func TestAuthorizeToolCall_WithArguments(t *testing.T) {
 		t.Parallel()
 
 		args := map[string]interface{}{"mode": "dangerous"}
-		ok, err := authz.AuthorizeToolCall(cedarCtx(t), cedarAuth, "deploy", args)
+		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "deploy", args)
 		require.NoError(t, err)
 		assert.False(t, ok)
 	})
@@ -282,7 +279,7 @@ func TestAuthorizeToolCall_WithArguments(t *testing.T) {
 		// When the policy references an argument that isn't present,
 		// Cedar returns an evaluation error. The caller should treat
 		// this as denied access.
-		ok, err := authz.AuthorizeToolCall(cedarCtx(t), cedarAuth, "deploy", nil)
+		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "deploy", nil)
 		assert.False(t, ok)
 		// Cedar may return an error when evaluating a when-clause against
 		// missing context attributes — either outcome (error or clean deny)
@@ -343,7 +340,7 @@ func TestAuthorizeToolCall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ok, err := authz.AuthorizeToolCall(context.Background(), tc.authorizer, tc.toolName, nil)
+			ok, err := authorizeToolCall(context.Background(), tc.authorizer, tc.toolName, nil)
 
 			assert.Equal(t, tc.wantOK, ok)
 			if tc.wantErr != nil {

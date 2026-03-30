@@ -303,8 +303,17 @@ func handleToolsCall(
 				parsedRequest.ID, toolName, innerArgs, next)
 			return
 		}
-		// find_tool or other pass-through without a wrapped toolName:
-		// allow through as a discovery operation — no authorization check.
+		// find_tool: allow through but filter the tools list in the response so
+		// callers cannot discover tools they are not authorized to call.
+		if parsedRequest.ResourceID == optimizerdec.FindToolName {
+			filteringWriter := NewResponseFilteringWriter(w, a, r, optimizerdec.FindToolName, annotationCache, passThroughTools)
+			next.ServeHTTP(filteringWriter, r)
+			if err := filteringWriter.FlushAndFilter(); err != nil {
+				slog.Warn("error filtering find_tool response", "error", err)
+			}
+			return
+		}
+		// Other pass-through tools without a wrapped toolName: allow through.
 		next.ServeHTTP(w, r)
 		return
 	}

@@ -1108,7 +1108,7 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 			expectHandlerHit: false,
 		},
 		{
-			name:     "find_tool passes through without authorization check",
+			name:     "find_tool request reaches handler (response filtering applied separately)",
 			toolName: "find_tool",
 			arguments: map[string]interface{}{
 				"tool_description": "search for web tools",
@@ -1426,14 +1426,14 @@ func TestHandleToolsCall(t *testing.T) {
 			expectStatus:     http.StatusOK,
 		},
 		{
-			// find_tool has no tool_name argument — it is a discovery operation
-			// and passes through without an authorization check.
-			name:     "find_tool — passes through without auth check",
+			// find_tool has no tool_name argument — the request reaches the handler
+			// and the response is filtered by Cedar before being returned.
+			name:     "find_tool — request reaches handler, response filtering applied",
 			toolName: "find_tool",
 			arguments: map[string]interface{}{
 				"tool_description": "search for web tools",
 			},
-			allowed:          false, // auth would deny, but it should never be reached
+			allowed:          false, // auth is not checked on the request itself
 			expectHandlerHit: true,
 			expectStatus:     http.StatusOK,
 		},

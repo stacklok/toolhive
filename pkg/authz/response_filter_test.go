@@ -24,7 +24,209 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
+
+// buildFindToolJSONRPCResponse creates a JSON-RPC tools/call response whose content
+// text is a serialised find_tool output containing the given tools.
+func buildFindToolJSONRPCResponse(t *testing.T, tools []mcp.Tool) []byte {
+	t.Helper()
+	output := optimizer.FindToolOutput{Tools: tools}
+	outputJSON, err := json.Marshal(output)
+	require.NoError(t, err)
+
+	callResult := map[string]interface{}{
+		"content": []map[string]interface{}{
+			{"type": "text", "text": string(outputJSON)},
+		},
+		"isError": false,
+	}
+	resultJSON, err := json.Marshal(callResult)
+	require.NoError(t, err)
+
+	resp := &jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(resultJSON),
+	}
+	encoded, err := jsonrpc2.EncodeMessage(resp)
+	require.NoError(t, err)
+	return encoded
+}
+
+// decodeFindToolOutput decodes a JSON-RPC response produced by buildFindToolJSONRPCResponse
+// and returns the optimizer.FindToolOutput embedded in the first text content item.
+func decodeFindToolOutput(t *testing.T, body []byte) optimizer.FindToolOutput {
+	t.Helper()
+	msg, err := jsonrpc2.DecodeMessage(body)
+	require.NoError(t, err)
+	rpcResp, ok := msg.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.Nil(t, rpcResp.Error)
+
+	var callResult struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	require.NoError(t, json.Unmarshal(rpcResp.Result, &callResult))
+	require.NotEmpty(t, callResult.Content)
+
+	var output optimizer.FindToolOutput
+	require.NoError(t, json.Unmarshal([]byte(callResult.Content[0].Text), &output))
+	return output
+}
+
+// TestFindToolResponseFilter verifies that find_tool results are filtered by Cedar
+// policy before being returned to the caller.
+func TestFindToolResponseFilter(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	})
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+	newReq := func(t *testing.T) *http.Request {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+		require.NoError(t, err)
+		return req.WithContext(auth.WithIdentity(req.Context(), identity))
+	}
+	newWriter := func(t *testing.T, cache *AnnotationCache) (*httptest.ResponseRecorder, *ResponseFilteringWriter) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		rr.Header().Set("Content-Type", "application/json")
+		fw := NewResponseFilteringWriter(rr, authorizer, newReq(t), optimizerdec.FindToolName, cache, nil)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+		return rr, fw
+	}
+
+	t.Run("Cedar policy filters unauthorized tools", func(t *testing.T) {
+		t.Parallel()
+
+		// The optimizer returns two tools but the caller is only permitted "weather".
+		responseBytes := buildFindToolJSONRPCResponse(t, []mcp.Tool{
+			{Name: "weather", Description: "Get weather"},
+			{Name: "admin_tool", Description: "Admin operations"},
+		})
+
+		rr, fw := newWriter(t, nil)
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		output := decodeFindToolOutput(t, rr.Body.Bytes())
+		require.Len(t, output.Tools, 1, "only the permitted tool should remain")
+		assert.Equal(t, "weather", output.Tools[0].Name)
+	})
+
+	t.Run("isError response passes through unfiltered", func(t *testing.T) {
+		t.Parallel()
+
+		// Build a CallToolResult with IsError set — the filter must not touch it.
+		errorResult := map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "tool execution failed"},
+			},
+			"isError": true,
+		}
+		resultJSON, err := json.Marshal(errorResult)
+		require.NoError(t, err)
+		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
+		responseBytes, err := jsonrpc2.EncodeMessage(resp)
+		require.NoError(t, err)
+
+		rr, fw := newWriter(t, nil)
+		_, err = fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		assert.Equal(t, responseBytes, rr.Body.Bytes(), "error response must pass through unchanged")
+	})
+
+	t.Run("response with no text content passes through unfiltered", func(t *testing.T) {
+		t.Parallel()
+
+		// A CallToolResult with no content items at all.
+		emptyResult := map[string]interface{}{"content": []interface{}{}, "isError": false}
+		resultJSON, err := json.Marshal(emptyResult)
+		require.NoError(t, err)
+		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
+		responseBytes, err := jsonrpc2.EncodeMessage(resp)
+		require.NoError(t, err)
+
+		rr, fw := newWriter(t, nil)
+		_, err = fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		assert.Equal(t, responseBytes, rr.Body.Bytes(), "response with no content must pass through unchanged")
+	})
+
+	t.Run("text content that is not a FindToolOutput passes through unfiltered", func(t *testing.T) {
+		t.Parallel()
+
+		// A plain text content item that is not a valid FindToolOutput JSON.
+		plainText := map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "this is a plain string, not a find_tool result"},
+			},
+			"isError": false,
+		}
+		resultJSON, err := json.Marshal(plainText)
+		require.NoError(t, err)
+		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
+		responseBytes, err := jsonrpc2.EncodeMessage(resp)
+		require.NoError(t, err)
+
+		rr, fw := newWriter(t, nil)
+		_, err = fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		assert.Equal(t, responseBytes, rr.Body.Bytes(), "non-FindToolOutput text content must pass through unchanged")
+	})
+
+	t.Run("annotation cache is populated from unfiltered tool list", func(t *testing.T) {
+		t.Parallel()
+
+		readOnly := true
+		responseBytes := buildFindToolJSONRPCResponse(t, []mcp.Tool{
+			{
+				Name:        "weather",
+				Description: "Get weather",
+				Annotations: mcp.ToolAnnotation{ReadOnlyHint: &readOnly},
+			},
+			// admin_tool is not permitted by Cedar, but its annotations must still
+			// be cached so that a subsequent call_tool request can evaluate Cedar
+			// when-clauses against them.
+			{
+				Name:        "admin_tool",
+				Description: "Admin operations",
+				Annotations: mcp.ToolAnnotation{ReadOnlyHint: &readOnly},
+			},
+		})
+
+		cache := NewAnnotationCache()
+		_, fw := newWriter(t, cache)
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		// Both tools must be in the cache even though admin_tool is filtered from the response.
+		assert.NotNil(t, cache.Get("weather"), "permitted tool annotation must be cached")
+		assert.NotNil(t, cache.Get("admin_tool"), "denied tool annotation must still be cached for future call_tool Cedar evaluation")
+	})
+}
 
 func TestResponseFilteringWriter(t *testing.T) {
 	t.Parallel()

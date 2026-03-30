@@ -27,7 +27,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.21.3
 	github.com/google/uuid v1.6.0
-	github.com/lestrrat-go/httprc/v3 v3.0.4
+	github.com/lestrrat-go/httprc/v3 v3.0.5
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/mark3labs/mcp-go v0.46.0
 	github.com/moby/moby/client v0.3.0

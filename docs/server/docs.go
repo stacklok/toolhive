@@ -343,6 +343,10 @@ const docTemplate = `{
                     "header_strategy": {
                         "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
                         "type": "string"
+                    },
+                    "provider_name": {
+                        "description": "ProviderName identifies which upstream provider's tokens to retrieve for injection.\nThis is required and must match a configured upstream provider name.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -439,6 +443,10 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "authorization_endpoint_base_url": {
+                        "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
+                        "type": "string"
+                    },
                     "disable_upstream_token_injection": {
                         "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients but does not\ninject upstream IdP tokens into requests forwarded to the backend MCP server.",
                         "type": "boolean"
@@ -477,7 +485,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nCurrently only a single upstream is supported.",
+                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig"
                         },
@@ -885,7 +893,7 @@ const docTemplate = `{
                 "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
                 "properties": {
                     "additional_packages": {
-                        "description": "AdditionalPackages lists extra packages to install in builder stage\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
+                        "description": "AdditionalPackages lists extra packages to install in the builder and\nruntime stages.\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
                         "items": {
                             "type": "string"
                         },
@@ -893,7 +901,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
                         "type": "string"
                     }
                 },
@@ -997,6 +1005,28 @@ const docTemplate = `{
                     "printOverlays": {
                         "description": "Whether to print resolved overlay paths for debugging",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig": {
+                "description": "AuthConfig contains the non-secret OAuth configuration when auth is configured.\nNil when auth_status is \"none\".",
+                "properties": {
+                    "audience": {
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -1145,6 +1175,14 @@ const docTemplate = `{
                     "proxy_mode": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.ProxyMode"
                     },
+                    "publish": {
+                        "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
                     },
@@ -1154,6 +1192,9 @@ const docTemplate = `{
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
+                    },
+                    "scaling_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig"
                     },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema",
@@ -1210,6 +1251,14 @@ const docTemplate = `{
                     "upstream_swap_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config"
                     },
+                    "validating_webhooks": {
+                        "description": "ValidatingWebhooks contains the configuration for validating webhook middleware.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "volumes": {
                         "description": "Volumes are the directory mounts to pass to the container\nFormat: \"host-path:container-path[:ro]\"",
                         "items": {
@@ -1217,6 +1266,37 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.ScalingConfig": {
+                "description": "ScalingConfig contains configuration for horizontal scaling of the proxy runner.\nOnly applicable when running in Kubernetes with the ToolHive operator.\nWhen nil, no scaling configuration is applied (single-replica default behavior).",
+                "properties": {
+                    "backend_replicas": {
+                        "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
+                        "type": "integer"
+                    },
+                    "session_redis": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig": {
+                "description": "SessionRedis holds non-sensitive Redis connection parameters for distributed session storage.\nPopulated only when MCPServer.spec.sessionStorage.provider == \"redis\".\nThe Redis password is not included — it is injected as env var THV_SESSION_REDIS_PASSWORD.\n+optional",
+                "properties": {
+                    "address": {
+                        "description": "Address is the Redis server address (host:port).",
+                        "type": "string"
+                    },
+                    "db": {
+                        "description": "DB is the Redis database number.",
+                        "type": "integer"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -1530,6 +1610,67 @@ const docTemplate = `{
                     "TransportTypeInspector"
                 ]
             },
+            "github_com_stacklok_toolhive_pkg_webhook.Config": {
+                "properties": {
+                    "failure_policy": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.FailurePolicy"
+                    },
+                    "hmac_secret_ref": {
+                        "description": "HMACSecretRef is an optional reference to an HMAC secret for payload signing.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is a unique identifier for this webhook.",
+                        "type": "string"
+                    },
+                    "timeout": {
+                        "description": "Timeout is the maximum time to wait for a webhook response.",
+                        "type": "integer"
+                    },
+                    "tls_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.TLSConfig"
+                    },
+                    "url": {
+                        "description": "URL is the HTTPS endpoint to call.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.FailurePolicy": {
+                "description": "FailurePolicy determines behavior when the webhook call fails.",
+                "enum": [
+                    "fail",
+                    "ignore"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FailurePolicyFail",
+                    "FailurePolicyIgnore"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.TLSConfig": {
+                "description": "TLSConfig holds optional TLS configuration (CA bundles, client certs).",
+                "properties": {
+                    "ca_bundle_path": {
+                        "description": "CABundlePath is the path to a CA certificate bundle for server verification.",
+                        "type": "string"
+                    },
+                    "client_cert_path": {
+                        "description": "ClientCertPath is the path to a client certificate for mTLS.",
+                        "type": "string"
+                    },
+                    "client_key_path": {
+                        "description": "ClientKeyPath is the path to a client key for mTLS.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify disables server certificate verification.\nWARNING: This should only be used for development/testing.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
             "permissions.InboundNetworkPermissions": {
                 "description": "Inbound defines inbound network permissions",
                 "properties": {
@@ -1635,6 +1776,32 @@ const docTemplate = `{
                     "RegistryTypeDefault"
                 ]
             },
+            "pkg_api_v1.UpdateRegistryAuthRequest": {
+                "description": "OAuth authentication configuration (optional)",
+                "properties": {
+                    "audience": {
+                        "description": "OAuth audience (optional)",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "OAuth client ID",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "OIDC issuer URL",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "OAuth scopes (optional)",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.UpdateRegistryRequest": {
                 "description": "Request containing registry configuration updates",
                 "properties": {
@@ -1645,6 +1812,9 @@ const docTemplate = `{
                     "api_url": {
                         "description": "MCP Registry API URL",
                         "type": "string"
+                    },
+                    "auth": {
+                        "$ref": "#/components/schemas/pkg_api_v1.UpdateRegistryAuthRequest"
                     },
                     "local_path": {
                         "description": "Local registry file path",
@@ -1945,6 +2115,17 @@ const docTemplate = `{
             "pkg_api_v1.getRegistryResponse": {
                 "description": "Response containing registry details",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty — see registryInfo for rationale.",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty — see registryInfo for rationale.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"
@@ -2195,6 +2376,17 @@ const docTemplate = `{
             "pkg_api_v1.registryInfo": {
                 "description": "Basic information about a registry",
                 "properties": {
+                    "auth_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig"
+                    },
+                    "auth_status": {
+                        "description": "AuthStatus is one of: \"none\", \"configured\", \"authenticated\".\nIntentionally omits omitempty so clients always receive the field,\neven when the value is \"none\" (the zero-value equivalent).",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType is \"oauth\", \"bearer\" (future), or empty string when no auth.\nIntentionally omits omitempty so clients can distinguish \"no auth\nconfigured\" (empty string) from \"field missing\" without extra logic.",
+                        "type": "string"
+                    },
                     "last_updated": {
                         "description": "Last updated timestamp",
                         "type": "string"
@@ -3522,6 +3714,94 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Add a registry",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
+        "/api/v1beta/registry/auth/login": {
+            "post": {
+                "description": "Trigger an interactive OAuth flow to authenticate with the configured registry. Only available in serve mode.",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Authenticated successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request - Registry OAuth not configured"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Registry login",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
+        "/api/v1beta/registry/auth/logout": {
+            "post": {
+                "description": "Clear cached OAuth tokens for the configured registry. Only available in serve mode.",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Logged out successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request - Registry OAuth not configured"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Registry logout",
                 "tags": [
                     "registry"
                 ]

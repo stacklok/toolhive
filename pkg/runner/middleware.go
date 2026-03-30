@@ -341,10 +341,11 @@ func injectUpstreamProviderIfNeeded(
 		return authzCfg, nil
 	}
 
-	// Derive the provider name using the same logic as addUpstreamSwapMiddleware.
+	// Derive the provider name the same way addUpstreamSwapMiddleware does,
+	// delegating normalisation (empty-string → "default") to ResolveUpstreamName.
 	providerName := func() string {
-		if len(embeddedCfg.Upstreams) > 0 && embeddedCfg.Upstreams[0].Name != "" {
-			return embeddedCfg.Upstreams[0].Name
+		if len(embeddedCfg.Upstreams) > 0 {
+			return authserver.ResolveUpstreamName(embeddedCfg.Upstreams[0].Name)
 		}
 		return authserver.DefaultUpstreamName
 	}()

@@ -1154,6 +1154,23 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			wantErr:     true,
 			errContains: "upstream token for provider",
 		},
+		{
+			name: "upstream_token_has_no_sub_claim",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"iss": "https://idp.example.com",
+						// intentionally no "sub"
+					}),
+				},
+			},
+			wantErr:     true,
+			errContains: "missing principal",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1416,6 +1433,38 @@ func TestInjectUpstreamProvider(t *testing.T) {
 				assert.Nil(t, result)
 			},
 		},
+		{
+			// GroupClaimName must survive the serialise→deserialise round-trip
+			// that InjectUpstreamProvider performs internally. A refactor that
+			// reconstructed ConfigOptions from scratch (populating only known
+			// fields) would silently drop GroupClaimName without this test.
+			name: "group_claim_name_preserved_after_inject",
+			setup: func(t *testing.T) *authorizers.Config {
+				t.Helper()
+				cfg, err := authorizers.NewConfig(Config{
+					Version: "1.0",
+					Type:    ConfigType,
+					Options: &ConfigOptions{
+						Policies:       []string{`permit(principal, action, resource);`},
+						EntitiesJSON:   "[]",
+						GroupClaimName: "https://example.com/groups",
+					},
+				})
+				require.NoError(t, err)
+				return cfg
+			},
+			providerName: "my-provider",
+			wantErr:      false,
+			checkResult: func(t *testing.T, result *authorizers.Config) {
+				t.Helper()
+				extracted, err := ExtractConfig(result)
+				require.NoError(t, err)
+				assert.Equal(t, "https://example.com/groups", extracted.Options.GroupClaimName,
+					"GroupClaimName must be unchanged after InjectUpstreamProvider")
+				assert.Equal(t, "my-provider", extracted.Options.PrimaryUpstreamProvider,
+					"PrimaryUpstreamProvider must be set by InjectUpstreamProvider")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1436,4 +1485,23 @@ func TestInjectUpstreamProvider(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInjectUpstreamProvider_NonCedarPassThrough verifies that a config whose
+// authorizer type is not "cedarv1" is returned as the identical pointer.
+// This is the key safety property that allows InjectUpstreamProvider to be
+// called unconditionally without knowing the authorizer type in advance.
+func TestInjectUpstreamProvider_NonCedarPassThrough(t *testing.T) {
+	t.Parallel()
+
+	src, err := authorizers.NewConfig(map[string]interface{}{
+		"version": "1.0",
+		"type":    "http", // deliberately not "cedarv1"
+	})
+	require.NoError(t, err)
+
+	result, err := InjectUpstreamProvider(src, "github")
+	require.NoError(t, err)
+	assert.Same(t, src, result,
+		"non-Cedar config must be returned as the same pointer — InjectUpstreamProvider must be a no-op for unknown types")
 }

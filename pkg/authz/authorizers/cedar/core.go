@@ -63,8 +63,13 @@ func ExtractConfig(authzConfig *authorizers.Config) (*Config, error) {
 
 // InjectUpstreamProvider returns a new authorizers.Config that is identical to
 // src except that the Cedar options' PrimaryUpstreamProvider field is set to
-// providerName. This is used by the runner middleware when the embedded auth
-// server is active to wire the upstream provider into Cedar evaluation.
+// providerName. Any existing PrimaryUpstreamProvider value is overwritten; if
+// the Cedar config file already contains a non-empty PrimaryUpstreamProvider
+// that differs from providerName, the file value is silently replaced. This is
+// intentional: the embedded auth server config is the authoritative source of
+// the upstream provider name at runtime. This is used by the runner middleware
+// when the embedded auth server is active to wire the upstream provider into
+// Cedar evaluation.
 //
 // If src is not a Cedar config, providerName is empty, or src is nil, src is
 // returned unchanged with a nil error. This makes the function safe to call

@@ -686,20 +686,22 @@ func addAuthzMiddleware(
 		return middlewareConfigs, nil
 	}
 
-	authzParams := authz.FactoryMiddlewareParams{
-		ConfigPath: authzConfigPath, // Keep for backwards compatibility
+	// Load the authz config eagerly so that a malformed file produces a clear
+	// error now rather than a confusing failure at request time.
+	authzConfigData, err := authz.LoadConfig(authzConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load authorization config from %q: %w", authzConfigPath, err)
 	}
 
-	// Load authz config and, when the embedded auth server is active, inject the
-	// primary upstream provider name so Cedar evaluates the upstream IDP token.
-	if authzConfigData, err := authz.LoadConfig(authzConfigPath); err == nil {
-		enriched, injectErr := injectUpstreamProviderIfNeeded(authzConfigData, embeddedAuthServerCfg)
-		if injectErr != nil {
-			return nil, fmt.Errorf("failed to inject upstream provider into authz config: %w", injectErr)
-		}
-		authzParams.ConfigData = enriched
+	enriched, err := injectUpstreamProviderIfNeeded(authzConfigData, embeddedAuthServerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inject upstream provider into authz config: %w", err)
 	}
-	// Note: ConfigPath is kept set for backwards compatibility.
+
+	authzParams := authz.FactoryMiddlewareParams{
+		ConfigPath: authzConfigPath, // Keep for backwards compatibility.
+		ConfigData: enriched,
+	}
 
 	authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams)
 	if err != nil {

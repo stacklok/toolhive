@@ -18,6 +18,7 @@ const (
 	// MCP clients use this code to trigger automatic session recovery.
 	CodeSessionNotFound int64 = -32001
 
+	// MessageSessionNotFound is the JSON-RPC error message for session-not-found.
 	MessageSessionNotFound = "Session not found"
 )
 

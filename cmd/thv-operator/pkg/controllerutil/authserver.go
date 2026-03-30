@@ -476,6 +476,9 @@ func BuildAuthServerRunConfig(
 	}
 	config.Storage = storageCfg
 
+	// Wire through upstream token injection flag
+	config.DisableUpstreamTokenInjection = authConfig.DisableUpstreamTokenInjection
+
 	return config, nil
 }
 

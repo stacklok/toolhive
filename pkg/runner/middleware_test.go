@@ -256,6 +256,7 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 		name         string
 		config       *RunConfig
 		wantAppended bool
+		wantType     string // expected middleware type when appended
 	}{
 		{
 			name:         "nil EmbeddedAuthServerConfig returns input unchanged",
@@ -269,6 +270,17 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 				UpstreamSwapConfig:       nil,
 			},
 			wantAppended: true,
+			wantType:     upstreamswap.MiddlewareType,
+		},
+		{
+			name: "DisableUpstreamTokenInjection adds strip-auth middleware instead",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{EmbeddedAuthServerConfig: cfg}
+			}(),
+			wantAppended: true,
+			wantType:     stripAuthMiddlewareType,
 		},
 		{
 			name: "EmbeddedAuthServerConfig set with explicit UpstreamSwapConfig uses provided config",
@@ -279,6 +291,7 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 				},
 			},
 			wantAppended: true,
+			wantType:     upstreamswap.MiddlewareType,
 		},
 		{
 			name: "EmbeddedAuthServerConfig with custom header strategy config",
@@ -290,6 +303,7 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 				},
 			},
 			wantAppended: true,
+			wantType:     upstreamswap.MiddlewareType,
 		},
 	}
 
@@ -309,20 +323,20 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			// Should have one additional entry.
 			require.Len(t, got, len(initial)+1)
 			added := got[len(got)-1]
-			assert.Equal(t, upstreamswap.MiddlewareType, added.Type)
+			assert.Equal(t, tt.wantType, added.Type)
 
-			// Verify serialized params contain the expected config.
-			var params upstreamswap.MiddlewareParams
-			require.NoError(t, json.Unmarshal(added.Parameters, &params))
+			// For upstreamswap type, verify serialized params
+			if tt.wantType == upstreamswap.MiddlewareType {
+				var params upstreamswap.MiddlewareParams
+				require.NoError(t, json.Unmarshal(added.Parameters, &params))
 
-			if tt.config.UpstreamSwapConfig != nil {
-				// Should use the provided config
-				require.NotNil(t, params.Config)
-				assert.Equal(t, tt.config.UpstreamSwapConfig.HeaderStrategy, params.Config.HeaderStrategy)
-				assert.Equal(t, tt.config.UpstreamSwapConfig.CustomHeaderName, params.Config.CustomHeaderName)
-			} else {
-				// Should use defaults (empty config is valid)
-				require.NotNil(t, params.Config)
+				if tt.config.UpstreamSwapConfig != nil {
+					require.NotNil(t, params.Config)
+					assert.Equal(t, tt.config.UpstreamSwapConfig.HeaderStrategy, params.Config.HeaderStrategy)
+					assert.Equal(t, tt.config.UpstreamSwapConfig.CustomHeaderName, params.Config.CustomHeaderName)
+				} else {
+					require.NotNil(t, params.Config)
+				}
 			}
 		})
 	}
@@ -335,6 +349,7 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 		name               string
 		config             *RunConfig
 		wantUpstreamSwap   bool
+		wantStripAuth      bool
 		wantHeaderStrategy string
 	}{
 		{
@@ -346,6 +361,16 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 			name:             "no EmbeddedAuthServerConfig omits upstream-swap",
 			config:           &RunConfig{EmbeddedAuthServerConfig: nil},
 			wantUpstreamSwap: false,
+		},
+		{
+			name: "DisableUpstreamTokenInjection adds strip-auth instead of upstream-swap",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{EmbeddedAuthServerConfig: cfg}
+			}(),
+			wantUpstreamSwap: false,
+			wantStripAuth:    true,
 		},
 		{
 			name: "explicit UpstreamSwapConfig is used",
@@ -367,20 +392,25 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 			err := PopulateMiddlewareConfigs(tt.config)
 			require.NoError(t, err)
 
-			var found bool
+			var foundSwap bool
+			var foundStrip bool
 			var foundConfig *types.MiddlewareConfig
 			for i, mw := range tt.config.MiddlewareConfigs {
 				if mw.Type == upstreamswap.MiddlewareType {
-					found = true
+					foundSwap = true
 					foundConfig = &tt.config.MiddlewareConfigs[i]
-					break
+				}
+				if mw.Type == stripAuthMiddlewareType {
+					foundStrip = true
 				}
 			}
-			assert.Equal(t, tt.wantUpstreamSwap, found,
+			assert.Equal(t, tt.wantUpstreamSwap, foundSwap,
 				"upstream-swap middleware presence mismatch")
+			assert.Equal(t, tt.wantStripAuth, foundStrip,
+				"strip-auth middleware presence mismatch")
 
 			// Verify config values if we expect the middleware and have specific expectations
-			if found && tt.wantHeaderStrategy != "" {
+			if foundSwap && tt.wantHeaderStrategy != "" {
 				var params upstreamswap.MiddlewareParams
 				require.NoError(t, json.Unmarshal(foundConfig.Parameters, &params))
 				require.NotNil(t, params.Config)

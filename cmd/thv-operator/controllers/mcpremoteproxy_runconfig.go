@@ -140,28 +140,9 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	// Add OIDC configuration (required for proxy mode)
-	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, proxy, &options); err != nil {
-		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-	}
-
-	// Resolve OIDC config for embedded auth server configuration
-	// ResourceURL provides AllowedAudiences, Scopes provides ScopesSupported
-	// Note: Validation (OIDC config required) happens in AddExternalAuthConfigOptions
-	var resolvedOIDCConfig *oidc.OIDCConfig
-	resolver := oidc.NewResolver(r.Client)
-	resolvedOIDCConfig, err := resolver.Resolve(ctx, proxy)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
-	}
-
-	// Add external auth configuration if specified (updated call)
-	// Will fail if embedded auth server is used without OIDC config or resourceUrl
-	if err := ctrlutil.AddExternalAuthConfigOptions(
-		ctx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
-		resolvedOIDCConfig, &options,
-	); err != nil {
-		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
+	// Add OIDC and external auth configuration
+	if err := r.addAuthConfigOptions(ctx, proxy, &options); err != nil {
+		return nil, err
 	}
 
 	// Add audit configuration if specified
@@ -239,6 +220,40 @@ func labelsForRunConfigRemoteProxy(proxyName string) map[string]string {
 		"toolhive.stacklok.io/mcp-remote-proxy": proxyName,
 		"toolhive.stacklok.io/managed-by":       "toolhive-operator",
 	}
+}
+
+// addAuthConfigOptions adds OIDC and external auth configuration options.
+// When OIDCConfig is nil, no authentication middleware is configured (anonymous access).
+func (r *MCPRemoteProxyReconciler) addAuthConfigOptions(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy, options *[]runner.RunConfigBuilderOption,
+) error {
+	// Add OIDC configuration if specified (nil means anonymous access)
+	if proxy.Spec.OIDCConfig != nil {
+		if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, proxy, options); err != nil {
+			return fmt.Errorf("failed to process OIDCConfig: %w", err)
+		}
+	}
+
+	// Resolve OIDC config for embedded auth server configuration
+	var resolvedOIDCConfig *oidc.OIDCConfig
+	if proxy.Spec.OIDCConfig != nil {
+		resolver := oidc.NewResolver(r.Client)
+		var err error
+		resolvedOIDCConfig, err = resolver.Resolve(ctx, proxy)
+		if err != nil {
+			return fmt.Errorf("failed to resolve OIDC config: %w", err)
+		}
+	}
+
+	// Add external auth configuration if specified
+	if err := ctrlutil.AddExternalAuthConfigOptions(
+		ctx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
+		resolvedOIDCConfig, options,
+	); err != nil {
+		return fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
+	}
+
+	return nil
 }
 
 // addHeaderForwardConfigOptions adds header forward configuration options to the builder options slice.

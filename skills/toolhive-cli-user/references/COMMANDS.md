@@ -411,6 +411,121 @@ thv config get-ca-cert
 thv config unset-ca-cert
 ```
 
+## Skill Commands
+
+All skill commands require `thv serve` to be running. They communicate via HTTP client with auto-discovery.
+
+### thv skill install
+
+Install a skill by name or OCI reference.
+
+```
+thv skill install [flags] SKILL_NAME
+```
+
+**Flags:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--client` | Target client application (e.g. claude-code) | |
+| `--scope` | Installation scope (user, project) | user |
+| `--force` | Overwrite existing skill directory | false |
+| `--project-root` | Project root path (required when scope=project) | |
+| `--group` | Group to add the skill to after installation | |
+
+### thv skill uninstall
+
+Remove an installed skill.
+
+```
+thv skill uninstall [flags] SKILL_NAME
+```
+
+**Flags:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--scope` | Scope to uninstall from (user, project) | user |
+| `--project-root` | Project root path (required when scope=project) | |
+
+Shell completion available for skill names.
+
+### thv skill list
+
+List installed skills. Alias: `thv skill ls`.
+
+```
+thv skill list [flags]
+```
+
+**Flags:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--scope` | Filter by scope (user, project) | |
+| `--client` | Filter by client application | |
+| `--format` | Output format (text, json) | text |
+| `--group` | Filter by group | |
+| `--project-root` | Project root path for project-scoped skills | |
+
+**Text output columns:** NAME, VERSION, SCOPE, STATUS, CLIENTS, REFERENCE
+
+### thv skill info
+
+Show detailed information about a skill.
+
+```
+thv skill info [flags] SKILL_NAME
+```
+
+**Flags:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--scope` | Filter by scope (user, project) | |
+| `--format` | Output format (text, json) | text |
+| `--project-root` | Project root path for project-scoped skills | |
+
+Shell completion available for skill names.
+
+### thv skill build
+
+Build a skill from a local directory into an OCI artifact.
+
+```
+thv skill build [flags] PATH
+```
+
+**Flags:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-t, --tag` | OCI tag for the built artifact | |
+
+Prints the OCI reference on success. Shell completion available for directory paths.
+
+### thv skill push
+
+Push a previously built skill artifact to a remote OCI registry.
+
+```
+thv skill push REFERENCE
+```
+
+No additional flags.
+
+### thv skill validate
+
+Check that a skill definition is valid and well-formed.
+
+```
+thv skill validate [flags] PATH
+```
+
+**Flags:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--format` | Output format (text, json) | text |
+
+**Text output:** Lists errors and warnings line by line. **JSON output:** `ValidationResult` with `Valid`, `Errors`, `Warnings` fields.
+
+Shell completion available for directory paths.
+
 ## Utility Commands
 
 ### thv inspector

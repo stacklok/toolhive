@@ -66,8 +66,9 @@ func ExtractConfig(authzConfig *authorizers.Config) (*Config, error) {
 // providerName. This is used by the runner middleware when the embedded auth
 // server is active to wire the upstream provider into Cedar evaluation.
 //
-// If src is not a Cedar config, or providerName is empty, src is returned
-// unchanged.
+// If src is not a Cedar config, providerName is empty, or src is nil, src is
+// returned unchanged with a nil error. This makes the function safe to call
+// unconditionally whenever the embedded auth server is active.
 func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*authorizers.Config, error) {
 	if src == nil || providerName == "" {
 		return src, nil
@@ -75,7 +76,10 @@ func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*auth
 
 	cedarCfg, err := ExtractConfig(src)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract Cedar config for upstream provider injection: %w", err)
+		// src is not a Cedar config (e.g. a future HTTP authorizer); treat as a
+		// no-op so callers can apply this unconditionally without needing to
+		// know the authorizer type ahead of time.
+		return src, nil
 	}
 
 	cedarCfg.Options.PrimaryUpstreamProvider = providerName
@@ -693,11 +697,11 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		return false, ErrMissingPrincipal
 	}
 
-	// Extract groups from the resolved claims and store them on the identity so
-	// that other middleware (audit, future authz layers) can read them, then pass
-	// them into the entity factory to build THVGroup parent entities.
+	// Extract groups from the resolved claims and pass them into the entity
+	// factory to build THVGroup parent entities for Cedar evaluation.
+	// The identity pointer is not mutated here because Identity MUST NOT be
+	// modified after it is placed in the request context (concurrent reads).
 	groups := auth.ExtractGroupsFromClaims(resolvedClaims, a.groupClaimName)
-	identity.Groups = groups
 
 	// Preprocess claims and arguments
 	processedClaims := preprocessClaims(resolvedClaims)

@@ -542,7 +542,11 @@ func WithMiddlewareFromFlags(
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
-		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
+		var authzErr error
+		middlewareConfigs, authzErr = addAuthzMiddleware(middlewareConfigs, authzConfigPath, b.config.EmbeddedAuthServerConfig)
+		if authzErr != nil {
+			return authzErr
+		}
 		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
 		// Add recovery middleware (always present, added last to be outermost wrapper)
@@ -669,29 +673,39 @@ func addTelemetryMiddleware(
 	return middlewareConfigs
 }
 
-// addAuthzMiddleware adds authorization middleware if config path is provided
+// addAuthzMiddleware adds authorization middleware if a config path is provided.
+// When embeddedAuthServerCfg is non-nil, the loaded Cedar config is enriched
+// with the upstream provider name so Cedar policies evaluate claims from the
+// upstream IDP token rather than the ToolHive-issued JWT.
 func addAuthzMiddleware(
-	middlewareConfigs []types.MiddlewareConfig, authzConfigPath string,
-) []types.MiddlewareConfig {
+	middlewareConfigs []types.MiddlewareConfig,
+	authzConfigPath string,
+	embeddedAuthServerCfg *authserver.RunConfig,
+) ([]types.MiddlewareConfig, error) {
 	if authzConfigPath == "" {
-		return middlewareConfigs
+		return middlewareConfigs, nil
 	}
 
 	authzParams := authz.FactoryMiddlewareParams{
 		ConfigPath: authzConfigPath, // Keep for backwards compatibility
 	}
 
-	// Read authz config contents if path is provided
+	// Load authz config and, when the embedded auth server is active, inject the
+	// primary upstream provider name so Cedar evaluates the upstream IDP token.
 	if authzConfigData, err := authz.LoadConfig(authzConfigPath); err == nil {
-		authzParams.ConfigData = authzConfigData
+		enriched, injectErr := injectUpstreamProviderIfNeeded(authzConfigData, embeddedAuthServerCfg)
+		if injectErr != nil {
+			return nil, fmt.Errorf("failed to inject upstream provider into authz config: %w", injectErr)
+		}
+		authzParams.ConfigData = enriched
 	}
-	// Note: We keep ConfigPath set for backwards compatibility
+	// Note: ConfigPath is kept set for backwards compatibility.
 
-	if authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams); err == nil {
-		middlewareConfigs = append(middlewareConfigs, *authzConfig)
+	authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authorization middleware config: %w", err)
 	}
-
-	return middlewareConfigs
+	return append(middlewareConfigs, *authzConfig), nil
 }
 
 // addAuditMiddleware adds audit middleware if enabled or config path is provided

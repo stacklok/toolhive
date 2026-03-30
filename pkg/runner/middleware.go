@@ -308,10 +308,10 @@ func addUpstreamSwapMiddleware(
 	if upstreamSwapConfig.ProviderName == "" {
 		upstreamSwapConfig.ProviderName = func() string {
 			if cfg := config.EmbeddedAuthServerConfig; cfg != nil &&
-				len(cfg.Upstreams) > 0 && cfg.Upstreams[0].Name != "" {
-				return cfg.Upstreams[0].Name
+				len(cfg.Upstreams) > 0 {
+				return authserver.ResolveUpstreamName(cfg.Upstreams[0].Name)
 			}
-			return "default"
+			return authserver.DefaultUpstreamName
 		}()
 	}
 

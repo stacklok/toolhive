@@ -1259,9 +1259,12 @@ func TestAuthorizeWithJWTClaims_GroupMembership(t *testing.T) {
 	}
 }
 
-// TestAuthorizeWithJWTClaims_PopulatesIdentityGroups verifies that
-// AuthorizeWithJWTClaims populates identity.Groups with the extracted groups.
-func TestAuthorizeWithJWTClaims_PopulatesIdentityGroups(t *testing.T) {
+// TestAuthorizeWithJWTClaims_DoesNotMutateIdentity verifies that
+// AuthorizeWithJWTClaims does not mutate the Identity stored in context.
+// The Identity contract (see auth.Identity) requires that the struct MUST NOT
+// be modified after it is placed in the request context to avoid concurrent
+// write races with other middleware reading the same pointer.
+func TestAuthorizeWithJWTClaims_DoesNotMutateIdentity(t *testing.T) {
 	t.Parallel()
 
 	policy := `permit(principal, action, resource);`
@@ -1281,6 +1284,9 @@ func TestAuthorizeWithJWTClaims_PopulatesIdentityGroups(t *testing.T) {
 			},
 		},
 	}
+	// Record pre-call state.
+	originalGroups := identity.Groups // nil before the call
+
 	ctx := auth.WithIdentity(context.Background(), identity)
 
 	_, err = authorizer.AuthorizeWithJWTClaims(
@@ -1292,10 +1298,9 @@ func TestAuthorizeWithJWTClaims_PopulatesIdentityGroups(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Groups should have been written back to the identity pointer.
-	retrieved, ok := auth.IdentityFromContext(ctx)
-	require.True(t, ok)
-	assert.Equal(t, []string{"devs", "ops"}, retrieved.Groups)
+	// Identity.Groups must NOT have been written by the authorizer.
+	assert.Equal(t, originalGroups, identity.Groups,
+		"authorizer must not mutate Identity after it is placed in context")
 }
 
 // TestAuthorizeWithJWTClaims_CustomGroupClaimName tests that GroupClaimName

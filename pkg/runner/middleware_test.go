@@ -5,6 +5,8 @@ package runner
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -681,4 +683,56 @@ func TestInjectUpstreamProviderIfNeeded(t *testing.T) {
 			assert.Equal(t, tt.wantProviderName, extracted.Options.PrimaryUpstreamProvider)
 		})
 	}
+}
+
+// writeCedarConfigFile writes a minimal Cedar authorization config JSON file to a
+// temporary directory and returns the path. The file is suitable for use as the
+// authzConfigPath argument to addAuthzMiddleware.
+func writeCedarConfigFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authz.json")
+	content := `{
+		"version": "1.0",
+		"type": "cedarv1",
+		"cedar": {
+			"policies": ["permit(principal, action, resource);"],
+			"entities_json": "[]"
+		}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+	return path
+}
+
+func TestAddAuthzMiddleware_InjectsUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	embeddedCfg := &authserver.RunConfig{
+		Upstreams: []authserver.UpstreamRunConfig{
+			{Name: "myidp"},
+		},
+	}
+
+	path := writeCedarConfigFile(t)
+	result, err := addAuthzMiddleware(nil, path, embeddedCfg)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	require.Equal(t, authz.MiddlewareType, result[0].Type)
+
+	// Decode the params and verify the upstream provider was injected.
+	var params authz.FactoryMiddlewareParams
+	require.NoError(t, json.Unmarshal(result[0].Parameters, &params))
+	require.NotNil(t, params.ConfigData, "ConfigData should be populated from file")
+
+	extracted, err := cedar.ExtractConfig(params.ConfigData)
+	require.NoError(t, err)
+	assert.Equal(t, "myidp", extracted.Options.PrimaryUpstreamProvider)
+}
+
+func TestAddAuthzMiddleware_EmptyPath(t *testing.T) {
+	t.Parallel()
+
+	result, err := addAuthzMiddleware(nil, "", nil)
+	require.NoError(t, err)
+	assert.Empty(t, result, "empty path should produce no middleware")
 }

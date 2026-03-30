@@ -7,10 +7,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TODO: Remove Hidden flag when skills feature is ready for release.
 var skillCmd = &cobra.Command{
-	Use:    "skill",
-	Short:  "Manage skills",
-	Long:   `The skill command provides subcommands to manage skills.`,
-	Hidden: true,
+	Use:   "skill",
+	Short: "Manage skills",
+	Long:  `The skill command provides subcommands to manage skills.`,
 }

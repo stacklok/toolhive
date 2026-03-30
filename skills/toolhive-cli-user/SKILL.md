@@ -1,12 +1,13 @@
 ---
 name: toolhive-cli-user
 description: >-
-  Guide for using ToolHive CLI (thv) to run and manage MCP servers.
+  Guide for using ToolHive CLI (thv) to run and manage MCP servers and skills.
   Use when running, listing, stopping, building, or configuring MCP servers locally.
   Covers server lifecycle, registry browsing, secrets management, client registration,
-  groups, container builds, exports, permissions, network isolation, and authentication.
+  groups, container builds, exports, permissions, network isolation, authentication,
+  and skill management (install, uninstall, list, info, build, push, validate).
   NOT for Kubernetes operator usage or ToolHive development/contributing.
-version: 0.2.0
+version: 0.3.0
 license: Apache-2.0
 ---
 
@@ -182,6 +183,36 @@ thv run --from-config ./config.json             # Import config
 
 For tool overrides, see [EXAMPLES.md](references/EXAMPLES.md#tool-filtering-and-overrides).
 
+## Skills Management
+
+Requires `thv serve` to be running. Skills have two scopes: `user` (global, default) and `project` (local to a project root).
+
+```bash
+thv skill install my-skill                              # Install from registry
+thv skill install ghcr.io/org/skill:v1.0                # Install by OCI reference
+thv skill install my-skill --client claude-code          # Target specific client
+thv skill install my-skill --scope project --project-root .  # Project-scoped
+thv skill install my-skill --group development           # Add to group
+thv skill install my-skill --force                       # Overwrite existing
+
+thv skill list                                           # List all installed
+thv skill ls --scope user --format json                  # Filter and format
+thv skill ls --client claude-code --group dev            # Filter by client/group
+
+thv skill info my-skill                                  # Show details
+thv skill info my-skill --format json                    # JSON output
+
+thv skill uninstall my-skill                             # Remove skill
+thv skill uninstall my-skill --scope project --project-root .
+
+thv skill validate ./my-skill-dir                        # Check skill definition
+thv skill build ./my-skill-dir                           # Build OCI artifact
+thv skill build ./my-skill-dir --tag ghcr.io/org/skill:v1.0
+thv skill push ghcr.io/org/skill:v1.0                   # Push to registry
+```
+
+For all flags and detailed examples, see [COMMANDS.md](references/COMMANDS.md#skill-commands) and [EXAMPLES.md](references/EXAMPLES.md#skills-management-examples).
+
 ## Debugging
 
 ```bash
@@ -194,10 +225,11 @@ thv runtime check                               # Verify container runtime
 
 ## Guardrails
 
-- NEVER use `docker rm` or `podman rm` on ToolHive-managed containers — always use `thv rm` for proper cleanup.
-- NEVER pass secrets as `-e SECRET=value` — use `--secret` with managed secrets instead.
+- NEVER use `docker rm` or `podman rm` on ToolHive-managed containers -- always use `thv rm` for proper cleanup.
+- NEVER pass secrets as `-e SECRET=value` -- use `--secret` with managed secrets instead.
 - Confirm destructive operations (`thv rm --all`, `thv stop --all`, `thv group rm --with-workloads`) with the user before running.
-- If the user asks about Kubernetes deployment, this skill does not cover the operator — direct them accordingly.
+- Skill commands require `thv serve` to be running. If a skill command fails with a connection error, suggest starting `thv serve` first.
+- If the user asks about Kubernetes deployment, this skill does not cover the operator -- direct them accordingly.
 
 ## Error Handling
 
@@ -211,6 +243,8 @@ thv runtime check                               # Verify container runtime
 | Image pull fails | Network or auth issue | Check network connectivity; for private registries, ensure credentials are configured |
 | Remote auth token expired | OAuth token lifetime exceeded | Restart the server (`thv restart`) to trigger fresh authentication |
 | Sensitive files exposed in mount | No `.thvignore` configured | Add `.thvignore` in mounted directory or globally at `~/.config/toolhive/thvignore` |
+| Skill command fails with connection error | `thv serve` not running | Start `thv serve` before using skill commands |
+| Skill validation fails | Invalid SKILL.md or directory structure | Run `thv skill validate ./path` and fix reported errors |
 
 ## Global Options
 

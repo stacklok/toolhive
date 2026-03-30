@@ -86,6 +86,16 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  disableUpstreamTokenInjection:
+                    default: false
+                    description: |-
+                      DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+                      upstream IdP tokens into requests forwarded to the backend MCP server.
+                      When true, the embedded auth server still handles OAuth flows for clients
+                      but does not swap ToolHive JWTs for upstream tokens on outgoing requests.
+                      This is useful when the backend MCP server does not require authentication
+                      (e.g., public documentation servers) but you still want client authentication.
+                    type: boolean
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing

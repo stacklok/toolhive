@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/stacklok/go-microvm/guest/boot"
+	microvmenv "github.com/stacklok/go-microvm/guest/env"
 	"github.com/stacklok/go-microvm/guest/reaper"
 )
 
@@ -51,11 +53,25 @@ func main() {
 		return
 	}
 
+	// Build the child environment.  The layering order matches Docker's
+	// convention where runtime-injected vars override image defaults:
+	//   1. OCI image ENV (base defaults from ep.Env)
+	//   2. ToolHive runtime vars from /etc/environment (MCP_TRANSPORT,
+	//      MCP_PORT, API keys, egress proxy settings, etc.)
+	// Note: boot.Run() also loads /etc/environment for the SSH server, but
+	// does not expose the parsed env to us -- we load it separately here.
+	childEnv := ep.Env
+	if runtimeEnv, err := microvmenv.Load("/etc/environment"); err != nil {
+		logger.Warn("failed to load /etc/environment", "error", err)
+	} else {
+		childEnv = mergeEnv(childEnv, runtimeEnv)
+	}
+
 	// Start the MCP server as a child process.
 	cmd := exec.Command(ep.Cmd[0], ep.Cmd[1:]...) //nolint:gosec // cmd comes from trusted OCI config
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), ep.Env...)
+	cmd.Env = childEnv
 	if ep.WorkingDir != "" {
 		cmd.Dir = ep.WorkingDir
 	}
@@ -79,7 +95,8 @@ func main() {
 
 	// Wait for the child to exit.
 	if err := cmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			logger.Info("MCP server exited", "code", exitErr.ExitCode())
 		} else {
 			logger.Error("error waiting for MCP server", "error", err)

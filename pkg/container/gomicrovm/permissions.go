@@ -5,6 +5,7 @@ package gomicrovm
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 
@@ -15,8 +16,10 @@ import (
 )
 
 // buildEgressPolicy converts toolhive-core NetworkPermissions into a go-microvm
-// EgressPolicy.  Returns nil when no restriction is needed (InsecureAllowAll,
-// nil input, or empty allow list).
+// EgressPolicy.  Returns nil when no restriction is needed (InsecureAllowAll
+// or nil input).  When AllowHost is empty and InsecureAllowAll is false the
+// intent is deny-all, but go-microvm rejects an empty AllowedHosts list so we
+// log a warning and return nil (unrestricted).
 func buildEgressPolicy(netPerm *permissions.NetworkPermissions) *microvm.EgressPolicy {
 	if netPerm == nil || netPerm.Outbound == nil {
 		return nil
@@ -25,7 +28,10 @@ func buildEgressPolicy(netPerm *permissions.NetworkPermissions) *microvm.EgressP
 	if out.InsecureAllowAll {
 		return nil
 	}
+	// TODO(go-microvm#54): pass empty AllowedHosts once upstream supports deny-all.
 	if len(out.AllowHost) == 0 {
+		slog.Warn("go-microvm: egress policy has no allowed hosts and InsecureAllowAll is false; " +
+			"intent is deny-all but go-microvm does not support empty AllowedHosts, network will be unrestricted")
 		return nil
 	}
 
@@ -61,6 +67,11 @@ func buildVirtioFSMounts(permConfig *runtime.PermissionConfig) []microvm.VirtioF
 	for i, m := range permConfig.Mounts {
 		if m.Type != runtime.MountTypeBind {
 			continue
+		}
+		// TODO(go-microvm#53): propagate ReadOnly once upstream supports it.
+		if m.ReadOnly {
+			slog.Warn("go-microvm: VirtioFSMount does not support ReadOnly; mount will be read-write",
+				"source", m.Source, "target", m.Target)
 		}
 		mounts = append(mounts, microvm.VirtioFSMount{
 			Tag:      mountTag(i, m.Source),

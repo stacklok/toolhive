@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,7 +53,7 @@ func (c *Client) DeployWorkload(
 		return 0, fmt.Errorf("go-microvm runtime: could not find an available host port")
 	}
 
-	vmDir := fmt.Sprintf("%s/vms/%s", c.opts.dataDir, name)
+	vmDir := filepath.Join(c.opts.dataDir, "vms", name)
 	if err := os.MkdirAll(vmDir, 0o700); err != nil {
 		return 0, fmt.Errorf("go-microvm runtime: creating VM data dir: %w", err)
 	}
@@ -112,8 +113,8 @@ func (c *Client) buildMicrovmOptions(
 	containerPort, hostPort int,
 	isolateNetwork bool,
 ) ([]microvm.Option, error) {
-	// Generate ephemeral SSH key pair. boot.Run() requires an authorized_keys
-	// file even though we don't actively SSH into the guest.
+	// Generate ephemeral SSH key pair for the guest SSH server started by
+	// boot.Run(). The private key is kept on the host for debugging access.
 	_, pubKeyPath, err := microvmssh.GenerateKeyPair(vmDir)
 	if err != nil {
 		return nil, fmt.Errorf("go-microvm runtime: generating SSH key pair: %w", err)

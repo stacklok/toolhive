@@ -520,7 +520,8 @@ func TestHandlePostRequest_InvalidSession(t *testing.T) {
 
 	// Check response
 	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Contains(t, w.Body.String(), "Could not find session")
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	assert.Contains(t, w.Body.String(), `"code":-32001`)
 }
 
 // TestRWMutexUsage tests that RWMutex is used correctly for read operations

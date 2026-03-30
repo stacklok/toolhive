@@ -933,6 +933,41 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		// We don't care if the restart ultimately succeeds or fails
 	})
 
+	t.Run("remote_workload_pid_zero_no_error_treated_as_dead", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
+
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
+
+		// PID 0 with nil error - simulates ResetWorkloadPID setting process_id to 0
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(0, nil)
+		// stopProxyIfNeeded also calls GetWorkloadPID (via stopProcess)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(0, nil)
+		statusMgr.EXPECT().ResetWorkloadPID(gomock.Any(), "test-base").Return(nil)
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+		manager := &DefaultManager{
+			statuses: statusMgr,
+		}
+
+		runConfig := &runner.RunConfig{
+			BaseName:  "test-base",
+			RemoteURL: "http://example.com",
+		}
+
+		_ = manager.restartRemoteWorkload(context.Background(), "test-workload", runConfig, false)
+
+		// Mock expectations verify stop logic was invoked, not the healthy-supervisor no-op path
+	})
+
 	t.Run("container_workload_healthy_supervisor_no_restart", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
@@ -1012,6 +1047,50 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 
 		// The important part is that the stop methods were called (verified by mock expectations)
 		// We don't care if the restart ultimately succeeds or fails
+	})
+
+	t.Run("container_workload_pid_zero_no_error_treated_as_dead", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
+		runtimeMgr := runtimeMocks.NewMockRuntime(ctrl)
+
+		containerInfo := runtime.ContainerInfo{
+			Name:  "test-workload",
+			State: runtime.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive.base-name": "test-workload",
+			},
+		}
+		runtimeMgr.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(containerInfo, nil)
+
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
+
+		// PID 0 with nil error - simulates ResetWorkloadPID setting process_id to 0
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, nil)
+
+		// When supervisor is treated as dead, expect stop logic
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, nil)
+		statusMgr.EXPECT().ResetWorkloadPID(gomock.Any(), "test-workload").Return(nil)
+		runtimeMgr.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
+
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+		manager := &DefaultManager{
+			statuses: statusMgr,
+			runtime:  runtimeMgr,
+		}
+
+		_ = manager.restartContainerWorkload(context.Background(), "test-workload", false)
+
+		// Mock expectations verify stop logic was invoked, not the healthy-supervisor no-op path
 	})
 }
 

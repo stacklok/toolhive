@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package secrets
@@ -90,6 +90,11 @@ func (o *OnePasswordManager) ListSecrets(ctx context.Context) ([]SecretDescripti
 	}
 
 	return secrets, nil
+}
+
+// DeleteSecrets is a no-op for the 1Password provider (read-only).
+func (*OnePasswordManager) DeleteSecrets(_ context.Context, _ []string) error {
+	return nil
 }
 
 // Cleanup is not needed for 1Password.

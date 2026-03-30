@@ -13,9 +13,8 @@ import (
 	context "context"
 	reflect "reflect"
 
-	gomock "go.uber.org/mock/gomock"
-
 	secrets "github.com/stacklok/toolhive/pkg/secrets"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockProvider is a mock of Provider interface.
@@ -40,6 +39,20 @@ func NewMockProvider(ctrl *gomock.Controller) *MockProvider {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
+}
+
+// DeleteSecrets mocks base method.
+func (m *MockProvider) DeleteSecrets(ctx context.Context, keys []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteSecrets", ctx, keys)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteSecrets indicates an expected call of DeleteSecrets.
+func (mr *MockProviderMockRecorder) DeleteSecrets(ctx, keys any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSecrets", reflect.TypeOf((*MockProvider)(nil).DeleteSecrets), ctx, keys)
 }
 
 // Capabilities mocks base method.

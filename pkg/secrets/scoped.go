@@ -11,6 +11,17 @@ import (
 )
 
 // SecretScope is the type for system-managed secret scope identifiers.
+//
+// Invariants that every SecretScope value MUST satisfy:
+//   - Non-empty: an empty scope would produce the prefix "__thv__", which is
+//     ambiguous and cannot be reliably stripped.
+//   - No underscores: the key format is "__thv_<scope>_<name>"; an underscore
+//     inside the scope would make it impossible to determine where the scope
+//     ends and the name begins.
+//
+// All constants declared in this package (ScopeRegistry, ScopeWorkloads,
+// ScopeAuth) satisfy these invariants. Custom scopes introduced in the future
+// must be validated against them.
 type SecretScope string
 
 const (
@@ -196,7 +207,10 @@ func (u *UserProvider) ListSecrets(ctx context.Context) ([]SecretDescription, er
 	return result, nil
 }
 
-// DeleteSecrets removes all named keys, rejecting any that are system-reserved.
+// DeleteSecrets removes all named keys with all-or-nothing semantics: it
+// validates every name in the list before issuing any delete to the underlying
+// store. If any name is system-reserved the entire operation is aborted and
+// ErrReservedKeyName is returned without deleting anything.
 func (u *UserProvider) DeleteSecrets(ctx context.Context, names []string) error {
 	for _, name := range names {
 		if isSystemKey(name) {

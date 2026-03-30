@@ -6,6 +6,7 @@ package secrets_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -740,6 +741,13 @@ func TestUserProvider_DeleteSecrets(t *testing.T) {
 			wantReserve: true,
 		},
 		{
+			name:        "mixed input: aborts without deleting when any key is reserved",
+			inputNames:  []string{"valid-key", "__thv_registry_reserved"},
+			wantErr:     true,
+			wantReserve: true,
+			// expectCall is false: the inner provider must NOT be called at all
+		},
+		{
 			name:       "propagates error from inner",
 			inputNames: []string{"valid-key"},
 			wantErr:    true,
@@ -775,6 +783,30 @@ func TestUserProvider_DeleteSecrets(t *testing.T) {
 				require.NoError(t, err)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SecretScope invariant tests
+// ---------------------------------------------------------------------------
+
+// TestSecretScopeInvariants verifies that every declared SecretScope constant
+// satisfies the invariants documented on the SecretScope type:
+//   - non-empty
+//   - contains no underscores (underscore is the delimiter in "__thv_<scope>_<name>")
+func TestSecretScopeInvariants(t *testing.T) {
+	t.Parallel()
+
+	scopes := []secrets.SecretScope{
+		secrets.ScopeRegistry,
+		secrets.ScopeWorkloads,
+		secrets.ScopeAuth,
+	}
+
+	for _, scope := range scopes {
+		s := string(scope)
+		assert.NotEmpty(t, s, "scope %q must not be empty", s)
+		assert.False(t, strings.Contains(s, "_"), "scope %q must not contain underscores", s)
 	}
 }
 

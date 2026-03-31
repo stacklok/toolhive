@@ -733,6 +733,8 @@ _Appears in:_
 - [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
 - [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
 - [api.v1alpha1.MCPGroupList](#apiv1alpha1mcpgrouplist)
+- [api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig)
+- [api.v1alpha1.MCPOIDCConfigList](#apiv1alpha1mcpoidcconfiglist)
 - [api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry)
 - [api.v1alpha1.MCPRegistryList](#apiv1alpha1mcpregistrylist)
 - [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
@@ -947,6 +949,7 @@ CABundleSource defines a source for CA certificate bundles.
 _Appears in:_
 - [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
+- [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1385,15 +1388,40 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OIDC client ID |  | Optional: \{\} <br /> |
-| `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional)<br />Deprecated: Use ClientSecretRef instead for better security |  | Optional: \{\} <br /> |
-| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret<br />If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence |  | Optional: \{\} <br /> |
-| `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.<br />Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to<br />already exist in the proxy runner container (e.g., Kubernetes service account CA at<br />/var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,<br />use CABundleRef which automatically mounts the ConfigMap and computes the path.<br />This field will be removed when the API graduates to v1beta1. |  | Optional: \{\} <br /> |
-| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.<br />If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef. |  | Optional: \{\} <br /> |
+| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret |  | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path. |  | Optional: \{\} <br /> |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  | Optional: \{\} <br /> |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false | Optional: \{\} <br /> |
 | `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing | false | Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production<br />Only enable for local development, testing, or trusted internal networks | false | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)<br />If empty, defaults to ["openid"] |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.InlineOIDCSharedConfig
+
+
+
+InlineOIDCSharedConfig contains direct OIDC configuration.
+This contains shared fields without audience and scopes, which are specified per-server
+via MCPOIDCConfigReference.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuer` _string_ | Issuer is the OIDC issuer URL |  | Required: \{\} <br /> |
+| `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  | Optional: \{\} <br /> |
+| `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  | Optional: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OIDC client ID |  | Optional: \{\} <br /> |
+| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret |  | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath. |  | Optional: \{\} <br /> |
+| `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests |  | Optional: \{\} <br /> |
+| `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses | false | Optional: \{\} <br /> |
+| `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses | false | Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.KubernetesOIDCConfig
@@ -1416,6 +1444,28 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint<br />If empty, OIDC discovery will be used to automatically determine the introspection URL |  | Optional: \{\} <br /> |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.KubernetesServiceAccountOIDCConfig
+
+
+
+KubernetesServiceAccountOIDCConfig configures OIDC for Kubernetes service account token validation.
+This contains shared fields without audience, which is specified per-server via MCPOIDCConfigReference.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for.<br />If empty, uses the pod's service account. |  | Optional: \{\} <br /> |
+| `namespace` _string_ | Namespace is the namespace of the service account.<br />If empty, uses the MCPServer's namespace. |  | Optional: \{\} <br /> |
+| `issuer` _string_ | Issuer is the OIDC issuer URL. | https://kubernetes.default.svc | Optional: \{\} <br /> |
+| `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
+| `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |
+| `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPExternalAuthConfig
@@ -1602,6 +1652,109 @@ _Appears in:_
 | `remoteProxies` _string array_ | RemoteProxies lists MCPRemoteProxy names in this group |  | Optional: \{\} <br /> |
 | `remoteProxyCount` _integer_ | RemoteProxyCount is the number of MCPRemoteProxies |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPOIDCConfig
+
+
+
+MCPOIDCConfig is the Schema for the mcpoidcconfigs API.
+MCPOIDCConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources within the same namespace. Cross-namespace references
+are not supported for security and isolation reasons.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPOIDCConfigList](#apiv1alpha1mcpoidcconfiglist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPOIDCConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)_ |  |  |  |
+| `status` _[api.v1alpha1.MCPOIDCConfigStatus](#apiv1alpha1mcpoidcconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPOIDCConfigList
+
+
+
+MCPOIDCConfigList contains a list of MCPOIDCConfig
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPOIDCConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig) array_ |  |  |  |
+
+
+
+
+#### api.v1alpha1.MCPOIDCConfigSourceType
+
+_Underlying type:_ _string_
+
+MCPOIDCConfigSourceType represents the type of OIDC configuration source for MCPOIDCConfig
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)
+
+| Field | Description |
+| --- | --- |
+| `kubernetesServiceAccount` | MCPOIDCConfigTypeKubernetesServiceAccount is the type for Kubernetes service account token validation<br /> |
+| `inline` | MCPOIDCConfigTypeInline is the type for inline OIDC configuration<br /> |
+
+
+#### api.v1alpha1.MCPOIDCConfigSpec
+
+
+
+MCPOIDCConfigSpec defines the desired state of MCPOIDCConfig.
+MCPOIDCConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources in the same namespace.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _[api.v1alpha1.MCPOIDCConfigSourceType](#apiv1alpha1mcpoidcconfigsourcetype)_ | Type is the type of OIDC configuration source |  | Enum: [kubernetesServiceAccount inline] <br />Required: \{\} <br /> |
+| `kubernetesServiceAccount` _[api.v1alpha1.KubernetesServiceAccountOIDCConfig](#apiv1alpha1kubernetesserviceaccountoidcconfig)_ | KubernetesServiceAccount configures OIDC for Kubernetes service account token validation.<br />Only used when Type is "kubernetesServiceAccount". |  | Optional: \{\} <br /> |
+| `inline` _[api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)_ | Inline contains direct OIDC configuration.<br />Only used when Type is "inline". |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPOIDCConfigStatus
+
+
+
+MCPOIDCConfigStatus defines the observed state of MCPOIDCConfig
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPOIDCConfig's state |  | Optional: \{\} <br /> |
+| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPOIDCConfig. |  | Optional: \{\} <br /> |
+| `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPOIDCConfig |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistry
@@ -1918,7 +2071,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `remoteURL` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
-| `port` _integer_ | Port is the port to expose the MCP proxy on<br />Deprecated: Use ProxyPort instead | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
 | `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the proxy<br />This validates incoming tokens from clients. Required for proxy mode. |  | Required: \{\} <br /> |
@@ -2039,8 +2191,6 @@ _Appears in:_
 | `image` _string_ | Image is the container image for the MCP server |  | Required: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the MCP server (stdio, streamable-http or sse) | stdio | Enum: [stdio streamable-http sse] <br /> |
 | `proxyMode` _string_ | ProxyMode is the proxy mode for stdio transport (sse or streamable-http)<br />This setting is ONLY applicable when Transport is "stdio".<br />For direct transports (sse, streamable-http), this field is ignored.<br />The default value is applied by Kubernetes but will be ignored for non-stdio transports. | streamable-http | Enum: [sse streamable-http] <br />Optional: \{\} <br /> |
-| `port` _integer_ | Port is the port to expose the MCP server on<br />Deprecated: Use ProxyPort instead | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
-| `targetPort` _integer_ | TargetPort is the port that MCP server listens to<br />Deprecated: Use McpPort instead |  | Maximum: 65535 <br />Minimum: 1 <br />Optional: \{\} <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the proxy runner on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `mcpPort` _integer_ | McpPort is the port that MCP server listens to |  | Maximum: 65535 <br />Minimum: 1 <br />Optional: \{\} <br /> |
 | `args` _string array_ | Args are additional arguments to pass to the MCP server |  | Optional: \{\} <br /> |
@@ -2055,8 +2205,7 @@ _Appears in:_
 | `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  | Optional: \{\} <br /> |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
-| `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server<br />Deprecated: Use ToolConfigRef instead |  | Optional: \{\} <br /> |
-| `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this takes precedence over the inline ToolsFilter field. |  | Optional: \{\} <br /> |
+| `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
 | `telemetry` _[api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)_ | Telemetry defines observability configuration for the MCP server |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
@@ -2663,6 +2812,7 @@ _Appears in:_
 - [api.v1alpha1.HeaderFromSecret](#apiv1alpha1headerfromsecret)
 - [api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
+- [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
 - [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
 - [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
 - [api.v1alpha1.RedisACLUserConfig](#apiv1alpha1redisacluserconfig)

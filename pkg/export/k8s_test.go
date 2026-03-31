@@ -256,7 +256,7 @@ func TestWriteK8sManifest(t *testing.T) {
 			},
 		},
 		{
-			name: "config with tools filter",
+			name: "config with tools filter is not exported to CRD",
 			config: &runner.RunConfig{
 				Image:       "ghcr.io/stacklok/mcp-server:latest",
 				Name:        "test",
@@ -266,9 +266,8 @@ func TestWriteK8sManifest(t *testing.T) {
 			},
 			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
 				t.Helper()
-				require.Len(t, mcpServer.Spec.ToolsFilter, 2)
-				assert.Equal(t, "tool1", mcpServer.Spec.ToolsFilter[0])
-				assert.Equal(t, "tool2", mcpServer.Spec.ToolsFilter[1])
+				// ToolsFilter is not exported to the CRD; use MCPToolConfig with toolConfigRef instead
+				assert.Nil(t, mcpServer.Spec.ToolConfigRef, "toolConfigRef should not be set by export")
 			},
 		},
 		{

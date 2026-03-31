@@ -1653,11 +1653,6 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 		*out = new(AuditConfig)
 		**out = **in
 	}
-	if in.ToolsFilter != nil {
-		in, out := &in.ToolsFilter, &out.ToolsFilter
-		*out = make([]string, len(*in))
-		copy(*out, *in)
-	}
 	if in.ToolConfigRef != nil {
 		in, out := &in.ToolConfigRef, &out.ToolConfigRef
 		*out = new(ToolConfigRef)

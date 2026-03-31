@@ -37,7 +37,7 @@ metadata:
   namespace: default
 spec:
   remoteURL: "https://mcp.example.com/api"
-  port: 8080
+  proxyPort: 8080
   transport: streamable-http
 
   # OIDC configuration for incoming authentication (validates tokens from clients)

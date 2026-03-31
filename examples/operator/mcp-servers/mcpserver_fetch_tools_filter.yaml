@@ -1,4 +1,13 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPToolConfig
+metadata:
+  name: fetch-tools
+  namespace: toolhive-system
+spec:
+  toolsFilter:
+    - fetch
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
   name: fetch
@@ -6,8 +15,8 @@ metadata:
 spec:
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
-  tools:
-    - fetch
+  toolConfigRef:
+    name: fetch-tools
   proxyPort: 8080
   mcpPort: 8080
   resources:

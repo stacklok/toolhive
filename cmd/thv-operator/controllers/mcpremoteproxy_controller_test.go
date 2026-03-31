@@ -885,7 +885,7 @@ func TestEnsureRBACResources(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -945,7 +945,7 @@ func TestMCPRemoteProxyEnsureRBACResources_Update(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -1027,7 +1027,7 @@ func TestMCPRemoteProxyEnsureRBACResources_Idempotency(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -1089,7 +1089,7 @@ func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL:      "https://mcp.example.com",
-			Port:           8080,
+			ProxyPort:      8080,
 			ServiceAccount: &customSA,
 		},
 	}

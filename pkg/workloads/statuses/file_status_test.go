@@ -4,6 +4,7 @@
 package statuses
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -231,6 +232,14 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
 	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "running-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(`{"name": "running-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
+
+	// Mock runtime name for isOwnedByActiveRuntime and migrateRuntimeName
+	mockRuntime.EXPECT().Name().Return("docker").AnyTimes()
+
+	// Mock GetWriter for migrateRuntimeName (legacy workload with no runtime_name gets migrated)
+	mockRunConfigStore.EXPECT().GetWriter(gomock.Any(), "running-workload").DoAndReturn(func(context.Context, string) (io.WriteCloser, error) {
+		return nopWriteCloser{&bytes.Buffer{}}, nil
 	}).AnyTimes()
 
 	// Create a workload status file and set it to running
@@ -915,6 +924,14 @@ func TestFileStatusManager_GetWorkload_HealthyRunningWorkload(t *testing.T) {
 		return io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`)), nil
 	}).AnyTimes()
 
+	// Mock runtime name for isOwnedByActiveRuntime and migrateRuntimeName
+	mockRuntime.EXPECT().Name().Return("docker").AnyTimes()
+
+	// Mock GetWriter for migrateRuntimeName (legacy workload with no runtime_name gets migrated)
+	mockRunConfigStore.EXPECT().GetWriter(gomock.Any(), "healthy-workload").DoAndReturn(func(context.Context, string) (io.WriteCloser, error) {
+		return nopWriteCloser{&bytes.Buffer{}}, nil
+	}).AnyTimes()
+
 	// Set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
 	require.NoError(t, err)
@@ -963,6 +980,9 @@ func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
 	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(`{"name": "proxy-down-workload", "transport": "sse"}`)), nil
 	}).AnyTimes()
+
+	// Mock runtime name for isOwnedByActiveRuntime
+	mockRuntime.EXPECT().Name().Return("docker").AnyTimes()
 
 	// First, create a status file manually to ensure file is found
 	statusFile := workloadStatusFile{
@@ -1039,6 +1059,14 @@ func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
 	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
 	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-with-proxy").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(`{"name": "healthy-with-proxy", "transport": "sse"}`)), nil
+	}).AnyTimes()
+
+	// Mock runtime name for isOwnedByActiveRuntime and migrateRuntimeName
+	mockRuntime.EXPECT().Name().Return("docker").AnyTimes()
+
+	// Mock GetWriter for migrateRuntimeName (legacy workload with no runtime_name gets migrated)
+	mockRunConfigStore.EXPECT().GetWriter(gomock.Any(), "healthy-with-proxy").DoAndReturn(func(context.Context, string) (io.WriteCloser, error) {
+		return nopWriteCloser{&bytes.Buffer{}}, nil
 	}).AnyTimes()
 
 	// Set the workload status to running in the file
@@ -2349,6 +2377,138 @@ func TestFileStatusManager_CrossRuntimeProtection(t *testing.T) {
 					assert.Equal(t, rt.WorkloadStatusRunning, workload.Status,
 						"workload should remain running (cross-runtime protection)")
 				}
+			}
+		})
+	}
+}
+
+// nopWriteCloser wraps a bytes.Buffer with a no-op Close.
+type nopWriteCloser struct {
+	*bytes.Buffer
+}
+
+func (nopWriteCloser) Close() error { return nil }
+
+func TestMigrateRuntimeName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		runtimeName     string
+		runConfigJSON   string
+		expectWrite     bool
+		expectedRuntime string
+		getReaderErr    bool
+		getWriterErr    bool
+	}{
+		{
+			name:            "migrates empty runtime_name",
+			runtimeName:     "docker",
+			runConfigJSON:   `{"name": "my-workload", "image": "test:latest"}`,
+			expectWrite:     true,
+			expectedRuntime: "docker",
+		},
+		{
+			name:            "migrates explicit empty runtime_name",
+			runtimeName:     "docker",
+			runConfigJSON:   `{"name": "my-workload", "runtime_name": "", "image": "test:latest"}`,
+			expectWrite:     true,
+			expectedRuntime: "docker",
+		},
+		{
+			name:          "no-op when runtime_name already set",
+			runtimeName:   "docker",
+			runConfigJSON: `{"name": "my-workload", "runtime_name": "docker", "image": "test:latest"}`,
+			expectWrite:   false,
+		},
+		{
+			name:          "no-op when runtime_name set to different runtime",
+			runtimeName:   "docker",
+			runConfigJSON: `{"name": "my-workload", "runtime_name": "go-microvm", "image": "test:latest"}`,
+			expectWrite:   false,
+		},
+		{
+			name:         "graceful on GetReader error",
+			runtimeName:  "docker",
+			getReaderErr: true,
+			expectWrite:  false,
+		},
+		{
+			name:          "graceful on GetWriter error",
+			runtimeName:   "docker",
+			runConfigJSON: `{"name": "my-workload"}`,
+			getWriterErr:  true,
+			expectWrite:   false,
+		},
+		{
+			name:          "graceful on malformed JSON",
+			runtimeName:   "docker",
+			runConfigJSON: `{bad json`,
+			expectWrite:   false,
+		},
+		{
+			name:            "migrates non-string runtime_name",
+			runtimeName:     "docker",
+			runConfigJSON:   `{"name": "my-workload", "runtime_name": 42}`,
+			expectWrite:     true,
+			expectedRuntime: "docker",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+			ctx := t.Context()
+
+			workloadName := "test-workload"
+			mockRuntime.EXPECT().Name().Return(tt.runtimeName).AnyTimes()
+
+			if tt.getReaderErr {
+				mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).
+					Return(nil, errors.New("store error"))
+			} else {
+				mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).DoAndReturn(
+					func(context.Context, string) (io.ReadCloser, error) {
+						return io.NopCloser(strings.NewReader(tt.runConfigJSON)), nil
+					},
+				)
+			}
+
+			var writeBuf nopWriteCloser
+			if tt.expectWrite {
+				if tt.getWriterErr {
+					mockRunConfigStore.EXPECT().GetWriter(gomock.Any(), workloadName).
+						Return(nil, errors.New("write error"))
+				} else {
+					writeBuf = nopWriteCloser{&bytes.Buffer{}}
+					mockRunConfigStore.EXPECT().GetWriter(gomock.Any(), workloadName).
+						Return(writeBuf, nil)
+				}
+			} else if tt.getWriterErr {
+				mockRunConfigStore.EXPECT().GetWriter(gomock.Any(), workloadName).
+					Return(nil, errors.New("write error"))
+			}
+
+			manager.migrateRuntimeName(ctx, workloadName)
+
+			if tt.expectWrite && !tt.getWriterErr {
+				var written map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(writeBuf.Bytes(), &written))
+
+				var runtimeName string
+				require.NoError(t, json.Unmarshal(written["runtime_name"], &runtimeName))
+				assert.Equal(t, tt.expectedRuntime, runtimeName,
+					"migrated runtime_name should match active runtime")
+
+				// Verify other fields are preserved
+				var name string
+				require.NoError(t, json.Unmarshal(written["name"], &name))
+				assert.Equal(t, "my-workload", name, "other fields should be preserved")
 			}
 		})
 	}

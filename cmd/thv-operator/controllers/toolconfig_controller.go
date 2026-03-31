@@ -120,26 +120,19 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	logger := log.FromContext(ctx)
 	logger.Info("MCPToolConfig configuration changed", "oldHash", toolConfig.Status.ConfigHash, "newHash", configHash)
 
-	// Update the status with the new hash
-	toolConfig.Status.ConfigHash = configHash
-	toolConfig.Status.ObservedGeneration = toolConfig.Generation
-
 	// Find all MCPServers that reference this MCPToolConfig
 	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing MCPServers")
-		meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionToolConfigValid,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationFailed,
-			Message:            "Failed to find referencing MCPServers",
-			ObservedGeneration: toolConfig.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {
-			logger.Error(updateErr, "Failed to update MCPToolConfig status after error")
-		}
+		// Don't persist the new hash on error — returning the error will requeue,
+		// and on the next attempt handleConfigHashChange will be re-entered so that
+		// MCPServer annotation updates are not permanently skipped.
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
+
+	// Update the status with the new hash only after successful server lookup
+	toolConfig.Status.ConfigHash = configHash
+	toolConfig.Status.ObservedGeneration = toolConfig.Generation
 
 	// Update the status with the list of referencing servers
 	serverNames := make([]string, 0, len(referencingServers))

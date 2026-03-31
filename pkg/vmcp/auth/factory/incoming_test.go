@@ -171,7 +171,7 @@ func TestNewCedarAuthzMiddleware_PropagatesPrimaryUpstreamProvider(t *testing.T)
 		PrimaryUpstreamProvider: providerName,
 	}
 
-	mw, err := newCedarAuthzMiddleware(authzCfg)
+	mw, err := newCedarAuthzMiddleware(authzCfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, mw, "middleware function should not be nil")
 

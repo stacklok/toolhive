@@ -7,6 +7,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Condition types for MCPToolConfig
+const (
+	// ConditionToolConfigValid indicates whether the MCPToolConfig spec is valid.
+	ConditionToolConfigValid = "Valid"
+)
+
+const (
+	// ConditionReasonToolConfigValidationSucceeded indicates validation passed.
+	ConditionReasonToolConfigValidationSucceeded = "ValidationSucceeded"
+	// ConditionReasonToolConfigValidationFailed indicates validation failed.
+	ConditionReasonToolConfigValidationFailed = "ValidationFailed"
+)
+
 // MCPToolConfigSpec defines the desired state of MCPToolConfig.
 // MCPToolConfig resources are namespace-scoped and can only be referenced by
 // MCPServer resources in the same namespace.
@@ -68,6 +81,12 @@ type ToolOverride struct {
 
 // MCPToolConfigStatus defines the observed state of MCPToolConfig
 type MCPToolConfigStatus struct {
+	// Conditions represent the latest available observations of the MCPToolConfig's state
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
 	// ObservedGeneration is the most recent generation observed for this MCPToolConfig.
 	// It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server.
 	// +optional

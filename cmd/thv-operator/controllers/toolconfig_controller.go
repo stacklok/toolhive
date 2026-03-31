@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -78,6 +80,15 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: finalizerRequeueDelay}, nil
 	}
 
+	// Validation succeeded - set Valid=True condition
+	conditionChanged := meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionToolConfigValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationSucceeded,
+		Message:            "Spec validation passed",
+		ObservedGeneration: toolConfig.Generation,
+	})
+
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(toolConfig.Spec)
 
@@ -85,6 +96,14 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	hashChanged := toolConfig.Status.ConfigHash != configHash
 	if hashChanged {
 		return r.handleConfigHashChange(ctx, toolConfig, configHash)
+	}
+
+	// Update condition if it changed (even without hash change)
+	if conditionChanged {
+		if err := r.Status().Update(ctx, toolConfig); err != nil {
+			logger.Error(err, "Failed to update MCPToolConfig status after condition change")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Even when hash hasn't changed, update referencing servers list.
@@ -109,6 +128,16 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing MCPServers")
+		meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionToolConfigValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationFailed,
+			Message:            fmt.Sprintf("Failed to find referencing MCPServers: %v", err),
+			ObservedGeneration: toolConfig.Generation,
+		})
+		if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {
+			logger.Error(updateErr, "Failed to update MCPToolConfig status after error")
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
@@ -153,6 +182,16 @@ func (r *ToolConfigReconciler) updateReferencingServers(
 	if err != nil {
 		logger := log.FromContext(ctx)
 		logger.Error(err, "Failed to find referencing MCPServers")
+		meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionToolConfigValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationFailed,
+			Message:            fmt.Sprintf("Failed to find referencing MCPServers: %v", err),
+			ObservedGeneration: toolConfig.Generation,
+		})
+		if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {
+			logger.Error(updateErr, "Failed to update MCPToolConfig status after error")
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 

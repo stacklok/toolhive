@@ -16,6 +16,10 @@ type MCPGroupSpec struct {
 
 // MCPGroupStatus defines observed state
 type MCPGroupStatus struct {
+	// ObservedGeneration reflects the generation most recently observed by the controller
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Phase indicates current state
 	// +optional
 	// +kubebuilder:default=Pending

@@ -305,6 +305,12 @@ func (*MCPRegistryReconciler) applyStatusUpdates(
 	// Apply status changes from status manager
 	hasUpdates = statusManager.UpdateStatus(ctx, &latestRegistryStatus) || hasUpdates
 
+	// Update ObservedGeneration to reflect that we've processed this generation
+	if latestRegistryStatus.ObservedGeneration != mcpRegistry.Generation {
+		latestRegistryStatus.ObservedGeneration = mcpRegistry.Generation
+		hasUpdates = true
+	}
+
 	// Single status update using the latest version
 	if hasUpdates {
 		latestRegistry.Status = latestRegistryStatus

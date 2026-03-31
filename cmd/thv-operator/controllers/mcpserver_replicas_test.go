@@ -789,3 +789,165 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 	}
 	assert.True(t, found, "ConditionSessionStorageWarning condition should be set to False when Redis is configured")
 }
+
+// TestMCPServerObservedGeneration verifies that ObservedGeneration is set
+// in the MCPServer status after updateMCPServerStatus
+func TestMCPServerObservedGeneration(t *testing.T) {
+	t.Parallel()
+
+	name := "observed-gen-test"
+	namespace := testNamespaceDefault
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  namespace,
+			Generation: 7,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+		},
+	}
+
+	testScheme := createTestScheme()
+
+	// Create deployment with 1 replica
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labelsForMCPServer(name),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelsForMCPServer(name),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "mcp", Image: "test-image:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	// Create a running pod
+	runningPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-pod-0", name),
+			Namespace: namespace,
+			Labels:    labelsForMCPServer(name),
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "mcp", Image: "test-image:latest"},
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer, deployment, runningPod).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.updateMCPServerStatus(t.Context(), mcpServer)
+	require.NoError(t, err)
+
+	// Fetch the updated MCPServer
+	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      name,
+		Namespace: namespace,
+	}, updatedMCPServer)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(7), updatedMCPServer.Status.ObservedGeneration,
+		"ObservedGeneration should match the MCPServer's Generation")
+	assert.Equal(t, mcpv1alpha1.MCPServerPhaseRunning, updatedMCPServer.Status.Phase)
+}
+
+// TestMCPServerObservedGenerationScaleToZero verifies ObservedGeneration is set
+// even when the deployment is scaled to zero
+func TestMCPServerObservedGenerationScaleToZero(t *testing.T) {
+	t.Parallel()
+
+	name := "observed-gen-zero"
+	namespace := testNamespaceDefault
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  namespace,
+			Generation: 4,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+		},
+	}
+
+	testScheme := createTestScheme()
+
+	// Create deployment scaled to zero
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(0),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labelsForMCPServer(name),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelsForMCPServer(name),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "mcp", Image: "test-image:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer, deployment).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.updateMCPServerStatus(t.Context(), mcpServer)
+	require.NoError(t, err)
+
+	// Fetch the updated MCPServer
+	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      name,
+		Namespace: namespace,
+	}, updatedMCPServer)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(4), updatedMCPServer.Status.ObservedGeneration,
+		"ObservedGeneration should be set even for scale-to-zero deployments")
+	assert.Equal(t, mcpv1alpha1.MCPServerPhaseStopped, updatedMCPServer.Status.Phase)
+}

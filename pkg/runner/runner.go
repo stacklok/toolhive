@@ -198,11 +198,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
-		systemProvider, err := secrets.CreateScopedSecretProvider(providerType, secrets.ScopeWorkloads)
+		systemProvider, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 		if err != nil {
 			return fmt.Errorf("error instantiating system secret manager: %w", err)
 		}
-		userProvider, err := secrets.CreateUserSecretProvider(providerType)
+		userProvider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 		if err != nil {
 			return fmt.Errorf("error instantiating user secret manager: %w", err)
 		}

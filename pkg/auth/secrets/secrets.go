@@ -193,7 +193,7 @@ func GetUserSecretsProvider() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	provider, err := secrets.CreateUserSecretProvider(providerType)
+	provider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}
@@ -217,7 +217,7 @@ func GetSecretsManager() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	provider, err := secrets.CreateScopedSecretProvider(providerType, secrets.ScopeWorkloads)
+	provider, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}

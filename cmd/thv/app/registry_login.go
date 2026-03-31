@@ -76,5 +76,5 @@ func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error
 	if err != nil {
 		return nil, fmt.Errorf("getting secrets provider type: %w", err)
 	}
-	return secrets.CreateScopedSecretProvider(providerType, secrets.ScopeRegistry)
+	return secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeRegistry))
 }

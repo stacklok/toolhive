@@ -508,7 +508,7 @@ func (d *DefaultManager) validateSecretParameters(ctx context.Context, runConfig
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
-		userProvider, err := secrets.CreateUserSecretProvider(providerType)
+		userProvider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 		if err != nil {
 			return fmt.Errorf("error instantiating secret manager: %w", err)
 		}

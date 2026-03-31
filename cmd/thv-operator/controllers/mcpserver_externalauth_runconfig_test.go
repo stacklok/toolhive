@@ -654,7 +654,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test:v1",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "oauth-config",
 					},
@@ -730,7 +730,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test:v1",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "non-existent",
 					},
@@ -748,7 +748,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test:v1",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "embedded-auth-config",
 					},

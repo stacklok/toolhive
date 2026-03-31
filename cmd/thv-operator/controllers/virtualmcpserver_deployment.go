@@ -323,19 +323,6 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 				},
 			},
 		})
-	} else if inline.ClientSecret != "" {
-		generatedSecretName := fmt.Sprintf("%s-oidc-client-secret", vmcp.Name)
-		env = append(env, corev1.EnvVar{
-			Name: "VMCP_OIDC_CLIENT_SECRET",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: generatedSecretName,
-					},
-					Key: "clientSecret",
-				},
-			},
-		})
 	}
 
 	return env

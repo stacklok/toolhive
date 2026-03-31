@@ -230,28 +230,13 @@ func (*resolver) resolveInlineConfig(
 		return nil, err
 	}
 
-	// Don't embed ClientSecret in the config if ClientSecretRef is set
-	// The secret will be injected via environment variable instead
-	clientSecret := config.ClientSecret
-	if config.ClientSecretRef != nil {
-		clientSecret = ""
-	}
-
-	// Compute ThvCABundlePath: use explicit value if set, otherwise auto-compute from CABundleRef
-	//nolint:staticcheck // SA1019: ThvCABundlePath is deprecated but still supported for backwards compatibility
-	thvCABundlePath := config.ThvCABundlePath
-	if thvCABundlePath == "" {
-		thvCABundlePath = computeCABundlePath(config.CABundleRef)
-	}
-
 	return &OIDCConfig{
 		Issuer:             config.Issuer,
 		Audience:           config.Audience,
 		JWKSURL:            config.JWKSURL,
 		IntrospectionURL:   config.IntrospectionURL,
 		ClientID:           config.ClientID,
-		ClientSecret:       clientSecret,
-		ThvCABundlePath:    thvCABundlePath,
+		ThvCABundlePath:    computeCABundlePath(config.CABundleRef),
 		JWKSAuthTokenPath:  config.JWKSAuthTokenPath,
 		ResourceURL:        resourceURL,
 		JWKSAllowPrivateIP: config.JWKSAllowPrivateIP,

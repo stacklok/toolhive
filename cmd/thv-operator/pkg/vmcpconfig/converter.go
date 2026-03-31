@@ -247,11 +247,9 @@ func mapResolvedOIDCToVmcpConfig(
 	if oidcConfigRef != nil {
 		switch oidcConfigRef.Type {
 		case mcpv1alpha1.OIDCConfigTypeInline:
-			// Inline config: check if ClientSecretRef or ClientSecret is set
-			if oidcConfigRef.Inline != nil {
-				if oidcConfigRef.Inline.ClientSecretRef != nil || oidcConfigRef.Inline.ClientSecret != "" {
-					config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
-				}
+			// Inline config: check if ClientSecretRef is set
+			if oidcConfigRef.Inline != nil && oidcConfigRef.Inline.ClientSecretRef != nil {
+				config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
 			}
 		case mcpv1alpha1.OIDCConfigTypeConfigMap:
 			// ConfigMap config: check if the resolved config has a client secret

@@ -97,11 +97,10 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// This avoids secrets provider errors in Kubernetes environment
 
 	// Get tool configuration from MCPToolConfig if referenced
-	toolsFilter := m.Spec.ToolsFilter
+	var toolsFilter []string
 	var toolsOverride map[string]runner.ToolOverride
 
 	if m.Spec.ToolConfigRef != nil {
-		// ToolConfigRef takes precedence over inline ToolsFilter
 		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(ctx, r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)

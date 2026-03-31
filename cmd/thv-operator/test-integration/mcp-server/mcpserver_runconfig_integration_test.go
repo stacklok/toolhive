@@ -59,13 +59,12 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "example/mcp-server:v1.0.0",
-					Transport:   "stdio",
-					ProxyMode:   "sse",
-					ProxyPort:   8080,
-					McpPort:     8081,
-					Args:        []string{"--verbose", "--debug"},
-					ToolsFilter: []string{"tool1", "tool2"},
+					Image:     "example/mcp-server:v1.0.0",
+					Transport: "stdio",
+					ProxyMode: "sse",
+					ProxyPort: 8080,
+					McpPort:   8081,
+					Args:      []string{"--verbose", "--debug"},
 					Env: []mcpv1alpha1.EnvVar{
 						{
 							Name:  "DEBUG",
@@ -172,7 +171,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.Port).To(Equal(8080))
 			Expect(runConfig.TargetPort).To(Equal(8081))
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--verbose", "--debug"}))
-			Expect(runConfig.ToolsFilter).To(Equal([]string{"tool1", "tool2"}))
 
 			// Verify environment variables
 			Expect(runConfig.EnvVars).To(HaveKeyWithValue("DEBUG", "true"))
@@ -613,12 +611,11 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "deterministic/mcp-server:v1.0.0",
-					Transport:   "sse",
-					ProxyPort:   9090,
-					McpPort:     8080,
-					Args:        []string{"--arg1", "--arg2", "--arg3"},
-					ToolsFilter: []string{"tool3", "tool1", "tool2"},
+					Image:     "deterministic/mcp-server:v1.0.0",
+					Transport: "sse",
+					ProxyPort: 9090,
+					McpPort:   8080,
+					Args:      []string{"--arg1", "--arg2", "--arg3"},
 					Env: []mcpv1alpha1.EnvVar{
 						{Name: "VAR_C", Value: "value_c"},
 						{Name: "VAR_A", Value: "value_a"},
@@ -700,7 +697,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.Port).To(Equal(9090))
 			Expect(runConfig.TargetPort).To(Equal(8080))
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--arg1", "--arg2", "--arg3"}))
-			Expect(runConfig.ToolsFilter).To(Equal([]string{"tool3", "tool1", "tool2"}))
 		})
 
 		It("Should handle MCPServer with OIDC authentication configuration", func() {
@@ -734,7 +730,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
 							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
 							ClientID:           "toolhive-client",
-							ClientSecret:       "secret123",
 							JWKSAllowPrivateIP: true,
 						},
 					},
@@ -773,7 +768,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.OIDCConfig.JWKSURL).To(Equal("https://auth.example.com/.well-known/jwks.json"))
 			Expect(runConfig.OIDCConfig.IntrospectionURL).To(Equal("https://auth.example.com/oauth/introspect"))
 			Expect(runConfig.OIDCConfig.ClientID).To(Equal("toolhive-client"))
-			Expect(runConfig.OIDCConfig.ClientSecret).To(Equal("secret123"))
 			Expect(runConfig.OIDCConfig.AllowPrivateIP).To(BeTrue())
 
 			// Verify fields that should be empty/nil
@@ -802,7 +796,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 						Expect(oidcConfig["JWKSURL"]).To(Equal("https://auth.example.com/.well-known/jwks.json"))
 						Expect(oidcConfig["IntrospectionURL"]).To(Equal("https://auth.example.com/oauth/introspect"))
 						Expect(oidcConfig["ClientID"]).To(Equal("toolhive-client"))
-						Expect(oidcConfig["ClientSecret"]).To(Equal("secret123"))
 						Expect(oidcConfig["AllowPrivateIP"]).To(BeTrue())
 					} else {
 						Fail("OIDC config not found in auth middleware parameters")

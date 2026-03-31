@@ -123,8 +123,13 @@ func TestConverter_OIDCResolution(t *testing.T) {
 		{
 			name: "inline with client secret sets ClientSecretEnv",
 			oidcConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type:   mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{ClientSecret: "secret"},
+				Type: mcpv1alpha1.OIDCConfigTypeInline,
+				Inline: &mcpv1alpha1.InlineOIDCConfig{
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "oidc-secret",
+						Key:  "client-secret",
+					},
+				},
 			},
 			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {

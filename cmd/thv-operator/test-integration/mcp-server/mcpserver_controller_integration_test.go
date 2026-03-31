@@ -63,12 +63,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:      "example/mcp-server:latest",
-					Transport:  "stdio",
-					ProxyMode:  "sse",
-					Port:       8080,
-					TargetPort: 8080,
-					Args:       []string{"--verbose"},
+					Image:     "example/mcp-server:latest",
+					Transport: "stdio",
+					ProxyMode: "sse",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					Args:      []string{"--verbose"},
 					Env: []mcpv1alpha1.EnvVar{
 						{
 							Name:  "DEBUG",
@@ -416,7 +416,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					// Invalid PodTemplateSpec - containers should be an array, not a string
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec": {"containers": "invalid-not-an-array"}}`),
@@ -533,7 +533,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec":{"containers":[{"name":"mcp","resources":{"limits":{"cpu":"2","memory":"2Gi"},"requests":{"cpu":"500m","memory":"512Mi"}}}]}}`),
 					},
@@ -657,7 +657,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec":{"securityContext":{"runAsUser":1000,"runAsGroup":1000,"fsGroup":1000}}}`),
 					},
@@ -768,7 +768,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			}
 
@@ -889,7 +889,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec":{"serviceAccountName":"custom-sa"}}`),
 					},
@@ -974,7 +974,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					GroupRef:  "non-existent-group", // This group doesn't exist
 				},
 			}
@@ -1097,7 +1097,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					GroupRef:  mcpGroupName, // This group exists
 				},
 			}

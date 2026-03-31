@@ -85,7 +85,7 @@ func (h *MCPRemoteProxyTestHelper) NewRemoteProxyBuilder(name string) *RemotePro
 			},
 			Spec: mcpv1alpha1.MCPRemoteProxySpec{
 				RemoteURL: "https://remote.example.com/mcp",
-				Port:      8080,
+				ProxyPort: 8080,
 				Transport: "streamable-http",
 				// Default OIDC config for tests - override with WithInlineOIDCConfig if testing OIDC
 				OIDCConfig: mcpv1alpha1.OIDCConfigRef{
@@ -101,9 +101,9 @@ func (h *MCPRemoteProxyTestHelper) NewRemoteProxyBuilder(name string) *RemotePro
 	}
 }
 
-// WithPort sets the port for the proxy
-func (rb *RemoteProxyBuilder) WithPort(port int32) *RemoteProxyBuilder {
-	rb.proxy.Spec.Port = port
+// WithProxyPort sets the proxy port for the proxy
+func (rb *RemoteProxyBuilder) WithProxyPort(port int32) *RemoteProxyBuilder {
+	rb.proxy.Spec.ProxyPort = port
 	return rb
 }
 

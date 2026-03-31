@@ -59,7 +59,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					Transport: "streamable-http",
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
@@ -132,7 +132,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      9090,
+					ProxyPort: 9090,
 					Transport: "sse",
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
@@ -247,7 +247,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -362,7 +362,7 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 				Type: mcpv1alpha1.OIDCConfigTypeInline,
 				Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -443,7 +443,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 				Type: mcpv1alpha1.OIDCConfigTypeInline,
 				Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -1063,7 +1063,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -1099,7 +1099,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{

@@ -209,10 +209,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 		// Use ProxyPort (not McpPort) because it's the externally accessible port
 		// that the egress proxy listens on. This is what vMCP connects to.
 		// The McpPort is only for internal container-to-container communication.
-		port := int(mcpServer.Spec.ProxyPort)
-		if port == 0 {
-			port = int(mcpServer.Spec.Port) // Fallback to deprecated Port field
-		}
+		port := int(mcpServer.GetProxyPort())
 		if port > 0 {
 			url = transport.GenerateMCPServerURL(
 				mcpServer.Spec.Transport,

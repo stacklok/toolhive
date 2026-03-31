@@ -11,6 +11,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPRemoteProxy
     listKind: MCPRemoteProxyList
     plural: mcpremoteproxies

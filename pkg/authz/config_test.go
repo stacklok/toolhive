@@ -263,7 +263,7 @@ func TestCreateMiddleware(t *testing.T) {
 	})
 
 	// Create the middleware
-	middleware, err := CreateMiddlewareFromConfig(config, "testmodule")
+	middleware, err := CreateMiddlewareFromConfig(config, "testmodule", nil)
 	require.NoError(t, err, "Failed to create middleware")
 	require.NotNil(t, middleware, "Middleware is nil")
 
@@ -391,7 +391,7 @@ func TestGetMiddlewareFromFile(t *testing.T) {
 		tempFile.Close()
 
 		// Get middleware from file
-		middleware, err := GetMiddlewareFromFile("testserver", tempFile.Name())
+		middleware, err := GetMiddlewareFromFile("testserver", tempFile.Name(), nil)
 		require.NoError(t, err)
 		require.NotNil(t, middleware)
 	})
@@ -399,7 +399,7 @@ func TestGetMiddlewareFromFile(t *testing.T) {
 	t.Run("Non-existent file", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := GetMiddlewareFromFile("testserver", "/nonexistent/path/config.json")
+		_, err := GetMiddlewareFromFile("testserver", "/nonexistent/path/config.json", nil)
 		assert.Error(t, err)
 	})
 
@@ -417,7 +417,7 @@ func TestGetMiddlewareFromFile(t *testing.T) {
 		tempFile.Close()
 
 		// Get middleware from file should fail
-		_, err = GetMiddlewareFromFile("testserver", tempFile.Name())
+		_, err = GetMiddlewareFromFile("testserver", tempFile.Name(), nil)
 		assert.Error(t, err)
 	})
 }
@@ -433,7 +433,7 @@ func TestCreateMiddlewareFromConfigErrors(t *testing.T) {
 			Type:    "unsupported-type",
 		}
 
-		_, err := CreateMiddlewareFromConfig(config, "testserver")
+		_, err := CreateMiddlewareFromConfig(config, "testserver", nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported configuration type")
 	})

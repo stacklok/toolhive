@@ -177,6 +177,11 @@ type Runtime interface {
 	// IsRunning checks the health of the container runtime.
 	// This is used to verify that the runtime is operational and can manage workloads.
 	IsRunning(ctx context.Context) error
+
+	// Name returns the registered name of this runtime (e.g., "docker", "kubernetes").
+	// Used to track which runtime owns a workload so that reconciliation logic
+	// does not corrupt status files of workloads managed by a different runtime.
+	Name() string
 }
 
 // Monitor defines the interface for container monitoring

@@ -48,6 +48,11 @@ type RunConfig struct {
 	// SchemaVersion is the version of the RunConfig schema
 	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
 
+	// RuntimeName is the registered name of the container runtime that owns this
+	// workload (e.g., "docker", "kubernetes"). Used during reconciliation to avoid
+	// corrupting status files of workloads managed by a different runtime.
+	RuntimeName string `json:"runtime_name,omitempty" yaml:"runtime_name,omitempty"`
+
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
 

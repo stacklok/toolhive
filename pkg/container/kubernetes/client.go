@@ -672,6 +672,11 @@ func (*Client) StopWorkload(_ context.Context, _ string) error {
 	return nil
 }
 
+// Name returns the registered name of this runtime.
+func (*Client) Name() string {
+	return RuntimeName
+}
+
 // IsRunning checks the health of the container runtime.
 // This is used to verify that the runtime is operational and can manage workloads.
 func (c *Client) IsRunning(ctx context.Context) error {

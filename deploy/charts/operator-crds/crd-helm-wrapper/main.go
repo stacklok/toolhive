@@ -43,6 +43,7 @@ var crdFeatureFlags = map[string][]string{
 	"mcpregistries":                      {"registry"},
 	"virtualmcpservers":                  {"virtualMcp"},
 	"virtualmcpcompositetooldefinitions": {"virtualMcp"},
+	"mcpoidcconfigs":                     {"server"},
 	"mcpexternalauthconfigs":             {"server", "virtualMcp"},
 }
 

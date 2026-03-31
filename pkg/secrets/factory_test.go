@@ -113,9 +113,9 @@ func TestEnvVarPrefix(t *testing.T) { //nolint:paralleltest
 	})
 }
 
-func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
+func TestCreateProvider_WithUserFacing(t *testing.T) { //nolint:paralleltest
 	t.Run("environment provider returns user provider", func(t *testing.T) { //nolint:paralleltest
-		provider, err := secrets.CreateUserSecretProvider(secrets.EnvironmentType)
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithUserFacing())
 		require.NoError(t, err)
 		require.NotNil(t, provider)
 
@@ -126,7 +126,7 @@ func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
 	})
 
 	t.Run("blocks system-reserved keys", func(t *testing.T) { //nolint:paralleltest
-		provider, err := secrets.CreateUserSecretProvider(secrets.EnvironmentType)
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithUserFacing())
 		require.NoError(t, err)
 
 		_, err = provider.GetSecret(t.Context(), "__thv_registry_foo")
@@ -134,7 +134,7 @@ func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
 	})
 
 	t.Run("allows non-system keys", func(t *testing.T) { //nolint:paralleltest
-		provider, err := secrets.CreateUserSecretProvider(secrets.EnvironmentType)
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithUserFacing())
 		require.NoError(t, err)
 
 		// A regular key should not be blocked (may return not-found, but not ErrReservedKeyName)
@@ -143,15 +143,15 @@ func TestCreateUserSecretProvider(t *testing.T) { //nolint:paralleltest
 	})
 
 	t.Run("unknown provider returns error", func(t *testing.T) { //nolint:paralleltest
-		provider, err := secrets.CreateUserSecretProvider(secrets.ProviderType("unknown"))
+		provider, err := secrets.CreateProvider(secrets.ProviderType("unknown"), secrets.WithUserFacing())
 		assert.Error(t, err)
 		assert.Nil(t, provider)
 	})
 }
 
-func TestCreateScopedSecretProvider(t *testing.T) { //nolint:paralleltest
+func TestCreateProvider_WithScope(t *testing.T) { //nolint:paralleltest
 	t.Run("environment provider returns scoped provider", func(t *testing.T) { //nolint:paralleltest
-		provider, err := secrets.CreateScopedSecretProvider(secrets.EnvironmentType, secrets.ScopeRegistry)
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithScope(secrets.ScopeRegistry))
 		require.NoError(t, err)
 		require.NotNil(t, provider)
 
@@ -162,7 +162,7 @@ func TestCreateScopedSecretProvider(t *testing.T) { //nolint:paralleltest
 	})
 
 	t.Run("scopes key access to given scope", func(t *testing.T) { //nolint:paralleltest
-		provider, err := secrets.CreateScopedSecretProvider(secrets.EnvironmentType, secrets.ScopeRegistry)
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithScope(secrets.ScopeRegistry))
 		require.NoError(t, err)
 
 		// Any get on an environment provider will return not-found; the key must not be blocked
@@ -171,8 +171,26 @@ func TestCreateScopedSecretProvider(t *testing.T) { //nolint:paralleltest
 	})
 
 	t.Run("unknown provider returns error", func(t *testing.T) { //nolint:paralleltest
-		provider, err := secrets.CreateScopedSecretProvider(secrets.ProviderType("unknown"), secrets.ScopeRegistry)
+		provider, err := secrets.CreateProvider(secrets.ProviderType("unknown"), secrets.WithScope(secrets.ScopeRegistry))
 		assert.Error(t, err)
 		assert.Nil(t, provider)
+	})
+}
+
+func TestCreateProvider_MutualExclusion(t *testing.T) { //nolint:paralleltest
+	t.Run("WithScope and WithUserFacing are mutually exclusive", func(t *testing.T) { //nolint:paralleltest
+		_, err := secrets.CreateProvider(secrets.EnvironmentType,
+			secrets.WithScope(secrets.ScopeRegistry),
+			secrets.WithUserFacing(),
+		)
+		require.Error(t, err)
+	})
+
+	t.Run("WithUserFacing and WithScope are mutually exclusive", func(t *testing.T) { //nolint:paralleltest
+		_, err := secrets.CreateProvider(secrets.EnvironmentType,
+			secrets.WithUserFacing(),
+			secrets.WithScope(secrets.ScopeRegistry),
+		)
+		require.Error(t, err)
 	})
 }

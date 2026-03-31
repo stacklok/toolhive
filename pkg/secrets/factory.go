@@ -271,24 +271,67 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 	return primary, nil
 }
 
-// CreateUserSecretProvider creates a Provider that filters out system-reserved keys,
-// suitable for user-facing callers (CLI, API, MCP tool server).
-func CreateUserSecretProvider(managerType ProviderType) (Provider, error) {
-	inner, err := CreateSecretProvider(managerType)
-	if err != nil {
-		return nil, err
-	}
-	return NewUserProvider(inner), nil
+// ProviderOption configures how CreateProvider wraps the underlying provider.
+type ProviderOption func(*providerOptions) error
+
+// providerOptions holds the accumulated state of all ProviderOptions passed to CreateProvider.
+type providerOptions struct {
+	scope      *SecretScope // nil = no scoping
+	userFacing bool
 }
 
-// CreateScopedSecretProvider creates a Provider that namespaces all operations
-// under the given scope, suitable for internal callers.
-func CreateScopedSecretProvider(managerType ProviderType, scope SecretScope) (Provider, error) {
+// WithScope returns a ProviderOption that wraps the provider with a ScopedProvider
+// for the given scope, keeping system secrets isolated under "__thv_<scope>_".
+// Mutually exclusive with WithUserFacing.
+func WithScope(scope SecretScope) ProviderOption {
+	return func(o *providerOptions) error {
+		if o.userFacing {
+			return errors.New("WithScope and WithUserFacing are mutually exclusive")
+		}
+		o.scope = &scope
+		return nil
+	}
+}
+
+// WithUserFacing returns a ProviderOption that wraps the provider with a UserProvider,
+// blocking access to any key that starts with the system prefix "__thv_".
+// Suitable for CLI, API, and MCP tool server callers.
+// Mutually exclusive with WithScope.
+func WithUserFacing() ProviderOption {
+	return func(o *providerOptions) error {
+		if o.scope != nil {
+			return errors.New("WithUserFacing and WithScope are mutually exclusive")
+		}
+		o.userFacing = true
+		return nil
+	}
+}
+
+// CreateProvider creates a secret Provider for the given manager type, optionally
+// wrapped according to the supplied options.
+//
+// Without options it behaves identically to CreateSecretProvider.
+// Pass WithUserFacing() for CLI/API callers or WithScope(scope) for internal callers.
+func CreateProvider(managerType ProviderType, opts ...ProviderOption) (Provider, error) {
 	inner, err := CreateSecretProvider(managerType)
 	if err != nil {
 		return nil, err
 	}
-	return NewScopedProvider(inner, scope), nil
+
+	options := &providerOptions{}
+	for _, opt := range opts {
+		if err := opt(options); err != nil {
+			return nil, err
+		}
+	}
+
+	if options.userFacing {
+		return NewUserProvider(inner), nil
+	}
+	if options.scope != nil {
+		return NewScopedProvider(inner, *options.scope), nil
+	}
+	return inner, nil
 }
 
 // shouldEnableFallback determines if environment variable fallback should be enabled

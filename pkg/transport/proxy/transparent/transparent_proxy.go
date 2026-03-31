@@ -153,6 +153,12 @@ const (
 	// It is written on initialize and read in the Rewrite closure to route follow-up requests
 	// to the same backend pod that handled the session's initialize request.
 	sessionMetadataBackendURL = "backend_url"
+
+	// maxRedirects is the maximum number of HTTP redirects to follow when
+	// forwarding requests to a remote MCP server. Uses the same limit as
+	// http.Client (10), but unlike http.Client the HTTP method is always
+	// preserved (POST never becomes GET) because MCP uses JSON-RPC over POST.
+	maxRedirects = 10
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -377,12 +383,87 @@ func (p *TransparentProxy) serverInitialized() bool {
 	return p.isServerInitialized.Load()
 }
 
-func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
+func (t *tracingTransport) forward(req *http.Request, body []byte) (*http.Response, error) {
 	tr := t.base
 	if tr == nil {
 		tr = http.DefaultTransport
 	}
-	return tr.RoundTrip(req)
+
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Follow HTTP redirects transparently. MCP clients expect JSON-RPC
+	// responses and cannot handle 3xx redirects, so the proxy must resolve
+	// them before returning the response. The HTTP method and request body
+	// are always preserved (POST never becomes GET). This intentionally
+	// differs from standard HTTP client behavior (RFC 7231 allows 301/302
+	// to change POST to GET) because MCP uses JSON-RPC over POST and
+	// changing the method would break every request.
+	//
+	// Note: request headers (including Authorization) are preserved across
+	// redirects because the proxy controls the target URL and redirects
+	// are expected to stay within the same trust domain.
+	for redirectsFollowed := 0; redirectsFollowed < maxRedirects &&
+		isRedirectStatus(resp.StatusCode); redirectsFollowed++ {
+		location := resp.Header.Get("Location")
+		if location == "" {
+			break
+		}
+
+		redirectURL, parseErr := req.URL.Parse(location)
+		if parseErr != nil {
+			slog.Warn("failed to parse redirect Location header",
+				"location", location, "error", parseErr)
+			break
+		}
+
+		slog.Warn("following HTTP redirect from remote MCP server; consider updating the server URL",
+			"status", resp.StatusCode,
+			"from", req.URL.String(),
+			"to", redirectURL.String(),
+			"redirect_number", redirectsFollowed+1)
+
+		// Drain and close the redirect response body to release the
+		// underlying connection back to the transport's connection pool.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		// Clone preserves Method and all headers. We intentionally do not
+		// change the method to GET for 301/302 (as browsers do) because
+		// MCP JSON-RPC requires POST with a body on every request.
+		req = req.Clone(req.Context())
+		req.URL = redirectURL
+		req.Host = redirectURL.Host
+		if len(body) > 0 {
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			req.ContentLength = int64(len(body))
+		}
+
+		resp, err = tr.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return resp, nil
+}
+
+// isRedirectStatus reports whether the HTTP status code is a redirect
+// that should be followed. This excludes 300 (Multiple Choices), 303
+// (See Other), and 304 (Not Modified) which are not standard redirects
+// or would require changing the request method.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, // 301
+		http.StatusFound,             // 302
+		http.StatusTemporaryRedirect, // 307
+		http.StatusPermanentRedirect: // 308
+		return true
+	default:
+		return false
+	}
 }
 
 // nolint:gocyclo // This function handles multiple request types and is complex by design
@@ -436,7 +517,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
-	resp, err := t.forward(req)
+	resp, err := t.forward(req, reqBody)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// Expected during shutdown or client disconnect—silently ignore

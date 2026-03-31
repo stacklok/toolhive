@@ -904,7 +904,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpserver;mcpservers
+//+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"

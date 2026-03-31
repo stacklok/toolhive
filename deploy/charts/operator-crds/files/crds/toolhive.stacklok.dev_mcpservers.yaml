@@ -8,6 +8,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPServer
     listKind: MCPServerList
     plural: mcpservers

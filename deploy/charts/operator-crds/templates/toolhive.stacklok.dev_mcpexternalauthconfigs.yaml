@@ -11,6 +11,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPExternalAuthConfig
     listKind: MCPExternalAuthConfigList
     plural: mcpexternalauthconfigs

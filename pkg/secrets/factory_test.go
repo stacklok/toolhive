@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package secrets_test
@@ -110,5 +110,87 @@ func TestProviderTypes(t *testing.T) { //nolint:paralleltest
 func TestEnvVarPrefix(t *testing.T) { //nolint:paralleltest
 	t.Run("correct prefix constant", func(t *testing.T) { //nolint:paralleltest
 		assert.Equal(t, "TOOLHIVE_SECRET_", secrets.EnvVarPrefix)
+	})
+}
+
+func TestCreateProvider_WithUserFacing(t *testing.T) { //nolint:paralleltest
+	t.Run("environment provider returns user provider", func(t *testing.T) { //nolint:paralleltest
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithUserFacing())
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+
+		// UserProvider inherits read-only capabilities from the environment provider
+		caps := provider.Capabilities()
+		assert.True(t, caps.CanRead)
+		assert.False(t, caps.CanWrite)
+	})
+
+	t.Run("blocks system-reserved keys", func(t *testing.T) { //nolint:paralleltest
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithUserFacing())
+		require.NoError(t, err)
+
+		_, err = provider.GetSecret(t.Context(), "__thv_registry_foo")
+		require.ErrorIs(t, err, secrets.ErrReservedKeyName)
+	})
+
+	t.Run("allows non-system keys", func(t *testing.T) { //nolint:paralleltest
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithUserFacing())
+		require.NoError(t, err)
+
+		// A regular key should not be blocked (may return not-found, but not ErrReservedKeyName)
+		_, err = provider.GetSecret(t.Context(), "my-api-key")
+		require.NotErrorIs(t, err, secrets.ErrReservedKeyName)
+	})
+
+	t.Run("unknown provider returns error", func(t *testing.T) { //nolint:paralleltest
+		provider, err := secrets.CreateProvider(secrets.ProviderType("unknown"), secrets.WithUserFacing())
+		assert.Error(t, err)
+		assert.Nil(t, provider)
+	})
+}
+
+func TestCreateProvider_WithScope(t *testing.T) { //nolint:paralleltest
+	t.Run("environment provider returns scoped provider", func(t *testing.T) { //nolint:paralleltest
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithScope(secrets.ScopeRegistry))
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+
+		// ScopedProvider inherits read-only capabilities from the environment provider
+		caps := provider.Capabilities()
+		assert.True(t, caps.CanRead)
+		assert.False(t, caps.CanWrite)
+	})
+
+	t.Run("scopes key access to given scope", func(t *testing.T) { //nolint:paralleltest
+		provider, err := secrets.CreateProvider(secrets.EnvironmentType, secrets.WithScope(secrets.ScopeRegistry))
+		require.NoError(t, err)
+
+		// Any get on an environment provider will return not-found; the key must not be blocked
+		_, err = provider.GetSecret(t.Context(), "my-token")
+		require.NotErrorIs(t, err, secrets.ErrReservedKeyName)
+	})
+
+	t.Run("unknown provider returns error", func(t *testing.T) { //nolint:paralleltest
+		provider, err := secrets.CreateProvider(secrets.ProviderType("unknown"), secrets.WithScope(secrets.ScopeRegistry))
+		assert.Error(t, err)
+		assert.Nil(t, provider)
+	})
+}
+
+func TestCreateProvider_MutualExclusion(t *testing.T) { //nolint:paralleltest
+	t.Run("WithScope and WithUserFacing are mutually exclusive", func(t *testing.T) { //nolint:paralleltest
+		_, err := secrets.CreateProvider(secrets.EnvironmentType,
+			secrets.WithScope(secrets.ScopeRegistry),
+			secrets.WithUserFacing(),
+		)
+		require.Error(t, err)
+	})
+
+	t.Run("WithUserFacing and WithScope are mutually exclusive", func(t *testing.T) { //nolint:paralleltest
+		_, err := secrets.CreateProvider(secrets.EnvironmentType,
+			secrets.WithUserFacing(),
+			secrets.WithScope(secrets.ScopeRegistry),
+		)
+		require.Error(t, err)
 	})
 }

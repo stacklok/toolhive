@@ -101,6 +101,7 @@ rules:
   - embeddingservers
   - mcpexternalauthconfigs
   - mcpgroups
+  - mcpoidcconfigs
   - mcpregistries
   - mcpremoteproxies
   - mcpservers
@@ -120,6 +121,7 @@ rules:
   - embeddingservers/finalizers
   - mcpexternalauthconfigs/finalizers
   - mcpgroups/finalizers
+  - mcpoidcconfigs/finalizers
   - mcpregistries/finalizers
   - mcpservers/finalizers
   - mcptoolconfigs/finalizers
@@ -131,6 +133,7 @@ rules:
   - embeddingservers/status
   - mcpexternalauthconfigs/status
   - mcpgroups/status
+  - mcpoidcconfigs/status
   - mcpregistries/status
   - mcpremoteproxies/status
   - mcpservers/status

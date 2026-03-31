@@ -423,6 +423,33 @@ spec:
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
                 - message: kubernetes must not be set when type is not 'kubernetes'
                   rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) : true'
+              oidcConfigRef:
+                description: |-
+                  OIDCConfigRef references a MCPOIDCConfig resource for shared OIDC configuration.
+                  The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
+                  Mutually exclusive with OIDCConfig (inline OIDC configuration).
+                properties:
+                  audience:
+                    description: |-
+                      Audience is the expected audience for token validation.
+                      This MUST be unique per server to prevent token replay attacks.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the MCPOIDCConfig resource
+                    minLength: 1
+                    type: string
+                  scopes:
+                    description: |-
+                      Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
+                      If empty, defaults to ["openid"].
+                    items:
+                      type: string
+                    type: array
+                required:
+                - audience
+                - name
+                type: object
               permissionProfile:
                 description: PermissionProfile defines the permission profile to use
                 properties:
@@ -846,6 +873,9 @@ spec:
             required:
             - image
             type: object
+            x-kubernetes-validations:
+            - message: oidcConfig and oidcConfigRef are mutually exclusive
+              rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
           status:
             description: MCPServerStatus defines the observed state of MCPServer
             properties:

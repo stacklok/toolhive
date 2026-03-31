@@ -105,6 +105,10 @@ const (
 const SessionStorageProviderRedis = "redis"
 
 // MCPServerSpec defines the desired state of MCPServer
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
 	// +kubebuilder:validation:Required
@@ -221,6 +225,12 @@ type MCPServerSpec struct {
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
+	// OIDCConfigRef references a MCPOIDCConfig resource for shared OIDC configuration.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
+	// Mutually exclusive with OIDCConfig (inline OIDC configuration).
+	// +optional
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
 	// Telemetry defines observability configuration for the MCP server
 	// +optional

@@ -2,9 +2,8 @@ version: '3'
 
 vars:
   CRD_DIR: config/crd/bases
-  # Don't change the following 2 paths - they fail locally, but are needed for CI in Github
-  DOCS_OUT: ../../docs/operator/crd-api.md
-  CRDREF_CONFIG: ../../docs/operator/crd-ref-config.yaml
+  DOCS_OUT: '{{.ROOT_DIR}}/docs/operator/crd-api.md'
+  CRDREF_CONFIG: '{{.ROOT_DIR}}/docs/operator/crd-ref-config.yaml'
   CONTAINER_RUNTIME:
     sh: |
       if command -v podman >/dev/null 2>&1; then
@@ -283,17 +282,17 @@ tasks:
     deps: [crdref-install]
     cmds:
       # Run from repo root to include types from pkg/vmcp/config, pkg/telemetry, pkg/audit
-      - crd-ref-docs --source-path=../.. --config={{ .CRDREF_CONFIG }} --renderer markdown --templates-dir=../../docs/operator/templates/markdown --output-path {{ .DOCS_OUT }}
+      - crd-ref-docs --source-path={{.ROOT_DIR}} --config={{.CRDREF_CONFIG}} --renderer markdown --templates-dir={{.ROOT_DIR}}/docs/operator/templates/markdown --output-path {{.DOCS_OUT}}
     sources:
-      - 'config/crd/bases/**/*.yaml'
-      - 'api/**/*.go'
-      - '../../pkg/vmcp/config/*.go'
-      - '../../pkg/vmcp/auth/types/*.go'
-      - '../../pkg/telemetry/*.go'
-      - '../../pkg/audit/*.go'
-      - '../../docs/operator/templates/markdown/*.tpl'
+      - '{{.ROOT_DIR}}/cmd/thv-operator/config/crd/bases/**/*.yaml'
+      - '{{.ROOT_DIR}}/cmd/thv-operator/api/**/*.go'
+      - '{{.ROOT_DIR}}/pkg/vmcp/config/*.go'
+      - '{{.ROOT_DIR}}/pkg/vmcp/auth/types/*.go'
+      - '{{.ROOT_DIR}}/pkg/telemetry/*.go'
+      - '{{.ROOT_DIR}}/pkg/audit/*.go'
+      - '{{.ROOT_DIR}}/docs/operator/templates/markdown/*.tpl'
     generates:
-      - '{{ .DOCS_OUT }}'
+      - '{{.DOCS_OUT}}'
 
   # Keycloak tasks
   keycloak:install-operator:

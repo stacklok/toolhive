@@ -7,9 +7,6 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // PrincipalInfo contains the non-sensitive identity fields safe for external consumption.
@@ -141,48 +138,4 @@ func (i *Identity) GetPrincipalInfo() *PrincipalInfo {
 
 	pi := i.PrincipalInfo
 	return &pi
-}
-
-// defaultGroupClaimNames lists common group claim names across popular identity
-// providers. They are checked in order; the first non-empty match is returned.
-var defaultGroupClaimNames = []string{"groups", "roles", "cognito:groups"}
-
-// ExtractGroupsFromClaims looks for group membership claims in the provided JWT
-// claims map. It checks customClaimName first (if non-empty), then falls back to
-// the well-known names "groups", "roles", and "cognito:groups". Returns the
-// string-slice value of the first matching claim key (which may be empty), or nil
-// when no group claim key is found.
-//
-// Passing a non-empty customClaimName allows callers to support IDPs that use
-// URI-style claim names (e.g. "https://example.com/groups" used by Auth0/Okta).
-func ExtractGroupsFromClaims(claims jwt.MapClaims, customClaimName string) []string {
-	names := defaultGroupClaimNames
-	if customClaimName != "" {
-		// Prepend the custom name so it takes priority over well-known names.
-		names = append([]string{customClaimName}, defaultGroupClaimNames...)
-	}
-
-	for _, name := range names {
-		val, ok := claims[name]
-		if !ok {
-			continue
-		}
-		switch v := val.(type) {
-		case []interface{}:
-			groups := make([]string, 0, len(v))
-			for _, g := range v {
-				if s, ok := g.(string); ok {
-					groups = append(groups, s)
-				}
-			}
-			return groups
-		case []string:
-			return v
-		}
-		// Claim key exists but has an unrecognized type; stop searching.
-		slog.Warn("group claim has unrecognized type, ignoring",
-			"claim", name, "type", fmt.Sprintf("%T", val))
-		return nil
-	}
-	return nil
 }

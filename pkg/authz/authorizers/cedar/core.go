@@ -716,7 +716,7 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	// factory to build THVGroup parent entities for Cedar evaluation.
 	// The identity pointer is not mutated here because Identity MUST NOT be
 	// modified after it is placed in the request context (concurrent reads).
-	groups := auth.ExtractGroupsFromClaims(resolvedClaims, a.groupClaimName)
+	groups := extractGroupsFromClaims(resolvedClaims, a.groupClaimName)
 
 	// Preprocess claims and arguments
 	processedClaims := preprocessClaims(resolvedClaims)
@@ -739,4 +739,48 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	default:
 		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)
 	}
+}
+
+// defaultGroupClaimNames lists common group claim names across popular identity
+// providers. They are checked in order; the first non-empty match is returned.
+var defaultGroupClaimNames = []string{"groups", "roles", "cognito:groups"}
+
+// extractGroupsFromClaims looks for group membership claims in the provided
+// claims map. It checks customClaimName first (if non-empty), then falls back to
+// the well-known names "groups", "roles", and "cognito:groups". Returns the
+// string-slice value of the first matching claim key (which may be empty), or nil
+// when no group claim key is found.
+//
+// Passing a non-empty customClaimName allows callers to support IDPs that use
+// URI-style claim names (e.g. "https://example.com/groups" used by Auth0/Okta).
+func extractGroupsFromClaims(claims map[string]any, customClaimName string) []string {
+	names := defaultGroupClaimNames
+	if customClaimName != "" {
+		// Prepend the custom name so it takes priority over well-known names.
+		names = append([]string{customClaimName}, defaultGroupClaimNames...)
+	}
+
+	for _, name := range names {
+		val, ok := claims[name]
+		if !ok {
+			continue
+		}
+		switch v := val.(type) {
+		case []interface{}:
+			groups := make([]string, 0, len(v))
+			for _, g := range v {
+				if s, ok := g.(string); ok {
+					groups = append(groups, s)
+				}
+			}
+			return groups
+		case []string:
+			return v
+		}
+		// Claim key exists but has an unrecognized type; stop searching.
+		slog.Warn("group claim has unrecognized type, ignoring",
+			"claim", name, "type", fmt.Sprintf("%T", val))
+		return nil
+	}
+	return nil
 }

@@ -521,7 +521,7 @@ func (s *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
 		return nil, err
 	}
 
-	return secrets.CreateUserSecretProvider(providerType)
+	return secrets.CreateProvider(providerType, secrets.WithUserFacing())
 }
 
 // Request and response type definitions

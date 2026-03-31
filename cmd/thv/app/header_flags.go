@@ -116,7 +116,7 @@ func resolveHeaderSecrets(secretHeaders map[string]string) (map[string]string, e
 		return nil, fmt.Errorf("failed to determine secrets provider type: %w", err)
 	}
 
-	secretManager, err := secrets.CreateUserSecretProvider(providerType)
+	secretManager, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secret provider: %w", err)
 	}

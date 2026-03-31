@@ -94,7 +94,7 @@ func (h *Handler) SetSecret(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 
 	// Create the secrets provider
-	secretsProvider, err := secrets.CreateUserSecretProvider(providerType)
+	secretsProvider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to create secrets provider: %v", err)), nil
 	}

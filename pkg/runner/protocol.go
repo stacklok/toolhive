@@ -302,7 +302,7 @@ func resolveBuildAuthFilesFromSecrets(configuredFiles []string) (map[string]stri
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateScopedSecretProvider(providerType, secrets.ScopeWorkloads)
+	manager, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}
@@ -336,7 +336,7 @@ func resolveSecretsForBuildEnv(secretRefs map[string]string) (map[string]string,
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateUserSecretProvider(providerType)
+	manager, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}

@@ -132,7 +132,7 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 			Type:               mcpv1alpha1.ConditionToolConfigValid,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationFailed,
-			Message:            fmt.Sprintf("Failed to find referencing MCPServers: %v", err),
+			Message:            "Failed to find referencing MCPServers",
 			ObservedGeneration: toolConfig.Generation,
 		})
 		if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {
@@ -186,7 +186,7 @@ func (r *ToolConfigReconciler) updateReferencingServers(
 			Type:               mcpv1alpha1.ConditionToolConfigValid,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationFailed,
-			Message:            fmt.Sprintf("Failed to find referencing MCPServers: %v", err),
+			Message:            "Failed to find referencing MCPServers",
 			ObservedGeneration: toolConfig.Generation,
 		})
 		if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {

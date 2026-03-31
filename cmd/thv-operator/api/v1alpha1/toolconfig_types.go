@@ -85,7 +85,7 @@ type MCPToolConfigStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=tc;toolconfig
+// +kubebuilder:resource:shortName=tc;toolconfig,categories=toolhive
 // +kubebuilder:printcolumn:name="Filter Count",type=integer,JSONPath=`.spec.toolsFilter[*]`
 // +kubebuilder:printcolumn:name="Override Count",type=integer,JSONPath=`.spec.toolsOverride`
 // +kubebuilder:printcolumn:name="Referenced By",type=string,JSONPath=`.status.referencingServers`

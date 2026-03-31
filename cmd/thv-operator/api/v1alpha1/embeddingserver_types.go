@@ -203,6 +203,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:resource:categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Model",type="string",JSONPath=".spec.model"
 //+kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"

@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -150,6 +151,39 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		assert.Equal(t, "original", loaded["x"], "original value must be preserved")
 	})
 
+	t.Run("StoreIfAbsent is atomic under concurrent callers", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		type result struct {
+			stored bool
+			err    error
+		}
+		const goroutines = 20
+		results := make(chan result, goroutines)
+		for i := range goroutines {
+			go func(val string) {
+				stored, err := s.StoreIfAbsent(ctx, "concurrent-key", map[string]string{"winner": val})
+				results <- result{stored: stored, err: err}
+			}(fmt.Sprintf("contender-%d", i))
+		}
+
+		var winCount int
+		for range goroutines {
+			r := <-results
+			require.NoError(t, r.err)
+			if r.stored {
+				winCount++
+			}
+		}
+		assert.Equal(t, 1, winCount, "exactly one goroutine should have stored the entry")
+
+		loaded, err := s.Load(ctx, "concurrent-key")
+		require.NoError(t, err)
+		assert.NotEmpty(t, loaded["winner"], "stored value must be one of the contenders")
+	})
+
 	t.Run("StoreIfAbsent with empty ID returns error", func(t *testing.T) {
 		t.Parallel()
 		s := newStorage(t)
@@ -199,7 +233,8 @@ func TestLocalSessionDataStorage(t *testing.T) {
 
 	newLocal := func(t *testing.T) DataStorage {
 		t.Helper()
-		s := NewLocalSessionDataStorage(time.Hour)
+		s, err := NewLocalSessionDataStorage(time.Hour)
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = s.Close() })
 		return s
 	}
@@ -208,63 +243,73 @@ func TestLocalSessionDataStorage(t *testing.T) {
 
 	t.Run("TTL eviction removes idle entries", func(t *testing.T) {
 		t.Parallel()
-		s := NewLocalSessionDataStorage(50 * time.Millisecond)
+		const ttl = time.Hour
+		s, err := NewLocalSessionDataStorage(ttl)
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = s.Close() })
 		ctx := context.Background()
 
 		require.NoError(t, s.Store(ctx, "ttl-sess", map[string]string{"k": "v"}))
+		backdateLocalEntry(t, s, "ttl-sess", ttl+time.Millisecond)
+		s.deleteExpired()
 
-		// Background cleanup runs at TTL/2 (~25ms). Wait long enough for it to fire.
-		time.Sleep(200 * time.Millisecond)
-
-		_, err := s.Load(ctx, "ttl-sess")
+		_, err = s.Load(ctx, "ttl-sess")
 		assert.ErrorIs(t, err, ErrSessionNotFound, "idle session should be evicted after TTL")
 	})
 
-	t.Run("Load refreshes TTL so active entries survive cleanup", func(t *testing.T) {
+	t.Run("Load refreshes TTL so active entries survive eviction", func(t *testing.T) {
 		t.Parallel()
-		ttl := 100 * time.Millisecond
-		s := NewLocalSessionDataStorage(ttl)
+		const ttl = time.Hour
+		s, err := NewLocalSessionDataStorage(ttl)
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = s.Close() })
 		ctx := context.Background()
 
 		require.NoError(t, s.Store(ctx, "active-sess", map[string]string{}))
+		backdateLocalEntry(t, s, "active-sess", ttl+time.Millisecond)
 
-		// Repeatedly load to keep the entry fresh, then verify it outlives the TTL.
-		for range 3 {
-			time.Sleep(ttl / 3)
-			_, err := s.Load(ctx, "active-sess")
-			require.NoError(t, err)
-		}
+		// Load should refresh the entry's timestamp.
+		_, err = s.Load(ctx, "active-sess")
+		require.NoError(t, err)
 
-		// Entry should still be present because each Load refreshed it.
-		_, err := s.Load(ctx, "active-sess")
+		// Eviction run should not remove the entry because Load just refreshed it.
+		s.deleteExpired()
+
+		_, err = s.Load(ctx, "active-sess")
 		assert.NoError(t, err, "actively loaded session should not be evicted")
 	})
 
 	t.Run("Exists does not refresh TTL", func(t *testing.T) {
 		t.Parallel()
-		ttl := 60 * time.Millisecond
-		s := NewLocalSessionDataStorage(ttl)
+		const ttl = time.Hour
+		s, err := NewLocalSessionDataStorage(ttl)
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = s.Close() })
 		ctx := context.Background()
 
 		require.NoError(t, s.Store(ctx, "probe-sess", map[string]string{}))
+		backdateLocalEntry(t, s, "probe-sess", ttl+time.Millisecond)
 
-		// Call Exists only (no Load) and wait for the entry to age past TTL.
-		for range 3 {
-			time.Sleep(ttl / 4)
-			ok, err := s.Exists(ctx, "probe-sess")
-			require.NoError(t, err)
-			require.True(t, ok)
-		}
+		// Exists must not refresh the timestamp.
+		ok, err := s.Exists(ctx, "probe-sess")
+		require.NoError(t, err)
+		require.True(t, ok)
 
-		// Give the background cleanup goroutine time to evict it.
-		time.Sleep(ttl * 2)
+		// Eviction run should remove the entry because Exists did not refresh it.
+		s.deleteExpired()
 
-		_, err := s.Load(ctx, "probe-sess")
+		_, err = s.Load(ctx, "probe-sess")
 		assert.ErrorIs(t, err, ErrSessionNotFound, "Exists should not have extended the TTL")
 	})
+}
+
+// backdateLocalEntry moves the last-access timestamp of id back by age,
+// simulating an entry that has been idle for that duration.
+func backdateLocalEntry(t *testing.T, s *LocalSessionDataStorage, id string, age time.Duration) {
+	t.Helper()
+	val, ok := s.sessions.Load(id)
+	require.True(t, ok, "entry %q not found for backdating", id)
+	val.(*localDataEntry).lastAccessNano.Store(time.Now().Add(-age).UnixNano())
 }
 
 // ---------------------------------------------------------------------------

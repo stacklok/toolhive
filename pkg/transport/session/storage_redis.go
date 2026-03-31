@@ -56,8 +56,21 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*
 	if ttl <= 0 {
 		return nil, fmt.Errorf("ttl must be a positive duration")
 	}
+	client, err := buildRedisClient(ctx, &cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &RedisStorage{
+		client:    client,
+		keyPrefix: cfg.KeyPrefix,
+		ttl:       ttl,
+	}, nil
+}
 
-	// Apply timeout defaults
+// buildRedisClient applies timeout defaults, resolves TLS, constructs either a
+// standalone or Sentinel client from cfg, and verifies the connection with Ping.
+// cfg is modified in place (timeout defaults written back).
+func buildRedisClient(ctx context.Context, cfg *RedisConfig) (redis.UniversalClient, error) {
 	if cfg.DialTimeout == 0 {
 		cfg.DialTimeout = DefaultDialTimeout
 	}
@@ -75,7 +88,7 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*
 
 	var client redis.UniversalClient
 	if cfg.SentinelConfig != nil {
-		opts := &redis.FailoverOptions{
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
 			MasterName:    cfg.SentinelConfig.MasterName,
 			SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
 			Username:      cfg.Username,
@@ -85,10 +98,9 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*
 			ReadTimeout:   cfg.ReadTimeout,
 			WriteTimeout:  cfg.WriteTimeout,
 			TLSConfig:     tlsCfg,
-		}
-		client = redis.NewFailoverClient(opts)
+		})
 	} else {
-		opts := &redis.Options{
+		client = redis.NewClient(&redis.Options{
 			Addr:         cfg.Addr,
 			Username:     cfg.Username,
 			Password:     cfg.Password,
@@ -97,20 +109,14 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*
 			ReadTimeout:  cfg.ReadTimeout,
 			WriteTimeout: cfg.WriteTimeout,
 			TLSConfig:    tlsCfg,
-		}
-		client = redis.NewClient(opts)
+		})
 	}
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
-
-	return &RedisStorage{
-		client:    client,
-		keyPrefix: cfg.KeyPrefix,
-		ttl:       ttl,
-	}, nil
+	return client, nil
 }
 
 // newRedisStorageWithClient creates a RedisStorage with a pre-configured client.

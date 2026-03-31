@@ -29,7 +29,7 @@ func (e *localDataEntry) lastAccess() time.Time {
 	return time.Unix(0, e.lastAccessNano.Load())
 }
 
-// LocalSessionDataStorage implements SessionDataStorage using an in-memory
+// LocalSessionDataStorage implements DataStorage using an in-memory
 // sync.Map with TTL-based eviction.
 //
 // Sessions are evicted if they have not been accessed within the configured TTL.
@@ -71,12 +71,10 @@ func (s *LocalSessionDataStorage) Load(_ context.Context, id string) (map[string
 		return nil, fmt.Errorf("invalid entry type in local session data storage")
 	}
 
-	// Refresh last-access by swapping in a new entry pointer. This prevents
-	// a concurrent DeleteExpired from evicting a session that is actively in use.
-	newEntry := newLocalDataEntry(entry.metadata)
-	s.sessions.CompareAndSwap(id, entry, newEntry)
-	// If CAS fails, another goroutine already replaced the entry; the map
-	// always holds a fresh pointer, so eviction of this session is safe.
+	// Refresh last-access in place. deleteExpired re-checks the timestamp
+	// immediately before calling CompareAndDelete, so this atomic store is
+	// sufficient to prevent eviction of an actively accessed entry.
+	entry.lastAccessNano.Store(time.Now().UnixNano())
 
 	return maps.Clone(entry.metadata), nil
 }

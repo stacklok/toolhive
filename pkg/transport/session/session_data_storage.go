@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -12,11 +13,11 @@ import (
 //
 // Unlike the Session-based Storage interface, DataStorage never attempts
 // to round-trip live session objects (MultiSession, StreamableSession, etc.).
-// It stores only serialisable metadata, keeping data storage and live-object
+// It stores only serializable metadata, keeping data storage and live-object
 // lifecycle as separate concerns.
 //
 // This separation avoids the type-assertion bug where a Redis round-trip
-// deserialises a MultiSession as a plain *StreamableSession, losing all
+// deserializes a MultiSession as a plain *StreamableSession, losing all
 // backend connections and routing state.
 //
 // # Contract
@@ -62,12 +63,16 @@ type DataStorage interface {
 }
 
 // NewLocalSessionDataStorage creates a LocalSessionDataStorage with the given TTL.
+// ttl must be positive; a zero or negative value returns an error.
 // A background cleanup goroutine is started and runs until Close is called.
-func NewLocalSessionDataStorage(ttl time.Duration) *LocalSessionDataStorage {
+func NewLocalSessionDataStorage(ttl time.Duration) (*LocalSessionDataStorage, error) {
+	if ttl <= 0 {
+		return nil, fmt.Errorf("ttl must be a positive duration")
+	}
 	s := &LocalSessionDataStorage{
 		ttl:    ttl,
 		stopCh: make(chan struct{}),
 	}
 	go s.cleanupRoutine()
-	return s
+	return s, nil
 }

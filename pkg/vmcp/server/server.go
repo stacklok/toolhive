@@ -204,13 +204,10 @@ type Server struct {
 	// For dynamic mode (K8s), this is a DynamicRegistry updated by the operator.
 	backendRegistry vmcp.BackendRegistry
 
-	// Session manager for tracking MCP protocol sessions
-	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
-	// used by streamable proxy for MCP session tracking. It handles:
-	//   - Session storage and retrieval
-	//   - TTL-based cleanup of inactive sessions
-	//   - Session lifecycle management
-	sessionManager *transportsession.Manager
+	// sessionDataStorage is the pluggable key-value backend for session metadata.
+	// LocalSessionDataStorage is used by default; RedisSessionDataStorage when
+	// SessionStorageConfig is provided in Config.
+	sessionDataStorage transportsession.DataStorage
 
 	// Capability adapter for converting aggregator types to SDK types
 	capabilityAdapter *adapter.CapabilityAdapter
@@ -353,13 +350,20 @@ func New(
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
-	// Create session manager using StreamableSession as the transport-layer placeholder.
-	// StreamableSession is a lightweight implementation of transportsession.Session that
-	// handles disconnect tracking, TTL, and metadata for Streamable HTTP connections.
-	// It intentionally carries no vmcp-specific state — backend connections, routing
-	// tables, tool lists, and token binding all live in the separate sessionmanager.Manager,
-	// keyed by the same session ID.
-	sessionManager := transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
+	// Create session data storage. Default to local in-memory storage; a future
+	// SessionStorageConfig field can wire up Redis for multi-pod deployments.
+	sessionDataStorage, err := transportsession.NewLocalSessionDataStorage(cfg.SessionTTL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session data storage: %w", err)
+	}
+	// Close sessionDataStorage if New() returns an error after this point so the
+	// background cleanup goroutine does not leak.
+	closeStorageOnErr := true
+	defer func() {
+		if closeStorageOnErr {
+			_ = sessionDataStorage.Close()
+		}
+	}()
 
 	// Create handler factory (used by adapter and for future dynamic registration)
 	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
@@ -395,31 +399,36 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 	}
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionManager, sessMgrCfg, backendRegistry)
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionTTL, sessMgrCfg, backendRegistry)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backendRegistry:   backendRegistry,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
-		statusReporter:    cfg.StatusReporter,
-		vmcpSessionMgr:    vmcpSessMgr,
+		config:             cfg,
+		mcpServer:          mcpServer,
+		router:             rt,
+		backendClient:      backendClient,
+		handlerFactory:     handlerFactory,
+		discoveryMgr:       discoveryMgr,
+		backendRegistry:    backendRegistry,
+		sessionDataStorage: sessionDataStorage,
+		capabilityAdapter:  capabilityAdapter,
+		ready:              make(chan struct{}),
+		healthMonitor:      healthMon,
+		statusReporter:     cfg.StatusReporter,
+		vmcpSessionMgr:     vmcpSessMgr,
 	}
 
 	if optimizerCleanup != nil {
 		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
 	}
+	// Close session data storage last so the eviction loop (stopped by optimizerCleanup
+	// above, which calls sm.stop()) cannot call storage.Exists() after Close().
+	srv.shutdownFuncs = append(srv.shutdownFuncs, func(_ context.Context) error {
+		return sessionDataStorage.Close()
+	})
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
 	// See handleSessionRegistration for implementation details.
@@ -427,6 +436,8 @@ func New(
 		srv.handleSessionRegistration(ctx, session)
 	})
 
+	// Disarm the close-on-error guard: Server is fully constructed.
+	closeStorageOnErr = false
 	return srv, nil
 }
 
@@ -545,7 +556,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		healthStatusProvider = healthMon
 	}
 	mcpHandler = discovery.Middleware(
-		s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider,
+		s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
 		discovery.WithSessionScopedRouting(),
 	)(mcpHandler)
 	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
@@ -730,13 +741,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listener = nil
 	s.listenerMu.Unlock()
 
-	// Stop session manager after HTTP server shutdown
-	if s.sessionManager != nil {
-		if err := s.sessionManager.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
-		}
-	}
-
 	// Stop health monitor to clean up health check goroutines
 	s.healthMonitorMu.RLock()
 	healthMon := s.healthMonitor
@@ -877,10 +881,10 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SessionManager returns the session manager instance.
+// SessionManager returns the session data storage instance.
 // This is useful for testing and monitoring.
-func (s *Server) SessionManager() *transportsession.Manager {
-	return s.sessionManager
+func (s *Server) SessionManager() transportsession.DataStorage {
+	return s.sessionDataStorage
 }
 
 // Ready returns a channel that is closed when the server is ready to accept connections.

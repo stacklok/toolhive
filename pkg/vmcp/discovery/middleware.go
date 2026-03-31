@@ -25,15 +25,19 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
-	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
+
+// MultiSessionGetter retrieves a fully-formed MultiSession by session ID.
+// The concrete implementation is sessionmanager.Manager.
+type MultiSessionGetter interface {
+	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
+}
 
 const (
 	// discoveryTimeout is the maximum time for capability discovery.
@@ -87,7 +91,7 @@ func WithDiscoveryTimeout(timeout time.Duration) MiddlewareOption {
 func Middleware(
 	manager Manager,
 	registry vmcp.BackendRegistry,
-	sessionManager *transportsession.Manager,
+	sessionGetter MultiSessionGetter,
 	healthStatusProvider health.StatusProvider,
 	opts ...MiddlewareOption,
 ) func(http.Handler) http.Handler {
@@ -102,7 +106,6 @@ func Middleware(
 			ctx := r.Context()
 			sessionID := r.Header.Get("Mcp-Session-Id")
 
-			var err error
 			if sessionID == "" {
 				if cfg.sessionScopedRouting {
 					// Session-scoped routing registers capabilities via the OnRegisterSession
@@ -111,15 +114,15 @@ func Middleware(
 					return
 				}
 				// Initialize request: discover and cache capabilities in session.
+				var err error
 				ctx, err = handleInitializeRequest(ctx, r, manager, registry, healthStatusProvider, cfg.timeout)
+				if err != nil {
+					handleDiscoveryError(w, r, err)
+					return
+				}
 			} else {
-				// Subsequent request: retrieve cached capabilities from session.
-				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
-			}
-
-			if err != nil {
-				handleDiscoveryError(w, r, err)
-				return
+				// Subsequent request: inject routing context from the session.
+				ctx = handleSubsequentRequest(ctx, r, sessionID, sessionGetter)
 			}
 
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -256,30 +259,20 @@ func handleInitializeRequest(
 	return WithDiscoveredCapabilities(ctx, capabilities), nil
 }
 
-// handleSubsequentRequest retrieves cached capabilities from the session.
-// Returns updated context with capabilities or an error.
+// handleSubsequentRequest injects routing context from the cached MultiSession.
+// Returns the updated context; never returns an error — unknown or not-yet-ready
+// sessions are silently passed through so the SDK can respond with 404.
 func handleSubsequentRequest(
 	ctx context.Context,
 	r *http.Request,
 	sessionID string,
-	sessionManager *transportsession.Manager,
-) (context.Context, error) {
+	sessionGetter MultiSessionGetter,
+) context.Context {
 	//nolint:gosec // G706: session ID and request fields are not injection vectors
 	slog.Debug("retrieving capabilities from session for subsequent request",
 		"session_id", sessionID,
 		"method", r.Method,
 		"path", r.URL.Path)
-
-	// First, validate the session exists at all.
-	rawSess, exists := sessionManager.Get(sessionID)
-	if !exists {
-		//nolint:gosec // G706: session ID is not an injection vector
-		slog.Error("session not found",
-			"session_id", sessionID,
-			"method", r.Method,
-			"path", r.URL.Path)
-		return ctx, fmt.Errorf("session not found: %s", sessionID)
-	}
 
 	// Backend tool handlers (created by DefaultHandlerFactory) resolve their backend
 	// target by calling router.RouteTool(ctx, name), which reads DiscoveredCapabilities
@@ -287,18 +280,15 @@ func handleSubsequentRequest(
 	// table so these handlers can route correctly on subsequent requests.
 	// Note: composite tool workflow engines are created per-session and route via
 	// SessionRouter directly, so they no longer depend on this context value.
-	multiSess, isMulti := rawSess.(vmcpsession.MultiSession)
-	if !isMulti {
-		// The session is still a StreamableSession placeholder — Phase 2
-		// (OnRegisterSession / CreateSession) has not yet replaced it with a
-		// MultiSession. This can happen if the client sends a request in the
-		// brief window between receiving the session ID and the hook completing.
-		// Skip capability injection and let the SDK respond (tools list will be
-		// temporarily empty, but no 500 is returned to the client).
+	multiSess, ok := sessionGetter.GetMultiSession(sessionID)
+	if !ok {
+		// The session is not yet in the node-local cache (placeholder, not-yet-restored,
+		// or expired). Pass through without capability injection so the SDK can respond
+		// with its own 404 via Validate().
 		//nolint:gosec // G706: session ID is not an injection vector
-		slog.Debug("session initialisation in progress, skipping capability injection",
+		slog.Debug("session not found or still initializing, skipping capability injection",
 			"session_id", sessionID)
-		return ctx, nil
+		return ctx
 	}
 
 	routingTable := multiSess.GetRoutingTable()
@@ -309,7 +299,7 @@ func handleSubsequentRequest(
 		//nolint:gosec // G706: session ID is not an injection vector
 		slog.Debug("multi-session routing table not yet initialised; skipping capability injection",
 			"session_id", sessionID)
-		return ctx, nil
+		return ctx
 	}
 	//nolint:gosec // G706: session ID is not an injection vector
 	slog.Debug("injecting capabilities from multi-session routing table for composite tool routing",
@@ -319,20 +309,13 @@ func handleSubsequentRequest(
 		RoutingTable: routingTable,
 		Tools:        multiSess.Tools(),
 	}
-	return WithDiscoveredCapabilities(ctx, capabilities), nil
+	return WithDiscoveredCapabilities(ctx, capabilities)
 }
 
 // handleDiscoveryError writes appropriate HTTP error responses based on the error type.
 func handleDiscoveryError(w http.ResponseWriter, _ *http.Request, err error) {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		http.Error(w, http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout)
-		return
-	}
-
-	// Check for session-related errors
-	errMsg := err.Error()
-	if strings.Contains(errMsg, "session not found") {
-		http.Error(w, "Session not found", http.StatusUnauthorized)
 		return
 	}
 

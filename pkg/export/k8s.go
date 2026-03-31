@@ -88,7 +88,7 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 	}
 
 	// Set proxy mode if transport is stdio
-	if config.Transport == types.TransportTypeStdio && config.ProxyMode != "" {
+	if config.Transport == types.TransportTypeStdio {
 		mcpServer.Spec.ProxyMode = string(config.ProxyMode)
 	}
 

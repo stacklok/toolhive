@@ -286,3 +286,17 @@ func IsValidProxyMode(mode string) bool {
 func (p ProxyMode) String() string {
 	return string(p)
 }
+
+// EffectiveProxyMode determines the actual HTTP protocol the proxy is using.
+// For stdio transports, this returns the proxy mode (sse or streamable-http).
+// For direct transports (sse/streamable-http), this returns the transport type
+// since the transport itself is the protocol.
+func EffectiveProxyMode(transportType TransportType, proxyMode ProxyMode) ProxyMode {
+	if transportType == TransportTypeStdio {
+		if proxyMode == "" {
+			return ProxyModeStreamableHTTP
+		}
+		return proxyMode
+	}
+	return ProxyMode(transportType.String())
+}

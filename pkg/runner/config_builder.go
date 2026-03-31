@@ -837,6 +837,9 @@ func internalRunConfigBuilder(
 	// Set schema version.
 	b.config.SchemaVersion = CurrentSchemaVersion
 
+	// Normalize proxyMode to the effective value before returning.
+	b.config.NormalizeProxyMode()
+
 	return b.config, nil
 }
 

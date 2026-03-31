@@ -323,6 +323,19 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		})
 
+		It("Should set ObservedGeneration in status after reconciliation", func() {
+			Eventually(func() int64 {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer); err != nil {
+					return -1
+				}
+				return updatedMCPServer.Status.ObservedGeneration
+			}, timeout, interval).Should(Equal(createdMCPServer.Generation))
+		})
+
 		It("Should update Deployment when MCPServer spec changes", func() {
 
 			// Wait for Deployment to be created

@@ -347,34 +347,6 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
-			// Verify ObservedGeneration is set after a successful reconciliation
-			name: "observed_generation_is_set_after_reconcile",
-			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
-				t.Helper()
-				mcpRegistry := newMCPRegistryWithFinalizer(registryName, registryNamespace)
-				mcpRegistry.Generation = 5
-				builder := fake.NewClientBuilder().
-					WithScheme(s).
-					WithObjects(mcpRegistry).
-					WithStatusSubresource(&mcpv1alpha1.MCPRegistry{})
-				return builder, mcpRegistry
-			},
-			configureMocks: func(mock *registryapimocks.MockManager) {
-				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
-			},
-			expResult: ctrl.Result{},
-			expErr:    nil,
-			assertRegistry: func(t *testing.T, fakeClient client.Client) {
-				t.Helper()
-				var updated mcpv1alpha1.MCPRegistry
-				require.NoError(t, fakeClient.Get(t.Context(),
-					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				assert.Equal(t, int64(5), updated.Status.ObservedGeneration,
-					"ObservedGeneration should match the MCPRegistry's Generation")
-			},
-		},
-		{
 			// When the API is ready, the endpoint in APIStatus should follow the in-cluster
 			// URL format and the APIReady condition should be True.
 			name: "api_reconcile_success_api_ready_checks_endpoint_and_condition",

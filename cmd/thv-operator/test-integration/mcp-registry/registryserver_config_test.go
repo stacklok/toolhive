@@ -140,6 +140,9 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				mcpv1alpha1.MCPRegistryPhaseReady,   // If somehow API becomes ready
 			))
 
+			// Verify ObservedGeneration is set after reconciliation
+			Expect(registry.Status.ObservedGeneration).To(Equal(registry.Generation))
+
 			// Verify API status exists and shows deployment
 			Expect(registry.Status.APIStatus).NotTo(BeNil())
 			Expect(registry.Status.APIStatus.Phase).To(BeElementOf(

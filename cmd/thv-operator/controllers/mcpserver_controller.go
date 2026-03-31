@@ -1393,6 +1393,9 @@ func categorizePodStatus(pod corev1.Pod) (running, pending, failed int, failureR
 
 // updateMCPServerStatus updates the status of the MCPServer
 func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	// Update ObservedGeneration to reflect that we've processed this generation
+	m.Status.ObservedGeneration = m.Generation
+
 	// Handle scale-to-zero: if deployment exists with 0 replicas, report Stopped
 	deployment := &appsv1.Deployment{}
 	if err := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, deployment); err == nil {

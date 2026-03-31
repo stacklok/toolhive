@@ -110,6 +110,11 @@ spec:
                   - type
                   type: object
                 type: array
+              observedGeneration:
+                description: ObservedGeneration reflects the generation most recently
+                  observed by the controller
+                format: int64
+                type: integer
               phase:
                 default: Pending
                 description: Phase indicates current state

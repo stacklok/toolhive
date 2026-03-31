@@ -483,6 +483,10 @@ type MCPRegistryOAuthProviderConfig struct {
 
 // MCPRegistryStatus defines the observed state of MCPRegistry
 type MCPRegistryStatus struct {
+	// ObservedGeneration reflects the generation most recently observed by the controller
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Phase represents the current overall phase of the MCPRegistry
 	// Derived from sync and API status
 	// +optional

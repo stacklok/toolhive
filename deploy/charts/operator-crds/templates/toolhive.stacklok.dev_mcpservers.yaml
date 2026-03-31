@@ -915,6 +915,11 @@ spec:
                 description: Message provides additional information about the current
                   phase
                 type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation most recently
+                  observed by the controller
+                format: int64
+                type: integer
               phase:
                 description: Phase is the current phase of the MCPServer
                 enum:

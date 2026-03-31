@@ -852,6 +852,10 @@ type MCPServerStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
+	// ObservedGeneration reflects the generation most recently observed by the controller
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// ToolConfigHash stores the hash of the referenced ToolConfig for change detection
 	// +optional
 	ToolConfigHash string `json:"toolConfigHash,omitempty"`

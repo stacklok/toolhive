@@ -124,6 +124,9 @@ func (r *MCPGroupReconciler) updateGroupMemberStatus(
 
 	mcpGroup.Status.Phase = mcpv1alpha1.MCPGroupPhaseReady
 
+	// Update ObservedGeneration to reflect that we've processed this generation
+	mcpGroup.Status.ObservedGeneration = mcpGroup.Generation
+
 	// Update the MCPGroup status
 	if err := r.Status().Update(ctx, mcpGroup); err != nil {
 		if errors.IsConflict(err) {
@@ -163,6 +166,9 @@ func (r *MCPGroupReconciler) handleListFailure(
 	mcpGroup.Status.Servers = nil
 	mcpGroup.Status.RemoteProxyCount = 0
 	mcpGroup.Status.RemoteProxies = nil
+
+	// Update ObservedGeneration even on failure to reflect that we've processed this generation
+	mcpGroup.Status.ObservedGeneration = mcpGroup.Generation
 
 	if updateErr := r.Status().Update(ctx, mcpGroup); updateErr != nil {
 		if errors.IsConflict(updateErr) {

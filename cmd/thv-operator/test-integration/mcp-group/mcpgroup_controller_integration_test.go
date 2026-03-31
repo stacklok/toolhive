@@ -171,6 +171,18 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				return updatedGroup.Status.Phase
 			}, timeout, interval).Should(Equal(mcpv1alpha1.MCPGroupPhaseReady))
 
+			// Verify ObservedGeneration is set after reconciliation
+			Eventually(func() int64 {
+				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpGroupName,
+					Namespace: namespace,
+				}, updatedGroup); err != nil {
+					return -1
+				}
+				return updatedGroup.Status.ObservedGeneration
+			}, timeout, interval).Should(Equal(mcpGroup.Generation))
+
 			// Verify the servers are in the group
 			updatedGroup := &mcpv1alpha1.MCPGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{

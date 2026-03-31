@@ -21,25 +21,27 @@ const stateFileName = "vm-state.json"
 
 // vmStatePersisted is the on-disk representation of a vmEntry.
 type vmStatePersisted struct {
-	Name          string                `json:"name"`
-	Image         string                `json:"image"`
-	Labels        map[string]string     `json:"labels"`
-	Ports         []runtime.PortMapping `json:"ports"`
-	TransportType string                `json:"transport_type"`
-	CreatedAt     time.Time             `json:"created_at"`
-	DataDir       string                `json:"data_dir"`
+	Name               string                `json:"name"`
+	Image              string                `json:"image"`
+	Labels             map[string]string     `json:"labels"`
+	Ports              []runtime.PortMapping `json:"ports"`
+	TransportType      string                `json:"transport_type"`
+	StdioRelayHostPort int                   `json:"stdio_relay_host_port,omitempty"`
+	CreatedAt          time.Time             `json:"created_at"`
+	DataDir            string                `json:"data_dir"`
 }
 
 // persistVMState writes the vmEntry state to a JSON file in the given directory.
 func persistVMState(dir string, entry *vmEntry) error {
 	persisted := vmStatePersisted{
-		Name:          entry.name,
-		Image:         entry.image,
-		Labels:        entry.labels,
-		Ports:         entry.ports,
-		TransportType: entry.transportType,
-		CreatedAt:     entry.createdAt,
-		DataDir:       entry.dataDir,
+		Name:               entry.name,
+		Image:              entry.image,
+		Labels:             entry.labels,
+		Ports:              entry.ports,
+		TransportType:      entry.transportType,
+		StdioRelayHostPort: entry.stdioRelayHostPort,
+		CreatedAt:          entry.createdAt,
+		DataDir:            entry.dataDir,
 	}
 	data, err := json.Marshal(persisted)
 	if err != nil {
@@ -146,15 +148,16 @@ func (c *Client) recoverState() {
 		}
 
 		c.vms[vmState.Name] = &vmEntry{
-			name:          vmState.Name,
-			image:         vmState.Image,
-			labels:        vmState.Labels,
-			state:         status,
-			vm:            nil,
-			createdAt:     vmState.CreatedAt,
-			dataDir:       vmState.DataDir,
-			ports:         vmState.Ports,
-			transportType: vmState.TransportType,
+			name:               vmState.Name,
+			image:              vmState.Image,
+			labels:             vmState.Labels,
+			state:              status,
+			vm:                 nil,
+			createdAt:          vmState.CreatedAt,
+			dataDir:            vmState.DataDir,
+			ports:              vmState.Ports,
+			transportType:      vmState.TransportType,
+			stdioRelayHostPort: vmState.StdioRelayHostPort,
 		}
 	}
 }

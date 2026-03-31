@@ -25,6 +25,20 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
+const (
+	// stdioRelayGuestPort is the well-known TCP port inside the guest VM where
+	// the stdio relay listens. The guest namespace is fully isolated so a fixed
+	// port avoids parameterization.
+	stdioRelayGuestPort = 9999
+
+	// stdioRelayPortEnvVar is the environment variable injected into the guest
+	// so thv-vm-init knows which port to listen on for the stdio relay.
+	stdioRelayPortEnvVar = "THV_STDIO_RELAY_PORT"
+
+	// transportStdio is the transport type string for stdio.
+	transportStdio = "stdio"
+)
+
 // DeployWorkload creates and starts a microVM workload.
 // When isolateNetwork is true the permission profile's network rules are
 // enforced via go-microvm's egress policy. When false, all egress is allowed
@@ -39,18 +53,29 @@ func (c *Client) DeployWorkload(
 	options *runtime.DeployWorkloadOptions,
 	isolateNetwork bool,
 ) (int, error) {
-	if transportType == "stdio" {
-		return 0, fmt.Errorf("go-microvm runtime: stdio transport is not supported — use SSE or streamable-http")
-	}
-
 	containerPort, err := extractContainerPort(options)
 	if err != nil {
 		return 0, fmt.Errorf("go-microvm runtime: %w", err)
 	}
 
-	hostPort := networking.FindAvailable()
-	if hostPort == 0 {
-		return 0, fmt.Errorf("go-microvm runtime: could not find an available host port")
+	// For HTTP transports, allocate a host port for the MCP server.
+	// For stdio, there is no HTTP port — the relay port is used instead.
+	var hostPort int
+	if transportType != transportStdio {
+		hostPort = networking.FindAvailable()
+		if hostPort == 0 {
+			return 0, fmt.Errorf("go-microvm runtime: could not find an available host port")
+		}
+	}
+
+	// For stdio transport, allocate a host port for the TCP stdio relay.
+	var stdioRelayHostPort int
+	if transportType == transportStdio {
+		stdioRelayHostPort = networking.FindAvailable()
+		if stdioRelayHostPort == 0 {
+			return 0, fmt.Errorf("go-microvm runtime: could not find an available host port for stdio relay")
+		}
+		envVars[stdioRelayPortEnvVar] = strconv.Itoa(stdioRelayGuestPort)
 	}
 
 	vmDir := filepath.Join(c.opts.dataDir, "vms", name)
@@ -58,7 +83,8 @@ func (c *Client) DeployWorkload(
 		return 0, fmt.Errorf("go-microvm runtime: creating VM data dir: %w", err)
 	}
 
-	opts, err := c.buildMicrovmOptions(name, vmDir, command, envVars, permissionProfile, containerPort, hostPort, isolateNetwork)
+	opts, err := c.buildMicrovmOptions(name, vmDir, command, envVars, permissionProfile,
+		containerPort, hostPort, stdioRelayHostPort, transportType, isolateNetwork)
 	if err != nil {
 		return 0, err
 	}
@@ -78,15 +104,16 @@ func (c *Client) DeployWorkload(
 	}
 
 	entry := &vmEntry{
-		name:          name,
-		image:         image,
-		labels:        labels,
-		state:         runtime.WorkloadStatusRunning,
-		vm:            vm,
-		createdAt:     time.Now(),
-		dataDir:       vmDir,
-		ports:         ports,
-		transportType: transportType,
+		name:               name,
+		image:              image,
+		labels:             labels,
+		state:              runtime.WorkloadStatusRunning,
+		vm:                 vm,
+		createdAt:          time.Now(),
+		dataDir:            vmDir,
+		ports:              ports,
+		transportType:      transportType,
+		stdioRelayHostPort: stdioRelayHostPort,
 	}
 
 	c.mu.Lock()
@@ -98,6 +125,8 @@ func (c *Client) DeployWorkload(
 		slog.Warn("failed to persist VM state", "error", err)
 	}
 
+	// For stdio transport, hostPort is 0 because there is no HTTP server port.
+	// The caller uses AttachToWorkload() to connect to the stdio relay instead.
 	return hostPort, nil
 }
 
@@ -110,7 +139,8 @@ func (c *Client) buildMicrovmOptions(
 	command []string,
 	envVars map[string]string,
 	permissionProfile *permissions.Profile,
-	containerPort, hostPort int,
+	containerPort, hostPort, stdioRelayHostPort int,
+	transportType string,
 	isolateNetwork bool,
 ) ([]microvm.Option, error) {
 	// Generate ephemeral SSH key pair for the guest SSH server started by
@@ -144,15 +174,11 @@ func (c *Client) buildMicrovmOptions(
 		opts = append(opts, microvm.WithImageCache(microvmimage.NewCache(c.opts.imageCacheDir)))
 	}
 
-	if containerPort > 0 {
-		if hostPort > math.MaxUint16 || containerPort > math.MaxUint16 {
-			return nil, fmt.Errorf("go-microvm runtime: port value out of range (host=%d, container=%d)", hostPort, containerPort)
-		}
-		opts = append(opts, microvm.WithPorts(microvm.PortForward{
-			Host:  uint16(hostPort),      //nolint:gosec // bounds checked above
-			Guest: uint16(containerPort), //nolint:gosec // bounds checked above
-		}))
+	portOpts, err := buildPortForwardOptions(containerPort, hostPort, stdioRelayHostPort)
+	if err != nil {
+		return nil, err
 	}
+	opts = append(opts, portOpts...)
 
 	if isolateNetwork && permissionProfile != nil && permissionProfile.Network != nil {
 		if ep := buildEgressPolicy(permissionProfile.Network); ep != nil {
@@ -167,9 +193,40 @@ func (c *Client) buildMicrovmOptions(
 
 	opts = append(opts, microvm.WithRootFSHook(buildRootFSHooks(command, pubKey, envVars)...))
 
-	// Add readiness probe when a port is exposed.
-	if containerPort > 0 {
+	// Add readiness probe: HTTP for container-port transports, TCP for stdio relay.
+	switch {
+	case transportType == transportStdio && stdioRelayHostPort > 0:
+		opts = append(opts, microvm.WithPostBoot(tcpReadinessProbe(stdioRelayHostPort)))
+	case containerPort > 0:
 		opts = append(opts, microvm.WithPostBoot(httpReadinessProbe(hostPort)))
+	}
+
+	return opts, nil
+}
+
+// buildPortForwardOptions constructs the port forward microvm.Options for the
+// MCP server port and/or the stdio relay port.
+func buildPortForwardOptions(containerPort, hostPort, stdioRelayHostPort int) ([]microvm.Option, error) {
+	var opts []microvm.Option
+
+	if containerPort > 0 {
+		if hostPort > math.MaxUint16 || containerPort > math.MaxUint16 {
+			return nil, fmt.Errorf("go-microvm runtime: port value out of range (host=%d, container=%d)", hostPort, containerPort)
+		}
+		opts = append(opts, microvm.WithPorts(microvm.PortForward{
+			Host:  uint16(hostPort),      //nolint:gosec // bounds checked above
+			Guest: uint16(containerPort), //nolint:gosec // bounds checked above
+		}))
+	}
+
+	if stdioRelayHostPort > 0 {
+		if stdioRelayHostPort > math.MaxUint16 {
+			return nil, fmt.Errorf("go-microvm runtime: stdio relay port out of range (%d)", stdioRelayHostPort)
+		}
+		opts = append(opts, microvm.WithPorts(microvm.PortForward{
+			Host:  uint16(stdioRelayHostPort), //nolint:gosec // bounds checked above
+			Guest: uint16(stdioRelayGuestPort),
+		}))
 	}
 
 	return opts, nil

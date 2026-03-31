@@ -6,6 +6,7 @@ package gomicrovm
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -356,12 +357,81 @@ func TestGetWorkloadLogs(t *testing.T) {
 	})
 }
 
-func TestAttachToWorkload(t *testing.T) {
+func TestAttachToWorkload_NotFound(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t)
-	_, _, err := c.AttachToWorkload(context.Background(), "any")
+	_, _, err := c.AttachToWorkload(context.Background(), "nonexistent")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "stdio transport is not supported")
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestAttachToWorkload_NotRunning(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t)
+	c.vms["stopped-vm"] = &vmEntry{
+		name:  "stopped-vm",
+		state: runtime.WorkloadStatusStopped,
+	}
+	_, _, err := c.AttachToWorkload(context.Background(), "stopped-vm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not running")
+}
+
+func TestAttachToWorkload_NoRelayPort(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t)
+	c.vms["http-vm"] = &vmEntry{
+		name:          "http-vm",
+		state:         runtime.WorkloadStatusRunning,
+		transportType: "sse",
+	}
+	_, _, err := c.AttachToWorkload(context.Background(), "http-vm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no stdio relay port")
+}
+
+func TestAttachToWorkload_Success(t *testing.T) {
+	t.Parallel()
+
+	// Start a TCP server to simulate the guest relay.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	// Accept one connection and echo data back.
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 256)
+		n, _ := conn.Read(buf)
+		_, _ = conn.Write(buf[:n])
+	}()
+
+	c := newTestClient(t)
+	c.vms["stdio-vm"] = &vmEntry{
+		name:               "stdio-vm",
+		state:              runtime.WorkloadStatusRunning,
+		transportType:      "stdio",
+		stdioRelayHostPort: port,
+	}
+
+	writer, reader, err := c.AttachToWorkload(context.Background(), "stdio-vm")
+	require.NoError(t, err)
+	defer reader.Close()
+
+	msg := []byte(`{"jsonrpc":"2.0","id":1}` + "\n")
+	_, err = writer.Write(msg)
+	require.NoError(t, err)
+	_ = writer.Close() // half-close
+
+	buf := make([]byte, 256)
+	n, err := reader.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, string(msg), string(buf[:n]))
 }
 
 func TestReadLogFile(t *testing.T) {

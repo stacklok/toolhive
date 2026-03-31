@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,15 +28,16 @@ type Client struct {
 
 // vmEntry tracks a running go-microvm VM mapped to a ToolHive workload.
 type vmEntry struct {
-	name          string
-	image         string
-	labels        map[string]string
-	state         runtime.WorkloadStatus
-	vm            vmHandle
-	createdAt     time.Time
-	dataDir       string
-	ports         []runtime.PortMapping
-	transportType string
+	name               string
+	image              string
+	labels             map[string]string
+	state              runtime.WorkloadStatus
+	vm                 vmHandle
+	createdAt          time.Time
+	dataDir            string
+	ports              []runtime.PortMapping
+	transportType      string
+	stdioRelayHostPort int // host port mapped to the guest stdio relay (stdio transport only)
 }
 
 // clientOptions holds configuration for the go-microvm runtime.
@@ -93,10 +95,43 @@ func defaultClientOptions() clientOptions {
 	}
 }
 
-// AttachToWorkload is not supported by the go-microvm runtime.
-// The stdio transport requires direct stdin/stdout access which VMs do not provide.
-func (*Client) AttachToWorkload(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
-	return nil, nil, fmt.Errorf("go-microvm runtime: stdio transport is not supported — use SSE or streamable-http")
+// AttachToWorkload connects to the guest VM's stdio relay over TCP.
+// The relay port is set up during DeployWorkload when stdio transport is used.
+// stdioRelayHostPort and transportType are immutable after the entry is
+// inserted into Client.vms — safe to read after releasing the lock.
+// state is mutable (updated by lifecycle methods) but the check here is
+// best-effort; AttachToWorkload is called once during StdioTransport.Start().
+func (c *Client) AttachToWorkload(_ context.Context, name string) (io.WriteCloser, io.ReadCloser, error) {
+	c.mu.RLock()
+	entry, ok := c.vms[name]
+	c.mu.RUnlock()
+
+	if !ok {
+		return nil, nil, fmt.Errorf("go-microvm runtime: workload %q not found", name)
+	}
+
+	if entry.state != runtime.WorkloadStatusRunning {
+		return nil, nil, fmt.Errorf("go-microvm runtime: workload %q is not running", name)
+	}
+
+	if entry.stdioRelayHostPort == 0 {
+		return nil, nil, fmt.Errorf("go-microvm runtime: workload %q has no stdio relay port (transport=%s)", name, entry.transportType)
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", entry.stdioRelayHostPort)
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return nil, nil, fmt.Errorf("go-microvm runtime: dialing stdio relay at %s: %w", addr, err)
+	}
+
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("go-microvm runtime: expected TCP connection, got %T", conn)
+	}
+
+	writer, reader := splitTCPConn(tcpConn)
+	return writer, reader, nil
 }
 
 // IsRunning checks the health of the go-microvm runtime.

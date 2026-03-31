@@ -93,6 +93,78 @@ func TestHTTPReadinessProbe_AcceptsNon200(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestTCPReadinessProbe_ImmediateSuccess(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	// Accept and close connections.
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	probe := tcpReadinessProbe(port)
+	err = probe(context.Background(), nil)
+	require.NoError(t, err)
+}
+
+func TestTCPReadinessProbe_Timeout(t *testing.T) {
+	t.Parallel()
+
+	// Use a port that nothing listens on.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	probe := tcpReadinessProbe(port)
+	err = probe(ctx, nil)
+	require.Error(t, err)
+}
+
+func TestTCPReadinessProbe_DelayedSuccess(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	addr := ln.Addr().String()
+	ln.Close()
+
+	// Start listening after 1s.
+	go func() {
+		time.Sleep(1 * time.Second)
+		ln2, listenErr := net.Listen("tcp", addr)
+		if listenErr != nil {
+			return
+		}
+		defer ln2.Close()
+		for {
+			conn, acceptErr := ln2.Accept()
+			if acceptErr != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	probe := tcpReadinessProbe(port)
+	err = probe(context.Background(), nil)
+	require.NoError(t, err)
+}
+
 func serverPort(t *testing.T, srv *httptest.Server) int {
 	t.Helper()
 	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())

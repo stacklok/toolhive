@@ -50,6 +50,31 @@ func TestPersistAndLoadVMState(t *testing.T) {
 	assert.Equal(t, entry.dataDir, loaded.DataDir)
 }
 
+func TestPersistAndLoadVMState_WithStdioRelayPort(t *testing.T) {
+	t.Parallel()
+
+	stateDir := resolvedTempDir(t)
+	entry := &vmEntry{
+		name:               "stdio-vm",
+		image:              "ghcr.io/example/stdio:latest",
+		labels:             map[string]string{"toolhive": "true"},
+		ports:              nil,
+		transportType:      "stdio",
+		stdioRelayHostPort: 54321,
+		createdAt:          time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC),
+		dataDir:            stateDir,
+	}
+
+	err := persistVMState(stateDir, entry)
+	require.NoError(t, err)
+
+	loaded, err := loadVMState(filepath.Join(stateDir, stateFileName))
+	require.NoError(t, err)
+
+	assert.Equal(t, "stdio", loaded.TransportType)
+	assert.Equal(t, 54321, loaded.StdioRelayHostPort)
+}
+
 func TestLoadVMState_InvalidJSON(t *testing.T) {
 	t.Parallel()
 

@@ -16,6 +16,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -67,14 +69,39 @@ func main() {
 		childEnv = mergeEnv(childEnv, runtimeEnv)
 	}
 
-	// Start the MCP server as a child process.
+	// Build the child command.
 	cmd := exec.Command(ep.Cmd[0], ep.Cmd[1:]...) //nolint:gosec // cmd comes from trusted OCI config
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Env = childEnv
 	if ep.WorkingDir != "" {
 		cmd.Dir = ep.WorkingDir
 	}
+
+	// Check if stdio relay mode is requested. When MCP_TRANSPORT=stdio and
+	// THV_STDIO_RELAY_PORT is set, the init process bridges the child's
+	// stdin/stdout over TCP so the host proxy can attach.
+	transport := getEnvValue(childEnv, "MCP_TRANSPORT")
+	relayPortStr := getEnvValue(childEnv, "THV_STDIO_RELAY_PORT")
+
+	if transport == "stdio" && relayPortStr != "" {
+		relayPort, parseErr := strconv.Atoi(relayPortStr)
+		if parseErr != nil {
+			logger.Error("invalid THV_STDIO_RELAY_PORT", "value", relayPortStr, "error", parseErr)
+			gracefulHalt(logger, shutdown)
+			return
+		}
+
+		// runStdioRelay starts the child, bridges TCP ↔ stdin/stdout, and
+		// blocks until the child exits.
+		if err := runStdioRelay(logger, relayPort, cmd); err != nil {
+			logChildExit(logger, err)
+		}
+		gracefulHalt(logger, shutdown)
+		return
+	}
+
+	// Default path: connect child stdout/stderr to console log.
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
 		logger.Error("failed to start MCP server", "error", err, "cmd", ep.Cmd)
@@ -95,12 +122,7 @@ func main() {
 
 	// Wait for the child to exit.
 	if err := cmd.Wait(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			logger.Info("MCP server exited", "code", exitErr.ExitCode())
-		} else {
-			logger.Error("error waiting for MCP server", "error", err)
-		}
+		logChildExit(logger, err)
 	}
 
 	gracefulHalt(logger, shutdown)
@@ -131,4 +153,26 @@ func gracefulHalt(logger *slog.Logger, shutdown func()) {
 // is the clean way to stop — calling os.Exit() would cause a kernel panic.
 func halt() {
 	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
+}
+
+// getEnvValue extracts the value for a key from a []string environment slice
+// of "KEY=value" entries. Returns "" if not found.
+func getEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
+}
+
+// logChildExit logs the child process exit in a consistent way.
+func logChildExit(logger *slog.Logger, err error) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		logger.Info("MCP server exited", "code", exitErr.ExitCode())
+	} else {
+		logger.Error("error waiting for MCP server", "error", err)
+	}
 }

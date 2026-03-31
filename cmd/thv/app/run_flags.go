@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 const (
@@ -136,6 +137,10 @@ type RunFlags struct {
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
+
+	// WebhookConfigs is a list of paths to webhook configuration files.
+	// Each file may define validating and/or mutating webhooks.
+	WebhookConfigs []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -277,6 +282,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	// Environment file processing flags
 	cmd.Flags().StringVar(&config.EnvFile, "env-file", "", "Load environment variables from a single file")
 	cmd.Flags().StringVar(&config.EnvFileDir, "env-file-dir", "", "Load environment variables from all files in a directory")
+
+	// Webhook configuration flags
+	cmd.Flags().StringArrayVar(&config.WebhookConfigs, "webhook-config", nil,
+		"Path to webhook configuration file (can be specified multiple times to merge configs)")
 
 	// Ignore functionality flags
 	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
@@ -505,6 +514,25 @@ func loadToolsOverrideConfig(toolsOverridePath string) (map[string]runner.ToolOv
 	return *loadedToolsOverride, nil
 }
 
+// loadAndMergeWebhookConfigs loads, merges, and validates webhook configuration files.
+// Each file may define validating and/or mutating webhooks. Later files override earlier
+// ones for webhooks with the same name.
+func loadAndMergeWebhookConfigs(paths []string) (*webhook.FileConfig, error) {
+	configs := make([]*webhook.FileConfig, 0, len(paths))
+	for _, path := range paths {
+		config, err := webhook.LoadConfig(path)
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, config)
+	}
+	merged := webhook.MergeConfigs(configs...)
+	if err := webhook.ValidateConfig(merged); err != nil {
+		return nil, fmt.Errorf("invalid webhook configuration: %w", err)
+	}
+	return merged, nil
+}
+
 // configureRemoteHeaderOptions configures header forwarding options for remote servers
 func configureRemoteHeaderOptions(runFlags *RunFlags) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
@@ -642,6 +670,18 @@ func buildRunnerConfig(
 		return nil, err
 	}
 	opts = append(opts, runtimeOpts...)
+
+	// Load and merge webhook configurations
+	if len(runFlags.WebhookConfigs) > 0 {
+		whCfg, err := loadAndMergeWebhookConfigs(runFlags.WebhookConfigs)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts,
+			runner.WithValidatingWebhooks(whCfg.Validating),
+			runner.WithMutatingWebhooks(whCfg.Mutating),
+		)
+	}
 
 	// Configure middleware and additional options
 	additionalOpts, err := configureMiddlewareAndOptions(runFlags, serverMetadata, toolsOverride, oidcConfig,

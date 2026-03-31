@@ -387,12 +387,18 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 }
 
 // OpenTelemetryConfig contains the settings for OpenTelemetry configuration.
+//
+// Fields whose CLI default is true use *bool so that "never set" (nil) is
+// distinguishable from "explicitly set to false". Without this, the config
+// zero value (false) would silently override the CLI default (true) for
+// every user who never touched the field. Plain bool with omitempty is fine
+// for fields that default to false on both the CLI and config sides.
 type OpenTelemetryConfig struct {
 	Endpoint                    string   `yaml:"endpoint,omitempty"`
 	SamplingRate                float64  `yaml:"sampling-rate,omitempty"`
 	EnvVars                     []string `yaml:"env-vars,omitempty"`
-	MetricsEnabled              bool     `yaml:"metrics-enabled,omitempty"`
-	TracingEnabled              bool     `yaml:"tracing-enabled,omitempty"`
+	MetricsEnabled              *bool    `yaml:"metrics-enabled"`
+	TracingEnabled              *bool    `yaml:"tracing-enabled"`
 	Insecure                    bool     `yaml:"insecure,omitempty"`
 	EnablePrometheusMetricsPath bool     `yaml:"enable-prometheus-metrics-path,omitempty"`
 	UseLegacyAttributes         *bool    `yaml:"use-legacy-attributes"`

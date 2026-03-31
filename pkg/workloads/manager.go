@@ -823,9 +823,9 @@ func (d *DefaultManager) isSupervisorProcessAlive(ctx context.Context, name stri
 	}
 
 	// Try to read the PID - if it exists, assume supervisor is running
-	_, err := d.statuses.GetWorkloadPID(ctx, name)
-	if err != nil {
-		// No PID found, supervisor is not running
+	pid, err := d.statuses.GetWorkloadPID(ctx, name)
+	if err != nil || pid <= 0 {
+		// No valid PID found, supervisor is not running
 		return false
 	}
 

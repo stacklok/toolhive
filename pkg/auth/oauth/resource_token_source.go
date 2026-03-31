@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -74,6 +75,12 @@ func (r *resourceTokenSource) refreshWithResource(ctx context.Context) (*oauth2.
 		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
 		oauth2.SetAuthURLParam("refresh_token", refreshToken),
 		oauth2.SetAuthURLParam("resource", r.resource),
+	}
+
+	// Include scope in refresh request. RFC 6749 section 6 says servers MUST
+	// preserve scopes when omitted, but not all do. Being explicit is safe.
+	if len(r.config.Scopes) > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(r.config.Scopes, " ")))
 	}
 
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, r.httpClient)

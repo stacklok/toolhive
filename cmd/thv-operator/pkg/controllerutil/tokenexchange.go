@@ -139,6 +139,9 @@ func AddExternalAuthConfigOptions(
 		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, mcpServerName, externalAuthConfigRef, oidcConfig, options)
 	case mcpv1alpha1.ExternalAuthTypeAWSSts:
 		return addAWSStsConfig(externalAuthConfig, options)
+	case mcpv1alpha1.ExternalAuthTypeUpstreamInject:
+		// Upstream inject is handled by the vMCP converter at runtime
+		return nil
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

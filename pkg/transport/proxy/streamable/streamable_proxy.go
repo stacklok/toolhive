@@ -253,7 +253,7 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
-		writeHTTPError(w, http.StatusNotFound, "session not found")
+		session.WriteNotFound(w, nil)
 		return
 	}
 	if err := p.sessionManager.Delete(sessID); err != nil {
@@ -632,7 +632,7 @@ func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Reques
 		return sessID, nil
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
-		writeHTTPError(w, http.StatusNotFound, "session not found")
+		session.WriteNotFound(w, nil)
 		return "", fmt.Errorf("session not found")
 	}
 	return sessID, nil
@@ -674,7 +674,7 @@ func (p *HTTPProxy) resolveSessionForRequest(
 
 	// If session is provided, ensure it exists
 	if _, ok := p.sessionManager.Get(sessID); !ok {
-		writeHTTPError(w, http.StatusNotFound, "session not found")
+		session.WriteNotFound(w, req.ID.Raw())
 		return "", false, fmt.Errorf("session not found")
 	}
 	return sessID, false, nil

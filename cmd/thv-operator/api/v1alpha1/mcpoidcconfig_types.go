@@ -14,9 +14,6 @@ const (
 	// MCPOIDCConfigTypeKubernetesServiceAccount is the type for Kubernetes service account token validation
 	MCPOIDCConfigTypeKubernetesServiceAccount MCPOIDCConfigSourceType = "kubernetesServiceAccount"
 
-	// MCPOIDCConfigTypeConfigMapRef is the type for OIDC configuration stored in ConfigMaps
-	MCPOIDCConfigTypeConfigMapRef MCPOIDCConfigSourceType = "configMapRef"
-
 	// MCPOIDCConfigTypeInline is the type for inline OIDC configuration
 	MCPOIDCConfigTypeInline MCPOIDCConfigSourceType = "inline"
 )
@@ -29,13 +26,12 @@ type MCPOIDCConfigSourceType string
 // MCPServer resources in the same namespace.
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'kubernetesServiceAccount' ? has(self.kubernetesServiceAccount) : !has(self.kubernetesServiceAccount)",message="kubernetesServiceAccount must be set when type is 'kubernetesServiceAccount', and must not be set otherwise"
-// +kubebuilder:validation:XValidation:rule="self.type == 'configMapRef' ? has(self.configMapRef) : !has(self.configMapRef)",message="configMapRef must be set when type is 'configMapRef', and must not be set otherwise"
 // +kubebuilder:validation:XValidation:rule="self.type == 'inline' ? has(self.inline) : !has(self.inline)",message="inline must be set when type is 'inline', and must not be set otherwise"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPOIDCConfigSpec struct {
 	// Type is the type of OIDC configuration source
-	// +kubebuilder:validation:Enum=kubernetesServiceAccount;configMapRef;inline
+	// +kubebuilder:validation:Enum=kubernetesServiceAccount;inline
 	// +kubebuilder:validation:Required
 	Type MCPOIDCConfigSourceType `json:"type"`
 
@@ -43,11 +39,6 @@ type MCPOIDCConfigSpec struct {
 	// Only used when Type is "kubernetesServiceAccount".
 	// +optional
 	KubernetesServiceAccount *KubernetesServiceAccountOIDCConfig `json:"kubernetesServiceAccount,omitempty"`
-
-	// ConfigMapRef references a ConfigMap containing OIDC configuration.
-	// Only used when Type is "configMapRef".
-	// +optional
-	ConfigMapRef *OIDCConfigMapRef `json:"configMapRef,omitempty"`
 
 	// Inline contains direct OIDC configuration.
 	// Only used when Type is "inline".
@@ -89,22 +80,6 @@ type KubernetesServiceAccountOIDCConfig struct {
 	// Defaults to true if not specified.
 	// +optional
 	UseClusterAuth *bool `json:"useClusterAuth"`
-}
-
-// OIDCConfigMapRef references a ConfigMap containing OIDC configuration.
-type OIDCConfigMapRef struct {
-	// Name is the name of the ConfigMap
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// Key is the key in the ConfigMap that contains the OIDC configuration
-	// +kubebuilder:default=oidc.json
-	// +optional
-	Key string `json:"key,omitempty"`
-
-	// CABundleRef references a ConfigMap containing the CA certificate bundle.
-	// +optional
-	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 }
 
 // InlineOIDCSharedConfig contains direct OIDC configuration.
@@ -238,9 +213,6 @@ func (r *MCPOIDCConfig) Validate() error {
 func (r *MCPOIDCConfig) validateTypeConfigConsistency() error {
 	if (r.Spec.KubernetesServiceAccount == nil) == (r.Spec.Type == MCPOIDCConfigTypeKubernetesServiceAccount) {
 		return fmt.Errorf("kubernetesServiceAccount configuration must be set if and only if type is 'kubernetesServiceAccount'")
-	}
-	if (r.Spec.ConfigMapRef == nil) == (r.Spec.Type == MCPOIDCConfigTypeConfigMapRef) {
-		return fmt.Errorf("configMapRef configuration must be set if and only if type is 'configMapRef'")
 	}
 	if (r.Spec.Inline == nil) == (r.Spec.Type == MCPOIDCConfigTypeInline) {
 		return fmt.Errorf("inline configuration must be set if and only if type is 'inline'")

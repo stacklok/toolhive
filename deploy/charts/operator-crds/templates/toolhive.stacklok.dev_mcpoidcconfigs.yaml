@@ -58,52 +58,6 @@ spec:
               MCPOIDCConfig resources are namespace-scoped and can only be referenced by
               MCPServer resources in the same namespace.
             properties:
-              configMapRef:
-                description: |-
-                  ConfigMapRef references a ConfigMap containing OIDC configuration.
-                  Only used when Type is "configMapRef".
-                properties:
-                  caBundleRef:
-                    description: CABundleRef references a ConfigMap containing the
-                      CA certificate bundle.
-                    properties:
-                      configMapRef:
-                        description: |-
-                          ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-                          If Key is not specified, it defaults to "ca.crt".
-                        properties:
-                          key:
-                            description: The key to select.
-                            type: string
-                          name:
-                            default: ""
-                            description: |-
-                              Name of the referent.
-                              This field is effectively required, but due to backwards compatibility is
-                              allowed to be empty. Instances of this type with an empty value here are
-                              almost certainly wrong.
-                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                            type: string
-                          optional:
-                            description: Specify whether the ConfigMap or its key
-                              must be defined
-                            type: boolean
-                        required:
-                        - key
-                        type: object
-                        x-kubernetes-map-type: atomic
-                    type: object
-                  key:
-                    default: oidc.json
-                    description: Key is the key in the ConfigMap that contains the
-                      OIDC configuration
-                    type: string
-                  name:
-                    description: Name is the name of the ConfigMap
-                    type: string
-                required:
-                - name
-                type: object
               inline:
                 description: |-
                   Inline contains direct OIDC configuration.
@@ -231,7 +185,6 @@ spec:
                 description: Type is the type of OIDC configuration source
                 enum:
                 - kubernetesServiceAccount
-                - configMapRef
                 - inline
                 type: string
             required:
@@ -242,9 +195,6 @@ spec:
                 and must not be set otherwise
               rule: 'self.type == ''kubernetesServiceAccount'' ? has(self.kubernetesServiceAccount)
                 : !has(self.kubernetesServiceAccount)'
-            - message: configMapRef must be set when type is 'configMapRef', and must
-                not be set otherwise
-              rule: 'self.type == ''configMapRef'' ? has(self.configMapRef) : !has(self.configMapRef)'
             - message: inline must be set when type is 'inline', and must not be set
                 otherwise
               rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'

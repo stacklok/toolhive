@@ -5,6 +5,7 @@
 package recovery
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -34,11 +36,17 @@ func Middleware(next http.Handler) http.Handler {
 				if rec == http.ErrAbortHandler {
 					panic(http.ErrAbortHandler)
 				}
-				stack := debug.Stack()
-				slog.Error(fmt.Sprintf("Panic recovered: %v\nStack trace:\n%s", rec, stack))
-				span := trace.SpanFromContext(r.Context())
-				span.RecordError(fmt.Errorf("%v", rec), trace.WithStackTrace(true))
-				span.SetStatus(codes.Error, fmt.Sprintf("panic: %v", rec))
+			stack := debug.Stack()
+			slog.Error(fmt.Sprintf("Panic recovered: %v\nStack trace:\n%s", rec, stack))
+			span := trace.SpanFromContext(r.Context())
+			// Use a generic message on the span to avoid sending potentially
+			// sensitive panic values (which may embed credentials or internal
+			// state) to external telemetry backends. Full details are in the log.
+			span.RecordError(errors.New("panic recovered"))
+			span.SetStatus(codes.Error, "panic recovered")
+			// Sentry span processor only creates transactions; call RecoverPanic
+			// explicitly so panics also appear as Issues in the Sentry Issues tab.
+			sentrypkg.RecoverPanic(r, rec)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

@@ -1,0 +1,24 @@
+# Basic MCPTelemetryConfig with OTLP tracing and metrics.
+#
+# This is the simplest useful MCPTelemetryConfig: it enables OpenTelemetry
+# with OTLP export (tracing + metrics) and Prometheus scraping.
+#
+# MCPServer resources in the same namespace can reference this config via
+# spec.telemetryConfigRef.name, providing a unique serviceName per server.
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPTelemetryConfig
+metadata:
+  name: basic-telemetry
+  namespace: toolhive-system
+spec:
+  openTelemetry:
+    enabled: true
+    endpoint: otel-collector.monitoring.svc.cluster.local:4318
+    insecure: true
+    tracing:
+      enabled: true
+      samplingRate: "0.1"
+    metrics:
+      enabled: true
+  prometheus:
+    enabled: true

@@ -1,0 +1,36 @@
+# Production-ready MCPTelemetryConfig with all features.
+#
+# Demonstrates:
+#   - Resource attributes for environment tagging
+#   - Secret-backed sensitive headers for authenticated OTLP export
+#   - Tracing with a conservative sampling rate
+#   - Prometheus scraping enabled
+#
+# Prerequisites:
+#   kubectl create secret generic otel-auth-secret \
+#     --namespace=mcp-platform \
+#     --from-literal=bearer-token='Bearer <your-token>'
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPTelemetryConfig
+metadata:
+  name: production-telemetry
+  namespace: mcp-platform
+spec:
+  openTelemetry:
+    enabled: true
+    endpoint: otel-collector.monitoring.svc.cluster.local:4318
+    resourceAttributes:
+      service.namespace: toolhive
+      deployment.environment: production
+    sensitiveHeaders:
+      - name: Authorization
+        secretKeyRef:
+          name: otel-auth-secret
+          key: bearer-token
+    tracing:
+      enabled: true
+      samplingRate: "0.1"
+    metrics:
+      enabled: true
+  prometheus:
+    enabled: true

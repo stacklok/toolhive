@@ -28,9 +28,12 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.Endpoint = testEndpoint
-		telemetryConfig.Spec.TracingEnabled = true
-		telemetryConfig.Spec.MetricsEnabled = true
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
@@ -73,8 +76,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.Endpoint = testEndpoint
-		telemetryConfig.Spec.TracingEnabled = true
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
@@ -100,7 +106,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 			Namespace: telemetryConfig.Namespace,
 		}, fetched)).To(Succeed())
 
-		fetched.Spec.Endpoint = "https://new-collector:4317"
+		fetched.Spec.OpenTelemetry.Endpoint = "https://new-collector:4317"
 		Expect(k8sClient.Update(ctx, fetched)).To(Succeed())
 
 		// Verify hash changed
@@ -124,8 +130,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.Endpoint = testEndpoint
-		telemetryConfig.Spec.TracingEnabled = true
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
@@ -169,8 +178,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.Endpoint = testEndpoint
-		telemetryConfig.Spec.TracingEnabled = true
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
@@ -200,7 +212,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		Expect(k8sClient.Create(ctx, server)).To(Succeed())
 
 		// The MCPServer watch should trigger a reconciliation of the MCPTelemetryConfig.
-		// Verify ReferencingServers is updated to include our server.
+		// Verify ReferencingWorkloads is updated to include our server.
 		Eventually(func() []string {
 			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
@@ -210,7 +222,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 			if err != nil {
 				return nil
 			}
-			return fetched.Status.ReferencingServers
+			names := make([]string, 0, len(fetched.Status.ReferencingWorkloads))
+			for _, ref := range fetched.Status.ReferencingWorkloads {
+				names = append(names, ref.Name)
+			}
+			return names
 		}, timeout, interval).Should(ContainElement("server-ref-tracking"))
 	})
 
@@ -222,8 +238,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.Endpoint = testEndpoint
-		telemetryConfig.Spec.TracingEnabled = true
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
@@ -260,7 +279,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}
 		Expect(k8sClient.Create(ctx, server)).To(Succeed())
 
-		// Wait for ReferencingServers to be populated
+		// Wait for ReferencingWorkloads to be populated
 		Eventually(func() []string {
 			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
@@ -270,7 +289,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 			if err != nil {
 				return nil
 			}
-			return fetched.Status.ReferencingServers
+			names := make([]string, 0, len(fetched.Status.ReferencingWorkloads))
+			for _, ref := range fetched.Status.ReferencingWorkloads {
+				names = append(names, ref.Name)
+			}
+			return names
 		}, timeout, interval).Should(ContainElement("server-deletion-blocker"))
 
 		// Attempt to delete the config — the API call succeeds (sets DeletionTimestamp)

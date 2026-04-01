@@ -22,15 +22,15 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.endpoint
+    - jsonPath: .spec.openTelemetry.endpoint
       name: Endpoint
       type: string
-    - jsonPath: .status.conditions[?(@.type=='Valid')].status
-      name: Ready
-      type: string
-    - jsonPath: .status.referencingServers
-      name: References
-      type: string
+    - jsonPath: .spec.openTelemetry.tracing.enabled
+      name: Tracing
+      type: boolean
+    - jsonPath: .spec.openTelemetry.metrics.enabled
+      name: Metrics
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -63,130 +63,119 @@ spec:
           spec:
             description: |-
               MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.
-              It embeds telemetry.Config from pkg/telemetry to eliminate the conversion
-              layer between CRD and application types. The environmentVariables field is
-              CLI-only and rejected by CEL validation; customAttributes is allowed for
-              setting shared OTel resource attributes (e.g., deployment.environment).
+              The spec uses a nested structure with openTelemetry and prometheus sub-objects
+              for clear separation of concerns.
             properties:
-              customAttributes:
-                additionalProperties:
-                  type: string
-                description: |-
-                  CustomAttributes contains custom resource attributes to be added to all telemetry signals.
-                  These are parsed from CLI flags (--otel-custom-attributes) or environment variables
-                  (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
-                type: object
-              enablePrometheusMetricsPath:
-                default: false
-                description: |-
-                  EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-                  The metrics are served on the main transport port at /metrics.
-                  This is separate from OTLP metrics which are sent to the Endpoint.
-                type: boolean
-              endpoint:
-                description: Endpoint is the OTLP endpoint URL
-                type: string
-              environmentVariables:
-                description: |-
-                  EnvironmentVariables is a list of environment variable names that should be
-                  included in telemetry spans as attributes. Only variables in this list will
-                  be read from the host machine and included in spans for observability.
-                  Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"]
-                items:
-                  type: string
-                type: array
-              headers:
-                additionalProperties:
-                  type: string
-                description: Headers contains authentication headers for the OTLP
-                  endpoint.
-                type: object
-              insecure:
-                default: false
-                description: Insecure indicates whether to use HTTP instead of HTTPS
-                  for the OTLP endpoint.
-                type: boolean
-              metricsEnabled:
-                default: false
-                description: |-
-                  MetricsEnabled controls whether OTLP metrics are enabled.
-                  When false, OTLP metrics are not sent even if an endpoint is configured.
-                  This is independent of EnablePrometheusMetricsPath.
-                type: boolean
-              samplingRate:
-                default: "0.05"
-                description: |-
-                  SamplingRate is the trace sampling rate (0.0-1.0) as a string.
-                  Only used when TracingEnabled is true.
-                  Example: "0.05" for 5% sampling.
-                type: string
-              sensitiveHeaders:
-                description: |-
-                  SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.
-                  Use this for credential headers (e.g., API keys, bearer tokens) instead of
-                  embedding secrets in the headers field.
-                items:
-                  description: |-
-                    SensitiveHeader represents a header whose value is stored in a Kubernetes Secret.
-                    This allows credential headers (e.g., API keys, bearer tokens) to be securely
-                    referenced without embedding secrets inline in the MCPTelemetryConfig resource.
-                  properties:
-                    name:
-                      description: Name is the header name (e.g., "Authorization",
-                        "X-API-Key")
-                      minLength: 1
+              openTelemetry:
+                description: OpenTelemetry defines OpenTelemetry configuration (OTLP
+                  endpoint, tracing, metrics)
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled controls whether OpenTelemetry is enabled
+                    type: boolean
+                  endpoint:
+                    description: Endpoint is the OTLP endpoint URL for tracing and
+                      metrics
+                    type: string
+                  headers:
+                    additionalProperties:
                       type: string
-                    secretKeyRef:
-                      description: SecretKeyRef is a reference to a Kubernetes Secret
-                        key containing the header value
+                    description: |-
+                      Headers contains authentication headers for the OTLP endpoint.
+                      For secret-backed credentials, use sensitiveHeaders instead.
+                    type: object
+                  insecure:
+                    default: false
+                    description: Insecure indicates whether to use HTTP instead of
+                      HTTPS for the OTLP endpoint
+                    type: boolean
+                  metrics:
+                    description: Metrics defines OpenTelemetry metrics-specific configuration
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether OTLP metrics are sent
+                        type: boolean
+                    type: object
+                  resourceAttributes:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ResourceAttributes contains custom resource attributes to be added to all telemetry signals.
+                      These become OTel resource attributes (e.g., deployment.environment, service.namespace).
+                      Note: service.name is intentionally excluded — it is set per-server via
+                      MCPTelemetryConfigReference.ServiceName.
+                    type: object
+                  sensitiveHeaders:
+                    description: |-
+                      SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.
+                      Use this for credential headers (e.g., API keys, bearer tokens) instead of
+                      embedding secrets in the headers field.
+                    items:
+                      description: |-
+                        SensitiveHeader represents a header whose value is stored in a Kubernetes Secret.
+                        This allows credential headers (e.g., API keys, bearer tokens) to be securely
+                        referenced without embedding secrets inline in the MCPTelemetryConfig resource.
                       properties:
-                        key:
-                          description: Key is the key within the secret
-                          type: string
                         name:
-                          description: Name is the name of the secret
+                          description: Name is the header name (e.g., "Authorization",
+                            "X-API-Key")
+                          minLength: 1
                           type: string
+                        secretKeyRef:
+                          description: SecretKeyRef is a reference to a Kubernetes
+                            Secret key containing the header value
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
                       required:
-                      - key
                       - name
+                      - secretKeyRef
                       type: object
-                  required:
-                  - name
-                  - secretKeyRef
-                  type: object
-                type: array
-              serviceName:
-                description: |-
-                  ServiceName is the service name for telemetry.
-                  When omitted, defaults to the server name (e.g., VirtualMCPServer name).
-                type: string
-              serviceVersion:
-                description: |-
-                  ServiceVersion is the service version for telemetry.
-                  When omitted, defaults to the ToolHive version.
-                type: string
-              tracingEnabled:
-                default: false
-                description: |-
-                  TracingEnabled controls whether distributed tracing is enabled.
-                  When false, no tracer provider is created even if an endpoint is configured.
-                type: boolean
-              useLegacyAttributes:
-                default: true
-                description: |-
-                  UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names
-                  are emitted alongside the new standard attribute names. When true, spans include both
-                  old and new attribute names for backward compatibility with existing dashboards.
-                  Currently defaults to true; this will change to false in a future release.
-                type: boolean
+                    type: array
+                  tracing:
+                    description: Tracing defines OpenTelemetry tracing configuration
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether OTLP tracing is sent
+                        type: boolean
+                      samplingRate:
+                        default: "0.05"
+                        description: SamplingRate is the trace sampling rate (0.0-1.0)
+                        type: string
+                    type: object
+                  useLegacyAttributes:
+                    default: true
+                    description: |-
+                      UseLegacyAttributes controls whether legacy attribute names are emitted alongside
+                      the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
+                      This will change to false in a future release and eventually be removed.
+                    type: boolean
+                type: object
+                x-kubernetes-validations:
+                - message: a header name cannot appear in both headers and sensitiveHeaders
+                  rule: '!has(self.headers) || !has(self.sensitiveHeaders) || self.sensitiveHeaders.all(sh,
+                    !(sh.name in self.headers))'
+              prometheus:
+                description: Prometheus defines Prometheus-specific configuration
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled controls whether Prometheus metrics endpoint
+                      is exposed
+                    type: boolean
+                type: object
             type: object
-            x-kubernetes-validations:
-            - message: environmentVariables is a CLI-only field and cannot be set
-                in MCPTelemetryConfig; use customAttributes for resource attributes
-              rule: '!has(self.environmentVariables)'
-            - message: a header name cannot appear in both headers and sensitiveHeaders
-              rule: '!has(self.headers) || !has(self.sensitiveHeaders) || self.sensitiveHeaders.all(sh,
-                !(sh.name in self.headers))'
           status:
             description: MCPTelemetryConfigStatus defines the observed state of MCPTelemetryConfig
             properties:
@@ -257,11 +246,27 @@ spec:
                   for this MCPTelemetryConfig.
                 format: int64
                 type: integer
-              referencingServers:
-                description: ReferencingServers is a list of MCPServer resources that
-                  reference this MCPTelemetryConfig
+              referencingWorkloads:
+                description: ReferencingWorkloads lists workloads that reference this
+                  MCPTelemetryConfig
                 items:
-                  type: string
+                  description: WorkloadReference identifies a Kubernetes workload
+                    that references a shared config resource.
+                  properties:
+                    kind:
+                      description: Kind is the resource kind (e.g., "MCPServer")
+                      type: string
+                    name:
+                      description: Name is the resource name
+                      type: string
+                    namespace:
+                      description: Namespace is the resource namespace
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - namespace
+                  type: object
                 type: array
             type: object
         type: object

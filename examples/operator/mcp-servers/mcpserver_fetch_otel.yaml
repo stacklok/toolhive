@@ -1,3 +1,8 @@
+# DEPRECATED: Inline telemetry configuration.
+#
+# The spec.telemetry field is deprecated and will be removed in a future release.
+# Prefer spec.telemetryConfigRef with a shared MCPTelemetryConfig resource instead.
+# See examples/operator/telemetry-configs/ for the recommended approach.
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -15,6 +20,7 @@ spec:
     requests:
       cpu: "50m"
       memory: "64Mi"
+  # Deprecated: inline telemetry block. Migrate to telemetryConfigRef.
   telemetry:
     openTelemetry:
       # Point to our OpenTelemetry Collector

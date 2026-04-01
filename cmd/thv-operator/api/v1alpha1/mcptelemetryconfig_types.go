@@ -7,8 +7,6 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
 // SensitiveHeader represents a header whose value is stored in a Kubernetes Secret.
@@ -25,24 +23,88 @@ type SensitiveHeader struct {
 	SecretKeyRef SecretKeyRef `json:"secretKeyRef"`
 }
 
-// MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.
-// It embeds telemetry.Config from pkg/telemetry to eliminate the conversion
-// layer between CRD and application types. The environmentVariables field is
-// CLI-only and rejected by CEL validation; customAttributes is allowed for
-// setting shared OTel resource attributes (e.g., deployment.environment).
+// MCPTelemetryOTelConfig defines OpenTelemetry configuration for shared MCPTelemetryConfig resources.
+// Unlike OpenTelemetryConfig (used by inline MCPServer telemetry), this type:
+//   - Omits ServiceName (per-server field set via MCPTelemetryConfigReference)
+//   - Uses map[string]string for Headers (not []string)
+//   - Adds SensitiveHeaders for Kubernetes Secret-backed credentials
+//   - Adds ResourceAttributes for shared OTel resource attributes
 //
-// +kubebuilder:validation:XValidation:rule="!has(self.environmentVariables)",message="environmentVariables is a CLI-only field and cannot be set in MCPTelemetryConfig; use customAttributes for resource attributes"
 // +kubebuilder:validation:XValidation:rule="!has(self.headers) || !has(self.sensitiveHeaders) || self.sensitiveHeaders.all(sh, !(sh.name in self.headers))",message="a header name cannot appear in both headers and sensitiveHeaders"
 //
 //nolint:lll // CEL validation rules exceed line length limit
-type MCPTelemetryConfigSpec struct {
-	telemetry.Config `json:",inline"` // nolint:revive
+type MCPTelemetryOTelConfig struct {
+	// Enabled controls whether OpenTelemetry is enabled
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Endpoint is the OTLP endpoint URL for tracing and metrics
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint
+	// +kubebuilder:default=false
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+
+	// Headers contains authentication headers for the OTLP endpoint.
+	// For secret-backed credentials, use sensitiveHeaders instead.
+	// +optional
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.
 	// Use this for credential headers (e.g., API keys, bearer tokens) instead of
 	// embedding secrets in the headers field.
 	// +optional
 	SensitiveHeaders []SensitiveHeader `json:"sensitiveHeaders,omitempty"`
+
+	// ResourceAttributes contains custom resource attributes to be added to all telemetry signals.
+	// These become OTel resource attributes (e.g., deployment.environment, service.namespace).
+	// Note: service.name is intentionally excluded — it is set per-server via
+	// MCPTelemetryConfigReference.ServiceName.
+	// +optional
+	ResourceAttributes map[string]string `json:"resourceAttributes,omitempty"`
+
+	// Metrics defines OpenTelemetry metrics-specific configuration
+	// +optional
+	Metrics *OpenTelemetryMetricsConfig `json:"metrics,omitempty"`
+
+	// Tracing defines OpenTelemetry tracing configuration
+	// +optional
+	Tracing *OpenTelemetryTracingConfig `json:"tracing,omitempty"`
+
+	// UseLegacyAttributes controls whether legacy attribute names are emitted alongside
+	// the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
+	// This will change to false in a future release and eventually be removed.
+	// +kubebuilder:default=true
+	// +optional
+	UseLegacyAttributes bool `json:"useLegacyAttributes"`
+}
+
+// MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.
+// The spec uses a nested structure with openTelemetry and prometheus sub-objects
+// for clear separation of concerns.
+type MCPTelemetryConfigSpec struct {
+	// OpenTelemetry defines OpenTelemetry configuration (OTLP endpoint, tracing, metrics)
+	// +optional
+	OpenTelemetry *MCPTelemetryOTelConfig `json:"openTelemetry,omitempty"`
+
+	// Prometheus defines Prometheus-specific configuration
+	// +optional
+	Prometheus *PrometheusConfig `json:"prometheus,omitempty"`
+}
+
+// WorkloadReference identifies a Kubernetes workload that references a shared config resource.
+type WorkloadReference struct {
+	// Kind is the resource kind (e.g., "MCPServer")
+	Kind string `json:"kind"`
+
+	// Namespace is the resource namespace
+	Namespace string `json:"namespace"`
+
+	// Name is the resource name
+	Name string `json:"name"`
 }
 
 // MCPTelemetryConfigStatus defines the observed state of MCPTelemetryConfig
@@ -59,17 +121,18 @@ type MCPTelemetryConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
-	// ReferencingServers is a list of MCPServer resources that reference this MCPTelemetryConfig
+	// ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig
 	// +optional
-	ReferencingServers []string `json:"referencingServers,omitempty"`
+	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=mcpotel,categories=toolhive
-// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.spec.endpoint`
+// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.spec.openTelemetry.endpoint`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingServers`
+// +kubebuilder:printcolumn:name="Tracing",type=boolean,JSONPath=`.spec.openTelemetry.tracing.enabled`
+// +kubebuilder:printcolumn:name="Metrics",type=boolean,JSONPath=`.spec.openTelemetry.metrics.enabled`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPTelemetryConfig is the Schema for the mcptelemetryconfigs API.
@@ -115,33 +178,26 @@ type MCPTelemetryConfigReference struct {
 // CEL catches issues at API admission time, but this method also validates
 // stored objects to catch any that bypassed CEL or were stored before CEL rules were added.
 func (r *MCPTelemetryConfig) Validate() error {
-	if err := r.validateCLIOnlyFields(); err != nil {
-		return err
-	}
 	return r.validateSensitiveHeaders()
-}
-
-// validateCLIOnlyFields rejects CLI-only fields that are not applicable to CRD-managed telemetry.
-func (r *MCPTelemetryConfig) validateCLIOnlyFields() error {
-	if len(r.Spec.EnvironmentVariables) > 0 {
-		return fmt.Errorf("environmentVariables is a CLI-only field and cannot be set in MCPTelemetryConfig")
-	}
-	return nil
 }
 
 // validateSensitiveHeaders validates sensitive header entries and checks for overlap with plaintext headers.
 func (r *MCPTelemetryConfig) validateSensitiveHeaders() error {
-	for i, sh := range r.Spec.SensitiveHeaders {
+	if r.Spec.OpenTelemetry == nil {
+		return nil
+	}
+	otel := r.Spec.OpenTelemetry
+	for i, sh := range otel.SensitiveHeaders {
 		if sh.Name == "" {
-			return fmt.Errorf("sensitiveHeaders[%d].name must not be empty", i)
+			return fmt.Errorf("openTelemetry.sensitiveHeaders[%d].name must not be empty", i)
 		}
 		if sh.SecretKeyRef.Name == "" {
-			return fmt.Errorf("sensitiveHeaders[%d].secretKeyRef.name must not be empty", i)
+			return fmt.Errorf("openTelemetry.sensitiveHeaders[%d].secretKeyRef.name must not be empty", i)
 		}
 		if sh.SecretKeyRef.Key == "" {
-			return fmt.Errorf("sensitiveHeaders[%d].secretKeyRef.key must not be empty", i)
+			return fmt.Errorf("openTelemetry.sensitiveHeaders[%d].secretKeyRef.key must not be empty", i)
 		}
-		if _, exists := r.Spec.Headers[sh.Name]; exists {
+		if _, exists := otel.Headers[sh.Name]; exists {
 			return fmt.Errorf("header %q appears in both headers and sensitiveHeaders", sh.Name)
 		}
 	}

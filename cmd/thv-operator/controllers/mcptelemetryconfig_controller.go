@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sort"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -108,16 +107,16 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(telemetryConfig.Spec)
 
-	// Track referencing MCPServers
-	referencingServers, err := r.findReferencingServers(ctx, telemetryConfig)
+	// Track referencing workloads
+	referencingWorkloads, err := r.findReferencingWorkloads(ctx, telemetryConfig)
 	if err != nil {
-		logger.Error(err, "Failed to find referencing MCPServers")
+		logger.Error(err, "Failed to find referencing workloads")
 		return ctrl.Result{}, err
 	}
 
 	// Check what changed
 	hashChanged := telemetryConfig.Status.ConfigHash != configHash
-	refsChanged := !slices.Equal(telemetryConfig.Status.ReferencingServers, referencingServers)
+	refsChanged := !workloadRefsEqual(telemetryConfig.Status.ReferencingWorkloads, referencingWorkloads)
 	needsUpdate := hashChanged || refsChanged || conditionChanged
 
 	if hashChanged {
@@ -129,7 +128,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if needsUpdate {
 		telemetryConfig.Status.ConfigHash = configHash
 		telemetryConfig.Status.ObservedGeneration = telemetryConfig.Generation
-		telemetryConfig.Status.ReferencingServers = referencingServers
+		telemetryConfig.Status.ReferencingWorkloads = referencingWorkloads
 
 		if err := r.Status().Update(ctx, telemetryConfig); err != nil {
 			logger.Error(err, "Failed to update MCPTelemetryConfig status")
@@ -142,7 +141,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Watch MCPServer changes to update ReferencingServers status
+	// Watch MCPServer changes to update ReferencingWorkloads status
 	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
 		func(_ context.Context, obj client.Object) []reconcile.Request {
 			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
@@ -187,15 +186,19 @@ func (r *MCPTelemetryConfigReconciler) handleDeletion(
 		return ctrl.Result{}, nil
 	}
 
-	// Check for referencing servers before allowing deletion
-	referencingServers, err := r.findReferencingServers(ctx, telemetryConfig)
+	// Check for referencing workloads before allowing deletion
+	referencingWorkloads, err := r.findReferencingWorkloads(ctx, telemetryConfig)
 	if err != nil {
-		logger.Error(err, "Failed to check referencing servers during deletion")
+		logger.Error(err, "Failed to check referencing workloads during deletion")
 		return ctrl.Result{}, err
 	}
 
-	if len(referencingServers) > 0 {
-		msg := fmt.Sprintf("cannot delete: still referenced by MCPServer(s): %v", referencingServers)
+	if len(referencingWorkloads) > 0 {
+		names := make([]string, 0, len(referencingWorkloads))
+		for _, ref := range referencingWorkloads {
+			names = append(names, fmt.Sprintf("%s/%s", ref.Namespace, ref.Name))
+		}
+		msg := fmt.Sprintf("cannot delete: still referenced by MCPServer(s): %v", names)
 		logger.Info(msg, "telemetryConfig", telemetryConfig.Name)
 		meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
 			Type:               "DeletionBlocked",
@@ -220,24 +223,49 @@ func (r *MCPTelemetryConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-// findReferencingServers returns a sorted list of MCPServer names in the same namespace
+// findReferencingWorkloads returns a sorted list of workload references in the same namespace
 // that reference this MCPTelemetryConfig via TelemetryConfigRef.
-func (r *MCPTelemetryConfigReconciler) findReferencingServers(
+func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
-) ([]string, error) {
+) ([]mcpv1alpha1.WorkloadReference, error) {
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	if err := r.List(ctx, mcpServerList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
 	}
 
-	var refs []string
+	var refs []mcpv1alpha1.WorkloadReference
 	for _, server := range mcpServerList.Items {
 		if server.Spec.TelemetryConfigRef != nil &&
 			server.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
-			refs = append(refs, server.Name)
+			refs = append(refs, mcpv1alpha1.WorkloadReference{
+				Kind:      "MCPServer",
+				Namespace: server.Namespace,
+				Name:      server.Name,
+			})
 		}
 	}
-	sort.Strings(refs)
+	slices.SortFunc(refs, func(a, b mcpv1alpha1.WorkloadReference) int {
+		if a.Namespace != b.Namespace {
+			if a.Namespace < b.Namespace {
+				return -1
+			}
+			return 1
+		}
+		if a.Name < b.Name {
+			return -1
+		}
+		if a.Name > b.Name {
+			return 1
+		}
+		return 0
+	})
 	return refs, nil
+}
+
+// workloadRefsEqual compares two WorkloadReference slices for equality.
+func workloadRefsEqual(a, b []mcpv1alpha1.WorkloadReference) bool {
+	return slices.EqualFunc(a, b, func(x, y mcpv1alpha1.WorkloadReference) bool {
+		return x.Kind == y.Kind && x.Namespace == y.Namespace && x.Name == y.Name
+	})
 }

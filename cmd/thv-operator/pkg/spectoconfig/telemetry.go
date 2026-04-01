@@ -102,7 +102,8 @@ func ConvertTelemetryConfig(
 }
 
 // NormalizeMCPTelemetryConfig converts an MCPTelemetryConfigSpec to a normalized telemetry.Config.
-// It applies the per-server ServiceName override from the reference, then delegates to
+// It maps the nested CRD structure (openTelemetry/prometheus) to a flat telemetry.Config,
+// applies the per-server ServiceName override from the reference, then delegates to
 // NormalizeTelemetryConfig for endpoint normalization and service name defaulting.
 func NormalizeMCPTelemetryConfig(
 	spec *v1alpha1.MCPTelemetryConfigSpec,
@@ -113,15 +114,37 @@ func NormalizeMCPTelemetryConfig(
 		return nil
 	}
 
-	// Copy the embedded config to avoid mutating the original
-	config := spec.Config
+	config := &telemetry.Config{}
+
+	// Map nested OpenTelemetry fields to flat telemetry.Config
+	if spec.OpenTelemetry != nil {
+		otel := spec.OpenTelemetry
+		config.Endpoint = otel.Endpoint
+		config.Insecure = otel.Insecure
+		config.Headers = otel.Headers
+		config.CustomAttributes = otel.ResourceAttributes
+		config.UseLegacyAttributes = otel.UseLegacyAttributes
+
+		if otel.Tracing != nil {
+			config.TracingEnabled = otel.Tracing.Enabled
+			config.SamplingRate = otel.Tracing.SamplingRate
+		}
+		if otel.Metrics != nil {
+			config.MetricsEnabled = otel.Metrics.Enabled
+		}
+	}
+
+	// Map Prometheus configuration
+	if spec.Prometheus != nil {
+		config.EnablePrometheusMetricsPath = spec.Prometheus.Enabled
+	}
 
 	// Apply per-server service name override from the TelemetryConfigRef
 	if serviceNameOverride != "" {
 		config.ServiceName = serviceNameOverride
 	}
 
-	return NormalizeTelemetryConfig(&config, defaultServiceName)
+	return NormalizeTelemetryConfig(config, defaultServiceName)
 }
 
 // NormalizeTelemetryConfig applies runtime normalization to a telemetry.Config.

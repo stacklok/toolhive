@@ -697,6 +697,7 @@ Config holds the configuration for OpenTelemetry instrumentation.
 
 _Appears in:_
 - [vmcp.config.Config](#vmcpconfigconfig)
+- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -741,6 +742,8 @@ _Appears in:_
 - [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
 - [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
 - [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
+- [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
+- [api.v1alpha1.MCPTelemetryConfigList](#apiv1alpha1mcptelemetryconfiglist)
 - [api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig)
 - [api.v1alpha1.MCPToolConfigList](#apiv1alpha1mcptoolconfiglist)
 - [api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition)
@@ -2242,6 +2245,104 @@ _Appears in:_
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready proxy replicas |  | Optional: \{\} <br /> |
 
 
+#### api.v1alpha1.MCPTelemetryConfig
+
+
+
+MCPTelemetryConfig is the Schema for the mcptelemetryconfigs API.
+MCPTelemetryConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources within the same namespace. Cross-namespace references
+are not supported for security and isolation reasons.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPTelemetryConfigList](#apiv1alpha1mcptelemetryconfiglist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPTelemetryConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)_ |  |  |  |
+| `status` _[api.v1alpha1.MCPTelemetryConfigStatus](#apiv1alpha1mcptelemetryconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPTelemetryConfigList
+
+
+
+MCPTelemetryConfigList contains a list of MCPTelemetryConfig
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPTelemetryConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig) array_ |  |  |  |
+
+
+
+
+#### api.v1alpha1.MCPTelemetryConfigSpec
+
+
+
+MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.
+It embeds telemetry.Config from pkg/telemetry to eliminate the conversion
+layer between CRD and application types. The environmentVariables field is
+CLI-only and rejected by CEL validation; customAttributes is allowed for
+setting shared OTel resource attributes (e.g., deployment.environment).
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpoint` _string_ | Endpoint is the OTLP endpoint URL |  | Optional: \{\} <br /> |
+| `serviceName` _string_ | ServiceName is the service name for telemetry.<br />When omitted, defaults to the server name (e.g., VirtualMCPServer name). |  | Optional: \{\} <br /> |
+| `serviceVersion` _string_ | ServiceVersion is the service version for telemetry.<br />When omitted, defaults to the ToolHive version. |  | Optional: \{\} <br /> |
+| `tracingEnabled` _boolean_ | TracingEnabled controls whether distributed tracing is enabled.<br />When false, no tracer provider is created even if an endpoint is configured. | false | Optional: \{\} <br /> |
+| `metricsEnabled` _boolean_ | MetricsEnabled controls whether OTLP metrics are enabled.<br />When false, OTLP metrics are not sent even if an endpoint is configured.<br />This is independent of EnablePrometheusMetricsPath. | false | Optional: \{\} <br /> |
+| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) as a string.<br />Only used when TracingEnabled is true.<br />Example: "0.05" for 5% sampling. | 0.05 | Optional: \{\} <br /> |
+| `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint. |  | Optional: \{\} <br /> |
+| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint. | false | Optional: \{\} <br /> |
+| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.<br />The metrics are served on the main transport port at /metrics.<br />This is separate from OTLP metrics which are sent to the Endpoint. | false | Optional: \{\} <br /> |
+| `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"] |  | Optional: \{\} <br /> |
+| `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs. |  | Optional: \{\} <br /> |
+| `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names<br />are emitted alongside the new standard attribute names. When true, spans include both<br />old and new attribute names for backward compatibility with existing dashboards.<br />Currently defaults to true; this will change to false in a future release. | true | Optional: \{\} <br /> |
+| `sensitiveHeaders` _[api.v1alpha1.SensitiveHeader](#apiv1alpha1sensitiveheader) array_ | SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.<br />Use this for credential headers (e.g., API keys, bearer tokens) instead of<br />embedding secrets in the headers field. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPTelemetryConfigStatus
+
+
+
+MCPTelemetryConfigStatus defines the observed state of MCPTelemetryConfig
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPTelemetryConfig's state |  | Optional: \{\} <br /> |
+| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPTelemetryConfig. |  | Optional: \{\} <br /> |
+| `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPTelemetryConfig |  | Optional: \{\} <br /> |
+
+
 #### api.v1alpha1.MCPToolConfig
 
 
@@ -2820,6 +2921,7 @@ _Appears in:_
 - [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
 - [api.v1alpha1.RedisACLUserConfig](#apiv1alpha1redisacluserconfig)
 - [api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)
+- [api.v1alpha1.SensitiveHeader](#apiv1alpha1sensitiveheader)
 - [api.v1alpha1.SessionStorageConfig](#apiv1alpha1sessionstorageconfig)
 - [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)
 
@@ -2845,6 +2947,25 @@ _Appears in:_
 | `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the secret itself |  | Required: \{\} <br /> |
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.SensitiveHeader
+
+
+
+SensitiveHeader represents a header whose value is stored in a Kubernetes Secret.
+This allows credential headers (e.g., API keys, bearer tokens) to be securely
+referenced without embedding secrets inline in the MCPTelemetryConfig resource.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the header name (e.g., "Authorization", "X-API-Key") |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `secretKeyRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | SecretKeyRef is a reference to a Kubernetes Secret key containing the header value |  | Required: \{\} <br /> |
 
 
 #### api.v1alpha1.SentinelServiceRef

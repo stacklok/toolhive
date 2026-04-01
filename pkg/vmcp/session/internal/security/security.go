@@ -197,6 +197,70 @@ func (d hijackPreventionDecorator) GetPrompt(
 	return d.MultiSession.GetPrompt(ctx, caller, name, arguments)
 }
 
+// RestoreHijackPrevention reconstructs a hijackPreventionDecorator from values
+// previously persisted to session metadata by PreventSessionHijacking.
+//
+// This is the restore counterpart to PreventSessionHijacking: instead of hashing
+// a live bearer token, it reads the already-computed tokenHash and tokenSaltHex
+// from Redis-backed metadata and rebuilds the decorator using the same hmacSecret.
+//
+// Parameters:
+//   - session: the base MultiSession to wrap (must not be nil)
+//   - tokenHash: value stored under MetadataKeyTokenHash; empty for anonymous sessions
+//   - tokenSaltHex: hex-encoded salt stored under MetadataKeyTokenSalt;
+//     empty for anonymous sessions
+//   - hmacSecret: must be identical to the secret used when the session was created;
+//     cross-replica validation silently fails if replicas use different secrets
+//
+// Returns an error if:
+//   - session is nil
+//   - tokenHash is non-empty but tokenSaltHex is empty (malformed persisted state —
+//     an authenticated session must always have a salt)
+//   - tokenSaltHex is non-empty but not valid hex
+func RestoreHijackPrevention(
+	session sessiontypes.MultiSession,
+	tokenHash string,
+	tokenSaltHex string,
+	hmacSecret []byte,
+) (sessiontypes.MultiSession, error) {
+	if session == nil {
+		return nil, fmt.Errorf("session must not be nil")
+	}
+
+	allowAnonymous := tokenHash == ""
+
+	var tokenSalt []byte
+	if tokenSaltHex != "" {
+		var err error
+		tokenSalt, err = hex.DecodeString(tokenSaltHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid token salt in persisted metadata: %w", err)
+		}
+	} else if !allowAnonymous {
+		// Authenticated sessions must have a salt. Without it we cannot reconstruct
+		// the correct HMAC input, so every token would be rejected — including the
+		// legitimate caller's. Treat this as malformed persisted state and fail fast.
+		return nil, fmt.Errorf("persisted session has non-empty token hash but missing salt")
+	}
+
+	// Make defensive copies to prevent external mutation after construction.
+	var hmacSecretCopy, tokenSaltCopy []byte
+	if len(hmacSecret) > 0 {
+		hmacSecretCopy = append([]byte(nil), hmacSecret...)
+	}
+	if len(tokenSalt) > 0 {
+		tokenSaltCopy = append([]byte(nil), tokenSalt...)
+	}
+
+	return &hijackPreventionDecorator{
+		MultiSession:   session,
+		allowAnonymous: allowAnonymous,
+		hmacSecret:     hmacSecretCopy,
+		boundTokenHash: tokenHash,
+		tokenSalt:      tokenSaltCopy,
+	}, nil
+}
+
 // PreventSessionHijacking wraps a session with hijack prevention security measures.
 // It computes token binding hashes, stores them in session metadata, and returns
 // a decorated session that validates caller identity on every operation.

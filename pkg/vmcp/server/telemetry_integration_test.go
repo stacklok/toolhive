@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -119,6 +120,12 @@ func (f *backendAwareTestFactory) MakeSessionWithID(
 		routingTable: f.routingTable,
 		clientRef:    f.clientRef,
 	}, nil
+}
+
+func (*backendAwareTestFactory) RestoreSession(
+	_ context.Context, _ string, _ map[string]string, _ []*vmcp.Backend,
+) (vmcpsession.MultiSession, error) {
+	return nil, fmt.Errorf("backendAwareTestFactory: RestoreSession not implemented in test helper")
 }
 
 // TestIntegration_TelemetryMiddleware tests that the vMCP server records telemetry

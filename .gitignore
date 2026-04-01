@@ -50,3 +50,10 @@ cmd/vmcp/__debug_bin*
 
 # Embedded VM init binary (built by task build-vm-init)
 pkg/container/gomicrovm/initbin/thv-vm-init
+
+# Embedded go-microvm runtime binaries (downloaded by task fetch-runtime-embed)
+pkg/container/gomicrovm/runtimebin/go-microvm-runner
+pkg/container/gomicrovm/runtimebin/libkrun.so.1
+pkg/container/gomicrovm/runtimebin/VERSION
+pkg/container/gomicrovm/runtimebin/sha256sums.txt
+pkg/container/gomicrovm/runtimebin/LICENSE-GPL

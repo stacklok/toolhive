@@ -42,6 +42,52 @@ tasks:
         rm -f "bin/${archive}"
         echo "Installed bin/go-microvm-runner"
 
+  fetch-runtime-embed:
+    desc: Download go-microvm runtime into runtimebin for embedding
+    platforms: [linux]
+    status:
+      - test -f pkg/container/gomicrovm/runtimebin/go-microvm-runner
+    cmds:
+      - mkdir -p pkg/container/gomicrovm/runtimebin
+      - |
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "NOTE: gh CLI not found -- skipping embedded runtime download."
+          echo "  Install gh (https://cli.github.com) and run 'task fetch-runtime-embed',"
+          echo "  or download go-microvm-runner manually from:"
+          echo "  https://github.com/stacklok/go-microvm/releases/tag/{{.GOMICROVM_VERSION}}"
+          exit 0
+        fi
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64)  arch="amd64" ;;
+          aarch64) arch="arm64" ;;
+        esac
+        archive="go-microvm-runtime-${os}-${arch}.tar.gz"
+        echo "Downloading go-microvm runtime {{.GOMICROVM_VERSION}} (${os}/${arch}) for embedding..."
+        gh release download {{.GOMICROVM_VERSION}} \
+          --repo stacklok/go-microvm \
+          --dir pkg/container/gomicrovm/runtimebin/ \
+          --clobber \
+          --pattern "${archive}"
+        tar -xzf "pkg/container/gomicrovm/runtimebin/${archive}" -C pkg/container/gomicrovm/runtimebin/ --strip-components=1
+        rm -f "pkg/container/gomicrovm/runtimebin/${archive}"
+        echo "Installed runtime binaries for embedding"
+
+  build-embed:
+    desc: Build thv with embedded go-microvm runtime
+    deps: [gen, build-vm-init, fetch-runtime-embed]
+    platforms: [linux]
+    vars:
+      VERSION:
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+    cmds:
+      - mkdir -p bin
+      - go build -tags embed_runtime -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}} -X github.com/stacklok/toolhive/pkg/container/gomicrovm/runtimebin.Version={{.GOMICROVM_VERSION}}" -o bin/thv ./cmd/thv
+
   docs:
     desc: Regenerate the docs
     deps: [swagger-install, helm-docs]

@@ -14,14 +14,21 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/stacklok/toolhive/pkg/container/gomicrovm/runtimebin"
 )
 
 // IsAvailable checks whether the go-microvm microVM runtime can be used.
-// It requires Linux with KVM access and the go-microvm-runner binary.
+// It requires Linux with KVM access and either an embedded runtime or the
+// go-microvm-runner binary on disk.
 func IsAvailable() bool {
 	if !kvmAccessible() {
 		slog.Debug("go-microvm: /dev/kvm is not accessible")
 		return false
+	}
+	if runtimebin.Available() {
+		slog.Debug("[EXPERIMENTAL] go-microvm microVM runtime detected as available (embedded runtime)")
+		return true
 	}
 	if _, err := FindRunnerPath(); err != nil {
 		slog.Debug("go-microvm: runner binary not found", "error", err)

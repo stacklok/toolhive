@@ -10,17 +10,20 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/stacklok/go-microvm"
+	"github.com/stacklok/go-microvm/extract"
 	"github.com/stacklok/go-microvm/hooks"
 	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	microvmimage "github.com/stacklok/go-microvm/image"
 	microvmssh "github.com/stacklok/go-microvm/ssh"
 
 	"github.com/stacklok/toolhive-core/permissions"
+	"github.com/stacklok/toolhive/pkg/container/gomicrovm/runtimebin"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -83,7 +86,7 @@ func (c *Client) DeployWorkload(
 		return 0, fmt.Errorf("go-microvm runtime: creating VM data dir: %w", err)
 	}
 
-	opts, err := c.buildMicrovmOptions(name, vmDir, command, envVars, permissionProfile,
+	opts, err := c.buildMicrovmOptions(ctx, name, vmDir, command, envVars, permissionProfile,
 		containerPort, hostPort, stdioRelayHostPort, transportType, isolateNetwork)
 	if err != nil {
 		return 0, err
@@ -135,6 +138,7 @@ func (c *Client) DeployWorkload(
 // profile is applied to restrict outbound traffic. When false, no egress
 // restrictions are set regardless of the permission profile.
 func (c *Client) buildMicrovmOptions(
+	ctx context.Context,
 	name, vmDir string,
 	command []string,
 	envVars map[string]string,
@@ -154,10 +158,7 @@ func (c *Client) buildMicrovmOptions(
 		return nil, fmt.Errorf("go-microvm runtime: reading public key: %w", err)
 	}
 
-	backendOpts := []libkrun.Option{libkrun.WithUserNamespaceUID(1000, 1000)}
-	if runnerPath, err := FindRunnerPath(); err == nil {
-		backendOpts = append(backendOpts, libkrun.WithRunnerPath(runnerPath))
-	}
+	backendOpts := c.buildBackendOptions(ctx)
 
 	opts := []microvm.Option{
 		microvm.WithName(name),
@@ -232,6 +233,47 @@ func buildPortForwardOptions(containerPort, hostPort, stdioRelayHostPort int) ([
 	return opts, nil
 }
 
+// buildBackendOptions constructs the libkrun backend options for the VM,
+// including runtime resolution (embedded or on-disk) and firmware resolution
+// (downloaded from GitHub releases or found on system).
+func (c *Client) buildBackendOptions(ctx context.Context) []libkrun.Option {
+	backendOpts := []libkrun.Option{libkrun.WithUserNamespaceUID(1000, 1000)}
+
+	if src := runtimebin.RuntimeSource(); src != nil {
+		// Embedded runtime: extract go-microvm-runner and libkrun to a
+		// versioned cache directory. The Source sets LD_LIBRARY_PATH for
+		// the spawned runner process automatically.
+		cacheDir := filepath.Join(c.opts.dataDir, "cache", "runtime")
+		backendOpts = append(backendOpts,
+			libkrun.WithRuntime(src),
+			libkrun.WithCacheDir(cacheDir),
+		)
+	} else if runnerPath, err := FindRunnerPath(); err == nil {
+		// Non-embedded: point to the runner on disk and set the library
+		// search path to its directory so a co-located libkrun.so.1 is
+		// found via LD_LIBRARY_PATH.
+		backendOpts = append(backendOpts,
+			libkrun.WithRunnerPath(runnerPath),
+			libkrun.WithLibDir(filepath.Dir(runnerPath)),
+		)
+	}
+
+	// Resolve firmware (libkrunfw.so.5). This is GPL-licensed so it cannot
+	// be embedded -- it is downloaded from GitHub releases and cached, with
+	// a fallback to system-installed firmware.
+	if fwVersion := goMicrovmModuleVersion(); fwVersion != "" {
+		fwCacheDir := filepath.Join(c.opts.dataDir, "cache")
+		fwDir, err := ResolveFirmware(ctx, fwVersion, fwCacheDir)
+		if err != nil {
+			slog.Warn("firmware resolution failed, VM may fail to start", "error", err)
+		} else {
+			backendOpts = append(backendOpts, libkrun.WithFirmware(extract.Dir(fwDir)))
+		}
+	}
+
+	return backendOpts
+}
+
 // buildRootFSHooks constructs the rootfs hooks for init binary, entrypoint,
 // SSH keys, and optional environment variables.
 func buildRootFSHooks(command []string, pubKey string, envVars map[string]string) []microvm.RootFSHook {
@@ -267,4 +309,20 @@ func extractContainerPort(options *runtime.DeployWorkloadOptions) (int, error) {
 		return port, nil
 	}
 	return 0, nil
+}
+
+// goMicrovmModuleVersion returns the go-microvm module version from the
+// binary's build info. This is used to match the firmware download to the
+// correct release tag. Returns empty string if the version cannot be determined.
+func goMicrovmModuleVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, dep := range bi.Deps {
+		if dep.Path == "github.com/stacklok/go-microvm" {
+			return dep.Version
+		}
+	}
+	return ""
 }

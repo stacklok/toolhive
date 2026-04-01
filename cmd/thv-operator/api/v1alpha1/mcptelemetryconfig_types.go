@@ -31,7 +31,6 @@ type SensitiveHeader struct {
 //   - Adds ResourceAttributes for shared OTel resource attributes
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.headers) || !has(self.sensitiveHeaders) || self.sensitiveHeaders.all(sh, !(sh.name in self.headers))",message="a header name cannot appear in both headers and sensitiveHeaders"
-// +kubebuilder:validation:XValidation:rule=”!has(self.endpoint) || size(self.endpoint) == 0 || (has(self.tracing) && self.tracing.enabled) || (has(self.metrics) && self.metrics.enabled)”,message=”endpoint requires at least one of tracing or metrics to be enabled”
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPTelemetryOTelConfig struct {
@@ -179,7 +178,28 @@ type MCPTelemetryConfigReference struct {
 // CEL catches issues at API admission time, but this method also validates
 // stored objects to catch any that bypassed CEL or were stored before CEL rules were added.
 func (r *MCPTelemetryConfig) Validate() error {
+	if err := r.validateEndpointRequiresSignals(); err != nil {
+		return err
+	}
 	return r.validateSensitiveHeaders()
+}
+
+// validateEndpointRequiresSignals rejects an endpoint when neither tracing nor metrics is enabled.
+// Without this check the config would pass CRD validation but fail at runtime in telemetry.NewProvider.
+func (r *MCPTelemetryConfig) validateEndpointRequiresSignals() error {
+	if r.Spec.OpenTelemetry == nil {
+		return nil
+	}
+	otel := r.Spec.OpenTelemetry
+	if otel.Endpoint == "" {
+		return nil
+	}
+	tracingEnabled := otel.Tracing != nil && otel.Tracing.Enabled
+	metricsEnabled := otel.Metrics != nil && otel.Metrics.Enabled
+	if !tracingEnabled && !metricsEnabled {
+		return fmt.Errorf("endpoint requires at least one of tracing or metrics to be enabled")
+	}
+	return nil
 }
 
 // validateSensitiveHeaders validates sensitive header entries and checks for overlap with plaintext headers.

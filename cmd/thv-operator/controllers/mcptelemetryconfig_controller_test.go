@@ -499,6 +499,19 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "invalid endpoint without tracing or metrics",
+			config: &mcpv1alpha1.MCPTelemetryConfig{
+				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+						Enabled:  true,
+						Endpoint: "otel-collector:4317",
+						// No Tracing or Metrics configured
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
 			name: "invalid empty secret ref name",
 			config: &mcpv1alpha1.MCPTelemetryConfig{
 				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {

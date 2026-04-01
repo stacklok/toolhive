@@ -288,4 +288,46 @@ var _ = Describe("CEL Validation for OIDCConfigRef and AuthzConfigRef", Label("k
 			))
 		})
 	})
+
+	Context("OIDCConfig and OIDCConfigRef mutual exclusion", func() {
+		It("should reject when both oidcConfig and oidcConfigRef are set", func() {
+			server := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-mutual-exclusion",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "example/mcp-server:latest",
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: "kubernetes",
+					},
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "some-config",
+						Audience: "test",
+					},
+				},
+			}
+			err := k8sClient.Create(ctx, server)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("oidcConfig and oidcConfigRef are mutually exclusive"))
+		})
+
+		It("should accept when only oidcConfigRef is set", func() {
+			server := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-ref-only",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "example/mcp-server:latest",
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "some-config",
+						Audience: "test",
+					},
+				},
+			}
+			err := k8sClient.Create(ctx, server)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

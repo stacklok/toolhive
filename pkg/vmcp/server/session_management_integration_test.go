@@ -387,7 +387,8 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 
 	// Subsequent requests with the terminated session ID are rejected.
 	// After Terminate() deletes the session from storage, the discovery middleware passes
-	// through and the SDK's Validate() returns a 404 for the unknown session.
+	// through (no session found → skip capability injection), and the SDK's Validate()
+	// returns HTTP 404 for the unknown session ID.
 	toolCallReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,

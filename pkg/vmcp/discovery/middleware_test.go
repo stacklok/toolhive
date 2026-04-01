@@ -23,7 +23,10 @@ import (
 	sessionmocks "github.com/stacklok/toolhive/pkg/vmcp/session/types/mocks"
 )
 
-// stubMultiSessionGetter is a simple MultiSessionGetter for tests.
+// Ensure stubMultiSessionGetter implements MultiSessionGetter.
+var _ MultiSessionGetter = (*stubMultiSessionGetter)(nil)
+
+// stubMultiSessionGetter is a simple in-memory MultiSessionGetter for tests.
 type stubMultiSessionGetter struct {
 	sessions map[string]vmcpsession.MultiSession
 }
@@ -32,9 +35,13 @@ func newStubMultiSessionGetter() *stubMultiSessionGetter {
 	return &stubMultiSessionGetter{sessions: make(map[string]vmcpsession.MultiSession)}
 }
 
-func (s *stubMultiSessionGetter) GetMultiSession(id string) (vmcpsession.MultiSession, bool) {
-	sess, ok := s.sessions[id]
+func (s *stubMultiSessionGetter) GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool) {
+	sess, ok := s.sessions[sessionID]
 	return sess, ok
+}
+
+func (s *stubMultiSessionGetter) add(sessionID string, sess vmcpsession.MultiSession) {
+	s.sessions[sessionID] = sess
 }
 
 // unorderedBackendsMatcher is a gomock matcher that compares backend slices without caring about order.
@@ -192,9 +199,6 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 		_, _ = w.Write([]byte("success"))
 	})
 
-	// Create session manager and store routing table in a MultiSession
-	sessionMgr := newStubMultiSessionGetter()
-
 	// Create a routing table for this session
 	routingTable := &vmcp.RoutingTable{
 		Tools:     map[string]*vmcp.BackendTarget{"tool1": {WorkloadID: "backend1"}},
@@ -206,7 +210,9 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 	mockSess := sessionmocks.NewMockMultiSession(ctrl)
 	mockSess.EXPECT().GetRoutingTable().Return(routingTable).AnyTimes()
 	mockSess.EXPECT().Tools().Return(nil).AnyTimes()
-	sessionMgr.sessions["dddddddd-1001-1001-1001-000000000001"] = mockSess
+
+	sessionMgr := newStubMultiSessionGetter()
+	sessionMgr.add("dddddddd-1001-1001-1001-000000000001", mockSess)
 
 	// Wrap handler with middleware
 	backendRegistry := vmcp.NewImmutableRegistry(backends)

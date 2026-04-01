@@ -276,21 +276,6 @@ func (m *Manager) Count() int {
 	return 0
 }
 
-// TTL returns the session time-to-live configured for this manager.
-func (m *Manager) TTL() time.Duration {
-	return m.ttl
-}
-
-// Exists reports whether a session exists without refreshing its eviction TTL.
-// Returns (true, nil) if found, (false, nil) if definitively absent, and
-// (false, err) if the storage backend could not be reached.
-// Callers must treat a non-nil error as "unknown" rather than "not found".
-func (m *Manager) Exists(id string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
-	defer cancel()
-	return m.storage.Exists(ctx, id)
-}
-
 func (m *Manager) cleanupExpiredOnce() error {
 	cutoff := time.Now().Add(-m.ttl)
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupOperationTimeout)

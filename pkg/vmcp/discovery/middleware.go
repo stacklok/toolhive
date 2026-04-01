@@ -33,16 +33,17 @@ import (
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
-// MultiSessionGetter retrieves a fully-formed MultiSession by session ID.
-// The concrete implementation is sessionmanager.Manager.
-type MultiSessionGetter interface {
-	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
-}
-
 const (
 	// discoveryTimeout is the maximum time for capability discovery.
 	discoveryTimeout = 15 * time.Second
 )
+
+// MultiSessionGetter retrieves a fully-formed MultiSession by session ID.
+// Returns (nil, false) if the session does not exist or has not yet been initialized.
+// This interface decouples the discovery middleware from the concrete session manager.
+type MultiSessionGetter interface {
+	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
+}
 
 // middlewareConfig holds optional configuration for Middleware.
 type middlewareConfig struct {
@@ -91,7 +92,7 @@ func WithDiscoveryTimeout(timeout time.Duration) MiddlewareOption {
 func Middleware(
 	manager Manager,
 	registry vmcp.BackendRegistry,
-	sessionGetter MultiSessionGetter,
+	multiSessionGetter MultiSessionGetter,
 	healthStatusProvider health.StatusProvider,
 	opts ...MiddlewareOption,
 ) func(http.Handler) http.Handler {
@@ -121,8 +122,8 @@ func Middleware(
 					return
 				}
 			} else {
-				// Subsequent request: inject routing context from the session.
-				ctx = handleSubsequentRequest(ctx, r, sessionID, sessionGetter)
+				// Subsequent request: inject routing context if the session is ready.
+				ctx = handleSubsequentRequest(ctx, r, sessionID, multiSessionGetter)
 			}
 
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -259,14 +260,13 @@ func handleInitializeRequest(
 	return WithDiscoveredCapabilities(ctx, capabilities), nil
 }
 
-// handleSubsequentRequest injects routing context from the cached MultiSession.
-// Returns the updated context; never returns an error — unknown or not-yet-ready
-// sessions are silently passed through so the SDK can respond with 404.
+// handleSubsequentRequest retrieves cached capabilities from the session.
+// Returns the updated context; never returns an error.
 func handleSubsequentRequest(
 	ctx context.Context,
 	r *http.Request,
 	sessionID string,
-	sessionGetter MultiSessionGetter,
+	multiSessionGetter MultiSessionGetter,
 ) context.Context {
 	//nolint:gosec // G706: session ID and request fields are not injection vectors
 	slog.Debug("retrieving capabilities from session for subsequent request",
@@ -274,19 +274,14 @@ func handleSubsequentRequest(
 		"method", r.Method,
 		"path", r.URL.Path)
 
-	// Backend tool handlers (created by DefaultHandlerFactory) resolve their backend
-	// target by calling router.RouteTool(ctx, name), which reads DiscoveredCapabilities
-	// from the request context. Inject capabilities built from the session's routing
-	// table so these handlers can route correctly on subsequent requests.
-	// Note: composite tool workflow engines are created per-session and route via
-	// SessionRouter directly, so they no longer depend on this context value.
-	multiSess, ok := sessionGetter.GetMultiSession(sessionID)
+	// Look up the fully-formed MultiSession. Returns (nil, false) if the session does
+	// not exist yet or is still a placeholder (CreateSession not yet complete). In either
+	// case, skip capability injection and let the SDK validate/reject the request — the
+	// SDK's own SessionIdManager.Validate() returns 404 for unknown session IDs.
+	multiSess, ok := multiSessionGetter.GetMultiSession(sessionID)
 	if !ok {
-		// The session is not yet in the node-local cache (placeholder, not-yet-restored,
-		// or expired). Pass through without capability injection so the SDK can respond
-		// with its own 404 via Validate().
 		//nolint:gosec // G706: session ID is not an injection vector
-		slog.Debug("session not found or still initializing, skipping capability injection",
+		slog.Debug("session not found or still initialising, skipping capability injection",
 			"session_id", sessionID)
 		return ctx
 	}

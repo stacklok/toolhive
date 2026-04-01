@@ -201,20 +201,6 @@ func (s *RedisStorage) Load(ctx context.Context, id string) (Session, error) {
 	return session, nil
 }
 
-// Exists checks whether a session key exists in Redis without refreshing its TTL.
-// Uses EXISTS rather than GETEX so that idle sessions are not kept alive by the
-// eviction-loop probes in sessionmanager.
-func (s *RedisStorage) Exists(ctx context.Context, id string) (bool, error) {
-	if id == "" {
-		return false, fmt.Errorf("cannot check session existence with empty ID")
-	}
-	n, err := s.client.Exists(ctx, s.key(id)).Result()
-	if err != nil {
-		return false, fmt.Errorf("failed to check session existence: %w", err)
-	}
-	return n > 0, nil
-}
-
 // Delete removes the Redis key. A missing key is not an error.
 func (s *RedisStorage) Delete(ctx context.Context, id string) error {
 	if id == "" {

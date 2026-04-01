@@ -26,13 +26,6 @@ type Storage interface {
 	// that DeleteExpired does not evict sessions that are actively being accessed.
 	Load(ctx context.Context, id string) (Session, error)
 
-	// Exists reports whether a session exists without refreshing its eviction TTL.
-	// Returns (true, nil) if the session exists, (false, nil) if it definitively
-	// does not exist, and (false, err) if the check could not be completed (e.g.
-	// storage unavailable). Callers must treat non-nil errors as "unknown"
-	// rather than "not found".
-	Exists(ctx context.Context, id string) (bool, error)
-
 	// Delete removes a session from the storage backend.
 	// It is not an error if the session doesn't exist.
 	Delete(ctx context.Context, id string) error

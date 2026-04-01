@@ -204,9 +204,17 @@ type Server struct {
 	// For dynamic mode (K8s), this is a DynamicRegistry updated by the operator.
 	backendRegistry vmcp.BackendRegistry
 
+	// Session manager for tracking MCP protocol sessions
+	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
+	// used by streamable proxy for MCP session tracking. It handles:
+	//   - Session storage and retrieval
+	//   - TTL-based cleanup of inactive sessions
+	//   - Session lifecycle management
+	sessionManager *transportsession.Manager
+
 	// sessionDataStorage is the pluggable key-value backend for session metadata.
-	// LocalSessionDataStorage is used by default; RedisSessionDataStorage when
-	// SessionStorageConfig is provided in Config.
+	// Currently always LocalSessionDataStorage (in-memory, single-process).
+	// Redis-backed storage for multi-pod deployments is not yet wired.
 	sessionDataStorage transportsession.DataStorage
 
 	// Capability adapter for converting aggregator types to SDK types
@@ -350,6 +358,14 @@ func New(
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
+	// Create session manager using StreamableSession as the transport-layer placeholder.
+	// StreamableSession is a lightweight implementation of transportsession.Session that
+	// handles disconnect tracking, TTL, and metadata for Streamable HTTP connections.
+	// It intentionally carries no vmcp-specific state — backend connections, routing
+	// tables, tool lists, and token binding all live in the separate sessionmanager.Manager,
+	// keyed by the same session ID.
+	sessionManager := transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
+
 	// Create session data storage. Default to local in-memory storage; a future
 	// SessionStorageConfig field can wire up Redis for multi-pod deployments.
 	sessionDataStorage, err := transportsession.NewLocalSessionDataStorage(cfg.SessionTTL)
@@ -399,7 +415,7 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 	}
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionTTL, sessMgrCfg, backendRegistry)
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, sessMgrCfg, backendRegistry)
 	if err != nil {
 		return nil, err
 	}
@@ -413,6 +429,7 @@ func New(
 		handlerFactory:     handlerFactory,
 		discoveryMgr:       discoveryMgr,
 		backendRegistry:    backendRegistry,
+		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
 		capabilityAdapter:  capabilityAdapter,
 		ready:              make(chan struct{}),
@@ -424,11 +441,6 @@ func New(
 	if optimizerCleanup != nil {
 		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
 	}
-	// Close session data storage last so the eviction loop (stopped by optimizerCleanup
-	// above, which calls sm.stop()) cannot call storage.Exists() after Close().
-	srv.shutdownFuncs = append(srv.shutdownFuncs, func(_ context.Context) error {
-		return sessionDataStorage.Close()
-	})
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
 	// See handleSessionRegistration for implementation details.
@@ -543,10 +555,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// Apply discovery middleware (runs after audit/auth middleware)
-	// Discovery middleware performs per-request capability aggregation with user context
-	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
-	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
-	// Pass health monitor to enable filtering based on current health status (respects circuit breaker)
+	// Discovery middleware performs per-request capability aggregation with user context.
+	// vmcpSessionMgr (MultiSessionGetter) is used to retrieve the fully-formed MultiSession
+	// for subsequent requests so the routing table can be injected into context.
+	// The backend registry provides a dynamic backend list (supports DynamicRegistry for K8s).
+	// The health monitor enables filtering based on current health status (respects circuit breaker).
 	s.healthMonitorMu.RLock()
 	healthMon := s.healthMonitor
 	s.healthMonitorMu.RUnlock()
@@ -759,9 +772,24 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Stop session manager after HTTP server shutdown
+	if s.sessionManager != nil {
+		if err := s.sessionManager.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
+		}
+	}
+
 	// Stop discovery manager to clean up background goroutines
 	if s.discoveryMgr != nil {
 		s.discoveryMgr.Stop()
+	}
+
+	// Close session data storage last: HTTP server is down (no new in-flight requests),
+	// all other components have stopped (no further restore or liveness checks).
+	if s.sessionDataStorage != nil {
+		if err := s.sessionDataStorage.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close session data storage: %w", err))
+		}
 	}
 
 	if len(errs) > 0 {
@@ -881,10 +909,10 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SessionManager returns the session data storage instance.
+// SessionManager returns the session manager instance.
 // This is useful for testing and monitoring.
-func (s *Server) SessionManager() transportsession.DataStorage {
-	return s.sessionDataStorage
+func (s *Server) SessionManager() *transportsession.Manager {
+	return s.sessionManager
 }
 
 // Ready returns a channel that is closed when the server is ready to accept connections.

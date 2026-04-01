@@ -382,16 +382,18 @@ func validateSessionID(id string) error {
 // usable hint. IDs are extracted from the already-sorted results slice to avoid
 // a second sort.
 func populateBackendMetadata(transportSess transportsession.Session, results []initResult) {
-	if len(results) > 0 {
-		ids := make([]string, len(results))
-		for i, r := range results {
-			ids[i] = r.target.WorkloadID
-			if sessID := r.conn.SessionID(); sessID != "" {
-				transportSess.SetMetadata(MetadataKeyBackendSessionPrefix+r.target.WorkloadID, sessID)
-			}
+	ids := make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.target.WorkloadID
+		if sessID := r.conn.SessionID(); sessID != "" {
+			transportSess.SetMetadata(MetadataKeyBackendSessionPrefix+r.target.WorkloadID, sessID)
 		}
-		transportSess.SetMetadata(MetadataKeyBackendIDs, strings.Join(ids, ","))
 	}
+	// Always write MetadataKeyBackendIDs, even for zero-backend sessions ("").
+	// This distinguishes an explicit zero-backend state from absent/corrupted metadata
+	// in RestoreSession, preventing filterBackendsByStoredIDs from silently
+	// falling back to all backends when the key is missing.
+	transportSess.SetMetadata(MetadataKeyBackendIDs, strings.Join(ids, ","))
 }
 
 // makeBaseSession initialises backends and assembles a defaultMultiSession
@@ -557,7 +559,16 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 
 	// Recreate the hijack-prevention decorator using the stored hash and salt,
 	// not by recomputing from identity.Token (which is unavailable at restore time).
-	storedHash := storedMetadata[sessiontypes.MetadataKeyTokenHash]
+	//
+	// Fail closed if the token-hash key is entirely absent from stored metadata:
+	// PreventSessionHijacking always writes the key (empty string for anonymous,
+	// non-empty for authenticated), so an absent key indicates corrupted or
+	// truncated metadata — not a legitimately anonymous session.
+	storedHash, hashKeyPresent := storedMetadata[sessiontypes.MetadataKeyTokenHash]
+	if !hashKeyPresent {
+		_ = baseSession.Close()
+		return nil, fmt.Errorf("RestoreSession: token hash metadata key absent (corrupted session metadata)")
+	}
 	storedSalt := storedMetadata[sessiontypes.MetadataKeyTokenSalt]
 	restored, err := security.RestoreHijackPrevention(baseSession, f.hmacSecret, storedHash, storedSalt)
 	if err != nil {
@@ -568,10 +579,15 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 }
 
 // filterBackendsByStoredIDs returns the subset of allBackends whose ID appears in
-// the comma-separated storedIDs string. If storedIDs is empty, all backends are returned.
+// the comma-separated storedIDs string. If storedIDs is empty, nil is returned (no backends).
+//
+// The empty-string case intentionally returns nil rather than all backends: callers
+// that store an explicit empty string mean "zero backends connected", and callers that
+// omit the key entirely (corrupted/absent metadata) must be handled by the caller before
+// invoking this function — relying on empty-string to mean "all backends" is a footgun.
 func filterBackendsByStoredIDs(allBackends []*vmcp.Backend, storedIDs string) []*vmcp.Backend {
 	if storedIDs == "" {
-		return allBackends
+		return nil
 	}
 	parts := strings.Split(storedIDs, ",")
 	idSet := make(map[string]struct{}, len(parts))

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,10 +37,11 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 	// Get the referenced MCPTelemetryConfig
 	telemetryConfig, err := getTelemetryConfigForMCPServer(ctx, r.Client, m)
 	if err != nil {
+		// Transient API error (not a NotFound)
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonTelemetryConfigRefNotFound,
+			Reason:             mcpv1alpha1.ConditionReasonTelemetryConfigRefError,
 			Message:            err.Error(),
 			ObservedGeneration: m.Generation,
 		})
@@ -47,6 +49,7 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 	}
 
 	if telemetryConfig == nil {
+		// Resource genuinely does not exist
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
@@ -96,6 +99,9 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 }
 
 // getTelemetryConfigForMCPServer fetches the MCPTelemetryConfig referenced by an MCPServer.
+// Returns (nil, nil) when TelemetryConfigRef is nil or the resource is not found.
+// Returns (nil, err) only for transient API errors so callers can distinguish
+// "config missing" from "API unavailable".
 func getTelemetryConfigForMCPServer(
 	ctx context.Context,
 	c client.Client,
@@ -110,6 +116,9 @@ func getTelemetryConfigForMCPServer(
 		Name:      m.Spec.TelemetryConfigRef.Name,
 		Namespace: m.Namespace,
 	}, telemetryConfig)
+	if errors.IsNotFound(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get MCPTelemetryConfig %s: %w", m.Spec.TelemetryConfigRef.Name, err)
 	}

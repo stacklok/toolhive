@@ -120,6 +120,9 @@ const (
 
 	// ConditionReasonTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is not valid
 	ConditionReasonTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonTelemetryConfigRefError indicates a transient error occurred fetching the config
+	ConditionReasonTelemetryConfigRefError = "TelemetryConfigRefError"
 )
 
 // ConditionStdioReplicaCapped indicates spec.replicas was capped at 1 for stdio transport.

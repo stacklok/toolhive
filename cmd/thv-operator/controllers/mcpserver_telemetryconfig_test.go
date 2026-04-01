@@ -66,7 +66,7 @@ func TestGetTelemetryConfigForMCPServer(t *testing.T) {
 			expectedConfigName: "my-telemetry-config",
 		},
 		{
-			name: "returns error when not found",
+			name: "returns nil without error when not found",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -80,7 +80,7 @@ func TestGetTelemetryConfigForMCPServer(t *testing.T) {
 			},
 			telemetryConfig: nil,
 			expectNil:       true,
-			expectError:     true,
+			expectError:     false,
 		},
 	}
 
@@ -153,8 +153,8 @@ func TestGetTelemetryConfigForMCPServer_NamespacedLookup(t *testing.T) {
 		WithObjects(telemetryConfig).
 		Build()
 
-	// Should fail because the config is in a different namespace
+	// Should return nil (NotFound) because the config is in a different namespace
 	result, err := getTelemetryConfigForMCPServer(ctx, fakeClient, mcpServer)
-	assert.Error(t, err, "Should not find config in different namespace")
-	assert.Nil(t, result)
+	assert.NoError(t, err, "NotFound should return nil error")
+	assert.Nil(t, result, "Should not find config in different namespace")
 }

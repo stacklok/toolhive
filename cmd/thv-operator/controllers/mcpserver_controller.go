@@ -1076,12 +1076,16 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
 
-	// Add OpenTelemetry environment variables: prefer TelemetryConfigRef over deprecated inline
+	// Add OpenTelemetry environment variables: prefer TelemetryConfigRef over deprecated inline.
+	// handleTelemetryConfig already validated this ref earlier in the reconcile loop;
+	// a failure here means a transient issue, so we log a warning and proceed without
+	// telemetry env vars rather than blocking the entire deployment creation.
 	if m.Spec.TelemetryConfigRef != nil {
 		telCfg, telErr := getTelemetryConfigForMCPServer(ctx, r.Client, m)
 		if telErr != nil {
 			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(telErr, "Failed to get MCPTelemetryConfig for env vars")
+			ctxLogger.V(0).Info("MCPTelemetryConfig fetch failed after prior validation; deployment may lack telemetry env vars",
+				"telemetryConfig", m.Spec.TelemetryConfigRef.Name, "error", telErr)
 		} else if telCfg != nil {
 			env = append(env, ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(telCfg, m.Spec.TelemetryConfigRef, m.Name, m.Namespace)...)
 		}
@@ -1665,6 +1669,8 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		if mcpServer.Spec.TelemetryConfigRef != nil {
 			telCfg, telErr := getTelemetryConfigForMCPServer(ctx, r.Client, mcpServer)
 			if telErr != nil {
+				// Can't determine expected env vars; assume deployment needs update.
+				// The actual error will surface during deployment creation.
 				return true
 			}
 			if telCfg != nil {

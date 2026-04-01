@@ -1353,7 +1353,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type defines the authentication type: anonymous or oidc<br />When no authentication is required, explicitly set this to "anonymous" |  | Enum: [anonymous oidc] <br />Required: \{\} <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration<br />Reuses MCPServer OIDC patterns |  | Optional: \{\} <br /> |
+| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  | Optional: \{\} <br /> |
 
 
@@ -1714,6 +1715,7 @@ The referenced MCPOIDCConfig must be in the same namespace as the MCPServer.
 
 
 _Appears in:_
+- [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -3580,6 +3582,7 @@ _Appears in:_
 | `url` _string_ | URL is the URL where the Virtual MCP server can be accessed |  | Optional: \{\} <br /> |
 | `discoveredBackends` _[api.v1alpha1.DiscoveredBackend](#apiv1alpha1discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations from the MCPGroup |  | Optional: \{\} <br /> |
 | `backendCount` _integer_ | BackendCount is the number of healthy/ready backends<br />(excludes unavailable, degraded, and unknown backends) |  | Optional: \{\} <br /> |
+| `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.<br />Only populated when IncomingAuth.OIDCConfigRef is set. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.Volume

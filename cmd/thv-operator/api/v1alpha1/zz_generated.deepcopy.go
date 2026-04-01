@@ -625,6 +625,11 @@ func (in *IncomingAuthConfig) DeepCopyInto(out *IncomingAuthConfig) {
 		*out = new(OIDCConfigRef)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.OIDCConfigRef != nil {
+		in, out := &in.OIDCConfigRef, &out.OIDCConfigRef
+		*out = new(MCPOIDCConfigReference)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.AuthzConfig != nil {
 		in, out := &in.AuthzConfig, &out.AuthzConfig
 		*out = new(AuthzConfigRef)
@@ -1641,6 +1646,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 	if in.OIDCConfig != nil {
 		in, out := &in.OIDCConfig, &out.OIDCConfig
 		*out = new(OIDCConfigRef)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.OIDCConfigRef != nil {
+		in, out := &in.OIDCConfigRef, &out.OIDCConfigRef
+		*out = new(MCPOIDCConfigReference)
 		(*in).DeepCopyInto(*out)
 	}
 	if in.AuthzConfig != nil {

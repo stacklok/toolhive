@@ -18,12 +18,24 @@ var (
 // in any provider created via NewProvider. This allows optional integrations
 // (e.g. a Sentry bridge, Datadog exporter) to self-register during their own
 // Init without coupling to the caller that creates the OTEL provider.
+//
+// Registration must happen before NewProvider is called; processors registered
+// after provider creation will not be included in the already-created provider.
+//
+// Duplicate registrations of the same processor pointer are silently ignored
+// to prevent OnStart/OnEnd from firing twice on a single span when Init is
+// called more than once (e.g. during tests or config reload).
 func RegisterSpanProcessor(p sdktrace.SpanProcessor) {
 	if p == nil {
 		return
 	}
 	globalProcessorsMu.Lock()
 	defer globalProcessorsMu.Unlock()
+	for _, existing := range globalProcessors {
+		if existing == p {
+			return
+		}
+	}
 	globalProcessors = append(globalProcessors, p)
 }
 

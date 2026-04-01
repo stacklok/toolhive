@@ -10,7 +10,7 @@ metadata:
 spec:
   openTelemetry:
     enabled: true
-    endpoint: otel-collector.monitoring.svc.cluster.local:4318
+    endpoint: otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318
     insecure: true
     tracing:
       enabled: true

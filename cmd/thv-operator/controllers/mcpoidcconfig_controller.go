@@ -5,16 +5,21 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -31,9 +36,8 @@ const (
 // MCPOIDCConfigReconciler reconciles a MCPOIDCConfig object.
 //
 // This controller manages the lifecycle of MCPOIDCConfig resources: validation,
-// config hash computation, and finalizer management. Reference tracking, cascade
-// to workloads, and deletion protection will be wired up when workload CRDs add
-// OIDCConfigRef fields (#4253).
+// config hash computation, finalizer management, reference tracking, and
+// deletion protection when MCPServer resources reference this config.
 type MCPOIDCConfigReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -120,6 +124,15 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// Refresh ReferencingServers list
+	referencingServers, err := r.findReferencingServers(ctx, oidcConfig)
+	if err != nil {
+		logger.Error(err, "Failed to find referencing servers")
+	} else if !slices.Equal(oidcConfig.Status.ReferencingServers, referencingServers) {
+		oidcConfig.Status.ReferencingServers = referencingServers
+		conditionChanged = true
+	}
+
 	// Update condition if it changed (even without hash change)
 	if conditionChanged {
 		if err := r.Status().Update(ctx, oidcConfig); err != nil {
@@ -137,9 +150,9 @@ func (*MCPOIDCConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPOIDCConf
 }
 
 // handleDeletion handles the deletion of a MCPOIDCConfig.
-// Currently allows immediate deletion by removing the finalizer.
-// Deletion protection (blocking while workloads reference this config)
-// will be added when workload CRDs gain OIDCConfigRef fields (#4253).
+// Blocks deletion while MCPServer resources reference this config by keeping the
+// finalizer and requeueing. Once all references are removed, the finalizer is removed
+// and the resource can be garbage collected.
 func (r *MCPOIDCConfigReconciler) handleDeletion(
 	ctx context.Context,
 	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
@@ -147,6 +160,34 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(oidcConfig, OIDCConfigFinalizerName) {
+		// Check if any MCPServers still reference this config
+		referencingServers, err := r.findReferencingServers(ctx, oidcConfig)
+		if err != nil {
+			logger.Error(err, "Failed to check referencing servers during deletion")
+			return ctrl.Result{}, err
+		}
+
+		if len(referencingServers) > 0 {
+			logger.Info("MCPOIDCConfig is still referenced by MCPServers, blocking deletion",
+				"oidcConfig", oidcConfig.Name,
+				"referencingServers", referencingServers)
+
+			meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
+				Type:               "DeletionBlocked",
+				Status:             metav1.ConditionTrue,
+				Reason:             "ReferencedByServers",
+				Message:            fmt.Sprintf("Cannot delete: referenced by MCPServers: %v", referencingServers),
+				ObservedGeneration: oidcConfig.Generation,
+			})
+			oidcConfig.Status.ReferencingServers = referencingServers
+			if updateErr := r.Status().Update(ctx, oidcConfig); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status during deletion block")
+			}
+
+			// Requeue to check again later
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+
 		controllerutil.RemoveFinalizer(oidcConfig, OIDCConfigFinalizerName)
 		if err := r.Update(ctx, oidcConfig); err != nil {
 			logger.Error(err, "Failed to remove finalizer")
@@ -158,11 +199,55 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
+// findReferencingServers returns the names of MCPServer resources that reference
+// this MCPOIDCConfig via their OIDCConfigRef field.
+func (r *MCPOIDCConfigReconciler) findReferencingServers(
+	ctx context.Context,
+	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+) ([]string, error) {
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(oidcConfig.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
+	}
+
+	var refs []string
+	for _, server := range mcpServerList.Items {
+		if server.Spec.OIDCConfigRef != nil && server.Spec.OIDCConfigRef.Name == oidcConfig.Name {
+			refs = append(refs, server.Name)
+		}
+	}
+	return refs, nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
-// When workload CRDs gain OIDCConfigRef fields (#4253), this should also
-// watch MCPServer changes to update ReferencingServers status.
+// Watches MCPServer changes to maintain accurate ReferencingServers status.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Watch MCPServer changes to update ReferencingServers on referenced MCPOIDCConfigs
+	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
+		func(_ context.Context, obj client.Object) []reconcile.Request {
+			server, ok := obj.(*mcpv1alpha1.MCPServer)
+			if !ok {
+				return nil
+			}
+
+			var requests []reconcile.Request
+
+			// If this server references an MCPOIDCConfig, enqueue it
+			if server.Spec.OIDCConfigRef != nil {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      server.Spec.OIDCConfigRef.Name,
+						Namespace: server.Namespace,
+					},
+				})
+			}
+
+			return requests
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPOIDCConfig{}).
+		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
 		Complete(r)
 }

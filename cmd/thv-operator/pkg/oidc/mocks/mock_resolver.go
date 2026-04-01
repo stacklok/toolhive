@@ -136,3 +136,18 @@ func (mr *MockResolverMockRecorder) Resolve(ctx, resource any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Resolve", reflect.TypeOf((*MockResolver)(nil).Resolve), ctx, resource)
 }
+
+// ResolveFromConfigRef mocks base method.
+func (m *MockResolver) ResolveFromConfigRef(ctx context.Context, oidcConfigRef *v1alpha1.MCPOIDCConfigReference, oidcConfig *v1alpha1.MCPOIDCConfig, serverName, namespace string, proxyPort int32) (*oidc.OIDCConfig, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResolveFromConfigRef", ctx, oidcConfigRef, oidcConfig, serverName, namespace, proxyPort)
+	ret0, _ := ret[0].(*oidc.OIDCConfig)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ResolveFromConfigRef indicates an expected call of ResolveFromConfigRef.
+func (mr *MockResolverMockRecorder) ResolveFromConfigRef(ctx, oidcConfigRef, oidcConfig, serverName, namespace, proxyPort any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveFromConfigRef", reflect.TypeOf((*MockResolver)(nil).ResolveFromConfigRef), ctx, oidcConfigRef, oidcConfig, serverName, namespace, proxyPort)
+}

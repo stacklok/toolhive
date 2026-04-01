@@ -143,6 +143,8 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
@@ -225,6 +227,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Check if MCPOIDCConfig is referenced and handle it
+	if err := r.handleOIDCConfig(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPOIDCConfig")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPOIDCConfig error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -584,9 +597,21 @@ func setCABundleRefCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.Con
 	})
 }
 
-// validateCABundleRef validates the CABundleRef ConfigMap reference if specified
+// validateCABundleRef validates the CABundleRef ConfigMap reference if specified.
+// Checks both the legacy OIDCConfig path and the new MCPOIDCConfig path.
 func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
 	caBundleRef := getCABundleRef(mcpServer.Spec.OIDCConfig)
+
+	// Also check MCPOIDCConfig inline CA bundle if using the new reference path
+	if caBundleRef == nil && mcpServer.Spec.OIDCConfigRef != nil {
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfigRef)
+		if err == nil && oidcCfg != nil &&
+			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Inline != nil {
+			caBundleRef = oidcCfg.Spec.Inline.CABundleRef
+		}
+	}
+
 	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
 		return
 	}
@@ -1059,6 +1084,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	}
 
 	// Add OIDC client secret environment variable if using inline config with secretRef
+	// Supports both legacy OIDCConfig and new MCPOIDCConfigRef paths
 	if m.Spec.OIDCConfig != nil && m.Spec.OIDCConfig.Inline != nil {
 		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
 			ctx, r.Client, m.Namespace, m.Spec.OIDCConfig.Inline.ClientSecretRef,
@@ -1068,6 +1094,22 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
 		} else if oidcClientSecretEnvVar != nil {
 			env = append(env, *oidcClientSecretEnvVar)
+		}
+	} else if m.Spec.OIDCConfigRef != nil {
+		// Check MCPOIDCConfig inline config for client secret
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
+		if err == nil && oidcCfg != nil &&
+			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Inline != nil {
+			oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+				ctx, r.Client, m.Namespace, oidcCfg.Spec.Inline.ClientSecretRef,
+			)
+			if err != nil {
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable from MCPOIDCConfig")
+			} else if oidcClientSecretEnvVar != nil {
+				env = append(env, *oidcClientSecretEnvVar)
+			}
 		}
 	}
 
@@ -1126,11 +1168,18 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		volumes = append(volumes, *authzVolume)
 	}
 
-	// Add OIDC CA bundle volume if configured
+	// Add OIDC CA bundle volume if configured (supports both legacy and MCPOIDCConfig paths)
 	if m.Spec.OIDCConfig != nil {
 		caVolumes, caMounts := ctrlutil.AddOIDCCABundleVolumes(m.Spec.OIDCConfig)
 		volumes = append(volumes, caVolumes...)
 		volumeMounts = append(volumeMounts, caMounts...)
+	} else if m.Spec.OIDCConfigRef != nil {
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
+		if err == nil && oidcCfg != nil {
+			caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
+			volumes = append(volumes, caVolumes...)
+			volumeMounts = append(volumeMounts, caMounts...)
+		}
 	}
 
 	// Add embedded auth server volumes and env vars if configured
@@ -1612,16 +1661,34 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Add OIDC client secret environment variable if using inline config with secretRef
+		// Supports both legacy OIDCConfig and new MCPOIDCConfigRef paths
 		if mcpServer.Spec.OIDCConfig != nil && mcpServer.Spec.OIDCConfig.Inline != nil {
 			oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
 				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfig.Inline.ClientSecretRef,
 			)
 			if err != nil {
-				// If we can't generate env var, consider the deployment needs update
 				return true
 			}
 			if oidcClientSecretEnvVar != nil {
 				expectedProxyEnv = append(expectedProxyEnv, *oidcClientSecretEnvVar)
+			}
+		} else if mcpServer.Spec.OIDCConfigRef != nil {
+			oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfigRef)
+			if err != nil {
+				return true
+			}
+			if oidcCfg != nil &&
+				oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+				oidcCfg.Spec.Inline != nil {
+				oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+					ctx, r.Client, mcpServer.Namespace, oidcCfg.Spec.Inline.ClientSecretRef,
+				)
+				if err != nil {
+					return true
+				}
+				if oidcClientSecretEnvVar != nil {
+					expectedProxyEnv = append(expectedProxyEnv, *oidcClientSecretEnvVar)
+				}
 			}
 		}
 
@@ -1927,6 +1994,122 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	return nil
 }
 
+// handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
+// It updates the MCPServer status when the OIDC configuration changes and sets
+// the OIDCConfigRefValidated condition.
+func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if m.Spec.OIDCConfigRef == nil {
+		// No MCPOIDCConfig referenced, clear any stored hash
+		if m.Status.OIDCConfigHash != "" {
+			m.Status.OIDCConfigHash = ""
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear MCPOIDCConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Get the referenced MCPOIDCConfig
+	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
+	if err != nil {
+		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			fmt.Sprintf("MCPOIDCConfig %s not found: %v", m.Spec.OIDCConfigRef.Name, err))
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig lookup error")
+		}
+		return err
+	}
+
+	if oidcConfig == nil {
+		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			fmt.Sprintf("MCPOIDCConfig %s not found", m.Spec.OIDCConfigRef.Name))
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig not found")
+		}
+		return fmt.Errorf("MCPOIDCConfig %s not found", m.Spec.OIDCConfigRef.Name)
+	}
+
+	// Check that the MCPOIDCConfig is valid
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, "Valid")
+	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
+		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", m.Spec.OIDCConfigRef.Name)
+		if validCondition != nil {
+			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", m.Spec.OIDCConfigRef.Name, validCondition.Message)
+		}
+		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid, msg)
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig validation check")
+		}
+		return fmt.Errorf("%s", msg)
+	}
+
+	// Update ReferencingServers on the MCPOIDCConfig status
+	if err := r.updateOIDCConfigReferencingServers(ctx, oidcConfig, m.Name); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingServers")
+		// Non-fatal: continue with reconciliation
+	}
+
+	// Set valid condition
+	setOIDCConfigRefCondition(m, metav1.ConditionTrue,
+		mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+		fmt.Sprintf("MCPOIDCConfig %s is valid and ready", m.Spec.OIDCConfigRef.Name))
+
+	// Check if the MCPOIDCConfig hash has changed
+	if m.Status.OIDCConfigHash != oidcConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPOIDCConfig has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"oidcConfig", oidcConfig.Name,
+			"oldHash", m.Status.OIDCConfigHash,
+			"newHash", oidcConfig.Status.ConfigHash)
+
+		m.Status.OIDCConfigHash = oidcConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update MCPOIDCConfig hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// setOIDCConfigRefCondition sets the OIDCConfigRefValidated status condition
+func setOIDCConfigRefCondition(m *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: m.Generation,
+	})
+}
+
+// updateOIDCConfigReferencingServers ensures the MCPServer name is listed in
+// the MCPOIDCConfig's ReferencingServers status field.
+func (r *MCPServerReconciler) updateOIDCConfigReferencingServers(
+	ctx context.Context,
+	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+	serverName string,
+) error {
+	// Check if already listed
+	for _, name := range oidcConfig.Status.ReferencingServers {
+		if name == serverName {
+			return nil
+		}
+	}
+
+	// Add the server name
+	oidcConfig.Status.ReferencingServers = append(oidcConfig.Status.ReferencingServers, serverName)
+	if err := r.Status().Update(ctx, oidcConfig); err != nil {
+		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingServers: %w", err)
+	}
+
+	return nil
+}
+
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	return ctrlutil.EnsureAuthzConfigMap(
@@ -2056,10 +2239,42 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
+	// Create a handler that maps MCPOIDCConfig changes to MCPServer reconciliation requests
+	oidcConfigHandler := handler.EnqueueRequestsFromMapFunc(
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			oidcConfig, ok := obj.(*mcpv1alpha1.MCPOIDCConfig)
+			if !ok {
+				return nil
+			}
+
+			mcpServerList := &mcpv1alpha1.MCPServerList{}
+			if err := r.List(ctx, mcpServerList, client.InNamespace(oidcConfig.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPOIDCConfig watch")
+				return nil
+			}
+
+			var requests []reconcile.Request
+			for _, server := range mcpServerList.Items {
+				if server.Spec.OIDCConfigRef != nil &&
+					server.Spec.OIDCConfigRef.Name == oidcConfig.Name {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      server.Name,
+							Namespace: server.Namespace,
+						},
+					})
+				}
+			}
+
+			return requests
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
+		Watches(&mcpv1alpha1.MCPOIDCConfig{}, oidcConfigHandler).
 		Complete(r)
 }

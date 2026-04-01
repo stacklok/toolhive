@@ -53,6 +53,68 @@ func AddOIDCConfigOptions(
 	return nil
 }
 
+// AddOIDCConfigRefOptions resolves OIDC configuration from an MCPOIDCConfig reference
+// and adds it to the builder options. The MCPOIDCConfig must already be fetched.
+func AddOIDCConfigRefOptions(
+	ctx context.Context,
+	c client.Client,
+	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	oidcCfg *mcpv1alpha1.MCPOIDCConfig,
+	serverName, namespace string,
+	proxyPort int32,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	resolver := oidc.NewResolver(c)
+	resolved, err := resolver.ResolveFromConfigRef(ctx, ref, oidcCfg, serverName, namespace, proxyPort)
+	if err != nil {
+		return fmt.Errorf("failed to resolve OIDC configuration from MCPOIDCConfig %s: %w", ref.Name, err)
+	}
+
+	if resolved == nil {
+		return nil
+	}
+
+	*options = append(*options, runner.WithOIDCConfig(
+		resolved.Issuer,
+		resolved.Audience,
+		resolved.JWKSURL,
+		resolved.IntrospectionURL,
+		resolved.ClientID,
+		resolved.ClientSecret,
+		resolved.ThvCABundlePath,
+		resolved.JWKSAuthTokenPath,
+		resolved.ResourceURL,
+		resolved.JWKSAllowPrivateIP,
+		resolved.InsecureAllowHTTP,
+		resolved.Scopes,
+	))
+
+	return nil
+}
+
+// GetOIDCConfigForServer fetches the MCPOIDCConfig referenced by an MCPServer.
+// Returns nil if the ref is nil or the resource is not found.
+func GetOIDCConfigForServer(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	ref *mcpv1alpha1.MCPOIDCConfigReference,
+) (*mcpv1alpha1.MCPOIDCConfig, error) {
+	if ref == nil {
+		return nil, nil
+	}
+
+	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{}
+	if err := c.Get(ctx, types.NamespacedName{
+		Name:      ref.Name,
+		Namespace: namespace,
+	}, oidcConfig); err != nil {
+		return nil, fmt.Errorf("failed to get MCPOIDCConfig %s/%s: %w", namespace, ref.Name, err)
+	}
+
+	return oidcConfig, nil
+}
+
 // GenerateOIDCClientSecretEnvVar generates environment variable for OIDC client secret
 // when using a SecretKeyRef.
 // Returns nil if clientSecretRef is nil.

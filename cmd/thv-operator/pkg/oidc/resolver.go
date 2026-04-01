@@ -59,6 +59,17 @@ type OIDCConfigurable interface {
 type Resolver interface {
 	// Resolve takes any resource implementing OIDCConfigurable and resolves its OIDC config
 	Resolve(ctx context.Context, resource OIDCConfigurable) (*OIDCConfig, error)
+
+	// ResolveFromConfigRef resolves OIDC configuration from an MCPOIDCConfig reference.
+	// It fetches the MCPOIDCConfig resource and merges shared provider config with
+	// per-server overrides (audience, scopes) from the reference.
+	ResolveFromConfigRef(
+		ctx context.Context,
+		oidcConfigRef *mcpv1alpha1.MCPOIDCConfigReference,
+		oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+		serverName, namespace string,
+		proxyPort int32,
+	) (*OIDCConfig, error)
 }
 
 // NewResolver creates a new OIDC configuration resolver
@@ -97,6 +108,108 @@ func (r *resolver) Resolve(ctx context.Context, resource OIDCConfigurable) (*OID
 	default:
 		return nil, fmt.Errorf("unknown OIDC config type: %s", oidcConfig.Type)
 	}
+}
+
+// ResolveFromConfigRef resolves OIDC configuration from an MCPOIDCConfig reference.
+// It merges shared provider config from the MCPOIDCConfig with per-server overrides
+// (audience, scopes) from the MCPOIDCConfigReference.
+func (r *resolver) ResolveFromConfigRef(
+	ctx context.Context,
+	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	oidcCfg *mcpv1alpha1.MCPOIDCConfig,
+	serverName, namespace string,
+	proxyPort int32,
+) (*OIDCConfig, error) {
+	if ref == nil || oidcCfg == nil {
+		return nil, nil
+	}
+
+	resourceURL := createServiceURL(serverName, namespace, proxyPort)
+
+	switch oidcCfg.Spec.Type {
+	case mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount:
+		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL)
+	case mcpv1alpha1.MCPOIDCConfigTypeInline:
+		return r.resolveFromInlineSharedConfig(oidcCfg.Spec.Inline, ref, resourceURL)
+	default:
+		return nil, fmt.Errorf("unknown MCPOIDCConfig type: %s", oidcCfg.Spec.Type)
+	}
+}
+
+// resolveFromK8sServiceAccountConfig resolves OIDC config from a shared KubernetesServiceAccount config
+// with per-server audience override from the MCPOIDCConfigReference.
+func (*resolver) resolveFromK8sServiceAccountConfig(
+	ctx context.Context,
+	config *mcpv1alpha1.KubernetesServiceAccountOIDCConfig,
+	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	resourceURL string,
+) (*OIDCConfig, error) {
+	if config == nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Info("KubernetesServiceAccount OIDCConfig is nil, using defaults")
+		defaultUseClusterAuth := true
+		config = &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			UseClusterAuth: &defaultUseClusterAuth,
+		}
+	}
+
+	useClusterAuth := true
+	if config.UseClusterAuth != nil {
+		useClusterAuth = *config.UseClusterAuth
+	}
+
+	result := &OIDCConfig{
+		ResourceURL: resourceURL,
+		// Audience comes from the per-server reference, not the shared config
+		Audience: ref.Audience,
+		Scopes:   ref.Scopes,
+	}
+
+	result.Issuer = config.Issuer
+	if result.Issuer == "" {
+		result.Issuer = defaultK8sIssuer
+	}
+
+	result.JWKSURL = config.JWKSURL
+	result.IntrospectionURL = config.IntrospectionURL
+
+	if useClusterAuth {
+		result.ThvCABundlePath = defaultK8sCABundlePath
+		result.JWKSAuthTokenPath = defaultK8sTokenPath
+		result.JWKSAllowPrivateIP = true
+	}
+
+	return result, nil
+}
+
+// resolveFromInlineSharedConfig resolves OIDC config from a shared inline config
+// with per-server audience and scopes override from the MCPOIDCConfigReference.
+func (*resolver) resolveFromInlineSharedConfig(
+	config *mcpv1alpha1.InlineOIDCSharedConfig,
+	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	resourceURL string,
+) (*OIDCConfig, error) {
+	if config == nil {
+		return nil, nil
+	}
+
+	if err := validation.ValidateCABundleSource(config.CABundleRef); err != nil {
+		return nil, err
+	}
+
+	return &OIDCConfig{
+		Issuer:             config.Issuer,
+		Audience:           ref.Audience,
+		JWKSURL:            config.JWKSURL,
+		IntrospectionURL:   config.IntrospectionURL,
+		ClientID:           config.ClientID,
+		ThvCABundlePath:    computeCABundlePath(config.CABundleRef),
+		JWKSAuthTokenPath:  config.JWKSAuthTokenPath,
+		ResourceURL:        resourceURL,
+		JWKSAllowPrivateIP: config.JWKSAllowPrivateIP,
+		InsecureAllowHTTP:  config.InsecureAllowHTTP,
+		Scopes:             ref.Scopes,
+	}, nil
 }
 
 // resolveKubernetesConfig resolves Kubernetes OIDC config using namespace directly

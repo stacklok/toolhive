@@ -194,20 +194,40 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
-		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-	}
-
-	// Resolve OIDC config for embedded auth server configuration
-	// ResourceURL provides AllowedAudiences, Scopes provides ScopesSupported
-	// Note: Validation (OIDC config required) happens in AddExternalAuthConfigOptions
+	// Resolve OIDC configuration from either legacy OIDCConfig or new MCPOIDCConfigRef
 	var resolvedOIDCConfig *oidc.OIDCConfig
-	if m.Spec.OIDCConfig != nil {
-		resolver := oidc.NewResolver(r.Client)
-		var err error
-		resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
+	if m.Spec.OIDCConfigRef != nil {
+		// New path: resolve from MCPOIDCConfig reference
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+			return nil, fmt.Errorf("failed to get MCPOIDCConfig %s: %w", m.Spec.OIDCConfigRef.Name, err)
+		}
+		if err := ctrlutil.AddOIDCConfigRefOptions(
+			ctx, r.Client, m.Spec.OIDCConfigRef, oidcCfg,
+			m.Name, m.Namespace, m.GetProxyPort(), &options,
+		); err != nil {
+			return nil, fmt.Errorf("failed to process OIDCConfigRef: %w", err)
+		}
+		// Also resolve for embedded auth server
+		resolver := oidc.NewResolver(r.Client)
+		resolvedOIDCConfig, err = resolver.ResolveFromConfigRef(
+			ctx, m.Spec.OIDCConfigRef, oidcCfg, m.Name, m.Namespace, m.GetProxyPort(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig: %w", err)
+		}
+	} else {
+		// Legacy path: resolve from inline OIDCConfig
+		if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
+			return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
+		}
+		if m.Spec.OIDCConfig != nil {
+			resolver := oidc.NewResolver(r.Client)
+			var err error
+			resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+			}
 		}
 	}
 

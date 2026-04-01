@@ -1643,6 +1643,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 		*out = new(OIDCConfigRef)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.OIDCConfigRef != nil {
+		in, out := &in.OIDCConfigRef, &out.OIDCConfigRef
+		*out = new(MCPOIDCConfigReference)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.AuthzConfig != nil {
 		in, out := &in.AuthzConfig, &out.AuthzConfig
 		*out = new(AuthzConfigRef)
@@ -1661,6 +1666,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 	if in.ExternalAuthConfigRef != nil {
 		in, out := &in.ExternalAuthConfigRef, &out.ExternalAuthConfigRef
 		*out = new(ExternalAuthConfigRef)
+		**out = **in
+	}
+	if in.TelemetryConfigRef != nil {
+		in, out := &in.TelemetryConfigRef, &out.TelemetryConfigRef
+		*out = new(MCPTelemetryConfigReference)
 		**out = **in
 	}
 	if in.Telemetry != nil {

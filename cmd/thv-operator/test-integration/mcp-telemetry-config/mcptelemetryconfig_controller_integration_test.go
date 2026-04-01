@@ -160,4 +160,144 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 			return err != nil // Should be NotFound
 		}, timeout, interval).Should(BeTrue())
 	})
+
+	It("should track referencing MCPServers in status", func() {
+		// Create a telemetry config
+		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-ref-tracking",
+				Namespace: "default",
+			},
+		}
+		telemetryConfig.Spec.Endpoint = testEndpoint
+		telemetryConfig.Spec.TracingEnabled = true
+
+		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
+
+		// Wait for initial reconciliation (finalizer + hash)
+		Eventually(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			return err == nil && fetched.Status.ConfigHash != ""
+		}, timeout, interval).Should(BeTrue())
+
+		// Create an MCPServer that references this config
+		server := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "server-ref-tracking",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				Image: "example/mcp-server:latest",
+				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					Name: "test-ref-tracking",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+		// The MCPServer watch should trigger a reconciliation of the MCPTelemetryConfig.
+		// Verify ReferencingServers is updated to include our server.
+		Eventually(func() []string {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return nil
+			}
+			return fetched.Status.ReferencingServers
+		}, timeout, interval).Should(ContainElement("server-ref-tracking"))
+	})
+
+	It("should block deletion when MCPServers reference the config", func() {
+		// Create a telemetry config
+		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-deletion-protection",
+				Namespace: "default",
+			},
+		}
+		telemetryConfig.Spec.Endpoint = testEndpoint
+		telemetryConfig.Spec.TracingEnabled = true
+
+		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
+
+		// Wait for finalizer
+		Eventually(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return false
+			}
+			for _, f := range fetched.Finalizers {
+				if f == "mcptelemetryconfig.toolhive.stacklok.dev/finalizer" {
+					return true
+				}
+			}
+			return false
+		}, timeout, interval).Should(BeTrue())
+
+		// Create an MCPServer that references this config
+		server := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "server-deletion-blocker",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				Image: "example/mcp-server:latest",
+				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					Name: "test-deletion-protection",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+		// Wait for ReferencingServers to be populated
+		Eventually(func() []string {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return nil
+			}
+			return fetched.Status.ReferencingServers
+		}, timeout, interval).Should(ContainElement("server-deletion-blocker"))
+
+		// Attempt to delete the config — the API call succeeds (sets DeletionTimestamp)
+		// but the finalizer blocks actual removal
+		Expect(k8sClient.Delete(ctx, telemetryConfig)).To(Succeed())
+
+		// Verify the object still exists (finalizer prevents deletion)
+		Consistently(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			return err == nil
+		}, 3*time.Second, interval).Should(BeTrue(), "Config should not be deleted while referenced")
+
+		// Now remove the referencing MCPServer
+		Expect(k8sClient.Delete(ctx, server)).To(Succeed())
+
+		// The config should now be deleted (finalizer removed after reference is gone)
+		Eventually(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			return err != nil // Should be NotFound
+		}, timeout, interval).Should(BeTrue(), "Config should be deleted after references are removed")
+	})
 })

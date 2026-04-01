@@ -330,4 +330,67 @@ var _ = Describe("CEL Validation for OIDCConfigRef and AuthzConfigRef", Label("k
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Context("Telemetry and TelemetryConfigRef mutual exclusion", func() {
+		It("should reject when both telemetry and telemetryConfigRef are set", func() {
+			server := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "telemetry-mutual-exclusion",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "example/mcp-server:latest",
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:  true,
+							Endpoint: "otel-collector:4317",
+						},
+					},
+					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						Name: "shared-config",
+					},
+				},
+			}
+			err := k8sClient.Create(ctx, server)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("telemetry and telemetryConfigRef are mutually exclusive"))
+		})
+
+		It("should accept when only telemetryConfigRef is set", func() {
+			server := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "telemetry-ref-only",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "example/mcp-server:latest",
+					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						Name: "shared-config",
+					},
+				},
+			}
+			err := k8sClient.Create(ctx, server)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should accept when only inline telemetry is set", func() {
+			server := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "telemetry-inline-only",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "example/mcp-server:latest",
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:  true,
+							Endpoint: "otel-collector:4317",
+						},
+					},
+				},
+			}
+			err := k8sClient.Create(ctx, server)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

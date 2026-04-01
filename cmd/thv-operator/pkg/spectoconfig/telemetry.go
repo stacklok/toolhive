@@ -101,6 +101,29 @@ func ConvertTelemetryConfig(
 	return NormalizeTelemetryConfig(config, mcpServerName)
 }
 
+// NormalizeMCPTelemetryConfig converts an MCPTelemetryConfigSpec to a normalized telemetry.Config.
+// It applies the per-server ServiceName override from the reference, then delegates to
+// NormalizeTelemetryConfig for endpoint normalization and service name defaulting.
+func NormalizeMCPTelemetryConfig(
+	spec *v1alpha1.MCPTelemetryConfigSpec,
+	serviceNameOverride string,
+	defaultServiceName string,
+) *telemetry.Config {
+	if spec == nil {
+		return nil
+	}
+
+	// Copy the embedded config to avoid mutating the original
+	config := spec.Config
+
+	// Apply per-server service name override from the TelemetryConfigRef
+	if serviceNameOverride != "" {
+		config.ServiceName = serviceNameOverride
+	}
+
+	return NormalizeTelemetryConfig(&config, defaultServiceName)
+}
+
 // NormalizeTelemetryConfig applies runtime normalization to a telemetry.Config.
 // This includes:
 // - Stripping http:// or https:// prefixes from the endpoint (OTLP clients expect host:port format)

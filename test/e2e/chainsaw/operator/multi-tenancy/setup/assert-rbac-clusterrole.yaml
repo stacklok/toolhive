@@ -105,6 +105,7 @@ rules:
   - mcpregistries
   - mcpremoteproxies
   - mcpservers
+  - mcptelemetryconfigs
   - mcptoolconfigs
   - virtualmcpservers
   verbs:
@@ -124,6 +125,7 @@ rules:
   - mcpoidcconfigs/finalizers
   - mcpregistries/finalizers
   - mcpservers/finalizers
+  - mcptelemetryconfigs/finalizers
   - mcptoolconfigs/finalizers
   verbs:
   - update
@@ -137,6 +139,7 @@ rules:
   - mcpregistries/status
   - mcpremoteproxies/status
   - mcpservers/status
+  - mcptelemetryconfigs/status
   - mcptoolconfigs/status
   - virtualmcpservers/status
   verbs:

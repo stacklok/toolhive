@@ -41,7 +41,10 @@ type workloadStatusResponse struct {
 type updateRequest struct {
 	// Docker image to use
 	Image string `json:"image"`
-	// RuntimeConfig allows overriding runtime build configuration for protocol schemes.
+	// RuntimeConfig is only accepted on create/update when image is a protocol
+	// URI such as go://, npx://, or uvx://.
+	// GET responses may include runtime_config for existing workloads, but
+	// clients should not send it back with a built/non-protocol image.
 	RuntimeConfig *templates.RuntimeConfig `json:"runtime_config,omitempty"`
 	// Host to bind to
 	Host string `json:"host"`

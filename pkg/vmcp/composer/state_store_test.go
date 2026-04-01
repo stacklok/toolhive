@@ -143,15 +143,15 @@ func TestInMemoryStateStore_ListActiveWorkflows(t *testing.T) {
 // TestInMemoryStateStore_Cleanup tests automatic cleanup of stale workflows.
 func TestInMemoryStateStore_Cleanup(t *testing.T) {
 	t.Parallel()
-	// Use short intervals with enough margin to reduce CI timing flakiness.
+	// Use very short intervals for testing but with sufficient margin
 	cleanupInterval := 50 * time.Millisecond
-	maxAge := 100 * time.Millisecond
+	maxAge := 50 * time.Millisecond
 
 	store := NewInMemoryStateStore(cleanupInterval, maxAge).(*inMemoryStateStore)
 	defer store.Stop()
 
 	// Create workflows directly in the store with specific timestamps
-	veryOldTime := time.Now().Add(-500 * time.Millisecond) // Well older than maxAge
+	veryOldTime := time.Now().Add(-1 * time.Second) // Way older than maxAge
 
 	store.mu.Lock()
 	// Old completed workflow - should be cleaned up
@@ -169,15 +169,20 @@ func TestInMemoryStateStore_Cleanup(t *testing.T) {
 	}
 	store.mu.Unlock()
 
-	require.Eventually(t, func() bool {
-		store.mu.RLock()
-		oldExists := store.states["old-workflow"]
-		runningExists := store.states["running-workflow"]
-		store.mu.RUnlock()
+	// Wait for at least 2 cleanup cycles
+	time.Sleep(150 * time.Millisecond)
 
-		// Old completed workflow should be cleaned up, running workflow must remain.
-		return oldExists == nil && runningExists != nil
-	}, 1*time.Second, 25*time.Millisecond, "expected stale terminal workflow to be cleaned up")
+	// Verify cleanup results
+	store.mu.RLock()
+	oldExists := store.states["old-workflow"]
+	runningExists := store.states["running-workflow"]
+	store.mu.RUnlock()
+
+	// Old completed workflow should be cleaned up
+	assert.Nil(t, oldExists, "old completed workflow should be cleaned up")
+
+	// Running workflow should still exist (not a terminal state)
+	assert.NotNil(t, runningExists, "running workflow should not be cleaned up")
 }
 
 // TestInMemoryStateStore_GetStats tests statistics retrieval.

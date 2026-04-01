@@ -89,7 +89,19 @@ func TestMigrateSystemKeys(t *testing.T) {
 			setup:      func(_ *secretsmocks.MockProvider) {},
 		},
 		{
-			name: "returns error when GetSecret fails with unexpected error",
+			name: "returns error when scoped key check fails with transient error",
+			migrations: []secrets.KeyMigration{
+				{OldKey: "BEARER_TOKEN_err", NewKey: "__thv_workloads_BEARER_TOKEN_err"},
+			},
+			setup: func(m *secretsmocks.MockProvider) {
+				// Non-not-found error on the existence check — must abort, not fall through.
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_err").Return("", errors.New("backend unavailable"))
+			},
+			wantErr:     true,
+			errContains: "migration: checking scoped key",
+		},
+		{
+			name: "returns error when GetSecret for old key fails with unexpected error",
 			migrations: []secrets.KeyMigration{
 				{OldKey: "BEARER_TOKEN_err", NewKey: "__thv_workloads_BEARER_TOKEN_err"},
 			},

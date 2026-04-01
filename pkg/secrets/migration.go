@@ -42,13 +42,17 @@ func MigrateSystemKeys(ctx context.Context, provider Provider, migrations []KeyM
 	for _, m := range migrations {
 		// If the scoped key already exists (e.g. from a partial prior run),
 		// skip the write and just clean up the bare key.
-		if _, err := provider.GetSecret(ctx, m.NewKey); err == nil {
+		_, err := provider.GetSecret(ctx, m.NewKey)
+		if err == nil {
 			slog.Debug("migration: scoped key already exists, skipping write",
 				"old_key", m.OldKey, "new_key", m.NewKey)
 			if delErr := provider.DeleteSecret(ctx, m.OldKey); delErr != nil && !IsNotFoundError(delErr) {
 				return fmt.Errorf("migration: deleting stale bare key %q: %w", m.OldKey, delErr)
 			}
 			continue
+		}
+		if !IsNotFoundError(err) {
+			return fmt.Errorf("migration: checking scoped key %q: %w", m.NewKey, err)
 		}
 
 		val, err := provider.GetSecret(ctx, m.OldKey)

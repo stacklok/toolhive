@@ -609,6 +609,238 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 	assert.True(t, foundValid, "Should have Valid=True condition after condition-only update")
 }
 
+func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "shared-config",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
+	}
+
+	// Two MCPServers reference this config, one does not
+	server1 := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-a",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+				Name: "shared-config",
+			},
+		},
+	}
+	server2 := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-b",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+				Name: "shared-config",
+			},
+		},
+	}
+	server3 := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-c",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			// No TelemetryConfigRef
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(telemetryConfig, server1, server2, server3).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		Build()
+
+	r := &MCPTelemetryConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      telemetryConfig.Name,
+			Namespace: telemetryConfig.Namespace,
+		},
+	}
+
+	// First reconcile: add finalizer
+	result, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0), "Should requeue after adding finalizer")
+
+	// Second reconcile: set hash, condition, and referencing servers
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updated mcpv1alpha1.MCPTelemetryConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updated)
+	require.NoError(t, err)
+
+	// ReferencingServers should list server-a and server-b (sorted), but not server-c
+	assert.Equal(t, []string{"server-a", "server-b"}, updated.Status.ReferencingServers)
+}
+
+func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	now := metav1.Now()
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "referenced-config",
+			Namespace:         "default",
+			Finalizers:        []string{TelemetryConfigFinalizerName},
+			DeletionTimestamp: &now,
+			Generation:        1,
+		},
+		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
+	}
+
+	// MCPServer that references this config
+	server := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "referencing-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+				Name: "referenced-config",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(telemetryConfig, server).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		Build()
+
+	r := &MCPTelemetryConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	result, err := r.handleDeletion(ctx, telemetryConfig)
+	assert.NoError(t, err)
+	// Should requeue because the config is still referenced
+	assert.Greater(t, result.RequeueAfter, time.Duration(0), "Should requeue when still referenced")
+	// Finalizer should NOT be removed
+	assert.Contains(t, telemetryConfig.Finalizers, TelemetryConfigFinalizerName,
+		"Finalizer should remain when config is still referenced")
+}
+
+func TestMCPTelemetryConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	now := metav1.Now()
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "unreferenced-config",
+			Namespace:         "default",
+			Finalizers:        []string{TelemetryConfigFinalizerName},
+			DeletionTimestamp: &now,
+			Generation:        1,
+		},
+		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
+	}
+
+	// MCPServer exists but does NOT reference this config
+	server := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unrelated-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			// No TelemetryConfigRef
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(telemetryConfig, server).
+		Build()
+
+	r := &MCPTelemetryConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	result, err := r.handleDeletion(ctx, telemetryConfig)
+	assert.NoError(t, err)
+	assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue when not referenced")
+	// Finalizer should be removed
+	assert.NotContains(t, telemetryConfig.Finalizers, TelemetryConfigFinalizerName,
+		"Finalizer should be removed when config is not referenced")
+}
+
+func TestMCPTelemetryConfigReconciler_handleDeletion_NoFinalizerIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	// Object with DeletionTimestamp but no finalizers.
+	// We don't add it to the fake client (which rejects such objects)
+	// because handleDeletion only reads from the object itself for the
+	// no-finalizer fast path.
+	now := metav1.Now()
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "no-finalizer-config",
+			Namespace:         "default",
+			DeletionTimestamp: &now,
+			// No finalizers
+		},
+		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	r := &MCPTelemetryConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	result, err := r.handleDeletion(ctx, telemetryConfig)
+	assert.NoError(t, err)
+	assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue")
+}
+
 // newTelemetrySpec creates a basic MCPTelemetryConfigSpec for testing.
 func newTelemetrySpec(endpoint string, tracing, metrics bool) mcpv1alpha1.MCPTelemetryConfigSpec {
 	spec := mcpv1alpha1.MCPTelemetryConfigSpec{}

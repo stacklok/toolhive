@@ -5,16 +5,22 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"sort"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -31,9 +37,7 @@ const (
 // MCPTelemetryConfigReconciler reconciles a MCPTelemetryConfig object.
 //
 // This controller manages the lifecycle of MCPTelemetryConfig resources: validation,
-// config hash computation, and finalizer management. Reference tracking, cascade
-// to workloads, and deletion protection will be wired up when MCPServer gains a
-// TelemetryConfigRef field.
+// config hash computation, finalizer management, reference tracking, and deletion protection.
 type MCPTelemetryConfigReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -42,6 +46,7 @@ type MCPTelemetryConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -103,27 +108,31 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(telemetryConfig.Spec)
 
-	// Check if the hash has changed
+	// Track referencing MCPServers
+	referencingServers, err := r.findReferencingServers(ctx, telemetryConfig)
+	if err != nil {
+		logger.Error(err, "Failed to find referencing MCPServers")
+		return ctrl.Result{}, err
+	}
+
+	// Check what changed
 	hashChanged := telemetryConfig.Status.ConfigHash != configHash
+	refsChanged := !slices.Equal(telemetryConfig.Status.ReferencingServers, referencingServers)
+	needsUpdate := hashChanged || refsChanged || conditionChanged
+
 	if hashChanged {
 		logger.Info("MCPTelemetryConfig configuration changed",
 			"oldHash", telemetryConfig.Status.ConfigHash,
 			"newHash", configHash)
+	}
 
+	if needsUpdate {
 		telemetryConfig.Status.ConfigHash = configHash
 		telemetryConfig.Status.ObservedGeneration = telemetryConfig.Generation
+		telemetryConfig.Status.ReferencingServers = referencingServers
 
 		if err := r.Status().Update(ctx, telemetryConfig); err != nil {
 			logger.Error(err, "Failed to update MCPTelemetryConfig status")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Update condition if it changed (even without hash change)
-	if conditionChanged {
-		if err := r.Status().Update(ctx, telemetryConfig); err != nil {
-			logger.Error(err, "Failed to update MCPTelemetryConfig status after condition change")
 			return ctrl.Result{}, err
 		}
 	}
@@ -132,11 +141,32 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// When MCPServer gains a TelemetryConfigRef field, this should also
-// watch MCPServer changes to update ReferencingServers status.
 func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Watch MCPServer changes to update ReferencingServers status
+	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
+		func(_ context.Context, obj client.Object) []reconcile.Request {
+			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
+			if !ok {
+				return nil
+			}
+
+			// If this MCPServer references a MCPTelemetryConfig, enqueue it for reconciliation
+			if mcpServer.Spec.TelemetryConfigRef == nil {
+				return nil
+			}
+
+			return []reconcile.Request{{
+				NamespacedName: types.NamespacedName{
+					Name:      mcpServer.Spec.TelemetryConfigRef.Name,
+					Namespace: mcpServer.Namespace,
+				},
+			}}
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPTelemetryConfig{}).
+		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
 		Complete(r)
 }
 
@@ -146,23 +176,68 @@ func (*MCPTelemetryConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPTel
 }
 
 // handleDeletion handles the deletion of a MCPTelemetryConfig.
-// Currently allows immediate deletion by removing the finalizer.
-// Deletion protection (blocking while workloads reference this config)
-// will be added when MCPServer gains a TelemetryConfigRef field.
+// Blocks deletion while MCPServer resources reference this config (deletion protection).
 func (r *MCPTelemetryConfigReconciler) handleDeletion(
 	ctx context.Context,
 	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	if controllerutil.ContainsFinalizer(telemetryConfig, TelemetryConfigFinalizerName) {
-		controllerutil.RemoveFinalizer(telemetryConfig, TelemetryConfigFinalizerName)
-		if err := r.Update(ctx, telemetryConfig); err != nil {
-			logger.Error(err, "Failed to remove finalizer")
-			return ctrl.Result{}, err
-		}
-		logger.Info("Removed finalizer from MCPTelemetryConfig", "telemetryConfig", telemetryConfig.Name)
+	if !controllerutil.ContainsFinalizer(telemetryConfig, TelemetryConfigFinalizerName) {
+		return ctrl.Result{}, nil
 	}
 
+	// Check for referencing servers before allowing deletion
+	referencingServers, err := r.findReferencingServers(ctx, telemetryConfig)
+	if err != nil {
+		logger.Error(err, "Failed to check referencing servers during deletion")
+		return ctrl.Result{}, err
+	}
+
+	if len(referencingServers) > 0 {
+		msg := fmt.Sprintf("cannot delete: still referenced by MCPServer(s): %v", referencingServers)
+		logger.Info(msg, "telemetryConfig", telemetryConfig.Name)
+		meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
+			Type:               "DeletionBlocked",
+			Status:             metav1.ConditionTrue,
+			Reason:             "ReferencedByWorkloads",
+			Message:            msg,
+			ObservedGeneration: telemetryConfig.Generation,
+		})
+		// Ignore status update error — the object is being deleted
+		_ = r.Status().Update(ctx, telemetryConfig)
+		// Requeue to re-check after references are removed
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	controllerutil.RemoveFinalizer(telemetryConfig, TelemetryConfigFinalizerName)
+	if err := r.Update(ctx, telemetryConfig); err != nil {
+		logger.Error(err, "Failed to remove finalizer")
+		return ctrl.Result{}, err
+	}
+	logger.Info("Removed finalizer from MCPTelemetryConfig", "telemetryConfig", telemetryConfig.Name)
+
 	return ctrl.Result{}, nil
+}
+
+// findReferencingServers returns a sorted list of MCPServer names in the same namespace
+// that reference this MCPTelemetryConfig via TelemetryConfigRef.
+func (r *MCPTelemetryConfigReconciler) findReferencingServers(
+	ctx context.Context,
+	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
+) ([]string, error) {
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
+	}
+
+	var refs []string
+	for _, server := range mcpServerList.Items {
+		if server.Spec.TelemetryConfigRef != nil &&
+			server.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
+			refs = append(refs, server.Name)
+		}
+	}
+	sort.Strings(refs)
+	return refs, nil
 }

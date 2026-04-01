@@ -108,6 +108,23 @@ const (
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 )
 
+// ConditionTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
+const ConditionTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
+
+const (
+	// ConditionReasonTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
+	ConditionReasonTelemetryConfigRefValid = "TelemetryConfigRefValid"
+
+	// ConditionReasonTelemetryConfigRefNotFound indicates the referenced MCPTelemetryConfig was not found
+	ConditionReasonTelemetryConfigRefNotFound = "TelemetryConfigRefNotFound"
+
+	// ConditionReasonTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is not valid
+	ConditionReasonTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonTelemetryConfigRefError indicates a transient error occurred fetching the config
+	ConditionReasonTelemetryConfigRefError = "TelemetryConfigRefError"
+)
+
 // ConditionStdioReplicaCapped indicates spec.replicas was capped at 1 for stdio transport.
 const ConditionStdioReplicaCapped = "StdioReplicaCapped"
 
@@ -136,6 +153,7 @@ const SessionStorageProviderRedis = "redis"
 // MCPServerSpec defines the desired state of MCPServer
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
@@ -244,7 +262,17 @@ type MCPServerSpec struct {
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 
-	// Telemetry defines observability configuration for the MCP server
+	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
+	// Cross-namespace references are not supported for security and isolation reasons.
+	// Mutually exclusive with the deprecated inline Telemetry field.
+	// +optional
+	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
+
+	// Telemetry defines inline observability configuration for the MCP server.
+	// Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
+	// This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
+	// is rejected by CEL validation.
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
@@ -872,6 +900,10 @@ type MCPServerStatus struct {
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
+
+	// TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection
+	// +optional
+	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional

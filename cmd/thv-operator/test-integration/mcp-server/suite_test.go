@@ -146,6 +146,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Register the MCPTelemetryConfig controller (needed for telemetryConfigRef tests)
+	err = (&controllers.MCPTelemetryConfigReconciler{
+		Client: k8sManager.GetClient(),
+		Scheme: k8sManager.GetScheme(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
 	// Start the manager in a goroutine
 	go func() {
 		defer GinkgoRecover()

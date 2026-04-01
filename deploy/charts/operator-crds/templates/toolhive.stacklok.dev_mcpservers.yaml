@@ -709,8 +709,11 @@ spec:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
               telemetry:
-                description: Telemetry defines observability configuration for the
-                  MCP server
+                description: |-
+                  Telemetry defines inline observability configuration for the MCP server.
+                  Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
+                  This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
+                  is rejected by CEL validation.
                 properties:
                   openTelemetry:
                     description: OpenTelemetry defines OpenTelemetry configuration
@@ -781,6 +784,27 @@ spec:
                         type: boolean
                     type: object
                 type: object
+              telemetryConfigRef:
+                description: |-
+                  TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+                  The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
+                  Cross-namespace references are not supported for security and isolation reasons.
+                  Mutually exclusive with the deprecated inline Telemetry field.
+                properties:
+                  name:
+                    description: Name is the name of the MCPTelemetryConfig resource
+                    minLength: 1
+                    type: string
+                  serviceName:
+                    description: |-
+                      ServiceName overrides the telemetry service name for this specific server.
+                      This MUST be unique per server for proper observability (e.g., distinguishing
+                      traces and metrics from different servers sharing the same collector).
+                      If empty, defaults to the server name with "thv-" prefix at runtime.
+                    type: string
+                required:
+                - name
+                type: object
               toolConfigRef:
                 description: |-
                   ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
@@ -843,6 +867,9 @@ spec:
             - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
                 to reference a shared MCPOIDCConfig
               rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
+            - message: telemetry and telemetryConfigRef are mutually exclusive; migrate
+                to telemetryConfigRef
+              rule: '!(has(self.telemetry) && has(self.telemetryConfigRef))'
           status:
             description: MCPServerStatus defines the observed state of MCPServer
             properties:
@@ -934,6 +961,10 @@ spec:
                 description: ReadyReplicas is the number of ready proxy replicas
                 format: int32
                 type: integer
+              telemetryConfigHash:
+                description: TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig
+                  spec for change detection
+                type: string
               toolConfigHash:
                 description: ToolConfigHash stores the hash of the referenced ToolConfig
                   for change detection

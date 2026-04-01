@@ -182,6 +182,142 @@ func TestNormalizeTelemetryConfig_DoesNotModifyInput(t *testing.T) {
 	assert.Equal(t, "default-service", result.ServiceName)
 }
 
+func TestNormalizeMCPTelemetryConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		spec                *v1alpha1.MCPTelemetryConfigSpec
+		serviceNameOverride string
+		defaultServiceName  string
+		expected            *telemetry.Config
+	}{
+		{
+			name:                "nil spec returns nil",
+			spec:                nil,
+			serviceNameOverride: "override",
+			defaultServiceName:  "default",
+			expected:            nil,
+		},
+		{
+			name: "service name override takes precedence",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				Config: telemetry.Config{
+					Endpoint:    "https://otel-collector:4317",
+					ServiceName: "spec-service-name",
+				},
+			},
+			serviceNameOverride: "per-server-override",
+			defaultServiceName:  "default-name",
+			expected: &telemetry.Config{
+				Endpoint:    "otel-collector:4317",
+				ServiceName: "per-server-override",
+			},
+		},
+		{
+			name: "empty override falls through to defaultServiceName",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				Config: telemetry.Config{
+					Endpoint:    "otel-collector:4317",
+					ServiceName: "",
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "default-server",
+			expected: &telemetry.Config{
+				Endpoint:    "otel-collector:4317",
+				ServiceName: "default-server",
+			},
+		},
+		{
+			name: "endpoint normalization strips http:// prefix",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				Config: telemetry.Config{
+					Endpoint:       "http://collector.monitoring:4317",
+					ServiceName:    "my-service",
+					TracingEnabled: true,
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				Endpoint:       "collector.monitoring:4317",
+				ServiceName:    "my-service",
+				TracingEnabled: true,
+			},
+		},
+		{
+			name: "endpoint normalization strips https:// prefix",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				Config: telemetry.Config{
+					Endpoint:    "https://secure-collector:4317",
+					ServiceName: "my-service",
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				Endpoint:    "secure-collector:4317",
+				ServiceName: "my-service",
+			},
+		},
+		{
+			name: "spec ServiceName used when no override and not empty",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				Config: telemetry.Config{
+					Endpoint:    "collector:4317",
+					ServiceName: "spec-level-name",
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				Endpoint:    "collector:4317",
+				ServiceName: "spec-level-name",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := NormalizeMCPTelemetryConfig(tt.spec, tt.serviceNameOverride, tt.defaultServiceName)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+			} else {
+				require.NotNil(t, result)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestNormalizeMCPTelemetryConfig_DoesNotModifyInput(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1alpha1.MCPTelemetryConfigSpec{
+		Config: telemetry.Config{
+			Endpoint:    "https://otel-collector:4317",
+			ServiceName: "",
+		},
+	}
+
+	originalEndpoint := spec.Endpoint
+	originalServiceName := spec.ServiceName
+
+	result := NormalizeMCPTelemetryConfig(spec, "override-name", "default-name")
+
+	// Verify the original spec was not modified
+	assert.Equal(t, originalEndpoint, spec.Endpoint, "Input endpoint should not be modified")
+	assert.Equal(t, originalServiceName, spec.ServiceName, "Input ServiceName should not be modified")
+
+	// Verify result has normalized values
+	require.NotNil(t, result)
+	assert.Equal(t, "otel-collector:4317", result.Endpoint)
+	assert.Equal(t, "override-name", result.ServiceName)
+}
+
 func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 	t.Parallel()
 

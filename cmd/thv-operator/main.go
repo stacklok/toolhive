@@ -258,6 +258,14 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create controller MCPExternalAuthConfig: %w", err)
 	}
 
+	// Set up MCPOIDCConfig controller
+	if err := (&controllers.MCPOIDCConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPOIDCConfig: %w", err)
+	}
+
 	// Set up MCPRemoteProxy controller
 	if err := (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),

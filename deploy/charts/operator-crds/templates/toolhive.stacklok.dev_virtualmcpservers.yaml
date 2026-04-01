@@ -1800,8 +1800,9 @@ spec:
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
                   oidcConfig:
                     description: |-
-                      OIDCConfig defines OIDC authentication configuration
-                      Reuses MCPServer OIDC patterns
+                      OIDCConfig defines OIDC authentication configuration.
+                      Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+                      This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -2020,6 +2021,34 @@ spec:
                     - message: kubernetes must not be set when type is not 'kubernetes'
                       rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) :
                         true'
+                  oidcConfigRef:
+                    description: |-
+                      OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+                      The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.
+                      Per-server overrides (audience, scopes) are specified here; shared provider config
+                      lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+                    properties:
+                      audience:
+                        description: |-
+                          Audience is the expected audience for token validation.
+                          This MUST be unique per server to prevent token replay attacks.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is the name of the MCPOIDCConfig resource
+                        minLength: 1
+                        type: string
+                      scopes:
+                        description: |-
+                          Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
+                          If empty, defaults to ["openid"].
+                        items:
+                          type: string
+                        type: array
+                    required:
+                    - audience
+                    - name
+                    type: object
                   type:
                     description: |-
                       Type defines the authentication type: anonymous or oidc
@@ -2032,8 +2061,13 @@ spec:
                 - type
                 type: object
                 x-kubernetes-validations:
-                - message: spec.incomingAuth.oidcConfig is required when type is oidc
-                  rule: 'self.type == ''oidc'' ? has(self.oidcConfig) : true'
+                - message: spec.incomingAuth.oidcConfig or oidcConfigRef is required
+                    when type is oidc
+                  rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) || has(self.oidcConfigRef))
+                    : true'
+                - message: oidcConfig and oidcConfigRef are mutually exclusive; use
+                    oidcConfigRef to reference a shared MCPOIDCConfig
+                  rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -2334,6 +2368,11 @@ spec:
                   for this VirtualMCPServer
                 format: int64
                 type: integer
+              oidcConfigHash:
+                description: |-
+                  OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.
+                  Only populated when IncomingAuth.OIDCConfigRef is set.
+                type: string
               phase:
                 default: Pending
                 description: Phase is the current phase of the VirtualMCPServer

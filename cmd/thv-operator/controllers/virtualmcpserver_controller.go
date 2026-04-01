@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -118,6 +119,8 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
 
@@ -149,6 +152,15 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	} else if !cont {
 		return ctrl.Result{}, nil
+	}
+
+	// Validate MCPOIDCConfigRef if referenced (before resource creation).
+	// handleOIDCConfig is a no-op when OIDCConfigRef is nil.
+	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates after MCPOIDCConfig validation error")
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Ensure all resources
@@ -1268,7 +1280,10 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if environment variables have changed
-	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	if err != nil {
+		return true // Trigger update to surface the error
+	}
 	if !reflect.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}
@@ -2131,6 +2146,12 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1alpha1.EmbeddingServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapEmbeddingServerToVirtualMCPServer),
 		).
+		// Watch referenced MCPOIDCConfigs so that validity/hash changes
+		// trigger VirtualMCPServer reconciliation.
+		Watches(
+			&mcpv1alpha1.MCPOIDCConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToVirtualMCPServer),
+		).
 		Complete(r)
 }
 
@@ -2702,4 +2723,152 @@ func generateHMACSecret() (string, error) {
 
 	// Encode as base64 for safe storage and environment variable use
 	return base64.StdEncoding.EncodeToString(secret), nil
+}
+
+// handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
+// It sets the OIDCConfigRefValidated condition and triggers reconciliation when
+// the OIDC configuration changes.
+func (r *VirtualMCPServerReconciler) handleOIDCConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if vmcp.Spec.IncomingAuth == nil || vmcp.Spec.IncomingAuth.OIDCConfigRef == nil {
+		// No MCPOIDCConfig referenced, clear any stored hash
+		if vmcp.Status.OIDCConfigHash != "" {
+			vmcp.Status.OIDCConfigHash = ""
+			if err := r.Status().Update(ctx, vmcp); err != nil {
+				return fmt.Errorf("failed to clear MCPOIDCConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	ref := vmcp.Spec.IncomingAuth.OIDCConfigRef
+
+	// Get the referenced MCPOIDCConfig
+	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, vmcp.Namespace, ref)
+	if err != nil {
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionOIDCConfigRefValidated,
+			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			fmt.Sprintf("MCPOIDCConfig %s not found: %v", ref.Name, err),
+			metav1.ConditionFalse,
+		)
+		return err
+	}
+
+	if oidcConfig == nil {
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionOIDCConfigRefValidated,
+			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			fmt.Sprintf("MCPOIDCConfig %s not found", ref.Name),
+			metav1.ConditionFalse,
+		)
+		return fmt.Errorf("MCPOIDCConfig %s not found", ref.Name)
+	}
+
+	// Check that the MCPOIDCConfig is valid
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
+	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
+		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", ref.Name)
+		if validCondition != nil {
+			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", ref.Name, validCondition.Message)
+		}
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionOIDCConfigRefValidated,
+			mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid,
+			msg,
+			metav1.ConditionFalse,
+		)
+		return fmt.Errorf("%s", msg)
+	}
+
+	// Update ReferencingWorkloads on the MCPOIDCConfig status
+	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, vmcp.Name); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
+		// Non-fatal: continue with reconciliation
+	}
+
+	// Set valid condition
+	statusManager.SetCondition(
+		mcpv1alpha1.ConditionOIDCConfigRefValidated,
+		mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+		fmt.Sprintf("MCPOIDCConfig %s is valid and ready", ref.Name),
+		metav1.ConditionTrue,
+	)
+
+	// Check if the MCPOIDCConfig hash has changed
+	if vmcp.Status.OIDCConfigHash != oidcConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPOIDCConfig has changed, updating VirtualMCPServer",
+			"vmcp", vmcp.Name,
+			"oidcConfig", oidcConfig.Name,
+			"oldHash", vmcp.Status.OIDCConfigHash,
+			"newHash", oidcConfig.Status.ConfigHash)
+
+		vmcp.Status.OIDCConfigHash = oidcConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, vmcp); err != nil {
+			return fmt.Errorf("failed to update MCPOIDCConfig hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// updateOIDCConfigReferencingWorkloads ensures the VirtualMCPServer is listed in
+// the MCPOIDCConfig's ReferencingWorkloads status field.
+func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
+	ctx context.Context,
+	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+	vmcpName string,
+) error {
+	ref := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
+	// Check if already listed
+	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
+		if entry.Kind == ref.Kind && entry.Name == ref.Name {
+			return nil
+		}
+	}
+
+	// Add the workload reference
+	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
+	if err := r.Status().Update(ctx, oidcConfig); err != nil {
+		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
+	}
+
+	return nil
+}
+
+// mapOIDCConfigToVirtualMCPServer maps MCPOIDCConfig changes to VirtualMCPServer reconciliation requests.
+func (r *VirtualMCPServerReconciler) mapOIDCConfigToVirtualMCPServer(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	oidcConfig, ok := obj.(*mcpv1alpha1.MCPOIDCConfig)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(oidcConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPOIDCConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		if vmcp.Spec.IncomingAuth != nil &&
+			vmcp.Spec.IncomingAuth.OIDCConfigRef != nil &&
+			vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == oidcConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
 }

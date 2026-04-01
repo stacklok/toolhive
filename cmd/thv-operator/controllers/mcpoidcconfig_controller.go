@@ -46,6 +46,7 @@ type MCPOIDCConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -199,7 +200,7 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-// findReferencingWorkloads returns the workload resources (MCPServer)
+// findReferencingWorkloads returns the workload resources (MCPServer and VirtualMCPServer)
 // that reference this MCPOIDCConfig via their OIDCConfigRef field.
 func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
@@ -216,11 +217,25 @@ func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
 		}
 	}
+
+	// Check VirtualMCPServers
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(oidcConfig.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list VirtualMCPServers: %w", err)
+	}
+	for _, vmcp := range vmcpList.Items {
+		if vmcp.Spec.IncomingAuth != nil &&
+			vmcp.Spec.IncomingAuth.OIDCConfigRef != nil &&
+			vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == oidcConfig.Name {
+			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcp.Name})
+		}
+	}
+
 	return refs, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
+// Watches MCPServer and VirtualMCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPOIDCConfigs.
 	// This handler enqueues both the currently-referenced MCPOIDCConfig AND any
@@ -274,5 +289,56 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPOIDCConfig{}).
 		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
+		Watches(
+			&mcpv1alpha1.VirtualMCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToOIDCConfig),
+		).
 		Complete(r)
+}
+
+// mapVirtualMCPServerToOIDCConfig maps VirtualMCPServer changes to MCPOIDCConfig reconciliation requests.
+// Enqueues both the currently-referenced config and any config that still lists this
+// VirtualMCPServer in ReferencingWorkloads (handles ref-removal / deletion).
+func (r *MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	vmcp, ok := obj.(*mcpv1alpha1.VirtualMCPServer)
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+
+	// Enqueue the currently-referenced MCPOIDCConfig (if any)
+	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
+		nn := types.NamespacedName{
+			Name:      vmcp.Spec.IncomingAuth.OIDCConfigRef.Name,
+			Namespace: vmcp.Namespace,
+		}
+		seen[nn] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: nn})
+	}
+
+	// Also enqueue any MCPOIDCConfig that still lists this VirtualMCPServer in
+	// ReferencingWorkloads — handles ref-removal and deletion cases.
+	oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
+	if err := r.List(ctx, oidcConfigList, client.InNamespace(vmcp.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for VirtualMCPServer watch")
+		return requests
+	}
+	for _, cfg := range oidcConfigList.Items {
+		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+		if _, already := seen[nn]; already {
+			continue
+		}
+		for _, ref := range cfg.Status.ReferencingWorkloads {
+			if ref.Kind == "VirtualMCPServer" && ref.Name == vmcp.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
+				break
+			}
+		}
+	}
+
+	return requests
 }

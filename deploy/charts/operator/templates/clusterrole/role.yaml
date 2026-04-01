@@ -105,7 +105,6 @@ rules:
   - mcpregistries
   - mcpremoteproxies
   - mcpservers
-  - mcptelemetryconfigs
   - mcptoolconfigs
   - virtualmcpservers
   verbs:
@@ -146,6 +145,16 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcptelemetryconfigs
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - toolhive.stacklok.dev
   resources:

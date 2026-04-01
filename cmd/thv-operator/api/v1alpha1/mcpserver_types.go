@@ -66,6 +66,26 @@ const (
 	ConditionCABundleRefValidated = "CABundleRefValidated"
 )
 
+// Condition type for MCPOIDCConfig reference validation
+const (
+	// ConditionOIDCConfigRefValidated indicates whether the OIDCConfigRef is valid
+	ConditionOIDCConfigRefValidated = "OIDCConfigRefValidated"
+)
+
+const (
+	// ConditionReasonOIDCConfigRefValid indicates the referenced MCPOIDCConfig is valid and ready
+	ConditionReasonOIDCConfigRefValid = "OIDCConfigRefValid"
+
+	// ConditionReasonOIDCConfigRefNotFound indicates the referenced MCPOIDCConfig was not found
+	ConditionReasonOIDCConfigRefNotFound = "OIDCConfigRefNotFound"
+
+	// ConditionReasonOIDCConfigRefNotValid indicates the referenced MCPOIDCConfig is not valid
+	ConditionReasonOIDCConfigRefNotValid = "OIDCConfigRefNotValid"
+
+	// ConditionReasonOIDCConfigRefError indicates an error occurred validating the OIDCConfigRef
+	ConditionReasonOIDCConfigRefError = "OIDCConfigRefError"
+)
+
 const (
 	// ConditionReasonCABundleRefValid indicates the CABundleRef is valid and the ConfigMap exists
 	ConditionReasonCABundleRefValid = "CABundleRefValid"
@@ -114,6 +134,10 @@ const (
 const SessionStorageProviderRedis = "redis"
 
 // MCPServerSpec defines the desired state of MCPServer
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
 	// +kubebuilder:validation:Required
@@ -188,9 +212,18 @@ type MCPServerSpec struct {
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
 
-	// OIDCConfig defines OIDC authentication configuration for the MCP server
+	// OIDCConfig defines OIDC authentication configuration for the MCP server.
+	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
 	// +optional
 	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
+	// Per-server overrides (audience, scopes) are specified here; shared provider config
+	// lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+	// +optional
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
 	// AuthzConfig defines authorization policy configuration for the MCP server
 	// +optional
@@ -835,6 +868,10 @@ type MCPServerStatus struct {
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
+	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
+	// +optional
+	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional

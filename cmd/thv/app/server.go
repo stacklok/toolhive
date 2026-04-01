@@ -16,7 +16,6 @@ import (
 
 	s "github.com/stacklok/toolhive/pkg/api"
 	"github.com/stacklok/toolhive/pkg/auth"
-	cfg "github.com/stacklok/toolhive/pkg/config"
 	mcpserver "github.com/stacklok/toolhive/pkg/mcp/server"
 	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -47,25 +46,54 @@ var serveCmd = &cobra.Command{
 		// Get debug mode flag
 		debugMode, _ := cmd.Flags().GetBool("debug")
 
+		// Resolve Sentry DSN from flag then env var to avoid exposing secrets in
+		// process listings (ps aux / /proc/<pid>/cmdline).
+		dsn := sentryDSN
+		if dsn == "" {
+			dsn = os.Getenv("SENTRY_DSN")
+		}
+		env := sentryEnvironment
+		if env == "" {
+			env = os.Getenv("SENTRY_ENVIRONMENT")
+		}
+
 		// Initialize Sentry for error reporting and panic capture.
+		// Must happen before telemetry.NewServeProvider so the Sentry span
+		// processor is registered in time to be picked up by NewProvider.
 		sentryCfg := sentrypkg.Config{
-			DSN:              sentryDSN,
-			Environment:      sentryEnvironment,
+			DSN:              dsn,
+			Environment:      env,
 			TracesSampleRate: sentryTracesSampleRate,
 			Debug:            debugMode,
 		}
 		if err := sentrypkg.Init(sentryCfg); err != nil {
 			return fmt.Errorf("failed to initialize sentry: %w", err)
 		}
-		defer sentrypkg.Close()
 
 		// Initialize OTEL provider from global config (thv config otel set-endpoint).
 		// If Sentry is also initialized, the Sentry span processor is wired in so spans
 		// are exported to both the configured OTLP backend and Sentry simultaneously.
-		otelEnabled, err := initServeOTEL(ctx, debugMode)
+		otelProvider, otelEnabled, err := telemetry.NewServeProvider(ctx)
 		if err != nil {
 			return err
 		}
+
+		// Shutdown ordering is intentionally LIFO via defer:
+		//   1. OTEL provider shuts down first — flushes the Sentry span processor
+		//      (which calls hub.Flush internally) before the Sentry client is closed.
+		//   2. Sentry client closes second — safe because the span processor has
+		//      already flushed by the time sentrypkg.Close() runs.
+		// Using defer instead of a goroutine makes the ordering deterministic.
+		if otelProvider != nil {
+			defer func() {
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+				if err := otelProvider.Shutdown(shutdownCtx); err != nil {
+					slog.Warn("telemetry shutdown error", "error", err)
+				}
+			}()
+		}
+		defer sentrypkg.Close()
 
 		// If socket path is provided, use it; otherwise use host:port
 		address := fmt.Sprintf("%s:%d", host, port)
@@ -127,73 +155,27 @@ var serveCmd = &cobra.Command{
 			}()
 		}
 
-		return s.Serve(ctx, address, isUnixSocket, debugMode, enableDocs, oidcConfig, otelEnabled)
-	},
-}
-
-// initServeOTEL initialises the OTEL provider for thv serve using the global config
-// (set via `thv config otel set-endpoint`). No new CLI flags are introduced; serve reuses
-// the same OTEL config as thv run. Any span processors registered via
-// telemetry.RegisterSpanProcessor (e.g. by sentrypkg.Init) are automatically included.
-// Returns true when OTEL HTTP middleware should be enabled on the API server.
-func initServeOTEL(ctx context.Context, _ bool) (bool, error) {
-	configProvider := cfg.NewDefaultProvider()
-	appConfig := configProvider.GetConfig()
-
-	otelCfg := appConfig.OTEL
-	hasRegisteredProcessors := telemetry.HasRegisteredSpanProcessors()
-	if otelCfg.Endpoint == "" && !otelCfg.EnablePrometheusMetricsPath && !hasRegisteredProcessors {
-		return false, nil
-	}
-
-	telemetryCfg := telemetry.Config{
-		ServiceName:                 "thv-api",
-		Endpoint:                    otelCfg.Endpoint,
-		TracingEnabled:              otelCfg.TracingEnabled,
-		MetricsEnabled:              otelCfg.MetricsEnabled,
-		Insecure:                    otelCfg.Insecure,
-		EnablePrometheusMetricsPath: otelCfg.EnablePrometheusMetricsPath,
-		EnvironmentVariables:        otelCfg.EnvVars,
-	}
-	if otelCfg.SamplingRate != 0.0 {
-		telemetryCfg.SetSamplingRateFromFloat(otelCfg.SamplingRate)
-	}
-	if telemetryCfg.SamplingRate == "" {
-		telemetryCfg.SamplingRate = "0.05"
-	}
-
-	// No OTLP endpoint but registered processors are active (e.g. a Sentry bridge).
-	// Force tracing on with 100% OTEL sampling so every span reaches the processors.
-	// Each processor's own sampling config is then the sole gate.
-	if otelCfg.Endpoint == "" && hasRegisteredProcessors {
-		telemetryCfg.TracingEnabled = true
-		telemetryCfg.SamplingRate = "1.0"
-	}
-
-	// Registered processors are picked up automatically by NewProvider via the global registry.
-	provider, err := telemetry.NewProvider(ctx, telemetryCfg)
-	if err != nil {
-		return false, fmt.Errorf("failed to initialize telemetry: %w", err)
-	}
-
-	// Provider shutdown is deferred via the serve context — provider.Shutdown is tied to the
-	// context cancel so we don't need an explicit defer here; the caller's defer cancel() is enough.
-	// However, we register a goroutine to flush on context cancellation.
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := provider.Shutdown(shutdownCtx); err != nil {
-			slog.Warn("telemetry shutdown error", "error", err)
+		// Use ServerBuilder directly to set otelEnabled without adding it as a
+		// positional parameter on the Serve() convenience function.
+		nonce, err := s.GenerateNonce()
+		if err != nil {
+			return err
 		}
-	}()
+		builder := s.NewServerBuilder().
+			WithAddress(address).
+			WithUnixSocket(isUnixSocket).
+			WithDebugMode(debugMode).
+			WithDocs(enableDocs).
+			WithNonce(nonce).
+			WithOIDCConfig(oidcConfig).
+			WithOtelEnabled(otelEnabled)
 
-	slog.Debug("OTEL provider initialized for thv serve",
-		"endpoint", otelCfg.Endpoint,
-		"tracing", otelCfg.TracingEnabled,
-		"metrics", otelCfg.MetricsEnabled)
-
-	return true, nil
+		server, err := s.NewServer(ctx, builder)
+		if err != nil {
+			return err
+		}
+		return server.Start(ctx)
+	},
 }
 
 func init() {
@@ -212,13 +194,15 @@ func init() {
 	serveCmd.Flags().StringVar(&mcpServerHost, "experimental-mcp-host", "localhost",
 		"EXPERIMENTAL: Host for the embedded MCP server")
 
-	// Add Sentry flags
+	// Add Sentry flags. The DSN and environment also fall back to the SENTRY_DSN
+	// and SENTRY_ENVIRONMENT environment variables respectively, which is the
+	// preferred way to supply credentials (avoids exposing the DSN in ps output).
 	serveCmd.Flags().StringVar(&sentryDSN, "sentry-dsn", "",
-		"Sentry DSN for error tracking and distributed tracing (env: SENTRY_DSN)")
+		"Sentry DSN for error tracking and distributed tracing (falls back to SENTRY_DSN env var)")
 	serveCmd.Flags().StringVar(&sentryEnvironment, "sentry-environment", "",
-		"Sentry environment name, e.g. production or development (env: SENTRY_ENVIRONMENT)")
+		"Sentry environment name, e.g. production or development (falls back to SENTRY_ENVIRONMENT env var)")
 	serveCmd.Flags().Float64Var(&sentryTracesSampleRate, "sentry-traces-sample-rate", 1.0,
-		"Sentry traces sample rate (0.0-1.0) for performance monitoring (env: SENTRY_TRACES_SAMPLE_RATE)")
+		"Sentry traces sample rate (0.0-1.0) for performance monitoring")
 
 	// Add OIDC validation flags
 	AddOIDCFlags(serveCmd)

@@ -21,8 +21,11 @@ spec:
     - jsonPath: .status.phase
       name: Status
       type: string
-    - jsonPath: .status.readyReplicas
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
+      type: string
+    - jsonPath: .status.readyReplicas
+      name: Replicas
       type: integer
     - jsonPath: .status.url
       name: URL

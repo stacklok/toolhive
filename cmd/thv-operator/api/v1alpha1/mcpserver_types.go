@@ -10,6 +10,7 @@ import (
 )
 
 // Condition types for MCPServer
+// Note: ConditionTypeReady is shared across multiple resources and defined in mcpremoteproxy_types.go
 const (
 	// ConditionImageValidated indicates whether this image is fine to be used
 	ConditionImageValidated = "ImageValidated"
@@ -19,6 +20,14 @@ const (
 
 	// ConditionPodTemplateValid indicates whether the PodTemplateSpec is valid
 	ConditionPodTemplateValid = "PodTemplateValid"
+)
+
+const (
+	// ConditionReasonReady indicates the MCPServer is ready
+	ConditionReasonReady = "Ready"
+
+	// ConditionReasonNotReady indicates the MCPServer is not ready
+	ConditionReasonNotReady = "NotReady"
 )
 
 const (
@@ -906,7 +915,8 @@ const (
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mcpserver;mcpservers
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+//+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

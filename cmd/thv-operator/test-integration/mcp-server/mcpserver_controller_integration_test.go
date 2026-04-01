@@ -336,6 +336,28 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(Equal(createdMCPServer.Generation))
 		})
 
+		It("Should set the Ready condition", func() {
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+						// In envtest, pods don't actually run, so the condition
+						// will be set (True if phase=Running, False if Pending)
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
+
 		It("Should update Deployment when MCPServer spec changes", func() {
 
 			// Wait for Deployment to be created
@@ -501,6 +523,27 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			Expect(updatedMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
+		})
+
+		It("Should set Ready condition to False for invalid PodTemplateSpec", func() {
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+						return cond.Status == metav1.ConditionFalse &&
+							cond.Reason == mcpv1alpha1.ConditionReasonNotReady
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
 		})
 	})
 
@@ -1041,6 +1084,28 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			// Verify the deployment was created successfully
 			Expect(deployment.Name).To(Equal(mcpServerName))
+		})
+
+		It("Should set Ready condition even with invalid GroupRef", func() {
+			// GroupRef validation doesn't block deployment creation,
+			// so the Ready condition should eventually be set based on pod status
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+						return true // Condition exists, regardless of status
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
 		})
 	})
 

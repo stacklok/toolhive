@@ -17,6 +17,9 @@ import (
 const (
 	timeout  = time.Second * 30
 	interval = time.Millisecond * 250
+
+	// conditionTypeValid is the MCPOIDCConfig "Valid" condition type
+	conditionTypeValid = "Valid"
 )
 
 var _ = Describe("MCPOIDCConfig Controller", func() {
@@ -61,7 +64,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 				return false
 			}
 			for _, cond := range fetched.Status.Conditions {
-				if cond.Type == "Valid" && cond.Status == metav1.ConditionTrue {
+				if cond.Type == conditionTypeValid && cond.Status == metav1.ConditionTrue {
 					return true
 				}
 			}

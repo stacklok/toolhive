@@ -75,7 +75,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == "Valid" && cond.Status == metav1.ConditionTrue {
+					if cond.Type == conditionTypeValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}

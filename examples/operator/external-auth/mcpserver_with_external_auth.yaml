@@ -12,10 +12,6 @@ spec:
   # Transport protocol (streamable-http, stdio, or sse)
   transport: streamable-http
 
-  # Tools exposed by this server
-  tools:
-    - fetch
-
   # Port configuration
   proxyPort: 8080
   mcpPort: 8080

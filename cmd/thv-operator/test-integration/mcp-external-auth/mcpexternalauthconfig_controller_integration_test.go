@@ -210,7 +210,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},
@@ -406,7 +406,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},

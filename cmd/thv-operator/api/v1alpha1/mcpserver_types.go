@@ -133,20 +133,6 @@ type MCPServerSpec struct {
 	// +optional
 	ProxyMode string `json:"proxyMode,omitempty"`
 
-	// Port is the port to expose the MCP server on
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +kubebuilder:default=8080
-	// Deprecated: Use ProxyPort instead
-	Port int32 `json:"port,omitempty"`
-
-	// TargetPort is the port that MCP server listens to
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +optional
-	// Deprecated: Use McpPort instead
-	TargetPort int32 `json:"targetPort,omitempty"`
-
 	// ProxyPort is the port to expose the proxy runner on
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
@@ -214,15 +200,9 @@ type MCPServerSpec struct {
 	// +optional
 	Audit *AuditConfig `json:"audit,omitempty"`
 
-	// ToolsFilter is the filter on tools applied to the MCP server
-	// Deprecated: Use ToolConfigRef instead
-	// +optional
-	ToolsFilter []string `json:"tools,omitempty"`
-
 	// ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
 	// The referenced MCPToolConfig must exist in the same namespace as this MCPServer.
 	// Cross-namespace references are not supported for security and isolation reasons.
-	// If specified, this takes precedence over the inline ToolsFilter field.
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
@@ -644,29 +624,12 @@ type InlineOIDCConfig struct {
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 
-	// ClientSecret is the client secret for introspection (optional)
-	// Deprecated: Use ClientSecretRef instead for better security
-	// +optional
-	ClientSecret string `json:"clientSecret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
-
 	// ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
-	// If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
-	//
-	// Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
-	// already exist in the proxy runner container (e.g., Kubernetes service account CA at
-	// /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
-	// use CABundleRef which automatically mounts the ConfigMap and computes the path.
-	// This field will be removed when the API graduates to v1beta1.
-	// +optional
-	ThvCABundlePath string `json:"thvCABundlePath,omitempty"`
-
 	// CABundleRef references a ConfigMap containing the CA certificate bundle.
-	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
-	// If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path.
 	// +optional
 	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 
@@ -913,7 +876,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpserver;mcpservers
+//+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
@@ -958,14 +921,6 @@ func (m *MCPServer) GetProxyPort() int32 {
 	if m.Spec.ProxyPort > 0 {
 		return m.Spec.ProxyPort
 	}
-
-	// the below is deprecated and will be removed in a future version
-	// we need to keep it here to avoid breaking changes
-	if m.Spec.Port > 0 {
-		return m.Spec.Port
-	}
-
-	// default to 8080 if no port is specified
 	return 8080
 }
 
@@ -974,15 +929,6 @@ func (m *MCPServer) GetMcpPort() int32 {
 	if m.Spec.McpPort > 0 {
 		return m.Spec.McpPort
 	}
-
-	// the below is deprecated and will be removed in a future version
-	// we need to keep it here to avoid breaking changes
-	if m.Spec.TargetPort > 0 {
-		return m.Spec.TargetPort
-	}
-
-	// Default to 8080 if no port is specified (matches GetProxyPort behavior)
-	// This is needed for HTTP-based transports (SSE, streamable-http) which require a target port
 	return 8080
 }
 

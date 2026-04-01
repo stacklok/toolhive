@@ -44,7 +44,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test-image:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						// Valid JSON but invalid PodTemplateSpec structure
 						// (spec.containers should be an array, not a string)
@@ -66,7 +66,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test-image:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec": {"containers": [{"name": "mcp"}]}}`),
 					},
@@ -86,7 +86,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:           "test-image:latest",
 					Transport:       "stdio",
-					Port:            8080,
+					ProxyPort:       8080,
 					PodTemplateSpec: nil,
 				},
 			},
@@ -196,7 +196,7 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 			PodTemplateSpec: &runtime.RawExtension{
 				Raw: []byte(`{invalid json`),
 			},

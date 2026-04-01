@@ -11,6 +11,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPRemoteProxy
     listKind: MCPRemoteProxyList
     plural: mcpremoteproxies
@@ -255,8 +257,7 @@ spec:
                       caBundleRef:
                         description: |-
                           CABundleRef references a ConfigMap containing the CA certificate bundle.
-                          When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
-                          If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+                          When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path.
                         properties:
                           configMapRef:
                             description: |-
@@ -287,15 +288,9 @@ spec:
                       clientId:
                         description: ClientID is the OIDC client ID
                         type: string
-                      clientSecret:
-                        description: |-
-                          ClientSecret is the client secret for introspection (optional)
-                          Deprecated: Use ClientSecretRef instead for better security
-                        type: string
                       clientSecretRef:
-                        description: |-
-                          ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
-                          If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+                        description: ClientSecretRef is a reference to a Kubernetes
+                          Secret containing the client secret
                         properties:
                           key:
                             description: Key is the key within the secret
@@ -348,16 +343,6 @@ spec:
                         items:
                           type: string
                         type: array
-                      thvCABundlePath:
-                        description: |-
-                          ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
-
-                          Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
-                          already exist in the proxy runner container (e.g., Kubernetes service account CA at
-                          /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
-                          use CABundleRef which automatically mounts the ConfigMap and computes the path.
-                          This field will be removed when the API graduates to v1beta1.
-                        type: string
                     required:
                     - issuer
                     type: object
@@ -427,15 +412,6 @@ spec:
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
                 - message: kubernetes must not be set when type is not 'kubernetes'
                   rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) : true'
-              port:
-                default: 8080
-                description: |-
-                  Port is the port to expose the MCP proxy on
-                  Deprecated: Use ProxyPort instead
-                format: int32
-                maximum: 65535
-                minimum: 1
-                type: integer
               proxyPort:
                 default: 8080
                 description: ProxyPort is the port to expose the MCP proxy on

@@ -316,13 +316,12 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Namespace: "test-ns",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "comprehensive:latest",
-					Transport:   "streamable-http",
-					ProxyPort:   9090,
-					McpPort:     8080,
-					ProxyMode:   "streamable-http",
-					Args:        []string{"--comprehensive", "--test"},
-					ToolsFilter: []string{"tool1", "tool2"},
+					Image:     "comprehensive:latest",
+					Transport: "streamable-http",
+					ProxyPort: 9090,
+					McpPort:   8080,
+					ProxyMode: "streamable-http",
+					Args:      []string{"--comprehensive", "--test"},
 					Env: []mcpv1alpha1.EnvVar{
 						{Name: "ENV1", Value: "value1"},
 						{Name: "ENV2", Value: "value2"},
@@ -347,7 +346,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, 8080, config.TargetPort)
 				assert.Equal(t, transporttypes.ProxyModeStreamableHTTP, config.ProxyMode)
 				assert.Equal(t, []string{"--comprehensive", "--test"}, config.CmdArgs)
-				assert.Equal(t, []string{"tool1", "tool2"}, config.ToolsFilter)
 				assert.Len(t, config.EnvVars, 6) // NOTE: we should probably drop this
 				assert.Equal(t, "value1", config.EnvVars["ENV1"])
 				assert.Equal(t, "value2", config.EnvVars["ENV2"])
@@ -371,14 +369,13 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Namespace: "test-ns",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "edge:latest",
-					Transport:   "stdio",
-					ProxyPort:   8080,
-					Args:        []string{},             // Empty slice
-					ToolsFilter: nil,                    // Nil slice
-					Env:         nil,                    // Nil slice
-					Volumes:     []mcpv1alpha1.Volume{}, // Empty slice
-					Secrets:     nil,                    // Nil slice
+					Image:     "edge:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					Args:      []string{},             // Empty slice
+					Env:       nil,                    // Nil slice
+					Volumes:   []mcpv1alpha1.Volume{}, // Empty slice
+					Secrets:   nil,                    // Nil slice
 				},
 			},
 			//nolint:thelper // We want to see the error at the specific line
@@ -386,7 +383,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "edge-server", config.Name)
 				assert.Equal(t, "edge:latest", config.Image)
 				assert.Len(t, config.CmdArgs, 0)
-				assert.Len(t, config.ToolsFilter, 0)
 				assert.Len(t, config.EnvVars, 1)
 				assert.Len(t, config.Volumes, 0)
 				assert.Len(t, config.Secrets, 0)
@@ -488,8 +484,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
 							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
 							ClientID:           "toolhive-client",
-							ClientSecret:       "secret123",
-							ThvCABundlePath:    "/etc/ssl/ca-bundle.pem",
 							JWKSAuthTokenPath:  "/etc/auth/token",
 							JWKSAllowPrivateIP: true,
 						},
@@ -506,8 +500,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", config.OIDCConfig.JWKSURL)
 				assert.Equal(t, "https://auth.example.com/oauth/introspect", config.OIDCConfig.IntrospectionURL)
 				assert.Equal(t, "toolhive-client", config.OIDCConfig.ClientID)
-				assert.Equal(t, "secret123", config.OIDCConfig.ClientSecret)
-				assert.Equal(t, "/etc/ssl/ca-bundle.pem", config.OIDCConfig.CACertPath)
 				assert.Equal(t, "/etc/auth/token", config.OIDCConfig.AuthTokenFile)
 				assert.True(t, config.OIDCConfig.AllowPrivateIP)
 			},
@@ -614,12 +606,11 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 			Namespace: "test-namespace",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:       "deterministic-test:v1.2.3",
-			Transport:   "sse",
-			ProxyPort:   9090,
-			McpPort:     8080,
-			Args:        []string{"--arg1", "--arg2", "--complex-flag=value"},
-			ToolsFilter: []string{"tool3", "tool1", "tool2"}, // Different order to test sorting
+			Image:     "deterministic-test:v1.2.3",
+			Transport: "sse",
+			ProxyPort: 9090,
+			McpPort:   8080,
+			Args:      []string{"--arg1", "--arg2", "--complex-flag=value"},
 			Env: []mcpv1alpha1.EnvVar{
 				{Name: "VAR_C", Value: "value_c"},
 				{Name: "VAR_A", Value: "value_a"},
@@ -717,7 +708,6 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 	assert.Equal(t, 9090, baseRunConfig.Port)
 	assert.Equal(t, 8080, baseRunConfig.TargetPort)
 	assert.Equal(t, []string{"--arg1", "--arg2", "--complex-flag=value"}, baseRunConfig.CmdArgs)
-	assert.Equal(t, []string{"tool3", "tool1", "tool2"}, baseRunConfig.ToolsFilter)
 
 	// Verify environment variables
 	assert.Len(t, baseRunConfig.EnvVars, 7) // NOTE: we should probably drop this
@@ -911,8 +901,6 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
 							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
 							ClientID:           "toolhive-client",
-							ClientSecret:       "secret123",
-							ThvCABundlePath:    "/etc/ssl/ca-bundle.pem",
 							JWKSAuthTokenPath:  "/etc/auth/token",
 							JWKSAllowPrivateIP: true,
 						},
@@ -940,8 +928,6 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", runConfig.OIDCConfig.JWKSURL)
 				assert.Equal(t, "https://auth.example.com/oauth/introspect", runConfig.OIDCConfig.IntrospectionURL)
 				assert.Equal(t, "toolhive-client", runConfig.OIDCConfig.ClientID)
-				assert.Equal(t, "secret123", runConfig.OIDCConfig.ClientSecret)
-				assert.Equal(t, "/etc/ssl/ca-bundle.pem", runConfig.OIDCConfig.CACertPath)
 				assert.Equal(t, "/etc/auth/token", runConfig.OIDCConfig.AuthTokenFile)
 				assert.True(t, runConfig.OIDCConfig.AllowPrivateIP)
 			},
@@ -1450,20 +1436,6 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			},
 			expectedChanges: map[string]interface{}{
 				"CmdArgs": []string{"--modified", "--different", "--args"},
-			},
-		},
-		{
-			name: "ToolsFilter change",
-			initialServer: func() *mcpv1alpha1.MCPServer {
-				server := createTestMCPServerWithConfig("tools-test", "default", "test:v1", nil)
-				server.Spec.ToolsFilter = []string{"tool1", "tool2"}
-				return server
-			},
-			modifyServer: func(server *mcpv1alpha1.MCPServer) {
-				server.Spec.ToolsFilter = []string{"tool3", "tool4", "tool5"}
-			},
-			expectedChanges: map[string]interface{}{
-				"ToolsFilter": []string{"tool3", "tool4", "tool5"},
 			},
 		},
 		{

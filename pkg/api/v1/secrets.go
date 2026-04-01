@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1
@@ -521,7 +521,7 @@ func (s *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
 		return nil, err
 	}
 
-	return secrets.CreateSecretProvider(providerType)
+	return secrets.CreateProvider(providerType, secrets.WithUserFacing())
 }
 
 // Request and response type definitions

@@ -539,6 +539,76 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	spec := newTelemetrySpec("https://otel-collector:4317", true, true)
+
+	// Pre-compute the hash the controller would produce
+	r := &MCPTelemetryConfigReconciler{}
+	precomputedHash := r.calculateConfigHash(spec)
+
+	// Resource already has finalizer and correct hash, but no Valid condition
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "condition-only-config",
+			Namespace:  "default",
+			Finalizers: []string{TelemetryConfigFinalizerName},
+			Generation: 1,
+		},
+		Spec: spec,
+		Status: mcpv1alpha1.MCPTelemetryConfigStatus{
+			ConfigHash:         precomputedHash,
+			ObservedGeneration: 1,
+			// No conditions set — this is the key setup
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(telemetryConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		Build()
+
+	r.Client = fakeClient
+	r.Scheme = scheme
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      telemetryConfig.Name,
+			Namespace: telemetryConfig.Namespace,
+		},
+	}
+
+	// Reconcile should detect condition is missing and write it
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updated mcpv1alpha1.MCPTelemetryConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updated)
+	require.NoError(t, err)
+
+	// Hash should remain unchanged
+	assert.Equal(t, precomputedHash, updated.Status.ConfigHash, "Hash should not change")
+
+	// Valid=True condition should now be set
+	var foundValid bool
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == conditionTypeValid {
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, "ValidationSucceeded", cond.Reason)
+			foundValid = true
+		}
+	}
+	assert.True(t, foundValid, "Should have Valid=True condition after condition-only update")
+}
+
 // newTelemetrySpec creates a basic MCPTelemetryConfigSpec for testing.
 func newTelemetrySpec(endpoint string, tracing, metrics bool) mcpv1alpha1.MCPTelemetryConfigSpec {
 	spec := mcpv1alpha1.MCPTelemetryConfigSpec{}

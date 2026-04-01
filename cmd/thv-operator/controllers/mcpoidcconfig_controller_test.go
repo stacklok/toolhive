@@ -20,8 +20,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-const conditionTypeValid = "Valid"
-
 func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 	t.Parallel()
 

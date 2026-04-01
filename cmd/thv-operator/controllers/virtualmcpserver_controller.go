@@ -1280,7 +1280,10 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if environment variables have changed
-	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	if err != nil {
+		return true // Trigger update to surface the error
+	}
 	if !reflect.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}

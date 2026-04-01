@@ -129,7 +129,11 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
 		return nil
 	}
-	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	env, err := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build env vars for VirtualMCPServer")
+		return nil
+	}
 
 	// Add embedded auth server volumes and env vars if configured (inline config)
 	if vmcp.Spec.AuthServerConfig != nil {
@@ -296,7 +300,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
-) []corev1.EnvVar {
+) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{}
 
 	// Add basic environment variables
@@ -313,8 +317,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount OIDC client secret
 	oidcEnv, err := r.buildOIDCEnvVars(ctx, vmcp)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to build OIDC env vars")
-		return nil
+		return nil, fmt.Errorf("failed to build OIDC env vars: %w", err)
 	}
 	env = append(env, oidcEnv...)
 
@@ -327,7 +330,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount Redis password secret when session storage provider is Redis.
 	env = append(env, r.buildRedisPasswordEnvVar(vmcp)...)
 
-	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }
 
 // buildOIDCEnvVars builds environment variables for OIDC client secret mounting.

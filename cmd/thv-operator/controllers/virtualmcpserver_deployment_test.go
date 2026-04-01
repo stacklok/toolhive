@@ -236,7 +236,8 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	env := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
+	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
+	require.NoError(t, err)
 
 	// Should have VMCP_NAME and VMCP_NAMESPACE
 	foundName := false

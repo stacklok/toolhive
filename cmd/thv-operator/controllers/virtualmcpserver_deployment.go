@@ -124,7 +124,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp(vmcp)
-	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
+	volumeMounts, volumes := r.buildVolumesForVmcp(ctx, vmcp)
 	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 
 	// Add embedded auth server volumes and env vars if configured (inline config)
@@ -235,7 +235,8 @@ func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
 }
 
 // buildVolumesForVmcp builds volumes and volume mounts for vmcp
-func (*VirtualMCPServerReconciler) buildVolumesForVmcp(
+func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) ([]corev1.VolumeMount, []corev1.Volume) {
 	volumeMounts := []corev1.VolumeMount{}
@@ -259,6 +260,23 @@ func (*VirtualMCPServerReconciler) buildVolumesForVmcp(
 			},
 		},
 	})
+
+	// Add OIDC CA bundle volume if configured
+	if vmcp.Spec.IncomingAuth != nil {
+		if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
+			caVolumes, caMounts := ctrlutil.AddOIDCCABundleVolumes(vmcp.Spec.IncomingAuth.OIDCConfig)
+			volumes = append(volumes, caVolumes...)
+			volumeMounts = append(volumeMounts, caMounts...)
+		} else if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
+			oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
+				ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
+			if err == nil && oidcCfg != nil {
+				caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
+				volumes = append(volumes, caVolumes...)
+				volumeMounts = append(volumeMounts, caMounts...)
+			}
+		}
+	}
 
 	// TODO: Add volumes for composite tool definitions from VirtualMCPCompositeToolDefinition refs
 
@@ -285,7 +303,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	})
 
 	// Mount OIDC client secret
-	env = append(env, r.buildOIDCEnvVars(vmcp)...)
+	env = append(env, r.buildOIDCEnvVars(ctx, vmcp)...)
 
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
@@ -300,18 +318,18 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 }
 
 // buildOIDCEnvVars builds environment variables for OIDC client secret mounting.
-func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
+func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(ctx context.Context, vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
 	var env []corev1.EnvVar
 
-	if vmcp.Spec.IncomingAuth == nil ||
-		vmcp.Spec.IncomingAuth.OIDCConfig == nil ||
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline == nil {
+	if vmcp.Spec.IncomingAuth == nil {
 		return env
 	}
 
-	inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-
-	if inline.ClientSecretRef != nil {
+	// Legacy path: inline OIDCConfig client secret
+	if vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
+		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil &&
+		vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef != nil {
+		inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
 		env = append(env, corev1.EnvVar{
 			Name: "VMCP_OIDC_CLIENT_SECRET",
 			ValueFrom: &corev1.EnvVarSource{
@@ -323,6 +341,28 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 				},
 			},
 		})
+	}
+
+	// New path: MCPOIDCConfig inline client secret
+	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
+			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
+		if err == nil && oidcCfg != nil &&
+			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Inline != nil &&
+			oidcCfg.Spec.Inline.ClientSecretRef != nil {
+			env = append(env, corev1.EnvVar{
+				Name: "VMCP_OIDC_CLIENT_SECRET",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: oidcCfg.Spec.Inline.ClientSecretRef.Name,
+						},
+						Key: oidcCfg.Spec.Inline.ClientSecretRef.Key,
+					},
+				},
+			})
+		}
 	}
 
 	return env
@@ -741,7 +781,7 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
-	// Validate OIDC client secret if configured
+	// Validate OIDC client secret if configured (legacy inline path)
 	if vmcp.Spec.IncomingAuth != nil &&
 		vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
 		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil &&
@@ -750,6 +790,22 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 			vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef,
 			"OIDC client secret"); err != nil {
 			return err
+		}
+	}
+
+	// Validate MCPOIDCConfig inline client secret if configured
+	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
+			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
+		if err == nil && oidcCfg != nil &&
+			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Inline != nil &&
+			oidcCfg.Spec.Inline.ClientSecretRef != nil {
+			if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
+				oidcCfg.Spec.Inline.ClientSecretRef,
+				"MCPOIDCConfig OIDC client secret"); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -222,24 +222,49 @@ func (r *MCPOIDCConfigReconciler) findReferencingServers(
 // SetupWithManager sets up the controller with the Manager.
 // Watches MCPServer changes to maintain accurate ReferencingServers status.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Watch MCPServer changes to update ReferencingServers on referenced MCPOIDCConfigs
+	// Watch MCPServer changes to update ReferencingServers on referenced MCPOIDCConfigs.
+	// This handler enqueues both the currently-referenced MCPOIDCConfig AND any
+	// MCPOIDCConfig that still lists this server in ReferencingServers (covers the
+	// case where a server removes its oidcConfigRef — the previously-referenced
+	// config needs to reconcile and clean up the stale entry).
 	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(_ context.Context, obj client.Object) []reconcile.Request {
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
 			server, ok := obj.(*mcpv1alpha1.MCPServer)
 			if !ok {
 				return nil
 			}
 
+			seen := make(map[types.NamespacedName]struct{})
 			var requests []reconcile.Request
 
-			// If this server references an MCPOIDCConfig, enqueue it
+			// Enqueue the currently-referenced MCPOIDCConfig (if any)
 			if server.Spec.OIDCConfigRef != nil {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      server.Spec.OIDCConfigRef.Name,
-						Namespace: server.Namespace,
-					},
-				})
+				nn := types.NamespacedName{
+					Name:      server.Spec.OIDCConfigRef.Name,
+					Namespace: server.Namespace,
+				}
+				seen[nn] = struct{}{}
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
+			}
+
+			// Also enqueue any MCPOIDCConfig that still lists this server in
+			// ReferencingServers — handles ref-removal and server-deletion cases.
+			oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
+			if err := r.List(ctx, oidcConfigList, client.InNamespace(server.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for MCPServer watch")
+				return requests
+			}
+			for _, cfg := range oidcConfigList.Items {
+				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+				if _, already := seen[nn]; already {
+					continue
+				}
+				for _, ref := range cfg.Status.ReferencingServers {
+					if ref == server.Name {
+						requests = append(requests, reconcile.Request{NamespacedName: nn})
+						break
+					}
+				}
 			}
 
 			return requests

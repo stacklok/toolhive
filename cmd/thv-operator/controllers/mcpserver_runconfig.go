@@ -194,7 +194,8 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	// Resolve OIDC configuration from either legacy OIDCConfig or new MCPOIDCConfigRef
+	// Resolve OIDC configuration from either legacy OIDCConfig or new MCPOIDCConfigRef.
+	// Resolve once and reuse for both RunConfig options and embedded auth server config.
 	var resolvedOIDCConfig *oidc.OIDCConfig
 	if m.Spec.OIDCConfigRef != nil {
 		// New path: resolve from MCPOIDCConfig reference
@@ -202,19 +203,28 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPOIDCConfig %s: %w", m.Spec.OIDCConfigRef.Name, err)
 		}
-		if err := ctrlutil.AddOIDCConfigRefOptions(
-			ctx, r.Client, m.Spec.OIDCConfigRef, oidcCfg,
-			m.Name, m.Namespace, m.GetProxyPort(), &options,
-		); err != nil {
-			return nil, fmt.Errorf("failed to process OIDCConfigRef: %w", err)
-		}
-		// Also resolve for embedded auth server
 		resolver := oidc.NewResolver(r.Client)
 		resolvedOIDCConfig, err = resolver.ResolveFromConfigRef(
 			ctx, m.Spec.OIDCConfigRef, oidcCfg, m.Name, m.Namespace, m.GetProxyPort(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig: %w", err)
+		}
+		if resolvedOIDCConfig != nil {
+			options = append(options, runner.WithOIDCConfig(
+				resolvedOIDCConfig.Issuer,
+				resolvedOIDCConfig.Audience,
+				resolvedOIDCConfig.JWKSURL,
+				resolvedOIDCConfig.IntrospectionURL,
+				resolvedOIDCConfig.ClientID,
+				resolvedOIDCConfig.ClientSecret,
+				resolvedOIDCConfig.ThvCABundlePath,
+				resolvedOIDCConfig.JWKSAuthTokenPath,
+				resolvedOIDCConfig.ResourceURL,
+				resolvedOIDCConfig.JWKSAllowPrivateIP,
+				resolvedOIDCConfig.InsecureAllowHTTP,
+				resolvedOIDCConfig.Scopes,
+			))
 		}
 	} else {
 		// Legacy path: resolve from inline OIDCConfig

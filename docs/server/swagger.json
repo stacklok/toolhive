@@ -1562,7 +1562,7 @@
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_transport_types.ProxyMode": {
-                "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                "description": "ProxyMode is the effective HTTP protocol the proxy uses.\nFor stdio transports, this is the configured mode (sse or streamable-http).\nFor direct transports (sse/streamable-http), this matches the transport type.\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
                 "enum": [
                     "sse",
                     "streamable-http",

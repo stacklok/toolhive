@@ -159,6 +159,86 @@ func TestTransportTypeConstants(t *testing.T) {
 	assert.Equal(t, "inspector", string(TransportTypeInspector))
 }
 
+func TestEffectiveProxyMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		transport TransportType
+		proxyMode ProxyMode
+		expected  ProxyMode
+	}{
+		{
+			name:      "stdio with sse proxy mode returns sse",
+			transport: TransportTypeStdio,
+			proxyMode: ProxyModeSSE,
+			expected:  ProxyModeSSE,
+		},
+		{
+			name:      "stdio with streamable-http proxy mode returns streamable-http",
+			transport: TransportTypeStdio,
+			proxyMode: ProxyModeStreamableHTTP,
+			expected:  ProxyModeStreamableHTTP,
+		},
+		{
+			name:      "stdio with empty proxy mode defaults to streamable-http",
+			transport: TransportTypeStdio,
+			proxyMode: "",
+			expected:  ProxyModeStreamableHTTP,
+		},
+		{
+			name:      "sse transport with empty proxy mode returns sse",
+			transport: TransportTypeSSE,
+			proxyMode: "",
+			expected:  ProxyMode("sse"),
+		},
+		{
+			name:      "sse transport with sse proxy mode returns sse",
+			transport: TransportTypeSSE,
+			proxyMode: ProxyModeSSE,
+			expected:  ProxyMode("sse"),
+		},
+		{
+			name:      "sse transport with streamable-http proxy mode returns sse",
+			transport: TransportTypeSSE,
+			proxyMode: ProxyModeStreamableHTTP,
+			expected:  ProxyMode("sse"),
+		},
+		{
+			name:      "streamable-http transport with empty proxy mode returns streamable-http",
+			transport: TransportTypeStreamableHTTP,
+			proxyMode: "",
+			expected:  ProxyMode("streamable-http"),
+		},
+		{
+			name:      "streamable-http transport with sse proxy mode returns streamable-http",
+			transport: TransportTypeStreamableHTTP,
+			proxyMode: ProxyModeSSE,
+			expected:  ProxyMode("streamable-http"),
+		},
+		{
+			name:      "streamable-http transport with streamable-http proxy mode returns streamable-http",
+			transport: TransportTypeStreamableHTTP,
+			proxyMode: ProxyModeStreamableHTTP,
+			expected:  ProxyMode("streamable-http"),
+		},
+		{
+			name:      "inspector transport with empty proxy mode returns inspector",
+			transport: TransportTypeInspector,
+			proxyMode: "",
+			expected:  ProxyMode("inspector"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := EffectiveProxyMode(tt.transport, tt.proxyMode)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestTransportType_RoundTrip(t *testing.T) {
 	t.Parallel()
 

@@ -95,6 +95,81 @@ func TestRunConfig_WithTransport(t *testing.T) {
 	}
 }
 
+func TestRunConfig_NormalizeProxyMode(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		config   *RunConfig
+		expected types.ProxyMode
+	}{
+		{
+			name: "stdio with empty proxy mode defaults to streamable-http",
+			config: &RunConfig{
+				Transport: types.TransportTypeStdio,
+				ProxyMode: "",
+			},
+			expected: types.ProxyModeStreamableHTTP,
+		},
+		{
+			name: "stdio with sse proxy mode stays sse",
+			config: &RunConfig{
+				Transport: types.TransportTypeStdio,
+				ProxyMode: types.ProxyModeSSE,
+			},
+			expected: types.ProxyModeSSE,
+		},
+		{
+			name: "stdio with streamable-http proxy mode stays streamable-http",
+			config: &RunConfig{
+				Transport: types.TransportTypeStdio,
+				ProxyMode: types.ProxyModeStreamableHTTP,
+			},
+			expected: types.ProxyModeStreamableHTTP,
+		},
+		{
+			name: "sse transport with empty proxy mode becomes sse",
+			config: &RunConfig{
+				Transport: types.TransportTypeSSE,
+				ProxyMode: "",
+			},
+			expected: types.ProxyMode("sse"),
+		},
+		{
+			name: "sse transport with streamable-http proxy mode becomes sse",
+			config: &RunConfig{
+				Transport: types.TransportTypeSSE,
+				ProxyMode: types.ProxyModeStreamableHTTP,
+			},
+			expected: types.ProxyMode("sse"),
+		},
+		{
+			name: "streamable-http transport with empty proxy mode becomes streamable-http",
+			config: &RunConfig{
+				Transport: types.TransportTypeStreamableHTTP,
+				ProxyMode: "",
+			},
+			expected: types.ProxyMode("streamable-http"),
+		},
+		{
+			name: "streamable-http transport with sse proxy mode becomes streamable-http",
+			config: &RunConfig{
+				Transport: types.TransportTypeStreamableHTTP,
+				ProxyMode: types.ProxyModeSSE,
+			},
+			expected: types.ProxyMode("streamable-http"),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.config.NormalizeProxyMode()
+			assert.Equal(t, tc.expected, tc.config.ProxyMode)
+		})
+	}
+}
+
 // TestRunConfig_WithPorts tests the WithPorts method
 // Note: This test uses actual port finding logic, so it may fail if ports are in use
 func TestRunConfig_WithPorts(t *testing.T) {

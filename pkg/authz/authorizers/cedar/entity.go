@@ -8,6 +8,11 @@ import (
 	cedar "github.com/cedar-policy/cedar-go"
 )
 
+// EntityTypeTHVGroup is the Cedar entity type representing group membership.
+// Principals are added as children of THVGroup entities so that Cedar's `in`
+// operator can evaluate group-based policies (e.g. `principal in THVGroup::"engineering"`).
+const EntityTypeTHVGroup cedar.EntityType = "THVGroup"
+
 // EntityFactory creates Cedar entities for authorization.
 type EntityFactory struct{}
 
@@ -33,7 +38,7 @@ func (*EntityFactory) CreatePrincipalEntity(
 	parentUIDs := make([]cedar.EntityUID, 0, len(groups))
 	var groupEntities []cedar.Entity
 	for _, g := range groups {
-		groupUID := cedar.NewEntityUID("THVGroup", cedar.String(g))
+		groupUID := cedar.NewEntityUID(EntityTypeTHVGroup, cedar.String(g))
 		parentUIDs = append(parentUIDs, groupUID)
 		groupEntities = append(groupEntities, cedar.Entity{
 			UID:        groupUID,

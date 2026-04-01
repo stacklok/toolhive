@@ -743,6 +743,15 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 
 // defaultGroupClaimNames lists common group claim names across popular identity
 // providers. They are checked in order; the first non-empty match is returned.
+//
+// Sources:
+//   - "groups"         — Microsoft Entra ID, Okta, Auth0, PingIdentity (the de-facto standard).
+//     https://learn.microsoft.com/en-us/security/zero-trust/develop/configure-tokens-group-claims-app-roles
+//     https://developer.okta.com/docs/guides/customize-tokens-groups-claim/main/
+//   - "roles"          — Keycloak (when a protocol mapper flattens realm_access.roles to a top-level claim).
+//     https://www.keycloak.org/docs/latest/authorization_services/index.html
+//   - "cognito:groups" — AWS Cognito user pools (included in both ID and access tokens).
+//     https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-the-access-token.html
 var defaultGroupClaimNames = []string{"groups", "roles", "cognito:groups"}
 
 // extractGroupsFromClaims looks for group membership claims in the provided

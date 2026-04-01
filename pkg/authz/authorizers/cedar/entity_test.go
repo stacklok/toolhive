@@ -77,7 +77,7 @@ func TestCreatePrincipalEntity_WithGroups(t *testing.T) {
 			// Each group entity must be a THVGroup with the correct ID.
 			for i, g := range tt.groups {
 				ge := groupEntities[i]
-				assert.Equal(t, "THVGroup", string(ge.UID.Type))
+				assert.Equal(t, string(EntityTypeTHVGroup), string(ge.UID.Type))
 				assert.Equal(t, g, string(ge.UID.ID))
 				// Group entities have no parents of their own.
 				assert.Equal(t, 0, ge.Parents.Len())
@@ -147,7 +147,7 @@ func TestCreateEntitiesForRequest_WithGroups(t *testing.T) {
 
 			// Verify group entities are present and principal has them as parents.
 			for _, g := range tt.wantGroupUIDs {
-				groupUID := cedar.NewEntityUID("THVGroup", cedar.String(g))
+				groupUID := cedar.NewEntityUID(EntityTypeTHVGroup, cedar.String(g))
 
 				_, groupFound := entities[groupUID]
 				assert.True(t, groupFound, "THVGroup::%q entity not found in map", g)

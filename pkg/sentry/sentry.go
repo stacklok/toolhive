@@ -55,7 +55,7 @@ func Init(cfg Config) error {
 		Debug:            cfg.Debug,
 		EnableTracing:    true,
 		AttachStacktrace: true,
-		SendDefaultPII:   true,
+		SendDefaultPII:   false,
 	})
 	if err != nil {
 		return fmt.Errorf("sentry init: %w", err)
@@ -66,10 +66,12 @@ func Init(cfg Config) error {
 
 	// Tag every event and transaction with the anonymous instance ID so that
 	// Sentry events from the API server can be correlated with those from
-	// toolhive-studio, which sets the same value as custom.user_id.
+	// toolhive-studio. Note: toolhive-studio currently uses "custom.user_id"
+	// for the same value; these should be aligned to "custom.instance_id" in
+	// both repos in a follow-up to avoid misleading PII detection heuristics.
 	if id, err := updates.TryGetAnonymousID(); err == nil && id != "" {
 		sentry.ConfigureScope(func(scope *sentry.Scope) {
-			scope.SetTag("custom.user_id", id)
+			scope.SetTag("custom.instance_id", id)
 		})
 		slog.Debug("sentry anonymous instance ID tagged", "id", id)
 	}
@@ -101,6 +103,11 @@ func Enabled() bool {
 // CaptureException reports an error to Sentry using the hub from the request context.
 // Falls back to the current hub if no hub is attached to the context.
 // No-op when Sentry is not initialized.
+//
+// The API server's error handler calls this alongside span.RecordError so that
+// 5xx errors appear as both OTEL span errors (distributed tracing) and
+// standalone Sentry Issues (error tracking). The Sentry span processor only
+// creates transactions; explicit hub calls are required for Issues.
 func CaptureException(r *http.Request, err error) {
 	if !initialized.Load() || err == nil {
 		return

@@ -171,7 +171,9 @@ type RunConfig struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
-	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+	// ProxyMode is the effective HTTP protocol the proxy uses.
+	// For stdio transports, this is the configured mode (sse or streamable-http).
+	// For direct transports (sse/streamable-http), this matches the transport type.
 	// Note: "sse" is deprecated; use "streamable-http" instead.
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty" enums:"sse,streamable-http"`
 
@@ -261,6 +263,12 @@ type SessionRedisConfig struct {
 	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
 }
 
+// NormalizeProxyMode sets ProxyMode to the effective value based on the
+// transport type, so downstream readers always see the actual HTTP protocol.
+func (c *RunConfig) NormalizeProxyMode() {
+	c.ProxyMode = types.EffectiveProxyMode(c.Transport, c.ProxyMode)
+}
+
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
 func (c *RunConfig) WriteJSON(w io.Writer) error {
 	// Ensure the schema version is set
@@ -312,6 +320,9 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	if err := migrateBearerToken(&config); err != nil {
 		return nil, fmt.Errorf("failed to migrate bearer token: %w", err)
 	}
+
+	// Normalize proxyMode so pre-existing configs always reflect the effective protocol
+	config.NormalizeProxyMode()
 
 	return &config, nil
 }

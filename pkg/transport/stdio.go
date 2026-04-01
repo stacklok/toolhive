@@ -125,7 +125,7 @@ func NewStdioTransport(
 		middlewares:       middlewares,
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
-		proxyMode:         types.ProxyModeSSE, // default to SSE for backward compatibility
+		proxyMode:         types.ProxyModeStreamableHTTP, // default to streamable-http
 		retryConfig:       defaultRetryConfig(),
 	}
 }

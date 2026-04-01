@@ -33,6 +33,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -191,20 +192,21 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	// middleware catches a panic. If recovery were outer, otelhttp's defer span.End()
 	// would fire during panic unwinding — before recover() — leaving the span ended
 	// and making span.RecordError a no-op. With otelhttp outer:
-	//   1. otelhttp starts span, calls next
-	//   2. recovery catches panic, calls span.RecordError, returns 500 normally
-	//   3. otelhttp's defer fires: span has error recorded + 500 status, then ends
-	// The span name uses chi's matched route pattern (e.g. "GET /api/v1beta/workloads/{name}")
-	// for clean grouping in Sentry and OTEL backends.
+	//   1. otelhttp starts span with a provisional name, calls next
+	//   2. chiRouteTagMiddleware renames the span after routing has resolved
+	//   3. recovery catches any panic, calls span.RecordError, returns 500 normally
+	//   4. otelhttp's defer fires: span has error recorded + 500 status, then ends
+	//
+	// Note: otelhttp reads W3C traceparent/tracestate headers before authentication.
+	// Untrusted clients can inject trace IDs or set sampled=1 to influence sampling.
+	// The ParentBased sampler (in otlp/tracing.go) partially mitigates forced sampling
+	// by delegating root decisions to TraceIDRatioBased.
 	if b.otelEnabled {
-		r.Use(otelhttp.NewMiddleware("thv-api",
-			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
-				if routeCtx := chi.RouteContext(r.Context()); routeCtx != nil && routeCtx.RoutePattern() != "" {
-					return r.Method + " " + routeCtx.RoutePattern()
-				}
-				return r.Method + " " + r.URL.Path
-			}),
-		))
+		r.Use(otelhttp.NewMiddleware("thv-api"))
+		// chiRouteTagMiddleware runs after routing so RoutePattern() is populated.
+		// It renames the span from the provisional "thv-api" to e.g.
+		// "GET /api/v1beta/workloads/{name}" for clean grouping in OTEL backends.
+		r.Use(chiRouteSpanNamer)
 	}
 
 	// Recovery middleware is inner so it runs inside the OTEL span lifetime,
@@ -777,7 +779,24 @@ func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 
 // generateNonce creates a cryptographically random nonce for server instance
 // identification. It returns a 32-character hex string (16 random bytes).
-func generateNonce() (string, error) {
+// chiRouteSpanNamer is a middleware that renames the active OTEL span to reflect
+// the matched chi route pattern (e.g. "GET /api/v1beta/workloads/{name}").
+//
+// otelhttp creates the span with a provisional name at request start, before
+// chi has matched the route. This middleware runs after chi routing completes
+// (i.e. it wraps next.ServeHTTP and renames the span on the way back up), so
+// RouteContext.RoutePattern() is guaranteed to be populated.
+func chiRouteSpanNamer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePattern() != "" {
+			trace.SpanFromContext(r.Context()).SetName(r.Method + " " + rctx.RoutePattern())
+		}
+	})
+}
+
+// GenerateNonce generates a random nonce for server instance identification.
+func GenerateNonce() (string, error) {
 	b := make([]byte, nonceBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate server nonce: %w", err)
@@ -789,7 +808,9 @@ func generateNonce() (string, error) {
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
 // If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
-// If otelEnabled is true, OTEL HTTP middleware is added for W3C traceparent extraction and distributed tracing.
+// Serve is a convenience wrapper that builds and starts the API server.
+// For callers that need to configure OTEL or other builder options not exposed
+// here, use NewServerBuilder and NewServer directly.
 func Serve(
 	ctx context.Context,
 	address string,
@@ -797,10 +818,9 @@ func Serve(
 	debugMode bool,
 	enableDocs bool,
 	oidcConfig *auth.TokenValidatorConfig,
-	otelEnabled bool,
 	middlewares ...func(http.Handler) http.Handler,
 ) error {
-	nonce, err := generateNonce()
+	nonce, err := GenerateNonce()
 	if err != nil {
 		return err
 	}
@@ -812,7 +832,6 @@ func Serve(
 		WithDocs(enableDocs).
 		WithNonce(nonce).
 		WithOIDCConfig(oidcConfig).
-		WithOtelEnabled(otelEnabled).
 		WithMiddleware(middlewares...)
 
 	server, err := NewServer(ctx, builder)

@@ -19,7 +19,7 @@ func TestGenerateNonce(t *testing.T) {
 	t.Run("returns valid 32-char hex string", func(t *testing.T) {
 		t.Parallel()
 
-		nonce, err := generateNonce()
+		nonce, err := GenerateNonce()
 		require.NoError(t, err)
 
 		assert.Len(t, nonce, 32)
@@ -29,10 +29,10 @@ func TestGenerateNonce(t *testing.T) {
 	t.Run("returns unique values on successive calls", func(t *testing.T) {
 		t.Parallel()
 
-		nonce1, err := generateNonce()
+		nonce1, err := GenerateNonce()
 		require.NoError(t, err)
 
-		nonce2, err := generateNonce()
+		nonce2, err := GenerateNonce()
 		require.NoError(t, err)
 
 		assert.NotEqual(t, nonce1, nonce2)

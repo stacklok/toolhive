@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package config contains the definition of the application config structure
@@ -39,6 +39,7 @@ type Config struct {
 	DefaultGroupMigration        bool                                `yaml:"default_group_migration,omitempty"`
 	TelemetryConfigMigration     bool                                `yaml:"telemetry_config_migration,omitempty"`
 	MiddlewareTelemetryMigration bool                                `yaml:"middleware_telemetry_migration,omitempty"`
+	SecretScopeMigration         bool                                `yaml:"secret_scope_migration,omitempty"`
 	DisableUsageMetrics          bool                                `yaml:"disable_usage_metrics,omitempty"`
 	BuildEnv                     map[string]string                   `yaml:"build_env,omitempty"`
 	BuildEnvFromSecrets          map[string]string                   `yaml:"build_env_from_secrets,omitempty"`

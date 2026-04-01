@@ -124,7 +124,11 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp(vmcp)
-	volumeMounts, volumes := r.buildVolumesForVmcp(ctx, vmcp)
+	volumeMounts, volumes, err := r.buildVolumesForVmcp(ctx, vmcp)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
+		return nil
+	}
 	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 
 	// Add embedded auth server volumes and env vars if configured (inline config)
@@ -238,7 +242,7 @@ func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
 func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]corev1.VolumeMount, []corev1.Volume) {
+) ([]corev1.VolumeMount, []corev1.Volume, error) {
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
 
@@ -270,7 +274,11 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 		} else if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 			oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
 				ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
-			if err == nil && oidcCfg != nil {
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to get MCPOIDCConfig %s for CA bundle: %w",
+					vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
+			}
+			if oidcCfg != nil {
 				caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
 				volumes = append(volumes, caVolumes...)
 				volumeMounts = append(volumeMounts, caMounts...)
@@ -280,7 +288,7 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 
 	// TODO: Add volumes for composite tool definitions from VirtualMCPCompositeToolDefinition refs
 
-	return volumeMounts, volumes
+	return volumeMounts, volumes, nil
 }
 
 // buildEnvVarsForVmcp builds environment variables for the vmcp container
@@ -303,7 +311,12 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	})
 
 	// Mount OIDC client secret
-	env = append(env, r.buildOIDCEnvVars(ctx, vmcp)...)
+	oidcEnv, err := r.buildOIDCEnvVars(ctx, vmcp)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build OIDC env vars")
+		return nil
+	}
+	env = append(env, oidcEnv...)
 
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
@@ -318,11 +331,13 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 }
 
 // buildOIDCEnvVars builds environment variables for OIDC client secret mounting.
-func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(ctx context.Context, vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
+func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(
+	ctx context.Context, vmcp *mcpv1alpha1.VirtualMCPServer,
+) ([]corev1.EnvVar, error) {
 	var env []corev1.EnvVar
 
 	if vmcp.Spec.IncomingAuth == nil {
-		return env
+		return env, nil
 	}
 
 	// Legacy path: inline OIDCConfig client secret
@@ -347,7 +362,11 @@ func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(ctx context.Context, vmcp 
 	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
 			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
-		if err == nil && oidcCfg != nil &&
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPOIDCConfig %s for client secret: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
+		}
+		if oidcCfg != nil &&
 			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
 			oidcCfg.Spec.Inline != nil &&
 			oidcCfg.Spec.Inline.ClientSecretRef != nil {
@@ -365,7 +384,7 @@ func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(ctx context.Context, vmcp 
 		}
 	}
 
-	return env
+	return env, nil
 }
 
 // buildHMACSecretEnvVar builds environment variable for HMAC secret mounting.
@@ -797,7 +816,11 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
 			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
-		if err == nil && oidcCfg != nil &&
+		if err != nil {
+			return fmt.Errorf("failed to get MCPOIDCConfig %s for secret validation: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
+		}
+		if oidcCfg != nil &&
 			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
 			oidcCfg.Spec.Inline != nil &&
 			oidcCfg.Spec.Inline.ClientSecretRef != nil {

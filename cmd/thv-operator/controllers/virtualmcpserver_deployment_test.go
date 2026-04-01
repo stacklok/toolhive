@@ -206,7 +206,8 @@ func TestBuildVolumesForVmcp(t *testing.T) {
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	volumeMounts, volumes := r.buildVolumesForVmcp(context.Background(), vmcp)
+	volumeMounts, volumes, err := r.buildVolumesForVmcp(context.Background(), vmcp)
+	require.NoError(t, err)
 
 	// Verify vmcp config volume
 	require.Len(t, volumeMounts, 1)

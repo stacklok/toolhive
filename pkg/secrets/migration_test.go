@@ -33,17 +33,43 @@ func TestMigrateSystemKeys(t *testing.T) {
 				{OldKey: "BUILD_AUTH_FILE_docker", NewKey: "__thv_workloads_BUILD_AUTH_FILE_docker"},
 			},
 			setup: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_foo").Return("", errors.New("secret not found"))
 				m.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_foo").Return("token-val", nil)
 				m.EXPECT().SetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_foo", "token-val").Return(nil)
 				m.EXPECT().DeleteSecret(gomock.Any(), "BEARER_TOKEN_foo").Return(nil)
 
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_registry_REGISTRY_OAUTH_bar").Return("", errors.New("secret not found"))
 				m.EXPECT().GetSecret(gomock.Any(), "REGISTRY_OAUTH_bar").Return("oauth-val", nil)
 				m.EXPECT().SetSecret(gomock.Any(), "__thv_registry_REGISTRY_OAUTH_bar", "oauth-val").Return(nil)
 				m.EXPECT().DeleteSecret(gomock.Any(), "REGISTRY_OAUTH_bar").Return(nil)
 
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BUILD_AUTH_FILE_docker").Return("", errors.New("secret not found"))
 				m.EXPECT().GetSecret(gomock.Any(), "BUILD_AUTH_FILE_docker").Return("auth-val", nil)
 				m.EXPECT().SetSecret(gomock.Any(), "__thv_workloads_BUILD_AUTH_FILE_docker", "auth-val").Return(nil)
 				m.EXPECT().DeleteSecret(gomock.Any(), "BUILD_AUTH_FILE_docker").Return(nil)
+			},
+		},
+		{
+			name: "idempotent: scoped key already exists — skips write, cleans up bare key",
+			migrations: []secrets.KeyMigration{
+				{OldKey: "BEARER_TOKEN_foo", NewKey: "__thv_workloads_BEARER_TOKEN_foo"},
+			},
+			setup: func(m *secretsmocks.MockProvider) {
+				// Scoped key already exists — SetSecret must NOT be called.
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_foo").Return("existing-val", nil)
+				m.EXPECT().DeleteSecret(gomock.Any(), "BEARER_TOKEN_foo").Return(nil)
+			},
+		},
+		{
+			name: "idempotent: scoped key exists and bare key already gone",
+			migrations: []secrets.KeyMigration{
+				{OldKey: "BEARER_TOKEN_foo", NewKey: "__thv_workloads_BEARER_TOKEN_foo"},
+			},
+			setup: func(m *secretsmocks.MockProvider) {
+				// Scoped key already exists — SetSecret must NOT be called.
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_foo").Return("existing-val", nil)
+				// Bare key is already gone — not-found on delete is ignored.
+				m.EXPECT().DeleteSecret(gomock.Any(), "BEARER_TOKEN_foo").Return(errors.New("secret not found: BEARER_TOKEN_foo"))
 			},
 		},
 		{
@@ -52,6 +78,7 @@ func TestMigrateSystemKeys(t *testing.T) {
 				{OldKey: "BEARER_TOKEN_missing", NewKey: "__thv_workloads_BEARER_TOKEN_missing"},
 			},
 			setup: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_missing").Return("", errors.New("secret not found"))
 				m.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_missing").Return("", errors.New("secret not found: BEARER_TOKEN_missing"))
 				// SetSecret and DeleteSecret must NOT be called.
 			},
@@ -67,6 +94,7 @@ func TestMigrateSystemKeys(t *testing.T) {
 				{OldKey: "BEARER_TOKEN_err", NewKey: "__thv_workloads_BEARER_TOKEN_err"},
 			},
 			setup: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_err").Return("", errors.New("secret not found"))
 				m.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_err").Return("", errors.New("backend unavailable"))
 			},
 			wantErr:     true,
@@ -78,6 +106,7 @@ func TestMigrateSystemKeys(t *testing.T) {
 				{OldKey: "BEARER_TOKEN_setfail", NewKey: "__thv_workloads_BEARER_TOKEN_setfail"},
 			},
 			setup: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_setfail").Return("", errors.New("secret not found"))
 				m.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_setfail").Return("val", nil)
 				m.EXPECT().SetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_setfail", "val").Return(errors.New("write error"))
 			},
@@ -90,6 +119,7 @@ func TestMigrateSystemKeys(t *testing.T) {
 				{OldKey: "BEARER_TOKEN_delfail", NewKey: "__thv_workloads_BEARER_TOKEN_delfail"},
 			},
 			setup: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_delfail").Return("", errors.New("secret not found"))
 				m.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_delfail").Return("val", nil)
 				m.EXPECT().SetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_delfail", "val").Return(nil)
 				m.EXPECT().DeleteSecret(gomock.Any(), "BEARER_TOKEN_delfail").Return(errors.New("delete error"))
@@ -103,6 +133,7 @@ func TestMigrateSystemKeys(t *testing.T) {
 				{OldKey: "BEARER_TOKEN_gone", NewKey: "__thv_workloads_BEARER_TOKEN_gone"},
 			},
 			setup: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().GetSecret(gomock.Any(), "__thv_workloads_BEARER_TOKEN_gone").Return("", errors.New("secret not found"))
 				// Old key already deleted in a previous migration run.
 				m.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_gone").Return("", errors.New("secret not found: BEARER_TOKEN_gone"))
 			},

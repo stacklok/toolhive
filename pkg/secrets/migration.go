@@ -6,6 +6,7 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -31,11 +32,25 @@ var SystemKeyPrefixMappings = []struct {
 }
 
 // MigrateSystemKeys renames keys from OldKey to NewKey in provider.
+// The migration is idempotent: if the scoped key already exists the bare key
+// is deleted without overwriting the scoped value, so a repeated or partial run
+// never clobbers data that was already written under the new name.
 // Write-before-delete ordering ensures that a crash between the two operations
 // leaves the secret reachable under the new key. Keys that do not exist in
 // provider are silently skipped, making the function safe to retry.
 func MigrateSystemKeys(ctx context.Context, provider Provider, migrations []KeyMigration) error {
 	for _, m := range migrations {
+		// If the scoped key already exists (e.g. from a partial prior run),
+		// skip the write and just clean up the bare key.
+		if _, err := provider.GetSecret(ctx, m.NewKey); err == nil {
+			slog.Debug("migration: scoped key already exists, skipping write",
+				"old_key", m.OldKey, "new_key", m.NewKey)
+			if delErr := provider.DeleteSecret(ctx, m.OldKey); delErr != nil && !IsNotFoundError(delErr) {
+				return fmt.Errorf("migration: deleting stale bare key %q: %w", m.OldKey, delErr)
+			}
+			continue
+		}
+
 		val, err := provider.GetSecret(ctx, m.OldKey)
 		if IsNotFoundError(err) {
 			continue

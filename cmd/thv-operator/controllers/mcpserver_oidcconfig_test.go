@@ -22,9 +22,9 @@ import (
 func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 	t.Parallel()
 
-	// validOIDCCondition is a helper to build a Valid=True condition slice.
+	// validOIDCCondition is a helper to build a Ready=True condition slice.
 	validOIDCCondition := []metav1.Condition{{
-		Type: "Valid", Status: metav1.ConditionTrue, Reason: "ValidationSucceeded",
+		Type: mcpv1alpha1.ConditionTypeOIDCConfigReady, Status: metav1.ConditionTrue, Reason: mcpv1alpha1.ConditionReasonOIDCConfigValid,
 	}}
 
 	tests := []struct {
@@ -62,7 +62,7 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 			expectConditionReason: mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
 		},
 		{
-			name: "config with Valid=False sets NotValid condition",
+			name: "config with Ready=False sets NotValid condition",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 				Spec: mcpv1alpha1.MCPServerSpec{
@@ -78,13 +78,13 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 				},
 				Status: mcpv1alpha1.MCPOIDCConfigStatus{
 					Conditions: []metav1.Condition{{
-						Type: "Valid", Status: metav1.ConditionFalse, Reason: "ValidationFailed",
+						Type: mcpv1alpha1.ConditionTypeOIDCConfigReady, Status: metav1.ConditionFalse, Reason: mcpv1alpha1.ConditionReasonOIDCConfigInvalid,
 						Message: "missing fields",
 					}},
 				},
 			},
 			expectError:           true,
-			expectErrorContains:   "not valid",
+			expectErrorContains:   "not ready",
 			expectConditionStatus: conditionStatusPtr(metav1.ConditionFalse),
 			expectConditionReason: mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid,
 		},

@@ -227,7 +227,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 		},
 	}
 
-	// Reconcile invalid config — should set Valid=False
+	// Reconcile invalid config — should set Ready=False
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
@@ -237,12 +237,12 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	var foundFalse bool
 	for _, cond := range invalidConfig.Status.Conditions {
-		if cond.Type == conditionTypeValid {
+		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady {
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			foundFalse = true
 		}
 	}
-	require.True(t, foundFalse, "Should have Valid=False condition")
+	require.True(t, foundFalse, "Should have Ready=False condition")
 	assert.Empty(t, invalidConfig.Status.ConfigHash, "Hash should not be set for invalid config")
 
 	// Fix the config by adding the inline spec
@@ -254,7 +254,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	err = fakeClient.Update(ctx, &invalidConfig)
 	require.NoError(t, err)
 
-	// Reconcile again — should set Valid=True and compute hash
+	// Reconcile again — should set Ready=True and compute hash
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
@@ -264,13 +264,13 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	var foundTrue bool
 	for _, cond := range recoveredConfig.Status.Conditions {
-		if cond.Type == conditionTypeValid {
-			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Valid condition should recover to True")
-			assert.Equal(t, "ValidationSucceeded", cond.Reason)
+		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady {
+			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Ready condition should recover to True")
+			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigValid, cond.Reason)
 			foundTrue = true
 		}
 	}
-	assert.True(t, foundTrue, "Should have Valid=True condition after fix")
+	assert.True(t, foundTrue, "Should have Ready=True condition after fix")
 	assert.NotEmpty(t, recoveredConfig.Status.ConfigHash, "Hash should be set after recovery")
 }
 
@@ -461,21 +461,21 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	// Check that the Valid condition is set to False
+	// Check that the Ready condition is set to False
 	var updatedConfig mcpv1alpha1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 
 	var foundCondition bool
 	for _, cond := range updatedConfig.Status.Conditions {
-		if cond.Type == conditionTypeValid {
+		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady {
 			foundCondition = true
-			assert.Equal(t, metav1.ConditionFalse, cond.Status, "Valid condition should be False")
-			assert.Equal(t, "ValidationFailed", cond.Reason)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status, "Ready condition should be False")
+			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigInvalid, cond.Reason)
 			break
 		}
 	}
-	assert.True(t, foundCondition, "Should have a Valid condition")
+	assert.True(t, foundCondition, "Should have a Ready condition")
 }
 
 func TestMCPOIDCConfig_Validate(t *testing.T) {

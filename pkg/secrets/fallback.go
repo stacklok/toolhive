@@ -5,6 +5,7 @@ package secrets
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 )
@@ -82,19 +83,24 @@ func (f *FallbackProvider) Capabilities() ProviderCapabilities {
 	return f.primary.Capabilities()
 }
 
-// IsNotFoundError checks if an error indicates a secret was not found.
-// It recognises errors by substring matching against the message forms used
-// by the built-in backends:
-//   - EncryptedManager: "secret not found: <name>"
-//   - EnvironmentProvider: "secret not found: <name>"
-//   - 1Password / external providers: errors containing "not found" or "does not exist"
-//
-// Any backend added in the future must return an error whose message contains
-// "not found" or "does not exist" to be recognised correctly by this function.
+// ErrSecretNotFound is the sentinel error returned by built-in Provider
+// implementations when a requested secret does not exist. Callers should
+// use IsNotFoundError rather than comparing directly, so that third-party
+// backends whose errors cannot wrap this sentinel are still handled.
+var ErrSecretNotFound = errors.New("secret not found")
+
+// IsNotFoundError reports whether err indicates that a secret was not found.
+// It first checks for the ErrSecretNotFound sentinel (used by all built-in
+// backends) via errors.Is, then falls back to substring matching for
+// third-party backends (e.g. 1Password SDK) that cannot wrap the sentinel.
 func IsNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, ErrSecretNotFound) {
+		return true
+	}
+	// Legacy fallback for third-party backends that don't wrap ErrSecretNotFound.
 	errStr := err.Error()
 	return strings.Contains(errStr, "not found") ||
 		strings.Contains(errStr, "does not exist")

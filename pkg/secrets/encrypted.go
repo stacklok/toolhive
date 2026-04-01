@@ -45,7 +45,7 @@ func (e *EncryptedManager) GetSecret(_ context.Context, name string) (string, er
 
 	value, ok := e.secrets.Load(name)
 	if !ok {
-		return "", fmt.Errorf("secret not found: %s", name)
+		return "", fmt.Errorf("%w: %s", ErrSecretNotFound, name)
 	}
 	return value.(string), nil
 }

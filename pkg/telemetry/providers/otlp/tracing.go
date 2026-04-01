@@ -51,7 +51,12 @@ func NewTracerProviderWithShutdown(
 
 	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(config.SamplingRate)),
+		// ParentBased ensures that when an incoming W3C traceparent header marks
+		// the parent as sampled (e.g. from ToolHive Studio), the child span is
+		// always sampled regardless of the local ratio. Without ParentBased, a
+		// bare TraceIDRatioBased sampler could drop a span even when the remote
+		// parent was sampled, breaking end-to-end distributed trace correlation.
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(config.SamplingRate))),
 	}
 
 	// Only wire an OTLP exporter when an endpoint is actually configured.

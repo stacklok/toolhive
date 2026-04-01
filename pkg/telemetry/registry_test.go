@@ -29,8 +29,8 @@ func (c *countingSpanProcessor) OnEnd(_ sdktrace.ReadOnlySpan) {
 	c.ends.Add(1)
 }
 
-func (c *countingSpanProcessor) Shutdown(_ context.Context) error { return nil }
-func (c *countingSpanProcessor) ForceFlush(_ context.Context) error { return nil }
+func (_ *countingSpanProcessor) Shutdown(_ context.Context) error { return nil }
+func (_ *countingSpanProcessor) ForceFlush(_ context.Context) error { return nil }
 
 // TestRegisterSpanProcessor_Dedup verifies that registering the same processor
 // pointer twice does not result in duplicate OnStart/OnEnd callbacks.

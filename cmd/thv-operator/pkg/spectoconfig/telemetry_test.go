@@ -276,6 +276,38 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 				ServiceName: "fallback",
 			},
 		},
+		{
+			name: "enabled false skips OTel config entirely",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  false,
+					Endpoint: "https://otel-collector:4317",
+					Tracing:  &v1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+					Metrics:  &v1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+				},
+			},
+			serviceNameOverride: "my-service",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				ServiceName: "my-service",
+			},
+		},
+		{
+			name: "endpoint with nil tracing and metrics produces no tracing or metrics",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					// Tracing and Metrics are nil
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				Endpoint:    "otel-collector:4317",
+				ServiceName: "test-server",
+			},
+		},
 	}
 
 	for _, tt := range tests {

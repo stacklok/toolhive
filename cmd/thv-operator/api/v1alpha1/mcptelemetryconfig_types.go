@@ -31,6 +31,7 @@ type SensitiveHeader struct {
 //   - Adds ResourceAttributes for shared OTel resource attributes
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.headers) || !has(self.sensitiveHeaders) || self.sensitiveHeaders.all(sh, !(sh.name in self.headers))",message="a header name cannot appear in both headers and sensitiveHeaders"
+// +kubebuilder:validation:XValidation:rule=”!has(self.endpoint) || size(self.endpoint) == 0 || (has(self.tracing) && self.tracing.enabled) || (has(self.metrics) && self.metrics.enabled)”,message=”endpoint requires at least one of tracing or metrics to be enabled”
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPTelemetryOTelConfig struct {

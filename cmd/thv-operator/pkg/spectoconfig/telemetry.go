@@ -116,8 +116,9 @@ func NormalizeMCPTelemetryConfig(
 
 	config := &telemetry.Config{}
 
-	// Map nested OpenTelemetry fields to flat telemetry.Config
-	if spec.OpenTelemetry != nil {
+	// Map nested OpenTelemetry fields to flat telemetry.Config.
+	// Only configure OTLP when Enabled is true, matching ConvertTelemetryConfig behavior.
+	if spec.OpenTelemetry != nil && spec.OpenTelemetry.Enabled {
 		otel := spec.OpenTelemetry
 		config.Endpoint = otel.Endpoint
 		config.Insecure = otel.Insecure

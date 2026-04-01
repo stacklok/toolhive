@@ -110,13 +110,16 @@ func newCedarAuthzMiddleware(
 
 	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
-	// Build the Cedar config structure expected by the authorizer factory
+	// Build the Cedar config structure expected by the authorizer factory.
+	// PrimaryUpstreamProvider is forwarded so Cedar evaluates claims from the
+	// upstream IDP token when the embedded auth server is active.
 	cedarConfig := cedar.Config{
 		Version: "1.0",
 		Type:    cedar.ConfigType,
 		Options: &cedar.ConfigOptions{
-			Policies:     authzCfg.Policies,
-			EntitiesJSON: "[]",
+			Policies:                authzCfg.Policies,
+			EntitiesJSON:            "[]",
+			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
 		},
 	}
 

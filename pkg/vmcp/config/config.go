@@ -245,6 +245,14 @@ type AuthzConfig struct {
 
 	// Policies contains Cedar policy definitions (when Type = "cedar").
 	Policies []string `json:"policies,omitempty" yaml:"policies,omitempty"`
+
+	// PrimaryUpstreamProvider names the upstream IDP provider whose access
+	// token should be used as the source of JWT claims for Cedar evaluation.
+	// When empty, claims from the ToolHive-issued token are used.
+	// Must match an upstream provider name configured in the embedded auth server
+	// (e.g. "default", "github"). Only relevant when the embedded auth server is active.
+	// +optional
+	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty" yaml:"primaryUpstreamProvider,omitempty"`
 }
 
 // StaticBackendConfig defines a pre-configured backend server for static mode.

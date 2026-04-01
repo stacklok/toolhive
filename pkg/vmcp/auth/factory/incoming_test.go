@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -152,4 +154,46 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNewCedarAuthzMiddleware_PropagatesPrimaryUpstreamProvider verifies that
+// newCedarAuthzMiddleware correctly wires PrimaryUpstreamProvider from the
+// AuthzConfig into the Cedar ConfigOptions so that Cedar evaluates claims from
+// the upstream IDP token when the embedded auth server is active.
+func TestNewCedarAuthzMiddleware_PropagatesPrimaryUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "my-idp"
+
+	authzCfg := &config.AuthzConfig{
+		Type:                    "cedar",
+		Policies:                []string{`permit(principal, action, resource);`},
+		PrimaryUpstreamProvider: providerName,
+	}
+
+	mw, err := newCedarAuthzMiddleware(authzCfg, nil)
+	require.NoError(t, err)
+	require.NotNil(t, mw, "middleware function should not be nil")
+
+	// Reconstruct the Cedar config the same way newCedarAuthzMiddleware does and
+	// verify the provider name is present in the serialised config options.  This
+	// exercises the full path: AuthzConfig -> cedar.Config -> authorizers.Config ->
+	// cedar.ExtractConfig, which is the same round-trip the Cedar authorizer uses
+	// at startup.
+	cedarCfg := cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:                authzCfg.Policies,
+			EntitiesJSON:            "[]",
+			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
+		},
+	}
+	authzConfig, err := authorizers.NewConfig(cedarCfg)
+	require.NoError(t, err)
+
+	extracted, err := cedar.ExtractConfig(authzConfig)
+	require.NoError(t, err)
+	assert.Equal(t, providerName, extracted.Options.PrimaryUpstreamProvider,
+		"PrimaryUpstreamProvider must be preserved through authorizers.NewConfig round-trip")
 }

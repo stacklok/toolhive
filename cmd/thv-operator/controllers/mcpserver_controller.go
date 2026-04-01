@@ -210,6 +210,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
 		// Update status to reflect the error
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPToolConfig error")
 		}
@@ -221,6 +222,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
 		// Update status to reflect the error
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
 		}
@@ -248,6 +250,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
 			mcpv1alpha1.ConditionReasonImageValidationFailed,
 			err.Error()) // This will include the wrapped error context with specific reason
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
 		}
@@ -258,6 +261,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "MCPServer image validation system error", "image", mcpServer.Spec.Image)
 		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
 			mcpv1alpha1.ConditionReasonImageValidationError,
+			fmt.Sprintf("Error checking image validity: %v", err))
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady,
 			fmt.Sprintf("Error checking image validity: %v", err))
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
@@ -316,6 +321,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure RBAC resources: %s", err.Error())
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RBAC error")
 		}
@@ -327,6 +333,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to ensure authorization ConfigMap")
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure authorization ConfigMap: %s", err.Error())
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after authz ConfigMap error")
 		}
@@ -338,6 +345,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig error")
 		}
@@ -357,6 +365,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to get RunConfig checksum")
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig checksum error")
 		}
@@ -374,6 +383,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			deploymentErr := fmt.Errorf("failed to create Deployment object")
 			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 			mcpServer.Status.Message = deploymentErr.Error()
+			setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
 			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment build failure")
 			}
@@ -385,6 +395,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			ctxLogger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 			mcpServer.Status.Message = fmt.Sprintf("Failed to create Deployment: %s", err.Error())
+			setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
 			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment creation failure")
 			}
@@ -639,6 +650,17 @@ func setImageValidationCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1
 	})
 }
 
+// setReadyCondition sets the top-level Ready status condition.
+func setReadyCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+}
+
 // validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the MCPServer status
 // with appropriate conditions and events
 func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) bool {
@@ -670,6 +692,9 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
 		})
+
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady,
+			fmt.Sprintf("Invalid PodTemplateSpec: %v", err))
 
 		// Update status with the condition
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
@@ -1403,6 +1428,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 			m.Status.Phase = mcpv1alpha1.MCPServerPhaseStopped
 			m.Status.Message = "MCP server is stopped (scaled to zero)"
 			m.Status.ReadyReplicas = 0
+			setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, "MCP server is stopped (scaled to zero)")
 			return r.Status().Update(ctx, m)
 		}
 	}
@@ -1426,6 +1452,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 			m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
 			m.Status.Message = "MCP server is being created"
 			m.Status.ReadyReplicas = 0
+			setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, "MCP server is being created")
 			return r.Status().Update(ctx, m)
 		}
 		return nil
@@ -1467,6 +1494,13 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 		m.Status.Message = "No healthy pods found"
 	}
 
+	// Set the top-level Ready condition based on the determined phase
+	if m.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+		setReadyCondition(m, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonReady, "MCP server is running")
+	} else {
+		setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, m.Status.Message)
+	}
+
 	// Update the status
 	return r.Status().Update(ctx, m)
 }
@@ -1494,6 +1528,7 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 	// Update the MCPServer status
 	m.Status.Phase = mcpv1alpha1.MCPServerPhaseTerminating
 	m.Status.Message = "MCP server is being terminated"
+	setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, "MCP server is being terminated")
 	if err := r.Status().Update(ctx, m); err != nil {
 		return err
 	}

@@ -41,10 +41,10 @@ type LocalSessionDataStorage struct {
 	stopOnce sync.Once
 }
 
-// Store creates or updates session metadata.
-func (s *LocalSessionDataStorage) Store(_ context.Context, id string, metadata map[string]string) error {
+// Upsert creates or updates session metadata.
+func (s *LocalSessionDataStorage) Upsert(_ context.Context, id string, metadata map[string]string) error {
 	if id == "" {
-		return fmt.Errorf("cannot store session data with empty ID")
+		return fmt.Errorf("cannot write session data with empty ID")
 	}
 	if metadata == nil {
 		metadata = make(map[string]string)
@@ -79,22 +79,11 @@ func (s *LocalSessionDataStorage) Load(_ context.Context, id string) (map[string
 	return maps.Clone(entry.metadata), nil
 }
 
-// Exists reports whether a session is present without refreshing its last-access
-// timestamp. This is safe for eviction probes: it will not extend the lifetime
-// of an idle session.
-func (s *LocalSessionDataStorage) Exists(_ context.Context, id string) (bool, error) {
-	if id == "" {
-		return false, fmt.Errorf("cannot check existence of session data with empty ID")
-	}
-	_, ok := s.sessions.Load(id)
-	return ok, nil
-}
-
-// StoreIfAbsent atomically creates session metadata only if the session ID
+// Create atomically creates session metadata only if the session ID
 // does not already exist. Uses sync.Map.LoadOrStore for atomicity.
-func (s *LocalSessionDataStorage) StoreIfAbsent(_ context.Context, id string, metadata map[string]string) (bool, error) {
+func (s *LocalSessionDataStorage) Create(_ context.Context, id string, metadata map[string]string) (bool, error) {
 	if id == "" {
-		return false, fmt.Errorf("cannot store session data with empty ID")
+		return false, fmt.Errorf("cannot write session data with empty ID")
 	}
 	if metadata == nil {
 		metadata = make(map[string]string)

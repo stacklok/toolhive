@@ -22,7 +22,9 @@ import (
 //
 // # Contract
 //
-//   - Store creates or overwrites the metadata for id, refreshing the TTL.
+//   - Create atomically creates metadata for id only if it does not already exist.
+//     Use this in preference to Load+Upsert to avoid TOCTOU races.
+//   - Upsert creates or overwrites the metadata for id, refreshing the TTL.
 //   - Load retrieves metadata and refreshes the TTL (sliding-window expiry).
 //     Returns ErrSessionNotFound if the session does not exist.
 //   - Delete removes the session. It is not an error if the session is absent.
@@ -34,26 +36,19 @@ import (
 //   - LocalSessionDataStorage (in-memory, single-process)
 //   - RedisSessionDataStorage (Redis/Valkey, multi-process)
 type DataStorage interface {
-	// Store creates or updates session metadata with a sliding TTL.
-	Store(ctx context.Context, id string, metadata map[string]string) error
+	// Upsert creates or updates session metadata with a sliding TTL.
+	Upsert(ctx context.Context, id string, metadata map[string]string) error
 
 	// Load retrieves session metadata and refreshes its TTL.
 	// Returns ErrSessionNotFound if the session does not exist.
 	Load(ctx context.Context, id string) (map[string]string, error)
 
-	// Exists reports whether a session exists without refreshing its TTL.
-	// Use this for read-only presence checks (e.g. eviction probes) where
-	// touching the TTL would incorrectly extend an idle session's lifetime.
-	// Returns (false, nil) when the session is not found; (false, err) on
-	// storage errors.
-	Exists(ctx context.Context, id string) (bool, error)
-
-	// StoreIfAbsent atomically creates session metadata only if the session ID
+	// Create atomically creates session metadata only if the session ID
 	// does not already exist. Returns (true, nil) if the entry was created,
 	// (false, nil) if it already existed, or (false, err) on storage errors.
-	// Use this in preference to Exists+Store to avoid TOCTOU races in
+	// Use this in preference to Load+Upsert to avoid TOCTOU races in
 	// multi-pod deployments.
-	StoreIfAbsent(ctx context.Context, id string, metadata map[string]string) (bool, error)
+	Create(ctx context.Context, id string, metadata map[string]string) (bool, error)
 
 	// Delete removes session metadata. Not an error if absent.
 	Delete(ctx context.Context, id string) error

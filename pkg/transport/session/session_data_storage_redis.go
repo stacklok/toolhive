@@ -16,7 +16,7 @@ import (
 // RedisSessionDataStorage implements DataStorage backed by Redis/Valkey.
 //
 // Metadata is serialized as a JSON object and stored with a sliding-window TTL:
-// each Load call refreshes the key's expiry via GETEX so that active sessions
+// each Upsert/Load call refreshes the key's expiry so that active sessions
 // never expire while they are in use.
 //
 // Because only plain map[string]string is stored, there are no type assertions
@@ -29,7 +29,7 @@ type RedisSessionDataStorage struct {
 
 // NewRedisSessionDataStorage constructs a RedisSessionDataStorage.
 // cfg provides connection parameters; ttl is the sliding-window expiry applied
-// on every Store and Load. The caller must call Close when done.
+// on every Upsert and Load. The caller must call Close when done.
 func NewRedisSessionDataStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*RedisSessionDataStorage, error) {
 	if err := validateRedisConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid redis configuration: %w", err)
@@ -52,10 +52,10 @@ func (s *RedisSessionDataStorage) key(id string) string {
 	return s.keyPrefix + id
 }
 
-// Store serializes metadata as JSON and writes it to Redis with a sliding TTL.
-func (s *RedisSessionDataStorage) Store(ctx context.Context, id string, metadata map[string]string) error {
+// Upsert serializes metadata as JSON and writes it to Redis with a sliding TTL.
+func (s *RedisSessionDataStorage) Upsert(ctx context.Context, id string, metadata map[string]string) error {
 	if id == "" {
-		return fmt.Errorf("cannot store session data with empty ID")
+		return fmt.Errorf("cannot write session data with empty ID")
 	}
 	if metadata == nil {
 		metadata = make(map[string]string)
@@ -87,25 +87,12 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 	return metadata, nil
 }
 
-// Exists checks whether the Redis key exists without refreshing its TTL.
-// Uses the Redis EXISTS command, which does not extend key expiry.
-func (s *RedisSessionDataStorage) Exists(ctx context.Context, id string) (bool, error) {
-	if id == "" {
-		return false, fmt.Errorf("cannot check existence of session data with empty ID")
-	}
-	count, err := s.client.Exists(ctx, s.key(id)).Result()
-	if err != nil {
-		return false, fmt.Errorf("failed to check session existence: %w", err)
-	}
-	return count > 0, nil
-}
-
-// StoreIfAbsent atomically creates session metadata only if the key does not
+// Create atomically creates session metadata only if the key does not
 // already exist. Uses Redis SET NX (set-if-not-exists) to eliminate the
-// TOCTOU race between Exists and Store in multi-pod deployments.
-func (s *RedisSessionDataStorage) StoreIfAbsent(ctx context.Context, id string, metadata map[string]string) (bool, error) {
+// TOCTOU race between Load and Upsert in multi-pod deployments.
+func (s *RedisSessionDataStorage) Create(ctx context.Context, id string, metadata map[string]string) (bool, error) {
 	if id == "" {
-		return false, fmt.Errorf("cannot store session data with empty ID")
+		return false, fmt.Errorf("cannot write session data with empty ID")
 	}
 	if metadata == nil {
 		metadata = make(map[string]string)

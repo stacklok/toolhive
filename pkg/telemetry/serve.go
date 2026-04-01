@@ -36,8 +36,8 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 	telemetryCfg := Config{
 		ServiceName:                 "thv-api",
 		Endpoint:                    otelCfg.Endpoint,
-		TracingEnabled:              otelCfg.TracingEnabled,
-		MetricsEnabled:              otelCfg.MetricsEnabled,
+		TracingEnabled:              otelCfg.TracingEnabled != nil && *otelCfg.TracingEnabled,
+		MetricsEnabled:              otelCfg.MetricsEnabled != nil && *otelCfg.MetricsEnabled,
 		Insecure:                    otelCfg.Insecure,
 		EnablePrometheusMetricsPath: otelCfg.EnablePrometheusMetricsPath,
 		EnvironmentVariables:        otelCfg.EnvVars,
@@ -69,8 +69,8 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 
 	slog.Debug("OTEL provider initialized for thv serve",
 		"endpoint", otelCfg.Endpoint,
-		"tracing", otelCfg.TracingEnabled,
-		"metrics", otelCfg.MetricsEnabled)
+		"tracing", telemetryCfg.TracingEnabled,
+		"metrics", telemetryCfg.MetricsEnabled)
 
 	return p, true, nil
 }

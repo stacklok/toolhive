@@ -132,6 +132,20 @@ type InlineOIDCSharedConfig struct {
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
 }
 
+// WorkloadReference identifies a workload that references a shared configuration resource.
+// Namespace is implicit — cross-namespace references are not supported.
+type WorkloadReference struct {
+	// Kind is the type of workload resource
+	// +kubebuilder:validation:Enum=MCPServer;VirtualMCPServer;MCPRemoteProxy
+	// +kubebuilder:validation:Required
+	Kind string `json:"kind"`
+
+	// Name is the name of the workload resource
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
 // MCPOIDCConfigStatus defines the observed state of MCPOIDCConfig
 type MCPOIDCConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPOIDCConfig's state
@@ -146,9 +160,10 @@ type MCPOIDCConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
-	// ReferencingServers is a list of MCPServer resources that reference this MCPOIDCConfig
+	// ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
+	// Each entry identifies the workload by kind and name.
 	// +optional
-	ReferencingServers []string `json:"referencingServers,omitempty"`
+	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true

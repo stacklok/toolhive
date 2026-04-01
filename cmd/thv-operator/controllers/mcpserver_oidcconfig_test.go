@@ -203,16 +203,19 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 			if tt.expectReferencingServer && tt.oidcConfig != nil {
 				var updated mcpv1alpha1.MCPOIDCConfig
 				require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.oidcConfig), &updated))
-				assert.Contains(t, updated.Status.ReferencingServers, tt.mcpServer.Name)
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: tt.mcpServer.Name}
+				assert.Contains(t, updated.Status.ReferencingWorkloads, expectedRef)
 			}
 		})
 	}
 }
 
-func TestMCPServerReconciler_updateOIDCConfigReferencingServers(t *testing.T) {
+func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
-	t.Run("adds new server name", func(t *testing.T) {
+	existingRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "existing"}
+
+	t.Run("adds new server reference", func(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 		scheme := runtime.NewScheme()
@@ -220,17 +223,18 @@ func TestMCPServerReconciler_updateOIDCConfigReferencingServers(t *testing.T) {
 
 		cfg := &mcpv1alpha1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status:     mcpv1alpha1.MCPOIDCConfigStatus{ReferencingServers: []string{"existing"}},
+			Status:     mcpv1alpha1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1alpha1.WorkloadReference{existingRef}},
 		}
 		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
 			WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).Build()
 		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
 
-		require.NoError(t, r.updateOIDCConfigReferencingServers(ctx, cfg, "new"))
-		assert.ElementsMatch(t, []string{"existing", "new"}, cfg.Status.ReferencingServers)
+		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "new"))
+		newRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "new"}
+		assert.ElementsMatch(t, []mcpv1alpha1.WorkloadReference{existingRef, newRef}, cfg.Status.ReferencingWorkloads)
 	})
 
-	t.Run("does not duplicate existing name", func(t *testing.T) {
+	t.Run("does not duplicate existing reference", func(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 		scheme := runtime.NewScheme()
@@ -238,14 +242,14 @@ func TestMCPServerReconciler_updateOIDCConfigReferencingServers(t *testing.T) {
 
 		cfg := &mcpv1alpha1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status:     mcpv1alpha1.MCPOIDCConfigStatus{ReferencingServers: []string{"existing"}},
+			Status:     mcpv1alpha1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1alpha1.WorkloadReference{existingRef}},
 		}
 		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
 			WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).Build()
 		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
 
-		require.NoError(t, r.updateOIDCConfigReferencingServers(ctx, cfg, "existing"))
-		assert.Len(t, cfg.Status.ReferencingServers, 1)
+		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "existing"))
+		assert.Len(t, cfg.Status.ReferencingWorkloads, 1)
 	})
 }
 

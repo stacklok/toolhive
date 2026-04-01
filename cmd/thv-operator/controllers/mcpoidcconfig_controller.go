@@ -125,12 +125,12 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	// Refresh ReferencingServers list
-	referencingServers, err := r.findReferencingServers(ctx, oidcConfig)
+	// Refresh ReferencingWorkloads list
+	referencingWorkloads, err := r.findReferencingWorkloads(ctx, oidcConfig)
 	if err != nil {
-		logger.Error(err, "Failed to find referencing servers")
-	} else if !slices.Equal(oidcConfig.Status.ReferencingServers, referencingServers) {
-		oidcConfig.Status.ReferencingServers = referencingServers
+		logger.Error(err, "Failed to find referencing workloads")
+	} else if !slices.Equal(oidcConfig.Status.ReferencingWorkloads, referencingWorkloads) {
+		oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
 		conditionChanged = true
 	}
 
@@ -161,26 +161,26 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(oidcConfig, OIDCConfigFinalizerName) {
-		// Check if any MCPServers still reference this config
-		referencingServers, err := r.findReferencingServers(ctx, oidcConfig)
+		// Check if any workloads still reference this config
+		referencingWorkloads, err := r.findReferencingWorkloads(ctx, oidcConfig)
 		if err != nil {
-			logger.Error(err, "Failed to check referencing servers during deletion")
+			logger.Error(err, "Failed to check referencing workloads during deletion")
 			return ctrl.Result{}, err
 		}
 
-		if len(referencingServers) > 0 {
-			logger.Info("MCPOIDCConfig is still referenced by MCPServers, blocking deletion",
+		if len(referencingWorkloads) > 0 {
+			logger.Info("MCPOIDCConfig is still referenced by workloads, blocking deletion",
 				"oidcConfig", oidcConfig.Name,
-				"referencingServers", referencingServers)
+				"referencingWorkloads", referencingWorkloads)
 
 			meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
 				Type:               "DeletionBlocked",
 				Status:             metav1.ConditionTrue,
-				Reason:             "ReferencedByServers",
-				Message:            fmt.Sprintf("Cannot delete: referenced by servers: %v", referencingServers),
+				Reason:             "ReferencedByWorkloads",
+				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
 				ObservedGeneration: oidcConfig.Generation,
 			})
-			oidcConfig.Status.ReferencingServers = referencingServers
+			oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
 			if updateErr := r.Status().Update(ctx, oidcConfig); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
@@ -200,22 +200,21 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-// findReferencingServers returns the names of MCPServer and VirtualMCPServer resources
+// findReferencingWorkloads returns the workload resources (MCPServer and VirtualMCPServer)
 // that reference this MCPOIDCConfig via their OIDCConfigRef field.
-// VirtualMCPServer entries are prefixed with "vmcp/" to distinguish them from MCPServers.
-func (r *MCPOIDCConfigReconciler) findReferencingServers(
+func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
-) ([]string, error) {
+) ([]mcpv1alpha1.WorkloadReference, error) {
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	if err := r.List(ctx, mcpServerList, client.InNamespace(oidcConfig.Namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
 	}
 
-	var refs []string
+	var refs []mcpv1alpha1.WorkloadReference
 	for _, server := range mcpServerList.Items {
 		if server.Spec.OIDCConfigRef != nil && server.Spec.OIDCConfigRef.Name == oidcConfig.Name {
-			refs = append(refs, server.Name)
+			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
 		}
 	}
 
@@ -228,7 +227,7 @@ func (r *MCPOIDCConfigReconciler) findReferencingServers(
 		if vmcp.Spec.IncomingAuth != nil &&
 			vmcp.Spec.IncomingAuth.OIDCConfigRef != nil &&
 			vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == oidcConfig.Name {
-			refs = append(refs, "vmcp/"+vmcp.Name)
+			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcp.Name})
 		}
 	}
 
@@ -236,11 +235,11 @@ func (r *MCPOIDCConfigReconciler) findReferencingServers(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer and VirtualMCPServer changes to maintain accurate ReferencingServers status.
+// Watches MCPServer and VirtualMCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Watch MCPServer changes to update ReferencingServers on referenced MCPOIDCConfigs.
+	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPOIDCConfigs.
 	// This handler enqueues both the currently-referenced MCPOIDCConfig AND any
-	// MCPOIDCConfig that still lists this server in ReferencingServers (covers the
+	// MCPOIDCConfig that still lists this server in ReferencingWorkloads (covers the
 	// case where a server removes its oidcConfigRef — the previously-referenced
 	// config needs to reconcile and clean up the stale entry).
 	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
@@ -264,7 +263,7 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Also enqueue any MCPOIDCConfig that still lists this server in
-			// ReferencingServers — handles ref-removal and server-deletion cases.
+			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
 			oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
 			if err := r.List(ctx, oidcConfigList, client.InNamespace(server.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for MCPServer watch")
@@ -275,8 +274,8 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if _, already := seen[nn]; already {
 					continue
 				}
-				for _, ref := range cfg.Status.ReferencingServers {
-					if ref == server.Name {
+				for _, ref := range cfg.Status.ReferencingWorkloads {
+					if ref.Kind == "MCPServer" && ref.Name == server.Name {
 						requests = append(requests, reconcile.Request{NamespacedName: nn})
 						break
 					}
@@ -299,7 +298,7 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // mapVirtualMCPServerToOIDCConfig maps VirtualMCPServer changes to MCPOIDCConfig reconciliation requests.
 // Enqueues both the currently-referenced config and any config that still lists this
-// VirtualMCPServer in ReferencingServers (handles ref-removal / deletion).
+// VirtualMCPServer in ReferencingWorkloads (handles ref-removal / deletion).
 func (r *MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
@@ -322,20 +321,19 @@ func (r *MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
 	}
 
 	// Also enqueue any MCPOIDCConfig that still lists this VirtualMCPServer in
-	// ReferencingServers — handles ref-removal and deletion cases.
+	// ReferencingWorkloads — handles ref-removal and deletion cases.
 	oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
 	if err := r.List(ctx, oidcConfigList, client.InNamespace(vmcp.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for VirtualMCPServer watch")
 		return requests
 	}
-	vmcpRef := "vmcp/" + vmcp.Name
 	for _, cfg := range oidcConfigList.Items {
 		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
 		if _, already := seen[nn]; already {
 			continue
 		}
-		for _, ref := range cfg.Status.ReferencingServers {
-			if ref == vmcpRef {
+		for _, ref := range cfg.Status.ReferencingWorkloads {
+			if ref.Kind == "VirtualMCPServer" && ref.Name == vmcp.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}

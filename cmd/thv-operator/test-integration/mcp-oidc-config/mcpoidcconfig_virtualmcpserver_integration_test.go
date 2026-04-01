@@ -155,7 +155,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("should track VirtualMCPServer in MCPOIDCConfig ReferencingServers", func() {
+		It("should track VirtualMCPServer in MCPOIDCConfig ReferencingWorkloads", func() {
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -165,8 +165,9 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == "vmcp/"+vmcpName {
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == expectedRef {
 						return true
 					}
 				}
@@ -175,7 +176,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 		})
 	})
 
-	Context("When VirtualMCPServer is deleted, should clean up ReferencingServers", Ordered, func() {
+	Context("When VirtualMCPServer is deleted, should clean up ReferencingWorkloads", Ordered, func() {
 		var (
 			namespace  string
 			configName string
@@ -259,7 +260,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}
 			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
 
-			// Wait for ReferencingServers to contain the VirtualMCPServer
+			// Wait for ReferencingWorkloads to contain the VirtualMCPServer
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -269,8 +270,9 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == "vmcp/"+vmcpName {
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == expectedRef {
 						return true
 					}
 				}
@@ -284,11 +286,11 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should remove VirtualMCPServer from ReferencingServers after deletion", func() {
+		It("should remove VirtualMCPServer from ReferencingWorkloads after deletion", func() {
 			// Delete the VirtualMCPServer
 			Expect(k8sClient.Delete(ctx, vmcpServer)).Should(Succeed())
 
-			// Eventually the referencing servers list should not contain the vmcp entry
+			// Eventually the referencing workloads list should not contain the vmcp entry
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -298,8 +300,9 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == "vmcp/"+vmcpName {
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == expectedRef {
 						return false
 					}
 				}
@@ -392,7 +395,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}
 			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
 
-			// Wait for ReferencingServers to be populated
+			// Wait for ReferencingWorkloads to be populated
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -402,8 +405,9 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == "vmcp/"+vmcpName {
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == expectedRef {
 						return true
 					}
 				}
@@ -664,7 +668,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should track both servers in ReferencingServers", func() {
+		It("should track both workloads in ReferencingWorkloads", func() {
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -674,13 +678,15 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				if err != nil {
 					return false
 				}
+				mcpServerRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: serverName}
+				vmcpServerRef := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
 				hasMCPServer := false
 				hasVMCPServer := false
-				for _, server := range updated.Status.ReferencingServers {
-					if server == serverName {
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == mcpServerRef {
 						hasMCPServer = true
 					}
-					if server == "vmcp/"+vmcpName {
+					if ref == vmcpServerRef {
 						hasVMCPServer = true
 					}
 				}

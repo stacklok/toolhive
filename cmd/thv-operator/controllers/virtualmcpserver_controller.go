@@ -2786,9 +2786,9 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 		return fmt.Errorf("%s", msg)
 	}
 
-	// Update ReferencingServers on the MCPOIDCConfig status
-	if err := r.updateOIDCConfigReferencingServers(ctx, oidcConfig, vmcp.Name); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingServers")
+	// Update ReferencingWorkloads on the MCPOIDCConfig status
+	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, vmcp.Name); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
 		// Non-fatal: continue with reconciliation
 	}
 
@@ -2817,26 +2817,25 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	return nil
 }
 
-// updateOIDCConfigReferencingServers ensures the VirtualMCPServer name is listed in
-// the MCPOIDCConfig's ReferencingServers status field.
-// Uses "vmcp/<name>" format to distinguish from MCPServer entries.
-func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingServers(
+// updateOIDCConfigReferencingWorkloads ensures the VirtualMCPServer is listed in
+// the MCPOIDCConfig's ReferencingWorkloads status field.
+func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	ctx context.Context,
 	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
 	vmcpName string,
 ) error {
-	ref := "vmcp/" + vmcpName
+	ref := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
 	// Check if already listed
-	for _, name := range oidcConfig.Status.ReferencingServers {
-		if name == ref {
+	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
+		if entry.Kind == ref.Kind && entry.Name == ref.Name {
 			return nil
 		}
 	}
 
-	// Add the server name
-	oidcConfig.Status.ReferencingServers = append(oidcConfig.Status.ReferencingServers, ref)
+	// Add the workload reference
+	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
-		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingServers: %w", err)
+		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}
 
 	return nil

@@ -1778,7 +1778,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPOIDCConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPOIDCConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPOIDCConfig |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistry
@@ -3621,5 +3621,23 @@ _Appears in:_
 | `hostPath` _string_ | HostPath is the path on the host to mount |  | Required: \{\} <br /> |
 | `mountPath` _string_ | MountPath is the path in the container to mount to |  | Required: \{\} <br /> |
 | `readOnly` _boolean_ | ReadOnly specifies whether the volume should be mounted read-only | false | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.WorkloadReference
+
+
+
+WorkloadReference identifies a workload that references a shared configuration resource.
+Namespace is implicit — cross-namespace references are not supported.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPOIDCConfigStatus](#apiv1alpha1mcpoidcconfigstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `kind` _string_ | Kind is the type of workload resource |  | Enum: [MCPServer VirtualMCPServer MCPRemoteProxy] <br />Required: \{\} <br /> |
+| `name` _string_ | Name is the name of the workload resource |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 

@@ -166,10 +166,9 @@ spec:
                 - message: a header name cannot appear in both headers and sensitiveHeaders
                   rule: '!has(self.headers) || !has(self.sensitiveHeaders) || self.sensitiveHeaders.all(sh,
                     !(sh.name in self.headers))'
-                - message: ”endpoint requires at least one of tracing or metrics to
-                    be enabled”
-                  rule: ”!has(self.endpoint) || size(self.endpoint) == 0 || (has(self.tracing)
-                    && self.tracing.enabled) || (has(self.metrics) && self.metrics.enabled)”
+                - message: endpoint requires at least one of tracing or metrics to be enabled
+                  rule: '!has(self.endpoint) || size(self.endpoint) == 0 || (has(self.tracing)
+                    && self.tracing.enabled) || (has(self.metrics) && self.metrics.enabled)'
               prometheus:
                 description: Prometheus defines Prometheus-specific configuration
                 properties:

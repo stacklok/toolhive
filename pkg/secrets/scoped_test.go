@@ -843,14 +843,15 @@ func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		scopedErr        error
-		scopedVal        string
-		expectBareLookup bool
-		bareVal          string
-		bareErr          error
-		wantVal          string
-		wantErr          bool
+		name                string
+		scopedErr           error
+		scopedVal           string
+		expectBareLookup    bool
+		bareVal             string
+		bareErr             error
+		wantVal             string
+		wantErr             bool
+		wantBareErrSurfaced bool // true when the bare-key backend error should be returned
 	}{
 		{
 			name:             "bare key found when scoped key missing",
@@ -880,6 +881,17 @@ func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) {
 			expectBareLookup: false,
 			wantErr:          true,
 		},
+		{
+			// When the bare-key lookup returns a real backend error (not a
+			// not-found), that error must be surfaced so the caller doesn't
+			// misdiagnose a connection failure as "secret not found".
+			name:                "bare key lookup hits backend error, error is surfaced",
+			scopedErr:           notFoundErr("__thv_workloads_mykey"),
+			expectBareLookup:    true,
+			bareErr:             errors.New("backend connection failed"),
+			wantErr:             true,
+			wantBareErrSurfaced: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -901,6 +913,9 @@ func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) {
 
 			if tc.wantErr {
 				require.Error(t, err)
+				if tc.wantBareErrSurfaced {
+					assert.ErrorIs(t, err, tc.bareErr)
+				}
 			} else {
 				require.NoError(t, err)
 				assert.Equal(t, tc.wantVal, got)

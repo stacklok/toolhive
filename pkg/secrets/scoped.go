@@ -80,10 +80,17 @@ func (s *ScopedProvider) GetSecret(ctx context.Context, name string) (string, er
 		// that was used before secret scope migration ran. After migration
 		// completes and the bare key is deleted, this lookup returns not-found
 		// and we fall through to return the original scoped-key error.
-		if bareVal, bareErr := s.provider.GetSecret(ctx, name); bareErr == nil {
+		bareVal, bareErr := s.provider.GetSecret(ctx, name)
+		if bareErr == nil {
 			slog.Debug("secret scope migration fallback: returning bare key",
 				"scope", s.scope, "name", name)
 			return bareVal, nil
+		}
+		if !IsNotFoundError(bareErr) {
+			// Bare-key lookup hit a real backend error (e.g. connection failure,
+			// auth error). Surface it so the caller doesn't misdiagnose a backend
+			// problem as "secret not found".
+			return "", fmt.Errorf("scoped key not found and bare-key fallback failed: %w", bareErr)
 		}
 	}
 	return "", err

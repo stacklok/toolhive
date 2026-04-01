@@ -31,7 +31,7 @@ func (e *EnvironmentProvider) GetSecret(_ context.Context, name string) (string,
 	envVar := e.prefix + name
 	value := os.Getenv(envVar)
 	if value == "" {
-		return "", fmt.Errorf("secret not found: %s", name)
+		return "", fmt.Errorf("%w: %s", ErrSecretNotFound, name)
 	}
 
 	return value, nil

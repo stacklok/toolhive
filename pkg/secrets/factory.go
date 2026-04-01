@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/adrg/xdg"
@@ -128,8 +127,8 @@ func ValidateEnvironmentProvider(ctx context.Context, provider Provider, result 
 		return result
 	}
 
-	// Check that we get the expected error message
-	if !strings.Contains(err.Error(), "secret not found") {
+	// Check that we get the expected not-found error
+	if !IsNotFoundError(err) {
 		result.Error = fmt.Errorf("unexpected error format: %w", err)
 		result.Message = "Environment provider validation failed"
 		return result

@@ -124,6 +124,7 @@ rules:
   - mcpoidcconfigs/finalizers
   - mcpregistries/finalizers
   - mcpservers/finalizers
+  - mcptelemetryconfigs/finalizers
   - mcptoolconfigs/finalizers
   verbs:
   - update
@@ -137,12 +138,23 @@ rules:
   - mcpregistries/status
   - mcpremoteproxies/status
   - mcpservers/status
+  - mcptelemetryconfigs/status
   - mcptoolconfigs/status
   - virtualmcpservers/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcptelemetryconfigs
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - toolhive.stacklok.dev
   resources:

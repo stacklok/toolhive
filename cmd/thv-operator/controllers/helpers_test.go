@@ -12,6 +12,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// conditionTypeValid is the condition type used across config controller tests.
+const conditionTypeValid = "Valid"
+
 // podTemplateSpecToRawExtension is a test helper to convert PodTemplateSpec to RawExtension
 func podTemplateSpecToRawExtension(t *testing.T, pts *corev1.PodTemplateSpec) *runtime.RawExtension {
 	t.Helper()

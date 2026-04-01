@@ -13,38 +13,30 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
+func TestMCPTelemetryConfigReconciler_calculateConfigHash(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
-		spec mcpv1alpha1.MCPOIDCConfigSpec
+		spec mcpv1alpha1.MCPTelemetryConfigSpec
 	}{
 		{
-			name: "kubernetesServiceAccount spec",
-			spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-				KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
-					Issuer: "https://kubernetes.default.svc",
-				},
-			},
+			name: "basic telemetry spec",
+			spec: newTelemetrySpec("https://otel-collector:4317", true, false),
 		},
 		{
-			name: "inline spec",
-			spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-					Issuer:   "https://accounts.google.com",
-					ClientID: "test-client",
-				},
-			},
+			name: "telemetry spec with headers",
+			spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+				s := newTelemetrySpec("https://otel-collector:4317", true, true)
+				s.Headers = map[string]string{"X-Team": "platform"}
+				return s
+			}(),
 		},
 	}
 
@@ -52,7 +44,7 @@ func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := &MCPOIDCConfigReconciler{}
+			r := &MCPTelemetryConfigReconciler{}
 
 			hash1 := r.calculateConfigHash(tt.spec)
 			hash2 := r.calculateConfigHash(tt.spec)
@@ -64,21 +56,9 @@ func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 
 	t.Run("different specs produce different hashes", func(t *testing.T) {
 		t.Parallel()
-		r := &MCPOIDCConfigReconciler{}
-		spec1 := mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-				Issuer:   "https://accounts.google.com",
-				ClientID: "client1",
-			},
-		}
-		spec2 := mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-				Issuer:   "https://accounts.google.com",
-				ClientID: "client2",
-			},
-		}
+		r := &MCPTelemetryConfigReconciler{}
+		spec1 := newTelemetrySpec("https://collector-a:4317", true, false)
+		spec2 := newTelemetrySpec("https://collector-b:4317", true, false)
 
 		hash1 := r.calculateConfigHash(spec1)
 		hash2 := r.calculateConfigHash(spec2)
@@ -87,7 +67,7 @@ func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 	})
 }
 
-func TestMCPOIDCConfigReconciler_ReconcileNotFound(t *testing.T) {
+func TestMCPTelemetryConfigReconciler_ReconcileNotFound(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -100,7 +80,7 @@ func TestMCPOIDCConfigReconciler_ReconcileNotFound(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	r := &MCPOIDCConfigReconciler{
+	r := &MCPTelemetryConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,
 	}
@@ -117,7 +97,7 @@ func TestMCPOIDCConfigReconciler_ReconcileNotFound(t *testing.T) {
 	assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue")
 }
 
-func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
+func TestMCPTelemetryConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -126,36 +106,30 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-				Issuer:   "https://accounts.google.com",
-				ClientID: "test-client",
-			},
-		},
+		Spec: newTelemetrySpec("https://otel-collector:4317", true, true),
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithObjects(telemetryConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
 		Build()
 
-	r := &MCPOIDCConfigReconciler{
+	r := &MCPTelemetryConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,
 	}
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
-			Name:      oidcConfig.Name,
-			Namespace: oidcConfig.Namespace,
+			Name:      telemetryConfig.Name,
+			Namespace: telemetryConfig.Namespace,
 		},
 	}
 
@@ -168,7 +142,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var afterInitial mcpv1alpha1.MCPOIDCConfig
+	var afterInitial mcpv1alpha1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterInitial)
 	require.NoError(t, err)
 	initialHash := afterInitial.Status.ConfigHash
@@ -179,14 +153,14 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
-	var afterSteady mcpv1alpha1.MCPOIDCConfig
+	var afterSteady mcpv1alpha1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterSteady)
 	require.NoError(t, err)
 	assert.Equal(t, initialHash, afterSteady.Status.ConfigHash, "Hash should not change")
 	assert.Equal(t, initialRV, afterSteady.ResourceVersion, "ResourceVersion should not change (no writes)")
 }
 
-func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
+func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -195,35 +169,36 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	// Start with invalid config: type=inline but no inline config
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	// Start with invalid config: environmentVariables is CLI-only
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "recovery-config",
 			Namespace:  "default",
-			Finalizers: []string{OIDCConfigFinalizerName},
+			Finalizers: []string{TelemetryConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			// Missing Inline config — invalid
-		},
+		Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+			s := newTelemetrySpec("https://otel-collector:4317", true, false)
+			s.EnvironmentVariables = []string{"OTEL_EXPORTER=grpc"}
+			return s
+		}(),
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithObjects(telemetryConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
 		Build()
 
-	r := &MCPOIDCConfigReconciler{
+	r := &MCPTelemetryConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,
 	}
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
-			Name:      oidcConfig.Name,
-			Namespace: oidcConfig.Namespace,
+			Name:      telemetryConfig.Name,
+			Namespace: telemetryConfig.Namespace,
 		},
 	}
 
@@ -231,7 +206,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var invalidConfig mcpv1alpha1.MCPOIDCConfig
+	var invalidConfig mcpv1alpha1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &invalidConfig)
 	require.NoError(t, err)
 
@@ -245,11 +220,8 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	require.True(t, foundFalse, "Should have Valid=False condition")
 	assert.Empty(t, invalidConfig.Status.ConfigHash, "Hash should not be set for invalid config")
 
-	// Fix the config by adding the inline spec
-	invalidConfig.Spec.Inline = &mcpv1alpha1.InlineOIDCSharedConfig{
-		Issuer:   "https://accounts.google.com",
-		ClientID: "test-client",
-	}
+	// Fix the config by removing environmentVariables
+	invalidConfig.Spec.EnvironmentVariables = nil
 	invalidConfig.Generation = 2
 	err = fakeClient.Update(ctx, &invalidConfig)
 	require.NoError(t, err)
@@ -258,7 +230,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var recoveredConfig mcpv1alpha1.MCPOIDCConfig
+	var recoveredConfig mcpv1alpha1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &recoveredConfig)
 	require.NoError(t, err)
 
@@ -274,31 +246,26 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	assert.NotEmpty(t, recoveredConfig.Status.ConfigHash, "Hash should be set after recovery")
 }
 
-func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
+func TestMCPTelemetryConfigReconciler_handleDeletion(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name                   string
-		oidcConfig             *mcpv1alpha1.MCPOIDCConfig
+		telemetryConfig        *mcpv1alpha1.MCPTelemetryConfig
 		expectFinalizerRemoved bool
 	}{
 		{
 			name: "delete config removes finalizer",
-			oidcConfig: &mcpv1alpha1.MCPOIDCConfig{
+			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-config",
 					Namespace:  "default",
-					Finalizers: []string{OIDCConfigFinalizerName},
+					Finalizers: []string{TelemetryConfigFinalizerName},
 					DeletionTimestamp: &metav1.Time{
 						Time: time.Now(),
 					},
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-						Issuer: "https://accounts.google.com",
-					},
-				},
+				Spec: newTelemetrySpec("https://otel-collector:4317", true, true),
 			},
 			expectFinalizerRemoved: true,
 		},
@@ -313,32 +280,30 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 			scheme := runtime.NewScheme()
 			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 
-			objs := []client.Object{tt.oidcConfig}
-
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithObjects(objs...).
+				WithObjects(tt.telemetryConfig).
 				Build()
 
-			r := &MCPOIDCConfigReconciler{
+			r := &MCPTelemetryConfigReconciler{
 				Client: fakeClient,
 				Scheme: scheme,
 			}
 
-			result, err := r.handleDeletion(ctx, tt.oidcConfig)
+			result, err := r.handleDeletion(ctx, tt.telemetryConfig)
 
 			assert.NoError(t, err)
 			assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 			if tt.expectFinalizerRemoved {
-				assert.NotContains(t, tt.oidcConfig.Finalizers, OIDCConfigFinalizerName,
+				assert.NotContains(t, tt.telemetryConfig.Finalizers, TelemetryConfigFinalizerName,
 					"Finalizer should be removed")
 			}
 		})
 	}
 }
 
-func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
+func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -347,36 +312,30 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-				Issuer:   "https://accounts.google.com",
-				ClientID: "test-client",
-			},
-		},
+		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithObjects(telemetryConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
 		Build()
 
-	r := &MCPOIDCConfigReconciler{
+	r := &MCPTelemetryConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,
 	}
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
-			Name:      oidcConfig.Name,
-			Namespace: oidcConfig.Namespace,
+			Name:      telemetryConfig.Name,
+			Namespace: telemetryConfig.Namespace,
 		},
 	}
 
@@ -391,14 +350,14 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Get updated config and check hash was set
-	var updatedConfig mcpv1alpha1.MCPOIDCConfig
+	var updatedConfig mcpv1alpha1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash, "Config hash should be set")
 	firstHash := updatedConfig.Status.ConfigHash
 
 	// Update the config spec (simulate a change)
-	updatedConfig.Spec.Inline.ClientID = "new-client-id"
+	updatedConfig.Spec.Endpoint = "https://new-collector:4317"
 	updatedConfig.Generation = 2
 	err = fakeClient.Update(ctx, &updatedConfig)
 	require.NoError(t, err)
@@ -408,7 +367,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get final config and verify hash changed
-	var finalConfig mcpv1alpha1.MCPOIDCConfig
+	var finalConfig mcpv1alpha1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &finalConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, finalConfig.Status.ConfigHash, "Config hash should still be set")
@@ -416,7 +375,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	assert.Equal(t, int64(2), finalConfig.Status.ObservedGeneration, "ObservedGeneration should be updated")
 }
 
-func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
+func TestMCPTelemetryConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -425,35 +384,36 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	// Invalid config: type is inline but no inline config set
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	// Invalid config: environmentVariables is CLI-only
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "invalid-config",
 			Namespace:  "default",
-			Finalizers: []string{OIDCConfigFinalizerName},
+			Finalizers: []string{TelemetryConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			// Missing Inline config
-		},
+		Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+			s := newTelemetrySpec("https://otel-collector:4317", true, false)
+			s.EnvironmentVariables = []string{"OTEL_EXPORTER=grpc"}
+			return s
+		}(),
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithObjects(telemetryConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
 		Build()
 
-	r := &MCPOIDCConfigReconciler{
+	r := &MCPTelemetryConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,
 	}
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
-			Name:      oidcConfig.Name,
-			Namespace: oidcConfig.Namespace,
+			Name:      telemetryConfig.Name,
+			Namespace: telemetryConfig.Namespace,
 		},
 	}
 
@@ -462,7 +422,7 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check that the Valid condition is set to False
-	var updatedConfig mcpv1alpha1.MCPOIDCConfig
+	var updatedConfig mcpv1alpha1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 
@@ -478,76 +438,87 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	assert.True(t, foundCondition, "Should have a Valid condition")
 }
 
-func TestMCPOIDCConfig_Validate(t *testing.T) {
+func TestMCPTelemetryConfig_Validate(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name        string
-		config      *mcpv1alpha1.MCPOIDCConfig
+		config      *mcpv1alpha1.MCPTelemetryConfig
 		expectError bool
 	}{
 		{
-			name: "valid kubernetesServiceAccount config",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
-						ServiceAccount: "test-sa",
-						Issuer:         "https://kubernetes.default.svc",
-					},
-				},
+			name: "valid basic config",
+			config: &mcpv1alpha1.MCPTelemetryConfig{
+				Spec: newTelemetrySpec("https://otel-collector:4317", false, true),
 			},
 			expectError: false,
 		},
 		{
-			name: "valid inline config",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-						Issuer:   "https://accounts.google.com",
-						ClientID: "test-client",
-					},
-				},
+			name: "valid config with sensitive headers",
+			config: &mcpv1alpha1.MCPTelemetryConfig{
+				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+					s := newTelemetrySpec("https://otel-collector:4317", true, false)
+					s.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+						{
+							Name: "Authorization",
+							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+								Name: "otel-secret",
+								Key:  "auth-token",
+							},
+						},
+					}
+					return s
+				}(),
 			},
 			expectError: false,
 		},
 		{
-			name: "invalid kubernetesServiceAccount set but type is inline",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
-						ServiceAccount: "test-sa",
-					},
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-						Issuer: "https://accounts.google.com",
-					},
-				},
+			name: "invalid environmentVariables set",
+			config: &mcpv1alpha1.MCPTelemetryConfig{
+				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+					s := newTelemetrySpec("https://otel-collector:4317", true, false)
+					s.EnvironmentVariables = []string{"OTEL_EXPORTER=grpc"}
+					return s
+				}(),
 			},
 			expectError: true,
 		},
 		{
-			name: "invalid no config variant set",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-				},
+			name: "invalid overlapping headers",
+			config: &mcpv1alpha1.MCPTelemetryConfig{
+				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+					s := newTelemetrySpec("https://otel-collector:4317", true, false)
+					s.Headers = map[string]string{"Authorization": "Bearer token"}
+					s.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+						{
+							Name: "Authorization",
+							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+								Name: "otel-secret",
+								Key:  "auth-token",
+							},
+						},
+					}
+					return s
+				}(),
 			},
 			expectError: true,
 		},
 		{
-			name: "invalid multiple config variants set",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
-						ServiceAccount: "test-sa",
-					},
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-						Issuer: "https://accounts.google.com",
-					},
-				},
+			name: "invalid empty secret ref name",
+			config: &mcpv1alpha1.MCPTelemetryConfig{
+				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+					s := newTelemetrySpec("https://otel-collector:4317", true, false)
+					s.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+						{
+							Name: "Authorization",
+							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+								Name: "",
+								Key:  "auth-token",
+							},
+						},
+					}
+					return s
+				}(),
 			},
 			expectError: true,
 		},
@@ -566,4 +537,83 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	spec := newTelemetrySpec("https://otel-collector:4317", true, true)
+
+	// Pre-compute the hash the controller would produce
+	r := &MCPTelemetryConfigReconciler{}
+	precomputedHash := r.calculateConfigHash(spec)
+
+	// Resource already has finalizer and correct hash, but no Valid condition
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "condition-only-config",
+			Namespace:  "default",
+			Finalizers: []string{TelemetryConfigFinalizerName},
+			Generation: 1,
+		},
+		Spec: spec,
+		Status: mcpv1alpha1.MCPTelemetryConfigStatus{
+			ConfigHash:         precomputedHash,
+			ObservedGeneration: 1,
+			// No conditions set — this is the key setup
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(telemetryConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		Build()
+
+	r.Client = fakeClient
+	r.Scheme = scheme
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      telemetryConfig.Name,
+			Namespace: telemetryConfig.Namespace,
+		},
+	}
+
+	// Reconcile should detect condition is missing and write it
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updated mcpv1alpha1.MCPTelemetryConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updated)
+	require.NoError(t, err)
+
+	// Hash should remain unchanged
+	assert.Equal(t, precomputedHash, updated.Status.ConfigHash, "Hash should not change")
+
+	// Valid=True condition should now be set
+	var foundValid bool
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == conditionTypeValid {
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, "ValidationSucceeded", cond.Reason)
+			foundValid = true
+		}
+	}
+	assert.True(t, foundValid, "Should have Valid=True condition after condition-only update")
+}
+
+// newTelemetrySpec creates a basic MCPTelemetryConfigSpec for testing.
+func newTelemetrySpec(endpoint string, tracing, metrics bool) mcpv1alpha1.MCPTelemetryConfigSpec {
+	spec := mcpv1alpha1.MCPTelemetryConfigSpec{}
+	spec.Endpoint = endpoint
+	spec.TracingEnabled = tracing
+	spec.MetricsEnabled = metrics
+	return spec
 }

@@ -45,6 +45,7 @@ func newMockSession(t *testing.T, ctrl *gomock.Controller, sessionID string, too
 	sess.EXPECT().SetData(gomock.Any()).AnyTimes()
 	sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
 	sess.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+	sess.EXPECT().RemoveBackendFromMetadata(gomock.Any()).AnyTimes()
 
 	// MultiSession-specific methods that tests don't care about
 	sess.EXPECT().BackendSessions().Return(nil).AnyTimes()
@@ -2078,6 +2079,38 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, loadErr := storage.Load(context.Background(), sessionID)
 		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
 			"terminated session must not be resurrected by NotifyBackendExpired")
+	})
+
+	t.Run("evicts session from node-local cache on success", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		registry := newFakeRegistry()
+		sess := newMockSession(t, ctrl, "s", nil)
+		sess.EXPECT().Close().Return(nil).AnyTimes()
+		factory := newMockFactory(t, ctrl, sess)
+		sm, storage := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		_, err := sm.CreateSession(t.Context(), sessionID)
+		require.NoError(t, err)
+
+		// CreateSession must have populated the node-local cache.
+		_, cached := sm.sessions.Peek(sessionID)
+		require.True(t, cached, "session must be in node-local cache after CreateSession")
+
+		seedBackendMetadata(t, storage, sessionID,
+			[]string{"workload-a"},
+			map[string]string{"workload-a": "sess-a"},
+		)
+
+		sm.NotifyBackendExpired(sessionID, "workload-a")
+
+		// The session must have been evicted so the next GetMultiSession call
+		// triggers RestoreSession with the updated (backend-free) metadata.
+		_, stillCached := sm.sessions.Peek(sessionID)
+		assert.False(t, stillCached,
+			"session must be evicted from node-local cache after NotifyBackendExpired")
 	})
 }
 

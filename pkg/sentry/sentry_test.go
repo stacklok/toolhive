@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	gosentry "github.com/getsentry/sentry-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -125,6 +126,30 @@ func TestCaptureException(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		CaptureException(req, nil)
 	})
+
+	t.Run("captures exception when initialized", func(t *testing.T) {
+		initialized.Store(false)
+		telemetry.ResetSpanProcessorsForTesting()
+
+		transport := &gosentry.MockTransport{}
+		err := gosentry.Init(gosentry.ClientOptions{
+			Dsn:       "https://examplePublicKey@o0.ingest.sentry.io/0",
+			Transport: transport,
+		})
+		require.NoError(t, err)
+		initialized.Store(true)
+		defer func() {
+			initialized.Store(false)
+			telemetry.ResetSpanProcessorsForTesting()
+		}()
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		CaptureException(req, errors.New("test capture"))
+
+		// hub.CaptureException enqueues the event; Flush delivers it to the transport.
+		gosentry.Flush(flushTimeout)
+		assert.Equal(t, 1, len(transport.Events()))
+	})
 }
 
 //nolint:paralleltest // mutates global initialized state
@@ -140,6 +165,30 @@ func TestRecoverPanic(t *testing.T) {
 		defer initialized.Store(false)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		RecoverPanic(req, nil)
+	})
+
+	t.Run("recovers panic and creates Sentry event", func(t *testing.T) {
+		initialized.Store(false)
+		telemetry.ResetSpanProcessorsForTesting()
+
+		transport := &gosentry.MockTransport{}
+		err := gosentry.Init(gosentry.ClientOptions{
+			Dsn:       "https://examplePublicKey@o0.ingest.sentry.io/0",
+			Transport: transport,
+		})
+		require.NoError(t, err)
+		initialized.Store(true)
+		defer func() {
+			initialized.Store(false)
+			telemetry.ResetSpanProcessorsForTesting()
+		}()
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		// RecoverPanic calls hub.Flush internally so events should be
+		// immediately available on the transport after the call returns.
+		RecoverPanic(req, "test panic value")
+
+		assert.Equal(t, 1, len(transport.Events()))
 	})
 }
 

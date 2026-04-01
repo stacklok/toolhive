@@ -520,9 +520,14 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 // cross-pod RestoreSession call does not attempt to reconnect to the expired
 // backend session.
 //
-// This is a best-effort, metadata-only operation: no live MultiSession state
-// is mutated. If the session is absent from storage (not found or terminated)
-// the call is a silent no-op. Storage errors are logged but not returned.
+// If the session is live in the node-local cache, RemoveBackendFromMetadata is
+// called on it to keep the in-memory state consistent. After a successful
+// storage update the session is evicted; the next GetMultiSession call will
+// trigger RestoreSession with the updated metadata.
+//
+// This is a best-effort operation. If the session is absent from storage (not
+// found or terminated) the call is a silent no-op. Storage errors are logged
+// but not returned; on error the cache is not evicted.
 func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
 	ctx := context.Background()
 	metadata, err := sm.storage.Load(ctx, sessionID)
@@ -539,13 +544,17 @@ func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
 		return
 	}
 
-	// Clear the per-backend session ID key.
-	delete(metadata, vmcpsession.MetadataKeyBackendSessionPrefix+workloadID)
+	// Update in-memory state if the session is live in this pod's cache.
+	if raw, ok := sm.sessions.Peek(sessionID); ok {
+		if sess, ok := raw.(vmcpsession.MultiSession); ok {
+			sess.RemoveBackendFromMetadata(workloadID)
+		}
+	}
 
-	// Rebuild MetadataKeyBackendIDs, removing the expired workload.
-	// Trim spaces and drop empty parts to handle any malformed metadata,
-	// consistent with filterBackendsByStoredIDs. When no backends remain,
-	// delete the key entirely to match populateBackendMetadata's contract.
+	// Clear the per-backend session ID key and rebuild MetadataKeyBackendIDs.
+	// Trim spaces and drop empty parts to handle malformed metadata gracefully.
+	// When no backends remain, delete the key to match populateBackendMetadata.
+	delete(metadata, vmcpsession.MetadataKeyBackendSessionPrefix+workloadID)
 	if backendIDs := metadata[vmcpsession.MetadataKeyBackendIDs]; backendIDs != "" {
 		parts := strings.Split(backendIDs, ",")
 		remaining := make([]string, 0, len(parts))
@@ -561,12 +570,17 @@ func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
 		}
 	}
 
-	if err := sm.storage.Store(ctx, sessionID, metadata); err != nil {
+	if err := sm.storage.Upsert(ctx, sessionID, metadata); err != nil {
 		slog.Warn("NotifyBackendExpired: failed to persist backend expiry to storage",
 			"session_id", sessionID,
 			"workload_id", workloadID,
 			"error", err)
+		return
 	}
+
+	// Evict from the node-local cache so the next GetMultiSession call triggers
+	// RestoreSession with the updated (backend-trimmed) metadata.
+	sm.sessions.Delete(sessionID)
 }
 
 // GetMultiSession retrieves the fully-formed MultiSession for a given SDK session ID.

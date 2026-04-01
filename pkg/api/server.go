@@ -33,6 +33,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
@@ -780,17 +781,35 @@ func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 // generateNonce creates a cryptographically random nonce for server instance
 // identification. It returns a 32-character hex string (16 random bytes).
 // chiRouteSpanNamer is a middleware that renames the active OTEL span to reflect
-// the matched chi route pattern (e.g. "GET /api/v1beta/workloads/{name}").
+// the matched chi route pattern (e.g. "GET /api/v1beta/workloads/{name}") and
+// records each URL path parameter as a span attribute for drill-down visibility.
 //
 // otelhttp creates the span with a provisional name at request start, before
 // chi has matched the route. This middleware runs after chi routing completes
 // (i.e. it wraps next.ServeHTTP and renames the span on the way back up), so
 // RouteContext.RoutePattern() is guaranteed to be populated.
+//
+// Low-cardinality span names group spans in OTEL/Sentry backends; the path
+// parameter attributes (e.g. url.path_param.name="my-server") retain the
+// concrete values for trace-level debugging without inflating cardinality.
 func chiRouteSpanNamer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
-		if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePattern() != "" {
-			trace.SpanFromContext(r.Context()).SetName(r.Method + " " + rctx.RoutePattern())
+		rctx := chi.RouteContext(r.Context())
+		if rctx == nil || rctx.RoutePattern() == "" {
+			return
+		}
+		span := trace.SpanFromContext(r.Context())
+		span.SetName(r.Method + " " + rctx.RoutePattern())
+		// Add each matched URL parameter as a span attribute so the actual
+		// value (e.g. the workload/MCP name) is visible in the trace without
+		// raising span-name cardinality.
+		attrs := make([]attribute.KeyValue, 0, len(rctx.URLParams.Keys))
+		for i, key := range rctx.URLParams.Keys {
+			attrs = append(attrs, attribute.String("url.path_param."+key, rctx.URLParams.Values[i]))
+		}
+		if len(attrs) > 0 {
+			span.SetAttributes(attrs...)
 		}
 	})
 }

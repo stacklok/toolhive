@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package runner provides functionality for running MCP servers
@@ -198,13 +198,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
-		secretManager, err := secrets.CreateSecretProvider(providerType)
+		systemProvider, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %w", err)
+			return fmt.Errorf("error instantiating system secret manager: %w", err)
+		}
+		userProvider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
+		if err != nil {
+			return fmt.Errorf("error instantiating user secret manager: %w", err)
 		}
 
 		// Process secrets (including RemoteAuthConfig and header forward secret resolution)
-		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
+		if _, err = r.Config.WithSecrets(ctx, systemProvider, userProvider); err != nil {
 			return err
 		}
 	}

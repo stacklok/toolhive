@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package runner
@@ -302,7 +302,7 @@ func resolveBuildAuthFilesFromSecrets(configuredFiles []string) (map[string]stri
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	manager, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}
@@ -336,7 +336,7 @@ func resolveSecretsForBuildEnv(secretRefs map[string]string) (map[string]string,
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	manager, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}

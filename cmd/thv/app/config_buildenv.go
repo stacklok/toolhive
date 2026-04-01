@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var (
@@ -111,26 +111,13 @@ func init() {
 }
 
 func validateSecretExists(ctx context.Context, secretName string) error {
-	configProvider := config.NewDefaultProvider()
-	cfg := configProvider.GetConfig()
-
-	// Check if secrets are set up
-	if !cfg.Secrets.SetupCompleted {
-		return secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return fmt.Errorf("failed to get secrets provider type: %w", err)
-	}
-
-	manager, err := secrets.CreateSecretProvider(providerType)
+	userSecretProvider, err := authsecrets.GetUserSecretsProvider()
 	if err != nil {
 		return fmt.Errorf("failed to create secrets provider: %w", err)
 	}
 
 	// Try to get the secret to validate it exists
-	_, err = manager.GetSecret(ctx, secretName)
+	_, err = userSecretProvider.GetSecret(ctx, secretName)
 	if err != nil {
 		return fmt.Errorf("secret '%s' not found or inaccessible: %w", secretName, err)
 	}

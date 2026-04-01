@@ -394,17 +394,22 @@ func (t *tracingTransport) forward(req *http.Request, body []byte) (*http.Respon
 		return nil, err
 	}
 
-	// Follow HTTP redirects transparently. MCP clients expect JSON-RPC
-	// responses and cannot handle 3xx redirects, so the proxy must resolve
-	// them before returning the response. The HTTP method and request body
-	// are always preserved (POST never becomes GET). This intentionally
-	// differs from standard HTTP client behavior (RFC 7231 allows 301/302
-	// to change POST to GET) because MCP uses JSON-RPC over POST and
-	// changing the method would break every request.
+	// Follow same-host HTTP redirects transparently. MCP clients expect
+	// JSON-RPC responses and cannot handle 3xx redirects, so the proxy
+	// must resolve them before returning the response.
 	//
-	// Note: request headers (including Authorization) are preserved across
-	// redirects because the proxy controls the target URL and redirects
-	// are expected to stay within the same trust domain.
+	// Only same-host redirects are followed to prevent SSRF: a malicious
+	// or compromised MCP server could otherwise redirect the proxy to
+	// internal cluster services (e.g. the Kubernetes API or cloud IMDS).
+	// Cross-host redirects are returned as-is; operators should update
+	// the configured target URL instead.
+	//
+	// The HTTP method and request body are always preserved (POST never
+	// becomes GET). This intentionally differs from standard HTTP client
+	// behavior (RFC 7231 allows 301/302 to change POST to GET) because
+	// MCP uses JSON-RPC over POST and changing the method would break
+	// every request.
+	originalHost := req.URL.Host
 	for redirectsFollowed := 0; redirectsFollowed < maxRedirects &&
 		isRedirectStatus(resp.StatusCode); redirectsFollowed++ {
 		location := resp.Header.Get("Location")
@@ -416,6 +421,13 @@ func (t *tracingTransport) forward(req *http.Request, body []byte) (*http.Respon
 		if parseErr != nil {
 			slog.Warn("failed to parse redirect Location header",
 				"location", location, "error", parseErr)
+			break
+		}
+
+		// Block cross-host redirects to prevent SSRF and credential leakage.
+		if redirectURL.Host != originalHost {
+			slog.Warn("refusing cross-host redirect from remote MCP server; update the configured target URL",
+				"from_host", originalHost, "to_host", redirectURL.Host)
 			break
 		}
 

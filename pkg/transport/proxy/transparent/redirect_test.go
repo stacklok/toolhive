@@ -74,27 +74,29 @@ func TestRedirectFollowing(t *testing.T) {
 			var receivedMethod atomic.Value
 			var receivedBody atomic.Value
 
-			// Final backend returns a valid response and records what it received.
-			final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Single server with a mux: /redirect returns the configured
+			// status code, /final records the request and returns 200.
+			// Both paths share the same host:port so the same-host check passes.
+			mux := http.NewServeMux()
+			mux.HandleFunc("/redirect", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Location", "/final")
+				w.WriteHeader(tt.redirectStatus)
+			})
+			mux.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) {
 				receivedMethod.Store(r.Method)
 				b, _ := io.ReadAll(r.Body)
 				receivedBody.Store(string(b))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{},"id":1}`))
-			}))
-			defer final.Close()
+			})
 
-			// Redirecting backend returns the configured status with a Location header.
-			redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Location", final.URL)
-				w.WriteHeader(tt.redirectStatus)
-			}))
-			defer redirector.Close()
+			server := httptest.NewServer(mux)
+			defer server.Close()
 
 			p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http", nil, nil, "", false)
 
-			targetURL, err := url.Parse(redirector.URL)
+			targetURL, err := url.Parse(server.URL)
 			require.NoError(t, err)
 			proxy := createBasicProxy(p, targetURL)
 
@@ -104,7 +106,7 @@ func TestRedirectFollowing(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(tt.method, redirector.URL+"/mcp", reqBody)
+			req := httptest.NewRequest(tt.method, server.URL+"/redirect", reqBody)
 			if tt.body != "" {
 				req.Header.Set("Content-Type", "application/json")
 			}
@@ -124,7 +126,7 @@ func TestRedirectLoopStopsAtMax(t *testing.T) {
 
 	var hitCount atomic.Int32
 
-	// Backend always redirects to itself.
+	// Backend always redirects to itself (same host).
 	looper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hitCount.Add(1)
 		w.Header().Set("Location", r.URL.String())
@@ -153,36 +155,33 @@ func TestRedirectLoopStopsAtMax(t *testing.T) {
 func TestRedirectChainMultipleHops(t *testing.T) {
 	t.Parallel()
 
-	// Final backend returns 200.
-	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// Single server: /hop-a → /hop-b → /final (all same host).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hop-a", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/hop-b")
+		w.WriteHeader(http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/hop-b", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/final")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/final", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{"tools":[]},"id":1}`))
-	}))
-	defer final.Close()
+	})
 
-	// Hop B redirects to final.
-	hopB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Location", final.URL)
-		w.WriteHeader(http.StatusTemporaryRedirect)
-	}))
-	defer hopB.Close()
-
-	// Hop A redirects to hop B.
-	hopA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Location", hopB.URL)
-		w.WriteHeader(http.StatusMovedPermanently)
-	}))
-	defer hopA.Close()
+	server := httptest.NewServer(mux)
+	defer server.Close()
 
 	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http", nil, nil, "", false)
 
-	targetURL, err := url.Parse(hopA.URL)
+	targetURL, err := url.Parse(server.URL)
 	require.NoError(t, err)
 	proxy := createBasicProxy(p, targetURL)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, hopA.URL+"/mcp",
+	req := httptest.NewRequest(http.MethodPost, server.URL+"/hop-a",
 		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list","id":1}`))
 	req.Header.Set("Content-Type", "application/json")
 	proxy.ServeHTTP(rec, req)
@@ -250,6 +249,41 @@ func TestRedirectRelativeLocation(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "/new", receivedPath.Load(), "relative Location should resolve correctly")
+}
+
+func TestRedirectCrossHostBlocked(t *testing.T) {
+	t.Parallel()
+
+	// A different-host server that should never receive a request.
+	var crossHostHit atomic.Bool
+	crossHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		crossHostHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer crossHost.Close()
+
+	// Origin server redirects to the cross-host server.
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", crossHost.URL+"/secret")
+		w.WriteHeader(http.StatusPermanentRedirect)
+	}))
+	defer origin.Close()
+
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http", nil, nil, "", false)
+
+	targetURL, err := url.Parse(origin.URL)
+	require.NoError(t, err)
+	proxy := createBasicProxy(p, targetURL)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, origin.URL+"/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	proxy.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusPermanentRedirect, rec.Code,
+		"cross-host redirect should be returned as-is, not followed")
+	assert.False(t, crossHostHit.Load(),
+		"cross-host server should never receive a request")
 }
 
 func TestNonRedirectPassesThrough(t *testing.T) {

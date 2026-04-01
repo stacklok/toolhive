@@ -23,14 +23,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.toolsFilter[*]
-      name: Filter Count
-      type: integer
-    - jsonPath: .spec.toolsOverride
-      name: Override Count
-      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Ready
+      type: string
     - jsonPath: .status.referencingServers
-      name: Referenced By
+      name: References
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age

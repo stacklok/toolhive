@@ -20,7 +20,13 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.type
-      name: Type
+      name: Source
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.referencingServers
+      name: References
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age

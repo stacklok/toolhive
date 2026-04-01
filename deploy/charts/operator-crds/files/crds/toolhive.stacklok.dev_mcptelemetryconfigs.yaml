@@ -22,12 +22,12 @@ spec:
     - jsonPath: .spec.endpoint
       name: Endpoint
       type: string
-    - jsonPath: .spec.tracingEnabled
-      name: Tracing
-      type: boolean
-    - jsonPath: .spec.metricsEnabled
-      name: Metrics
-      type: boolean
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.referencingServers
+      name: References
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

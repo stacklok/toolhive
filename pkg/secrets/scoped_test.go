@@ -843,14 +843,14 @@ func TestScopedProvider_GetSecret_MigrationFallback(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		scopedErr         error
-		scopedVal         string
-		expectBareLookup  bool
-		bareVal           string
-		bareErr           error
-		wantVal           string
-		wantErr           bool
+		name                string
+		scopedErr           error
+		scopedVal           string
+		expectBareLookup    bool
+		bareVal             string
+		bareErr             error
+		wantVal             string
+		wantErr             bool
 		wantBareErrSurfaced bool // true when the bare-key backend error should be returned
 	}{
 		{

@@ -1,0 +1,268 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: mcptelemetryconfigs.toolhive.stacklok.dev
+spec:
+  group: toolhive.stacklok.dev
+  names:
+    categories:
+    - toolhive
+    kind: MCPTelemetryConfig
+    listKind: MCPTelemetryConfigList
+    plural: mcptelemetryconfigs
+    shortNames:
+    - mcpotel
+    singular: mcptelemetryconfig
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.endpoint
+      name: Endpoint
+      type: string
+    - jsonPath: .spec.tracingEnabled
+      name: Tracing
+      type: boolean
+    - jsonPath: .spec.metricsEnabled
+      name: Metrics
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPTelemetryConfig is the Schema for the mcptelemetryconfigs API.
+          MCPTelemetryConfig resources are namespace-scoped and can only be referenced by
+          MCPServer resources within the same namespace. Cross-namespace references
+          are not supported for security and isolation reasons.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.
+              It embeds telemetry.Config from pkg/telemetry to eliminate the conversion
+              layer between CRD and application types. The environmentVariables field is
+              CLI-only and rejected by CEL validation; customAttributes is allowed for
+              setting shared OTel resource attributes (e.g., deployment.environment).
+            properties:
+              customAttributes:
+                additionalProperties:
+                  type: string
+                description: |-
+                  CustomAttributes contains custom resource attributes to be added to all telemetry signals.
+                  These are parsed from CLI flags (--otel-custom-attributes) or environment variables
+                  (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
+                type: object
+              enablePrometheusMetricsPath:
+                default: false
+                description: |-
+                  EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
+                  The metrics are served on the main transport port at /metrics.
+                  This is separate from OTLP metrics which are sent to the Endpoint.
+                type: boolean
+              endpoint:
+                description: Endpoint is the OTLP endpoint URL
+                type: string
+              environmentVariables:
+                description: |-
+                  EnvironmentVariables is a list of environment variable names that should be
+                  included in telemetry spans as attributes. Only variables in this list will
+                  be read from the host machine and included in spans for observability.
+                  Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"]
+                items:
+                  type: string
+                type: array
+              headers:
+                additionalProperties:
+                  type: string
+                description: Headers contains authentication headers for the OTLP
+                  endpoint.
+                type: object
+              insecure:
+                default: false
+                description: Insecure indicates whether to use HTTP instead of HTTPS
+                  for the OTLP endpoint.
+                type: boolean
+              metricsEnabled:
+                default: false
+                description: |-
+                  MetricsEnabled controls whether OTLP metrics are enabled.
+                  When false, OTLP metrics are not sent even if an endpoint is configured.
+                  This is independent of EnablePrometheusMetricsPath.
+                type: boolean
+              samplingRate:
+                default: "0.05"
+                description: |-
+                  SamplingRate is the trace sampling rate (0.0-1.0) as a string.
+                  Only used when TracingEnabled is true.
+                  Example: "0.05" for 5% sampling.
+                type: string
+              sensitiveHeaders:
+                description: |-
+                  SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.
+                  Use this for credential headers (e.g., API keys, bearer tokens) instead of
+                  embedding secrets in the headers field.
+                items:
+                  description: |-
+                    SensitiveHeader represents a header whose value is stored in a Kubernetes Secret.
+                    This allows credential headers (e.g., API keys, bearer tokens) to be securely
+                    referenced without embedding secrets inline in the MCPTelemetryConfig resource.
+                  properties:
+                    name:
+                      description: Name is the header name (e.g., "Authorization",
+                        "X-API-Key")
+                      minLength: 1
+                      type: string
+                    secretKeyRef:
+                      description: SecretKeyRef is a reference to a Kubernetes Secret
+                        key containing the header value
+                      properties:
+                        key:
+                          description: Key is the key within the secret
+                          type: string
+                        name:
+                          description: Name is the name of the secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                  required:
+                  - name
+                  - secretKeyRef
+                  type: object
+                type: array
+              serviceName:
+                description: |-
+                  ServiceName is the service name for telemetry.
+                  When omitted, defaults to the server name (e.g., VirtualMCPServer name).
+                type: string
+              serviceVersion:
+                description: |-
+                  ServiceVersion is the service version for telemetry.
+                  When omitted, defaults to the ToolHive version.
+                type: string
+              tracingEnabled:
+                default: false
+                description: |-
+                  TracingEnabled controls whether distributed tracing is enabled.
+                  When false, no tracer provider is created even if an endpoint is configured.
+                type: boolean
+              useLegacyAttributes:
+                default: true
+                description: |-
+                  UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names
+                  are emitted alongside the new standard attribute names. When true, spans include both
+                  old and new attribute names for backward compatibility with existing dashboards.
+                  Currently defaults to true; this will change to false in a future release.
+                type: boolean
+            type: object
+            x-kubernetes-validations:
+            - message: environmentVariables is a CLI-only field and cannot be set
+                in MCPTelemetryConfig; use customAttributes for resource attributes
+              rule: '!has(self.environmentVariables)'
+            - message: a header name cannot appear in both headers and sensitiveHeaders
+              rule: '!has(self.headers) || !has(self.sensitiveHeaders) || self.sensitiveHeaders.all(sh,
+                !(sh.name in self.headers))'
+          status:
+            description: MCPTelemetryConfigStatus defines the observed state of MCPTelemetryConfig
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the MCPTelemetryConfig's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              configHash:
+                description: ConfigHash is a hash of the current configuration for
+                  change detection
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  for this MCPTelemetryConfig.
+                format: int64
+                type: integer
+              referencingServers:
+                description: ReferencingServers is a list of MCPServer resources that
+                  reference this MCPTelemetryConfig
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

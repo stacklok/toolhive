@@ -88,7 +88,7 @@ func (h *MCPRemoteProxyTestHelper) NewRemoteProxyBuilder(name string) *RemotePro
 				ProxyPort: 8080,
 				Transport: "streamable-http",
 				// Default OIDC config for tests - override with WithInlineOIDCConfig if testing OIDC
-				OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 					Type: "inline",
 					Inline: &mcpv1alpha1.InlineOIDCConfig{
 						Issuer:   "https://auth.example.com",
@@ -131,7 +131,7 @@ func (rb *RemoteProxyBuilder) WithGroupRef(name string) *RemoteProxyBuilder {
 
 // WithInlineOIDCConfig sets an inline OIDC config for the proxy
 func (rb *RemoteProxyBuilder) WithInlineOIDCConfig(issuer, audience string, insecureAllowHTTP bool) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = mcpv1alpha1.OIDCConfigRef{
+	rb.proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
 		Type: "inline",
 		Inline: &mcpv1alpha1.InlineOIDCConfig{
 			Issuer:            issuer,
@@ -152,7 +152,7 @@ func (rb *RemoteProxyBuilder) WithRemoteURL(url string) *RemoteProxyBuilder {
 func (rb *RemoteProxyBuilder) WithInlineOIDCConfigAndJWKS(
 	issuer, audience, jwksURL string,
 ) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = mcpv1alpha1.OIDCConfigRef{
+	rb.proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
 		Type: mcpv1alpha1.OIDCConfigTypeInline,
 		Inline: &mcpv1alpha1.InlineOIDCConfig{
 			Issuer:   issuer,

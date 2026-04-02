@@ -435,6 +435,9 @@ func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason,
 // validateOIDCIssuerURL validates the OIDC issuer URL scheme.
 func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	oidcConfig := proxy.Spec.OIDCConfig
+	if oidcConfig == nil {
+		return nil
+	}
 
 	switch oidcConfig.Type {
 	case mcpv1alpha1.OIDCConfigTypeInline:
@@ -453,6 +456,9 @@ func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRem
 // validateJWKSURL validates the JWKS URL scheme in the OIDC config.
 func (*MCPRemoteProxyReconciler) validateJWKSURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	oidcConfig := proxy.Spec.OIDCConfig
+	if oidcConfig == nil {
+		return nil
+	}
 
 	switch oidcConfig.Type {
 	case mcpv1alpha1.OIDCConfigTypeInline:
@@ -727,9 +733,9 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
 	if err != nil {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyOIDCConfigRefValidated,
+			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyOIDCConfigRefNotFound,
+			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
 			Message:            fmt.Sprintf("MCPOIDCConfig %s not found: %v", proxy.Spec.OIDCConfigRef.Name, err),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -741,9 +747,9 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 
 	if oidcConfig == nil {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyOIDCConfigRefValidated,
+			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyOIDCConfigRefNotFound,
+			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
 			Message:            fmt.Sprintf("MCPOIDCConfig %s not found", proxy.Spec.OIDCConfigRef.Name),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -761,9 +767,9 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 			msg = fmt.Sprintf("MCPOIDCConfig %s is not ready: %s", proxy.Spec.OIDCConfigRef.Name, readyCondition.Message)
 		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyOIDCConfigRefValidated,
+			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyOIDCConfigRefNotReady,
+			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid,
 			Message:            msg,
 			ObservedGeneration: proxy.Generation,
 		})
@@ -781,9 +787,9 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 
 	// Set valid condition
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyOIDCConfigRefValidated,
+		Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyOIDCConfigRefValid,
+		Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
 		Message:            fmt.Sprintf("MCPOIDCConfig %s is valid and ready", proxy.Spec.OIDCConfigRef.Name),
 		ObservedGeneration: proxy.Generation,
 	})

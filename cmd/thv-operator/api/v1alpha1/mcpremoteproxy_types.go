@@ -34,6 +34,10 @@ type HeaderFromSecret struct {
 }
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
@@ -51,10 +55,11 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:default=streamable-http
 	Transport string `json:"transport,omitempty"`
 
-	// OIDCConfig defines OIDC authentication configuration for the proxy
-	// This validates incoming tokens from clients. Required for proxy mode.
-	// +kubebuilder:validation:Required
-	OIDCConfig OIDCConfigRef `json:"oidcConfig"`
+	// OIDCConfig defines OIDC authentication configuration for the proxy.
+	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
+	// +optional
+	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
 
 	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
@@ -210,9 +215,6 @@ const (
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
 
-	// ConditionTypeMCPRemoteProxyOIDCConfigRefValidated indicates whether the OIDCConfigRef is valid
-	ConditionTypeMCPRemoteProxyOIDCConfigRefValidated = "OIDCConfigRefValidated"
-
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
 )
@@ -270,15 +272,6 @@ const (
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream indicates multi-upstream is not supported
 	// for MCPRemoteProxy (use VirtualMCPServer for multi-upstream).
 	ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
-
-	// ConditionReasonMCPRemoteProxyOIDCConfigRefValid indicates the referenced MCPOIDCConfig is valid and ready
-	ConditionReasonMCPRemoteProxyOIDCConfigRefValid = "OIDCConfigRefValid"
-
-	// ConditionReasonMCPRemoteProxyOIDCConfigRefNotFound indicates the referenced MCPOIDCConfig was not found
-	ConditionReasonMCPRemoteProxyOIDCConfigRefNotFound = "OIDCConfigRefNotFound"
-
-	// ConditionReasonMCPRemoteProxyOIDCConfigRefNotReady indicates the referenced MCPOIDCConfig is not ready
-	ConditionReasonMCPRemoteProxyOIDCConfigRefNotReady = "OIDCConfigRefNotReady"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"
@@ -348,7 +341,7 @@ func (m *MCPRemoteProxy) GetNamespace() string {
 
 // GetOIDCConfig returns the OIDC configuration reference
 func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
-	return &m.Spec.OIDCConfig
+	return m.Spec.OIDCConfig
 }
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy

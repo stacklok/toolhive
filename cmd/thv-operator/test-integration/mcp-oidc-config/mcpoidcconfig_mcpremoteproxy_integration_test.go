@@ -32,7 +32,7 @@ func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mc
 			RemoteURL: testRemoteURL,
 			ProxyPort: 8080,
 			Transport: "streamable-http",
-			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+			OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 				Type: "inline",
 				Inline: &mcpv1alpha1.InlineOIDCConfig{
 					Issuer:   "https://auth.example.com",
@@ -135,12 +135,12 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyOIDCConfigRefValidated)
+				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
 				if condition == nil {
 					return false
 				}
 				return condition.Status == metav1.ConditionTrue &&
-					condition.Reason == mcpv1alpha1.ConditionReasonMCPRemoteProxyOIDCConfigRefValid
+					condition.Reason == mcpv1alpha1.ConditionReasonOIDCConfigRefValid
 			}, timeout, interval).Should(BeTrue())
 		})
 
@@ -232,12 +232,12 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyOIDCConfigRefValidated)
+				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
 				if condition == nil {
 					return false
 				}
 				return condition.Status == metav1.ConditionFalse &&
-					condition.Reason == mcpv1alpha1.ConditionReasonMCPRemoteProxyOIDCConfigRefNotFound
+					condition.Reason == mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
@@ -317,12 +317,12 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyOIDCConfigRefValidated)
+				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
 				if condition == nil {
 					return false
 				}
 				return condition.Status == metav1.ConditionFalse &&
-					condition.Reason == mcpv1alpha1.ConditionReasonMCPRemoteProxyOIDCConfigRefNotReady
+					condition.Reason == mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid
 			}, timeout, interval).Should(BeTrue())
 		})
 	})

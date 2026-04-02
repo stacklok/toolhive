@@ -195,8 +195,9 @@ spec:
                 type: object
               oidcConfig:
                 description: |-
-                  OIDCConfig defines OIDC authentication configuration for the proxy
-                  This validates incoming tokens from clients. Required for proxy mode.
+                  OIDCConfig defines OIDC authentication configuration for the proxy.
+                  Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+                  This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -691,9 +692,12 @@ spec:
                   and X-Forwarded-Prefix headers to construct endpoint URLs
                 type: boolean
             required:
-            - oidcConfig
             - remoteURL
             type: object
+            x-kubernetes-validations:
+            - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
+                to reference a shared MCPOIDCConfig
+              rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:

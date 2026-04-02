@@ -1199,6 +1199,11 @@ spec:
                               InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
                               WARNING: This is insecure and should NEVER be used in production
                             type: boolean
+                          introspectionUrl:
+                            description: |-
+                              IntrospectionURL is the token introspection endpoint URL (RFC 7662).
+                              When set, enables token introspection for opaque (non-JWT) tokens.
+                            type: string
                           issuer:
                             description: Issuer is the OIDC issuer URL.
                             pattern: ^https?://
@@ -1210,6 +1215,12 @@ spec:
                               the OIDC middleware needs to fetch its JWKS from that address.
                               Use with caution - only enable for trusted internal IDPs or testing.
                             type: boolean
+                          jwksUrl:
+                            description: |-
+                              JWKSURL is the explicit JWKS endpoint URL.
+                              When set, skips OIDC discovery and fetches the JWKS directly from this URL.
+                              This is useful when the OIDC issuer does not serve a /.well-known/openid-configuration.
+                            type: string
                           protectedResourceAllowPrivateIp:
                             description: |-
                               ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses

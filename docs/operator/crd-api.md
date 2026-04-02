@@ -381,6 +381,8 @@ _Appears in:_
 | `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
 | `audience` _string_ | Audience is the required token audience. |  |  |
 | `resource` _string_ | Resource is the OAuth 2.0 resource indicator (RFC 8707).<br />Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).<br />If not specified, defaults to Audience. |  |  |
+| `jwksUrl` _string_ | JWKSURL is the explicit JWKS endpoint URL.<br />When set, skips OIDC discovery and fetches the JWKS directly from this URL.<br />This is useful when the OIDC issuer does not serve a /.well-known/openid-configuration. |  | Optional: \{\} <br /> |
+| `introspectionUrl` _string_ | IntrospectionURL is the token introspection endpoint URL (RFC 7662).<br />When set, enables token introspection for opaque (non-JWT) tokens. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the required OAuth scopes. |  |  |
 | `protectedResourceAllowPrivateIp` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing |  |  |
 | `jwksAllowPrivateIp` _boolean_ | JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.<br />Enable when the embedded auth server runs on a loopback address and<br />the OIDC middleware needs to fetch its JWKS from that address.<br />Use with caution - only enable for trusted internal IDPs or testing. |  |  |

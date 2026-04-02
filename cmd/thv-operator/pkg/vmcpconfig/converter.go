@@ -274,6 +274,8 @@ func mapResolvedOIDCToVmcpConfig(
 		ClientID:                        resolved.ClientID,
 		Audience:                        resolved.Audience,
 		Resource:                        resolved.ResourceURL,
+		JWKSURL:                         resolved.JWKSURL,
+		IntrospectionURL:                resolved.IntrospectionURL,
 		ProtectedResourceAllowPrivateIP: resolved.JWKSAllowPrivateIP,
 		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
 		Scopes:                          resolved.Scopes,

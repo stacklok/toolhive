@@ -168,6 +168,8 @@ func newOIDCAuthMiddleware(
 		ClientID:          oidcCfg.ClientID,
 		Audience:          oidcCfg.Audience,
 		ResourceURL:       oidcCfg.Resource,
+		JWKSURL:           oidcCfg.JWKSURL,
+		IntrospectionURL:  oidcCfg.IntrospectionURL,
 		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
 		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
 		Scopes:            oidcCfg.Scopes,

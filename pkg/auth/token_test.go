@@ -2473,7 +2473,7 @@ func TestWithKeyProvider(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
-	provider := keysmocks.NewMockKeyProvider(ctrl)
+	provider := keysmocks.NewMockPublicKeyProvider(ctrl)
 	opt := WithKeyProvider(provider)
 
 	o := &tokenValidatorOptions{}
@@ -2507,7 +2507,7 @@ func TestGetKeyFromLocalProvider(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
-		provider := keysmocks.NewMockKeyProvider(ctrl)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
 		provider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
 			{KeyID: "other-kid", PublicKey: &privateKey.PublicKey},
 			{KeyID: "target-kid", PublicKey: &privateKey.PublicKey},
@@ -2529,7 +2529,7 @@ func TestGetKeyFromLocalProvider(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
-		provider := keysmocks.NewMockKeyProvider(ctrl)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
 		provider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
 			{KeyID: "other-kid", PublicKey: &privateKey.PublicKey},
 		}, nil)
@@ -2549,7 +2549,7 @@ func TestGetKeyFromLocalProvider(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
-		provider := keysmocks.NewMockKeyProvider(ctrl)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
 		provider.EXPECT().PublicKeys(gomock.Any()).Return(nil, errors.New("key unavailable"))
 
 		v := &TokenValidator{keyProvider: provider}
@@ -2567,7 +2567,7 @@ func TestGetKeyFromLocalProvider(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
-		provider := keysmocks.NewMockKeyProvider(ctrl)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
 
 		v := &TokenValidator{keyProvider: provider}
 		token := &jwt.Token{
@@ -2585,7 +2585,7 @@ func TestGetKeyFromLocalProvider(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
-		provider := keysmocks.NewMockKeyProvider(ctrl)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
 
 		v := &TokenValidator{keyProvider: provider}
 		token := &jwt.Token{

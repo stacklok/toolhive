@@ -86,7 +86,7 @@ type Runner struct {
 	// keyProvider provides in-process JWKS key lookups from the embedded
 	// auth server, eliminating self-referential HTTP calls.
 	// Nil when no embedded auth server is configured.
-	keyProvider keys.KeyProvider
+	keyProvider keys.PublicKeyProvider
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -144,10 +144,10 @@ func (r *Runner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
 	return r.upstreamTokenReader
 }
 
-// GetKeyProvider returns the embedded auth server's signing key provider
+// GetKeyProvider returns the embedded auth server's public key provider
 // for in-process JWKS key lookups. Returns nil if no embedded auth server
 // is configured.
-func (r *Runner) GetKeyProvider() keys.KeyProvider {
+func (r *Runner) GetKeyProvider() keys.PublicKeyProvider {
 	return r.keyProvider
 }
 

@@ -125,10 +125,10 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 }
 
 // GetKeyProvider mocks base method.
-func (m *MockMiddlewareRunner) GetKeyProvider() keys.KeyProvider {
+func (m *MockMiddlewareRunner) GetKeyProvider() keys.PublicKeyProvider {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetKeyProvider")
-	ret0, _ := ret[0].(keys.KeyProvider)
+	ret0, _ := ret[0].(keys.PublicKeyProvider)
 	return ret0
 }
 

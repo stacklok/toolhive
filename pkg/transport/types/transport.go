@@ -82,10 +82,10 @@ type MiddlewareRunner interface {
 	// Returns nil if the embedded auth server is not configured.
 	GetUpstreamTokenReader() upstreamtoken.TokenReader
 
-	// GetKeyProvider returns the embedded auth server's signing key provider
+	// GetKeyProvider returns the embedded auth server's public key provider
 	// for in-process JWKS key lookups. Returns nil if no embedded auth server
 	// is configured.
-	GetKeyProvider() keys.KeyProvider
+	GetKeyProvider() keys.PublicKeyProvider
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration

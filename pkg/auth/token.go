@@ -374,10 +374,10 @@ type TokenValidator struct {
 	upstreamTokenReader upstreamtoken.TokenReader
 
 	// keyProvider provides in-process JWKS key lookups from the embedded auth
-	// server's KeyProvider. When set, getKeyFromJWKS resolves keys locally
+	// server's key provider. When set, getKeyFromJWKS resolves keys locally
 	// before falling back to HTTP. Eliminates self-referential HTTP calls.
 	// nil when no embedded auth server is configured.
-	keyProvider keys.KeyProvider
+	keyProvider keys.PublicKeyProvider
 
 	// Lazy JWKS registration
 	jwksRegistered      bool
@@ -554,7 +554,7 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 type tokenValidatorOptions struct {
 	envReader           env.Reader
 	upstreamTokenReader upstreamtoken.TokenReader
-	keyProvider         keys.KeyProvider
+	keyProvider         keys.PublicKeyProvider
 }
 
 // TokenValidatorOption is a functional option for NewTokenValidator.
@@ -580,10 +580,12 @@ func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOpt
 
 // WithKeyProvider configures the token validator to use an in-process key
 // provider for JWKS lookups instead of fetching keys over HTTP. This is used
-// when the embedded auth server's KeyProvider is available in the same process,
+// when the embedded auth server's key provider is available in the same process,
 // eliminating self-referential HTTP calls and the need for insecureAllowHTTP
 // and jwksAllowPrivateIP flags.
-func WithKeyProvider(provider keys.KeyProvider) TokenValidatorOption {
+//
+// Only PublicKeyProvider is required — the validator never signs tokens.
+func WithKeyProvider(provider keys.PublicKeyProvider) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.keyProvider = provider
 	}

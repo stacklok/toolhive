@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -49,6 +50,7 @@ func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
 	passThroughTools map[string]struct{},
+	upstreamReader upstreamtoken.TokenReader,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -63,7 +65,7 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -141,9 +143,14 @@ func newCedarAuthzMiddleware(
 // newOIDCAuthMiddleware creates OIDC authentication middleware.
 // Reuses pkg/auth.GetAuthenticationMiddleware for OIDC token validation.
 // The middleware now directly creates Identity in context (no separate conversion needed).
+//
+// The reader parameter, when non-nil, enables the JWT validator to load upstream
+// provider tokens from the embedded auth server's storage. This is required for
+// upstream_inject outgoing auth to work with an embedded auth server.
 func newOIDCAuthMiddleware(
 	ctx context.Context,
 	oidcCfg *config.OIDCConfig,
+	reader upstreamtoken.TokenReader,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -166,8 +173,15 @@ func newOIDCAuthMiddleware(
 		Scopes:            oidcCfg.Scopes,
 	}
 
+	// Wire the upstream token reader so the JWT validator can enrich Identity
+	// with upstream provider tokens (needed for upstream_inject auth strategy).
+	var opts []auth.TokenValidatorOption
+	if reader != nil {
+		opts = append(opts, auth.WithUpstreamTokenReader(reader))
+	}
+
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
-	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
 	}

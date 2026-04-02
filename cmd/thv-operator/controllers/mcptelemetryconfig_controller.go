@@ -140,26 +140,54 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 }
 
 // SetupWithManager sets up the controller with the Manager.
+// Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Watch MCPServer changes to update ReferencingWorkloads status
+	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPTelemetryConfigs.
+	// This handler enqueues both the currently-referenced MCPTelemetryConfig AND any
+	// MCPTelemetryConfig that still lists this server in ReferencingWorkloads (covers the
+	// case where a server removes its telemetryConfigRef — the previously-referenced
+	// config needs to reconcile and clean up the stale entry).
 	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(_ context.Context, obj client.Object) []reconcile.Request {
-			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			server, ok := obj.(*mcpv1alpha1.MCPServer)
 			if !ok {
 				return nil
 			}
 
-			// If this MCPServer references a MCPTelemetryConfig, enqueue it for reconciliation
-			if mcpServer.Spec.TelemetryConfigRef == nil {
-				return nil
+			seen := make(map[types.NamespacedName]struct{})
+			var requests []reconcile.Request
+
+			// Enqueue the currently-referenced MCPTelemetryConfig (if any)
+			if server.Spec.TelemetryConfigRef != nil {
+				nn := types.NamespacedName{
+					Name:      server.Spec.TelemetryConfigRef.Name,
+					Namespace: server.Namespace,
+				}
+				seen[nn] = struct{}{}
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
 			}
 
-			return []reconcile.Request{{
-				NamespacedName: types.NamespacedName{
-					Name:      mcpServer.Spec.TelemetryConfigRef.Name,
-					Namespace: mcpServer.Namespace,
-				},
-			}}
+			// Also enqueue any MCPTelemetryConfig that still lists this server in
+			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
+			telemetryConfigList := &mcpv1alpha1.MCPTelemetryConfigList{}
+			if err := r.List(ctx, telemetryConfigList, client.InNamespace(server.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPTelemetryConfigs for MCPServer watch")
+				return requests
+			}
+			for _, cfg := range telemetryConfigList.Items {
+				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+				if _, already := seen[nn]; already {
+					continue
+				}
+				for _, ref := range cfg.Status.ReferencingWorkloads {
+					if ref.Kind == "MCPServer" && ref.Name == server.Name {
+						requests = append(requests, reconcile.Request{NamespacedName: nn})
+						break
+					}
+				}
+			}
+
+			return requests
 		},
 	)
 

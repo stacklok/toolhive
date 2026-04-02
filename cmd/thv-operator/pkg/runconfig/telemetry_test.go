@@ -13,7 +13,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
 const (
@@ -270,11 +269,11 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 		{
 			name: "valid spec adds runner option",
 			spec: &mcpv1alpha1.MCPTelemetryConfigSpec{
-				Config: telemetry.Config{
-					Endpoint:       "https://otel-collector:4317",
-					TracingEnabled: true,
-					MetricsEnabled: true,
-					SamplingRate:   "0.1",
+				OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "https://otel-collector:4317",
+					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
+					Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
 				},
 			},
 			serviceNameOverride: "my-server-service",
@@ -313,9 +312,10 @@ func TestAddMCPTelemetryConfigRefOptions_NilOptions(t *testing.T) {
 	t.Parallel()
 
 	spec := &mcpv1alpha1.MCPTelemetryConfigSpec{
-		Config: telemetry.Config{
-			Endpoint:       "otel-collector:4317",
-			TracingEnabled: true,
+		OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: "otel-collector:4317",
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
 		},
 	}
 

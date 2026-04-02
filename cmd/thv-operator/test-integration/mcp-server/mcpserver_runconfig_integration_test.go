@@ -546,12 +546,14 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 			}
-			telCfg.Spec.Endpoint = "otel-collector:4317"
-			telCfg.Spec.Insecure = true
-			telCfg.Spec.TracingEnabled = true
-			telCfg.Spec.MetricsEnabled = true
-			telCfg.Spec.SamplingRate = "0.1"
-			telCfg.Spec.EnablePrometheusMetricsPath = true
+			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "otel-collector:4317",
+				Insecure: true,
+				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
+				Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+			}
+			telCfg.Spec.Prometheus = &mcpv1alpha1.PrometheusConfig{Enabled: true}
 
 			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
 			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck
@@ -630,8 +632,11 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 			}
-			telCfg.Spec.Endpoint = "otel-collector:4317"
-			telCfg.Spec.TracingEnabled = true
+			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "otel-collector:4317",
+				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			}
 
 			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
 			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck

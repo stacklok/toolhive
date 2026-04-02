@@ -202,9 +202,9 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		{
 			name: "service name override takes precedence",
 			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				Config: telemetry.Config{
-					Endpoint:    "https://otel-collector:4317",
-					ServiceName: "spec-service-name",
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "https://otel-collector:4317",
 				},
 			},
 			serviceNameOverride: "per-server-override",
@@ -217,9 +217,9 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		{
 			name: "empty override falls through to defaultServiceName",
 			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				Config: telemetry.Config{
-					Endpoint:    "otel-collector:4317",
-					ServiceName: "",
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
 				},
 			},
 			serviceNameOverride: "",
@@ -232,13 +232,13 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		{
 			name: "endpoint normalization strips http:// prefix",
 			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				Config: telemetry.Config{
-					Endpoint:       "http://collector.monitoring:4317",
-					ServiceName:    "my-service",
-					TracingEnabled: true,
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "http://collector.monitoring:4317",
+					Tracing:  &v1alpha1.OpenTelemetryTracingConfig{Enabled: true},
 				},
 			},
-			serviceNameOverride: "",
+			serviceNameOverride: "my-service",
 			defaultServiceName:  "fallback",
 			expected: &telemetry.Config{
 				Endpoint:       "collector.monitoring:4317",
@@ -249,12 +249,12 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		{
 			name: "endpoint normalization strips https:// prefix",
 			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				Config: telemetry.Config{
-					Endpoint:    "https://secure-collector:4317",
-					ServiceName: "my-service",
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "https://secure-collector:4317",
 				},
 			},
-			serviceNameOverride: "",
+			serviceNameOverride: "my-service",
 			defaultServiceName:  "fallback",
 			expected: &telemetry.Config{
 				Endpoint:    "secure-collector:4317",
@@ -262,18 +262,50 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "spec ServiceName used when no override and not empty",
+			name: "default service name used when no override",
 			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				Config: telemetry.Config{
-					Endpoint:    "collector:4317",
-					ServiceName: "spec-level-name",
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "collector:4317",
 				},
 			},
 			serviceNameOverride: "",
 			defaultServiceName:  "fallback",
 			expected: &telemetry.Config{
 				Endpoint:    "collector:4317",
-				ServiceName: "spec-level-name",
+				ServiceName: "fallback",
+			},
+		},
+		{
+			name: "enabled false skips OTel config entirely",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  false,
+					Endpoint: "https://otel-collector:4317",
+					Tracing:  &v1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+					Metrics:  &v1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+				},
+			},
+			serviceNameOverride: "my-service",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				ServiceName: "my-service",
+			},
+		},
+		{
+			name: "endpoint with nil tracing and metrics produces no tracing or metrics",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					// Tracing and Metrics are nil
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				Endpoint:    "otel-collector:4317",
+				ServiceName: "test-server",
 			},
 		},
 	}
@@ -297,20 +329,18 @@ func TestNormalizeMCPTelemetryConfig_DoesNotModifyInput(t *testing.T) {
 	t.Parallel()
 
 	spec := &v1alpha1.MCPTelemetryConfigSpec{
-		Config: telemetry.Config{
-			Endpoint:    "https://otel-collector:4317",
-			ServiceName: "",
+		OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: "https://otel-collector:4317",
 		},
 	}
 
-	originalEndpoint := spec.Endpoint
-	originalServiceName := spec.ServiceName
+	originalEndpoint := spec.OpenTelemetry.Endpoint
 
 	result := NormalizeMCPTelemetryConfig(spec, "override-name", "default-name")
 
 	// Verify the original spec was not modified
-	assert.Equal(t, originalEndpoint, spec.Endpoint, "Input endpoint should not be modified")
-	assert.Equal(t, originalServiceName, spec.ServiceName, "Input ServiceName should not be modified")
+	assert.Equal(t, originalEndpoint, spec.OpenTelemetry.Endpoint, "Input endpoint should not be modified")
 
 	// Verify result has normalized values
 	require.NotNil(t, result)

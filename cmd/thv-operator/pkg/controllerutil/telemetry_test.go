@@ -83,19 +83,21 @@ func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
 			name: "sensitive headers produce env vars with SecretKeyRef",
 			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
 				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					SensitiveHeaders: []mcpv1alpha1.SensitiveHeader{
-						{
-							Name: "Authorization",
-							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
-								Name: "otel-secret",
-								Key:  "auth-token",
+					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+						SensitiveHeaders: []mcpv1alpha1.SensitiveHeader{
+							{
+								Name: "Authorization",
+								SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+									Name: "otel-secret",
+									Key:  "auth-token",
+								},
 							},
-						},
-						{
-							Name: "X-API-Key",
-							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
-								Name: "api-secrets",
-								Key:  "api-key",
+							{
+								Name: "X-API-Key",
+								SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+									Name: "api-secrets",
+									Key:  "api-key",
+								},
 							},
 						},
 					},

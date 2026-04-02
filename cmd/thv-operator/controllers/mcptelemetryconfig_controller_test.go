@@ -34,7 +34,7 @@ func TestMCPTelemetryConfigReconciler_calculateConfigHash(t *testing.T) {
 			name: "telemetry spec with headers",
 			spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
 				s := newTelemetrySpec("https://otel-collector:4317", true, true)
-				s.Headers = map[string]string{"X-Team": "platform"}
+				s.OpenTelemetry.Headers = map[string]string{"X-Team": "platform"}
 				return s
 			}(),
 		},
@@ -169,7 +169,7 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	// Start with invalid config: environmentVariables is CLI-only
+	// Start with invalid config: empty sensitive header name
 	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "recovery-config",
@@ -179,7 +179,10 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 		},
 		Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
 			s := newTelemetrySpec("https://otel-collector:4317", true, false)
-			s.EnvironmentVariables = []string{"OTEL_EXPORTER=grpc"}
+			s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{{
+				Name:         "",
+				SecretKeyRef: mcpv1alpha1.SecretKeyRef{Name: "s", Key: "k"},
+			}}
 			return s
 		}(),
 	}
@@ -220,8 +223,8 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 	require.True(t, foundFalse, "Should have Valid=False condition")
 	assert.Empty(t, invalidConfig.Status.ConfigHash, "Hash should not be set for invalid config")
 
-	// Fix the config by removing environmentVariables
-	invalidConfig.Spec.EnvironmentVariables = nil
+	// Fix the config by removing invalid sensitive headers
+	invalidConfig.Spec.OpenTelemetry.SensitiveHeaders = nil
 	invalidConfig.Generation = 2
 	err = fakeClient.Update(ctx, &invalidConfig)
 	require.NoError(t, err)
@@ -357,7 +360,7 @@ func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.
 	firstHash := updatedConfig.Status.ConfigHash
 
 	// Update the config spec (simulate a change)
-	updatedConfig.Spec.Endpoint = "https://new-collector:4317"
+	updatedConfig.Spec.OpenTelemetry.Endpoint = "https://new-collector:4317"
 	updatedConfig.Generation = 2
 	err = fakeClient.Update(ctx, &updatedConfig)
 	require.NoError(t, err)
@@ -384,7 +387,7 @@ func TestMCPTelemetryConfigReconciler_ValidationFailureSetsCondition(t *testing.
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	// Invalid config: environmentVariables is CLI-only
+	// Invalid config: empty sensitive header name
 	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "invalid-config",
@@ -394,7 +397,10 @@ func TestMCPTelemetryConfigReconciler_ValidationFailureSetsCondition(t *testing.
 		},
 		Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
 			s := newTelemetrySpec("https://otel-collector:4317", true, false)
-			s.EnvironmentVariables = []string{"OTEL_EXPORTER=grpc"}
+			s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{{
+				Name:         "",
+				SecretKeyRef: mcpv1alpha1.SecretKeyRef{Name: "s", Key: "k"},
+			}}
 			return s
 		}(),
 	}
@@ -458,7 +464,7 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 			config: &mcpv1alpha1.MCPTelemetryConfig{
 				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
 					s := newTelemetrySpec("https://otel-collector:4317", true, false)
-					s.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+					s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
 						{
 							Name: "Authorization",
 							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
@@ -473,23 +479,12 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "invalid environmentVariables set",
-			config: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
-					s := newTelemetrySpec("https://otel-collector:4317", true, false)
-					s.EnvironmentVariables = []string{"OTEL_EXPORTER=grpc"}
-					return s
-				}(),
-			},
-			expectError: true,
-		},
-		{
 			name: "invalid overlapping headers",
 			config: &mcpv1alpha1.MCPTelemetryConfig{
 				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
 					s := newTelemetrySpec("https://otel-collector:4317", true, false)
-					s.Headers = map[string]string{"Authorization": "Bearer token"}
-					s.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+					s.OpenTelemetry.Headers = map[string]string{"Authorization": "Bearer token"}
+					s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
 						{
 							Name: "Authorization",
 							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
@@ -504,11 +499,24 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "invalid endpoint without tracing or metrics",
+			config: &mcpv1alpha1.MCPTelemetryConfig{
+				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+						Enabled:  true,
+						Endpoint: "otel-collector:4317",
+						// No Tracing or Metrics configured
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
 			name: "invalid empty secret ref name",
 			config: &mcpv1alpha1.MCPTelemetryConfig{
 				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
 					s := newTelemetrySpec("https://otel-collector:4317", true, false)
-					s.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+					s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
 						{
 							Name: "Authorization",
 							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
@@ -694,8 +702,11 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 	err = fakeClient.Get(ctx, req.NamespacedName, &updated)
 	require.NoError(t, err)
 
-	// ReferencingServers should list server-a and server-b (sorted), but not server-c
-	assert.Equal(t, []string{"server-a", "server-b"}, updated.Status.ReferencingServers)
+	// ReferencingWorkloads should list server-a and server-b (sorted), but not server-c
+	assert.Equal(t, []mcpv1alpha1.WorkloadReference{
+		{Kind: "MCPServer", Name: "server-a"},
+		{Kind: "MCPServer", Name: "server-b"},
+	}, updated.Status.ReferencingWorkloads)
 }
 
 func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.T) {
@@ -843,9 +854,12 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_NoFinalizerIsNoOp(t *testin
 
 // newTelemetrySpec creates a basic MCPTelemetryConfigSpec for testing.
 func newTelemetrySpec(endpoint string, tracing, metrics bool) mcpv1alpha1.MCPTelemetryConfigSpec {
-	spec := mcpv1alpha1.MCPTelemetryConfigSpec{}
-	spec.Endpoint = endpoint
-	spec.TracingEnabled = tracing
-	spec.MetricsEnabled = metrics
-	return spec
+	return mcpv1alpha1.MCPTelemetryConfigSpec{
+		OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: endpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: tracing},
+			Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: metrics},
+		},
+	}
 }

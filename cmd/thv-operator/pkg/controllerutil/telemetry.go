@@ -38,19 +38,21 @@ func GenerateOpenTelemetryEnvVarsFromRef(
 	// Inject sensitive headers as env vars so the proxy runner can merge them
 	// into the OTLP exporter at startup. Each header becomes:
 	//   TOOLHIVE_OTEL_HEADER_<NORMALIZED_NAME>=<secret value>
-	for _, sh := range telemetryConfig.Spec.SensitiveHeaders {
-		envVarName := "TOOLHIVE_OTEL_HEADER_" + normalizeHeaderEnvVarName(sh.Name)
-		envVars = append(envVars, corev1.EnvVar{
-			Name: envVarName,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: sh.SecretKeyRef.Name,
+	if telemetryConfig.Spec.OpenTelemetry != nil {
+		for _, sh := range telemetryConfig.Spec.OpenTelemetry.SensitiveHeaders {
+			envVarName := "TOOLHIVE_OTEL_HEADER_" + normalizeHeaderEnvVarName(sh.Name)
+			envVars = append(envVars, corev1.EnvVar{
+				Name: envVarName,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: sh.SecretKeyRef.Name,
+						},
+						Key: sh.SecretKeyRef.Key,
 					},
-					Key: sh.SecretKeyRef.Key,
 				},
-			},
-		})
+			})
+		}
 	}
 
 	return envVars

@@ -171,53 +171,14 @@ func (c *Converter) convertIncomingAuth(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) (*vmcpconfig.IncomingAuthConfig, error) {
-	ctxLogger := log.FromContext(ctx)
+	oidcConfig, err := c.resolveOIDCConfig(ctx, vmcp)
+	if err != nil {
+		return nil, err
+	}
 
 	incoming := &vmcpconfig.IncomingAuthConfig{
 		Type: vmcp.Spec.IncomingAuth.Type,
-	}
-
-	// Convert OIDC configuration if present.
-	// New path: resolve from MCPOIDCConfig reference (preferred over legacy inline OIDCConfig)
-	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
-		oidcCfg, err := controllerutil.GetOIDCConfigForServer(
-			ctx, c.k8sClient, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get MCPOIDCConfig %s: %w",
-				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
-		}
-		resolvedConfig, err := c.oidcResolver.ResolveFromConfigRef(
-			ctx, vmcp.Spec.IncomingAuth.OIDCConfigRef, oidcCfg,
-			vmcp.Name, vmcp.Namespace, vmcp.GetProxyPort())
-		if err != nil {
-			ctxLogger.Error(err, "failed to resolve OIDC config from MCPOIDCConfig",
-				"vmcp", vmcp.Name,
-				"namespace", vmcp.Namespace,
-				"oidcConfigRef", vmcp.Spec.IncomingAuth.OIDCConfigRef.Name)
-			return nil, fmt.Errorf("OIDC resolution failed from MCPOIDCConfig %q: %w",
-				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
-		}
-		if resolvedConfig != nil {
-			incoming.OIDC = mapResolvedOIDCToVmcpConfigFromRef(resolvedConfig, oidcCfg)
-		}
-	} else if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
-		// Legacy path: resolve from inline OIDCConfig
-		// Use the OIDC resolver to handle all OIDC types (kubernetes, configMap, inline)
-		// VirtualMCPServer implements OIDCConfigurable, so the resolver can work with it directly
-		resolvedConfig, err := c.oidcResolver.Resolve(ctx, vmcp)
-		if err != nil {
-			ctxLogger.Error(err, "failed to resolve OIDC config",
-				"vmcp", vmcp.Name,
-				"namespace", vmcp.Namespace,
-				"oidcType", vmcp.Spec.IncomingAuth.OIDCConfig.Type)
-			// Fail closed: return error when OIDC is configured but resolution fails
-			// This prevents deploying without authentication when OIDC is explicitly requested
-			return nil, fmt.Errorf("OIDC resolution failed for type %q: %w",
-				vmcp.Spec.IncomingAuth.OIDCConfig.Type, err)
-		}
-		if resolvedConfig != nil {
-			incoming.OIDC = mapResolvedOIDCToVmcpConfig(resolvedConfig, vmcp.Spec.IncomingAuth.OIDCConfig)
-		}
+		OIDC: oidcConfig,
 	}
 
 	// Convert authorization configuration
@@ -241,6 +202,59 @@ func (c *Converter) convertIncomingAuth(
 	}
 
 	return incoming, nil
+}
+
+// resolveOIDCConfig resolves OIDC configuration from either an MCPOIDCConfig reference
+// or legacy inline OIDCConfig. Returns nil when no OIDC config is present.
+// Fails closed: returns an error when OIDC is configured but resolution fails,
+// preventing deployment without authentication when OIDC is explicitly requested.
+func (c *Converter) resolveOIDCConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*vmcpconfig.OIDCConfig, error) {
+	if vmcp.Spec.IncomingAuth == nil {
+		return nil, nil
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// New path: resolve from MCPOIDCConfig reference (preferred over legacy inline OIDCConfig)
+	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
+		oidcCfg, err := controllerutil.GetOIDCConfigForServer(
+			ctx, c.k8sClient, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPOIDCConfig %s: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
+		}
+		resolved, err := c.oidcResolver.ResolveFromConfigRef(
+			ctx, vmcp.Spec.IncomingAuth.OIDCConfigRef, oidcCfg,
+			vmcp.Name, vmcp.Namespace, vmcp.GetProxyPort())
+		if err != nil {
+			ctxLogger.Error(err, "failed to resolve OIDC config from MCPOIDCConfig",
+				"vmcp", vmcp.Name,
+				"namespace", vmcp.Namespace,
+				"oidcConfigRef", vmcp.Spec.IncomingAuth.OIDCConfigRef.Name)
+			return nil, fmt.Errorf("OIDC resolution failed from MCPOIDCConfig %q: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
+		}
+		return mapResolvedOIDCToVmcpConfigFromRef(resolved, oidcCfg), nil
+	}
+
+	// Legacy path: resolve from inline OIDCConfig
+	if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
+		resolved, err := c.oidcResolver.Resolve(ctx, vmcp)
+		if err != nil {
+			ctxLogger.Error(err, "failed to resolve OIDC config",
+				"vmcp", vmcp.Name,
+				"namespace", vmcp.Namespace,
+				"oidcType", vmcp.Spec.IncomingAuth.OIDCConfig.Type)
+			return nil, fmt.Errorf("OIDC resolution failed for type %q: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfig.Type, err)
+		}
+		return mapResolvedOIDCToVmcpConfig(resolved, vmcp.Spec.IncomingAuth.OIDCConfig), nil
+	}
+
+	return nil, nil
 }
 
 // mapResolvedOIDCToVmcpConfig maps from oidc.OIDCConfig (resolved by the OIDC resolver)

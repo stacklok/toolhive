@@ -23,4 +23,6 @@ type SkillService interface {
 	Build(ctx context.Context, opts BuildOptions) (*BuildResult, error)
 	// Push pushes a built skill artifact to a remote registry.
 	Push(ctx context.Context, opts PushOptions) error
+	// ListBuilds returns all locally-built OCI skill artifacts in the local store.
+	ListBuilds(ctx context.Context) ([]LocalBuild, error)
 }

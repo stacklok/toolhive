@@ -179,10 +179,16 @@ func (m Model) renderInspForm(width, height int) string {
 	sep := dimStyle.Render(strings.Repeat("─", width))
 
 	var sb strings.Builder
-	// Tool name and description.
+	// Tool name and description (capped to 2 lines; press 'i' for full description).
 	sb.WriteString(lipgloss.NewStyle().Foreground(ui.ColorCyan).Bold(true).Render(tool.Name) + "\n")
 	if tool.Description != "" {
-		for _, line := range wrapText(tool.Description, width-2, "") {
+		descLines := wrapText(tool.Description, width-2, "")
+		const maxDescLines = 2
+		if len(descLines) > maxDescLines {
+			descLines = descLines[:maxDescLines]
+			descLines[maxDescLines-1] += lipgloss.NewStyle().Foreground(ui.ColorDim).Render("… [i] more")
+		}
+		for _, line := range descLines {
 			sb.WriteString(lipgloss.NewStyle().Foreground(ui.ColorDim2).Render(line) + "\n")
 		}
 	}

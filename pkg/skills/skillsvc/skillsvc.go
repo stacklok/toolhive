@@ -501,6 +501,48 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 	return nil
 }
 
+// ListBuilds returns all locally-built OCI skill artifacts in the local store.
+func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
+	if s.ociStore == nil {
+		return nil, httperr.WithCode(
+			errors.New("OCI packaging is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	tags, err := s.ociStore.ListTags(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing local OCI builds: %w", err)
+	}
+
+	builds := make([]skills.LocalBuild, 0, len(tags))
+	for _, tag := range tags {
+		d, resolveErr := s.ociStore.Resolve(ctx, tag)
+		if resolveErr != nil {
+			slog.Debug("failed to resolve tag in local OCI store", "tag", tag, "error", resolveErr)
+			continue
+		}
+
+		build := skills.LocalBuild{
+			Tag:    tag,
+			Digest: d.String(),
+		}
+
+		// Best-effort: enrich with skill metadata from the OCI config labels.
+		if _, cfg, extractErr := s.extractOCIContent(ctx, d); extractErr == nil && cfg != nil {
+			build.Name = cfg.Name
+			build.Description = cfg.Description
+			build.Version = cfg.Version
+		} else if extractErr != nil {
+			slog.Debug("failed to extract skill config from local build", "tag", tag, "error", extractErr)
+		}
+
+		builds = append(builds, build)
+	}
+
+	return builds, nil
+}
+
 // ociPullTimeout is the maximum time allowed for pulling an OCI artifact.
 const ociPullTimeout = 5 * time.Minute
 

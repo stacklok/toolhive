@@ -22,8 +22,11 @@ func (m Model) registryBoxDims() (boxW, innerW, visibleRows int) {
 }
 
 // renderRegistryOverlay renders the registry browser overlay.
-// It delegates to the detail view when an item is selected.
+// It delegates to the run form or detail view as appropriate.
 func (m Model) renderRegistryOverlay(_ string) string {
+	if m.runForm.open {
+		return m.renderRunFormOverlay()
+	}
 	if m.registry.detail {
 		return m.renderRegistryDetailOverlay()
 	}
@@ -132,7 +135,7 @@ func (m Model) renderRegistryDetailOverlay() string {
 	textStyle := lipgloss.NewStyle().Foreground(ui.ColorText)
 	breadcrumb := titleStyle.Render("REGISTRY") + dimStyle.Render("  /  ") +
 		textStyle.Bold(true).Render(item.GetName())
-	sb.WriteString(breadcrumb + "  " + hintStyle.Render("↑↓ scroll  y=copy run  esc back") + "\n")
+	sb.WriteString(breadcrumb + "  " + hintStyle.Render("↑↓ scroll  r=run  y=copy cmd  esc back") + "\n")
 	sb.WriteString(sep + "\n")
 	for _, l := range lines[scrollOff:end] {
 		sb.WriteString(l + "\n")
@@ -298,6 +301,68 @@ func buildDetailTools(
 		}
 	}
 	return lines
+}
+
+// renderRunFormOverlay renders the run-from-registry form overlay.
+func (m Model) renderRunFormOverlay() string {
+	boxW, innerW, visibleRows := m.registryBoxDims()
+	item := m.runForm.item
+
+	dimStyle := lipgloss.NewStyle().Foreground(ui.ColorDim)
+	titleStyle := lipgloss.NewStyle().Foreground(ui.ColorPurple).Bold(true)
+	hintStyle := lipgloss.NewStyle().Foreground(ui.ColorDim2)
+	textStyle := lipgloss.NewStyle().Foreground(ui.ColorText)
+	greenStyle := lipgloss.NewStyle().Foreground(ui.ColorGreen)
+	sep := dimStyle.Render(strings.Repeat("─", innerW))
+
+	var sb strings.Builder
+
+	// Breadcrumb header.
+	breadcrumb := titleStyle.Render("REGISTRY") + dimStyle.Render("  /  ") +
+		textStyle.Bold(true).Render(item.GetName()) + dimStyle.Render("  /  ") +
+		titleStyle.Render("RUN")
+	hint := "tab=next  enter=run  esc=cancel"
+	if m.runForm.running {
+		hint = "starting…"
+	}
+	sb.WriteString(breadcrumb + "  " + hintStyle.Render(hint) + "\n")
+	sb.WriteString(sep + "\n")
+
+	// Form fields (scrollable).
+	const linesPerField = 4 // label + desc + input + gap
+	const headerFooterLines = 5
+	maxFields := max((visibleRows-headerFooterLines)/linesPerField, 2)
+	endIdx := min(m.runForm.scroll+maxFields, len(m.runForm.fields))
+
+	for i := m.runForm.scroll; i < endIdx; i++ {
+		f := m.runForm.fields[i]
+		focused := i == m.runForm.idx
+		lines := renderFormFieldFromStruct(f, focused, innerW)
+		for _, l := range lines {
+			sb.WriteString("  " + l + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(m.runForm.fields) > maxFields {
+		sb.WriteString(dimStyle.Render(fmt.Sprintf("  field %d/%d", m.runForm.idx+1, len(m.runForm.fields))) + "\n")
+	}
+
+	// Run button.
+	sb.WriteString(sep + "\n")
+	btnLabel := "  ▶ Run " + item.GetName()
+	if m.runForm.running {
+		btnLabel = "  ⟳ Starting…"
+	}
+	sb.WriteString(greenStyle.Bold(true).Render(btnLabel))
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+			BorderForeground(ui.ColorPurple).Padding(0, 1).Width(boxW).
+			Render(sb.String()),
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(ui.ColorDim),
+	)
 }
 
 // buildRunCmd builds a suggested `thv run` command string from registry metadata.

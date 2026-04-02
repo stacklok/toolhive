@@ -41,9 +41,9 @@ func runStdioRelay(logger *slog.Logger, relayPort int, cmd *exec.Cmd) error {
 
 	// Start the TCP listener before launching the child so the readiness
 	// probe on the host side can connect as soon as the port is forwarded.
-	// Bind to 127.0.0.1 — the port-forward from the host connects to the
-	// guest's loopback, so wider binding is unnecessary.
-	addr := fmt.Sprintf("127.0.0.1:%d", relayPort)
+	// Bind to 0.0.0.0 — the host-side port forward connects to the guest's
+	// network interface (e.g. 192.168.127.2), not loopback.
+	addr := fmt.Sprintf("0.0.0.0:%d", relayPort)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)

@@ -56,6 +56,13 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:validation:Required
 	OIDCConfig OIDCConfigRef `json:"oidcConfig"`
 
+	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Per-server overrides (audience, scopes) are specified here; shared provider config
+	// lives in the MCPOIDCConfig resource.
+	// +optional
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
+
 	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
 	// When specified, the proxy will exchange validated incoming tokens for remote service tokens.
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
@@ -156,6 +163,10 @@ type MCPRemoteProxyStatus struct {
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
 
+	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
+	// +optional
+	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
+
 	// Message provides additional information about the current phase
 	// +optional
 	Message string `json:"message,omitempty"`
@@ -198,6 +209,9 @@ const (
 
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+
+	// ConditionTypeMCPRemoteProxyOIDCConfigRefValidated indicates whether the OIDCConfigRef is valid
+	ConditionTypeMCPRemoteProxyOIDCConfigRefValidated = "OIDCConfigRefValidated"
 
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
@@ -256,6 +270,15 @@ const (
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream indicates multi-upstream is not supported
 	// for MCPRemoteProxy (use VirtualMCPServer for multi-upstream).
 	ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonMCPRemoteProxyOIDCConfigRefValid indicates the referenced MCPOIDCConfig is valid and ready
+	ConditionReasonMCPRemoteProxyOIDCConfigRefValid = "OIDCConfigRefValid"
+
+	// ConditionReasonMCPRemoteProxyOIDCConfigRefNotFound indicates the referenced MCPOIDCConfig was not found
+	ConditionReasonMCPRemoteProxyOIDCConfigRefNotFound = "OIDCConfigRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyOIDCConfigRefNotReady indicates the referenced MCPOIDCConfig is not ready
+	ConditionReasonMCPRemoteProxyOIDCConfigRefNotReady = "OIDCConfigRefNotReady"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"

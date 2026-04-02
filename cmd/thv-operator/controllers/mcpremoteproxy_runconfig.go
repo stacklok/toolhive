@@ -141,18 +141,10 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	}
 
 	// Add OIDC configuration (required for proxy mode)
-	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, proxy, &options); err != nil {
-		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-	}
-
-	// Resolve OIDC config for embedded auth server configuration
-	// ResourceURL provides AllowedAudiences, Scopes provides ScopesSupported
-	// Note: Validation (OIDC config required) happens in AddExternalAuthConfigOptions
-	var resolvedOIDCConfig *oidc.OIDCConfig
-	resolver := oidc.NewResolver(r.Client)
-	resolvedOIDCConfig, err := resolver.Resolve(ctx, proxy)
+	// Supports both legacy inline OIDCConfig and new MCPOIDCConfigRef paths
+	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(ctx, proxy, &options)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+		return nil, err
 	}
 
 	// Add external auth configuration if specified (updated call)
@@ -191,6 +183,55 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	}
 
 	return runConfig, nil
+}
+
+// resolveAndAddOIDCConfig resolves OIDC configuration from either the shared MCPOIDCConfigRef
+// or the legacy inline OIDCConfig, adds the appropriate runner options, and returns the resolved config.
+func (r *MCPRemoteProxyReconciler) resolveAndAddOIDCConfig(
+	ctx context.Context,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	options *[]runner.RunConfigBuilderOption,
+) (*oidc.OIDCConfig, error) {
+	resolver := oidc.NewResolver(r.Client)
+
+	if proxy.Spec.OIDCConfigRef != nil {
+		// Resolve from shared MCPOIDCConfig reference
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPOIDCConfig: %w", err)
+		}
+		resolved, err := resolver.ResolveFromConfigRef(
+			ctx, proxy.Spec.OIDCConfigRef, oidcCfg, proxy.Name, proxy.Namespace, proxy.GetProxyPort(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig ref: %w", err)
+		}
+		*options = append(*options, runner.WithOIDCConfig(
+			resolved.Issuer,
+			resolved.Audience,
+			resolved.JWKSURL,
+			resolved.IntrospectionURL,
+			resolved.ClientID,
+			resolved.ClientSecret,
+			resolved.ThvCABundlePath,
+			resolved.JWKSAuthTokenPath,
+			resolved.ResourceURL,
+			resolved.JWKSAllowPrivateIP,
+			resolved.InsecureAllowHTTP,
+			resolved.Scopes,
+		))
+		return resolved, nil
+	}
+
+	// Use legacy inline OIDCConfig
+	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, proxy, options); err != nil {
+		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
+	}
+	resolved, err := resolver.Resolve(ctx, proxy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+	}
+	return resolved, nil
 }
 
 // validateRunConfigForRemoteProxy validates a RunConfig for remote proxy deployments

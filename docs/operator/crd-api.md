@@ -2479,7 +2479,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPToolConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig<br />This helps track which servers need to be reconciled when this config changes |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.ModelCacheConfig
@@ -3653,6 +3653,7 @@ Namespace is implicit — cross-namespace references are not supported.
 _Appears in:_
 - [api.v1alpha1.MCPOIDCConfigStatus](#apiv1alpha1mcpoidcconfigstatus)
 - [api.v1alpha1.MCPTelemetryConfigStatus](#apiv1alpha1mcptelemetryconfigstatus)
+- [api.v1alpha1.MCPToolConfigStatus](#apiv1alpha1mcptoolconfigstatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

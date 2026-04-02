@@ -221,11 +221,11 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 					"MCPToolConfig status should have config hash")
 			}
 
-			// Check referencing servers in status
+			// Check referencing workloads in status
 			if tt.existingMCPServer != nil {
-				assert.Contains(t, updatedConfig.Status.ReferencingServers,
-					tt.existingMCPServer.Name,
-					"Status should contain referencing MCPServer")
+				assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+					mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
+					"Status should contain referencing MCPServer as WorkloadReference")
 			}
 
 			// Check Valid condition is set after successful reconciliation
@@ -238,7 +238,7 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 	}
 }
 
-func TestToolConfigReconciler_findReferencingMCPServers(t *testing.T) {
+func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -302,21 +302,16 @@ func TestToolConfigReconciler_findReferencingMCPServers(t *testing.T) {
 	}
 
 	ctx := t.Context()
-	servers, err := r.findReferencingMCPServers(ctx, toolConfig)
+	refs, err := r.findReferencingWorkloads(ctx, toolConfig)
 	require.NoError(t, err)
 
-	assert.Len(t, servers, 2, "Should find 2 referencing MCPServers")
-
-	serverNames := make([]string, len(servers))
-	for i, s := range servers {
-		serverNames[i] = s.Name
-	}
-	assert.Contains(t, serverNames, "server1")
-	assert.Contains(t, serverNames, "server2")
-	assert.NotContains(t, serverNames, "server3")
+	assert.Len(t, refs, 2, "Should find 2 referencing workloads")
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
+	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
 }
 
-func TestToolConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *testing.T) {
+func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -366,7 +361,7 @@ func TestToolConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *test
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
-	assert.Empty(t, updatedConfig.Status.ReferencingServers, "No servers should be referencing yet")
+	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No servers should be referencing yet")
 
 	// Verify Valid condition is set after initial reconciliation
 	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
@@ -394,11 +389,12 @@ func TestToolConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *test
 
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingServers, "new-server",
-		"ReferencingServers should be updated even without hash change")
+	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
+		"ReferencingWorkloads should be updated even without hash change")
 }
 
-func TestToolConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testing.T) {
+func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -460,7 +456,8 @@ func TestToolConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testi
 	var updatedConfig mcpv1alpha1.MCPToolConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingServers, "server-to-delete")
+	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
 
 	// Delete the MCPServer
 	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
@@ -471,8 +468,8 @@ func TestToolConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testi
 
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Empty(t, updatedConfig.Status.ReferencingServers,
-		"ReferencingServers should be empty after server deletion")
+	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
+		"ReferencingWorkloads should be empty after server deletion")
 }
 
 func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {

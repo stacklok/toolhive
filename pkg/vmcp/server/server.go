@@ -212,6 +212,11 @@ type Server struct {
 	//   - Session lifecycle management
 	sessionManager *transportsession.Manager
 
+	// sessionDataStorage is the pluggable key-value backend for session metadata.
+	// Currently always LocalSessionDataStorage (in-memory, single-process).
+	// Redis-backed storage for multi-pod deployments is not yet wired.
+	sessionDataStorage transportsession.DataStorage
+
 	// Capability adapter for converting aggregator types to SDK types
 	capabilityAdapter *adapter.CapabilityAdapter
 
@@ -361,6 +366,21 @@ func New(
 	// keyed by the same session ID.
 	sessionManager := transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
 
+	// Create session data storage. Default to local in-memory storage; a future
+	// SessionStorageConfig field can wire up Redis for multi-pod deployments.
+	sessionDataStorage, err := transportsession.NewLocalSessionDataStorage(cfg.SessionTTL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session data storage: %w", err)
+	}
+	// Close sessionDataStorage if New() returns an error after this point so the
+	// background cleanup goroutine does not leak.
+	closeStorageOnErr := true
+	defer func() {
+		if closeStorageOnErr {
+			_ = sessionDataStorage.Close()
+		}
+	}()
+
 	// Create handler factory (used by adapter and for future dynamic registration)
 	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
 
@@ -395,26 +415,27 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 	}
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionManager, sessMgrCfg, backendRegistry)
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, sessMgrCfg, backendRegistry)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backendRegistry:   backendRegistry,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
-		statusReporter:    cfg.StatusReporter,
-		vmcpSessionMgr:    vmcpSessMgr,
+		config:             cfg,
+		mcpServer:          mcpServer,
+		router:             rt,
+		backendClient:      backendClient,
+		handlerFactory:     handlerFactory,
+		discoveryMgr:       discoveryMgr,
+		backendRegistry:    backendRegistry,
+		sessionManager:     sessionManager,
+		sessionDataStorage: sessionDataStorage,
+		capabilityAdapter:  capabilityAdapter,
+		ready:              make(chan struct{}),
+		healthMonitor:      healthMon,
+		statusReporter:     cfg.StatusReporter,
+		vmcpSessionMgr:     vmcpSessMgr,
 	}
 
 	if optimizerCleanup != nil {
@@ -427,6 +448,8 @@ func New(
 		srv.handleSessionRegistration(ctx, session)
 	})
 
+	// Disarm the close-on-error guard: Server is fully constructed.
+	closeStorageOnErr = false
 	return srv, nil
 }
 
@@ -532,10 +555,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// Apply discovery middleware (runs after audit/auth middleware)
-	// Discovery middleware performs per-request capability aggregation with user context
-	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
-	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
-	// Pass health monitor to enable filtering based on current health status (respects circuit breaker)
+	// Discovery middleware performs per-request capability aggregation with user context.
+	// vmcpSessionMgr (MultiSessionGetter) is used to retrieve the fully-formed MultiSession
+	// for subsequent requests so the routing table can be injected into context.
+	// The backend registry provides a dynamic backend list (supports DynamicRegistry for K8s).
+	// The health monitor enables filtering based on current health status (respects circuit breaker).
 	s.healthMonitorMu.RLock()
 	healthMon := s.healthMonitor
 	s.healthMonitorMu.RUnlock()
@@ -545,7 +569,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		healthStatusProvider = healthMon
 	}
 	mcpHandler = discovery.Middleware(
-		s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider,
+		s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
 		discovery.WithSessionScopedRouting(),
 	)(mcpHandler)
 	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
@@ -730,13 +754,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listener = nil
 	s.listenerMu.Unlock()
 
-	// Stop session manager after HTTP server shutdown
-	if s.sessionManager != nil {
-		if err := s.sessionManager.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
-		}
-	}
-
 	// Stop health monitor to clean up health check goroutines
 	s.healthMonitorMu.RLock()
 	healthMon := s.healthMonitor
@@ -755,9 +772,24 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Stop session manager after HTTP server shutdown
+	if s.sessionManager != nil {
+		if err := s.sessionManager.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
+		}
+	}
+
 	// Stop discovery manager to clean up background goroutines
 	if s.discoveryMgr != nil {
 		s.discoveryMgr.Stop()
+	}
+
+	// Close session data storage last: HTTP server is down (no new in-flight requests),
+	// all other components have stopped (no further restore or liveness checks).
+	if s.sessionDataStorage != nil {
+		if err := s.sessionDataStorage.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close session data storage: %w", err))
+		}
 	}
 
 	if len(errs) > 0 {

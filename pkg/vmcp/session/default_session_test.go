@@ -877,7 +877,7 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 		identity       *auth.Identity
 		backends       []*vmcp.Backend
 		wantSubject    string // non-empty → assert equal; empty → assert key absent
-		wantBackendIDs string // non-empty → assert equal; empty → assert key absent
+		wantBackendIDs string // always asserted equal (key is always written, "" for zero backends)
 	}{
 		{
 			name:           "sets identity subject and backend IDs",
@@ -908,9 +908,10 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 			wantBackendIDs: "b1,b2",
 		},
 		{
-			name:      "omits backend IDs when no backends connect",
-			connector: failConnector,
-			backends:  []*vmcp.Backend{backend1},
+			name:           "writes empty backend IDs when no backends connect",
+			connector:      failConnector,
+			backends:       []*vmcp.Backend{backend1},
+			wantBackendIDs: "", // key present, value empty — explicit zero-backend sentinel
 		},
 	}
 
@@ -933,12 +934,10 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 				assert.False(t, ok, "identity subject key should be absent")
 			}
 
-			if tt.wantBackendIDs != "" {
-				assert.Equal(t, tt.wantBackendIDs, meta[MetadataKeyBackendIDs])
-			} else {
-				_, ok := meta[MetadataKeyBackendIDs]
-				assert.False(t, ok, "backend IDs key should be absent")
-			}
+			// MetadataKeyBackendIDs is always written (even "" for zero backends).
+			backendIDsVal, backendIDsPresent := meta[MetadataKeyBackendIDs]
+			assert.True(t, backendIDsPresent, "MetadataKeyBackendIDs must always be written")
+			assert.Equal(t, tt.wantBackendIDs, backendIDsVal)
 		})
 	}
 }

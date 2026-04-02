@@ -63,8 +63,9 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 			assert.False(t, strings.HasPrefix(k, MetadataKeyBackendSessionPrefix),
 				"no backend session keys expected when no backends connected, got %q", k)
 		}
-		_, present := meta[MetadataKeyBackendIDs]
-		assert.False(t, present, "MetadataKeyBackendIDs must be absent when no backends connected")
+		backendIDs, present := meta[MetadataKeyBackendIDs]
+		assert.True(t, present, "MetadataKeyBackendIDs must always be written (empty string for zero backends)")
+		assert.Empty(t, backendIDs, "MetadataKeyBackendIDs must be empty string when no backends connected")
 	})
 
 	t.Run("partial failure: only successful backend written", func(t *testing.T) {

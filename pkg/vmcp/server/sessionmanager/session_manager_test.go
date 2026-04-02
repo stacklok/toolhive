@@ -77,43 +77,56 @@ func newMockFactoryWithError(t *testing.T, ctrl *gomock.Controller, err error) *
 	return factory
 }
 
-// alwaysFailStorage is a transportsession.Storage whose Store() always returns an
+// alwaysFailDataStorage is a DataStorage whose Upsert/Create always return an
 // error. It is used to exercise the Generate() double-failure path (UUID collision
-// simulation — both attempts to AddWithID fail, so Generate() must return "").
-type alwaysFailStorage struct{}
+// simulation — both attempts to Create fail, so Generate() must return "").
+type alwaysFailDataStorage struct{}
 
-func (alwaysFailStorage) Store(_ context.Context, _ transportsession.Session) error {
+func (alwaysFailDataStorage) Upsert(_ context.Context, _ string, _ map[string]string) error {
 	return errors.New("storage unavailable")
 }
-func (alwaysFailStorage) Load(_ context.Context, _ string) (transportsession.Session, error) {
-	return nil, errors.New("not found")
+func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]string, error) {
+	return nil, transportsession.ErrSessionNotFound
 }
-func (alwaysFailStorage) Delete(_ context.Context, _ string) error           { return nil }
-func (alwaysFailStorage) DeleteExpired(_ context.Context, _ time.Time) error { return nil }
-func (alwaysFailStorage) Close() error                                       { return nil }
+func (alwaysFailDataStorage) Create(_ context.Context, _ string, _ map[string]string) (bool, error) {
+	return false, errors.New("storage unavailable")
+}
+func (alwaysFailDataStorage) Delete(_ context.Context, _ string) error { return nil }
+func (alwaysFailDataStorage) Close() error                             { return nil }
 
-// configurableFailStorage wraps a real storage and allows injecting failures
-// for specific operations. Used to test fallback behavior in Terminate().
-type configurableFailStorage struct {
-	transportsession.Storage
+// configurableFailDataStorage wraps a real SessionDataStorage and allows injecting
+// failures for specific operations. Used to test fallback behavior in Terminate().
+type configurableFailDataStorage struct {
+	transportsession.DataStorage
 	storeCallCount int
-	failStoreAfter int // fail Store after this many successful calls (0 = never fail, -1 = always fail)
+	failStoreAfter int // fail Upsert/Create after this many successful calls (0 = never fail, -1 = always fail)
 	failDelete     bool
 }
 
-func (s *configurableFailStorage) Store(ctx context.Context, sess transportsession.Session) error {
+func (s *configurableFailDataStorage) shouldFail() bool {
 	s.storeCallCount++
-	if s.failStoreAfter == -1 || (s.failStoreAfter >= 0 && s.storeCallCount > s.failStoreAfter) {
-		return errors.New("injected Store failure")
-	}
-	return s.Storage.Store(ctx, sess)
+	return s.failStoreAfter == -1 || (s.failStoreAfter >= 0 && s.storeCallCount > s.failStoreAfter)
 }
 
-func (s *configurableFailStorage) Delete(ctx context.Context, id string) error {
+func (s *configurableFailDataStorage) Upsert(ctx context.Context, id string, metadata map[string]string) error {
+	if s.shouldFail() {
+		return errors.New("injected Upsert failure")
+	}
+	return s.DataStorage.Upsert(ctx, id, metadata)
+}
+
+func (s *configurableFailDataStorage) Create(ctx context.Context, id string, metadata map[string]string) (bool, error) {
+	if s.shouldFail() {
+		return false, errors.New("injected Create failure")
+	}
+	return s.DataStorage.Create(ctx, id, metadata)
+}
+
+func (s *configurableFailDataStorage) Delete(ctx context.Context, id string) error {
 	if s.failDelete {
 		return errors.New("injected Delete failure")
 	}
-	return s.Storage.Delete(ctx, id)
+	return s.DataStorage.Delete(ctx, id)
 }
 
 // fakeBackendRegistry is a simple BackendRegistry for tests.
@@ -144,13 +157,14 @@ func (r *fakeBackendRegistry) Count() int {
 	return len(r.backends)
 }
 
-// newTestTransportManager creates a transportsession.Manager backed by local storage
-// with a long TTL. The cleanup goroutine is stopped via t.Cleanup.
-func newTestTransportManager(t *testing.T) *transportsession.Manager {
+// newTestSessionDataStorage creates a LocalSessionDataStorage with a long TTL.
+// The storage is closed via t.Cleanup.
+func newTestSessionDataStorage(t *testing.T) transportsession.DataStorage {
 	t.Helper()
-	mgr := transportsession.NewTypedManager(30*time.Minute, transportsession.SessionTypeStreamable)
-	t.Cleanup(func() { _ = mgr.Stop() })
-	return mgr
+	storage, err := transportsession.NewLocalSessionDataStorage(30 * time.Minute)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+	return storage
 }
 
 // newTestSessionManager is a convenience constructor for tests.
@@ -158,11 +172,12 @@ func newTestSessionManager(
 	t *testing.T,
 	factory vmcpsession.MultiSessionFactory,
 	registry vmcp.BackendRegistry,
-) (*Manager, *transportsession.Manager) {
+) (*Manager, transportsession.DataStorage) {
 	t.Helper()
-	storage := newTestTransportManager(t)
-	sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
+	storage := newTestSessionDataStorage(t)
+	sm, cleanup, err := New(storage, &FactoryConfig{Base: factory}, registry)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleanup(context.Background()) })
 	return sm, storage
 }
 
@@ -188,27 +203,21 @@ func TestSessionManager_Generate(t *testing.T) {
 		assert.Contains(t, sessionID, "-", "expected UUID format")
 
 		// Placeholder must exist in storage.
-		_, exists := storage.Get(sessionID)
-		assert.True(t, exists, "placeholder should be stored in transport manager")
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		assert.NoError(t, loadErr, "placeholder should be stored in storage")
 	})
 
 	t.Run("returns empty string when storage always fails", func(t *testing.T) {
 		t.Parallel()
 
-		// Use a Manager backed by storage that always fails Store(), forcing both
+		// Use a storage that always fails StoreIfAbsent(), forcing both
 		// UUID attempts inside Generate() to fail so it must return "".
-		failingMgr := transportsession.NewManagerWithStorage(
-			time.Hour,
-			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
-			alwaysFailStorage{},
-		)
-		t.Cleanup(func() { _ = failingMgr.Stop() })
-
 		ctrl := gomock.NewController(t)
 		sess := newMockSession(t, ctrl, "placeholder", nil)
 		factory := newMockFactory(t, ctrl, sess)
-		sm, _, err := New(failingMgr, &FactoryConfig{Base: factory}, newFakeRegistry())
+		sm, cleanup, err := New(alwaysFailDataStorage{}, &FactoryConfig{Base: factory}, newFakeRegistry())
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = cleanup(context.Background()) })
 
 		id := sm.Generate()
 		assert.Empty(t, id, "Generate() should return '' when storage is unavailable")
@@ -274,11 +283,9 @@ func TestSessionManager_CreateSession(t *testing.T) {
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
 
-		// Storage must now hold the MultiSession (not just a placeholder).
-		stored, exists := storage.Get(sessionID)
-		require.True(t, exists, "session should still exist in storage")
-		_, isMulti := stored.(vmcpsession.MultiSession)
-		assert.True(t, isMulti, "stored session should be a MultiSession")
+		// Storage must still hold the session metadata after CreateSession.
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		assert.NoError(t, loadErr, "session should still exist in storage after CreateSession")
 	})
 
 	t.Run("returns error for empty session ID", func(t *testing.T) {
@@ -338,7 +345,7 @@ func TestSessionManager_CreateSession(t *testing.T) {
 		// TTL expiry or a client DELETE that removes the record before the hook fires.
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
-		require.NoError(t, storage.Delete(sessionID))
+		require.NoError(t, storage.Delete(context.Background(), sessionID))
 
 		// CreateSession must fail fast before opening any backend connections.
 		_, createErr := sm.CreateSession(context.Background(), sessionID)
@@ -611,15 +618,16 @@ func TestSessionManager_Terminate(t *testing.T) {
 		require.NoError(t, err)
 
 		// Session must exist before termination.
-		_, existsBefore := storage.Get(sessionID)
-		assert.True(t, existsBefore)
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		assert.NoError(t, loadErr, "session should exist in storage before Terminate")
 
 		_, err = sm.Terminate(sessionID)
 		require.NoError(t, err)
 
 		// Session must be removed from storage.
-		_, existsAfter := storage.Get(sessionID)
-		assert.False(t, existsAfter, "session should be deleted from storage after Terminate")
+		_, loadErrAfter := storage.Load(context.Background(), sessionID)
+		assert.ErrorIs(t, loadErrAfter, transportsession.ErrSessionNotFound,
+			"session should be deleted from storage after Terminate")
 	})
 
 	t.Run("placeholder session is marked terminated (not deleted)", func(t *testing.T) {
@@ -640,9 +648,9 @@ func TestSessionManager_Terminate(t *testing.T) {
 		assert.False(t, isNotAllowed)
 
 		// Placeholder should still be in storage but marked terminated.
-		sess2, exists := storage.Get(sessionID)
-		require.True(t, exists, "placeholder should remain in storage (TTL will clean it)")
-		assert.Equal(t, MetadataValTrue, sess2.GetMetadata()[MetadataKeyTerminated])
+		metadata, loadErr := storage.Load(context.Background(), sessionID)
+		require.NoError(t, loadErr, "placeholder should remain in storage (TTL will clean it)")
+		assert.Equal(t, MetadataValTrue, metadata[MetadataKeyTerminated])
 	})
 
 	t.Run("placeholder termination falls back to delete when upsert fails", func(t *testing.T) {
@@ -653,25 +661,22 @@ func TestSessionManager_Terminate(t *testing.T) {
 		factory := newMockFactory(t, ctrl, sess)
 		registry := newFakeRegistry()
 
-		// Create a storage that succeeds on the first Store (Generate creates
+		// Create a storage that succeeds on the first StoreIfAbsent (Generate creates
 		// placeholder) but fails on the second Store (Terminate tries to upsert).
 		// Delete succeeds. This tests the fallback path in Terminate().
-		baseStorage := transportsession.NewLocalStorage()
-		failingStorage := &configurableFailStorage{
-			Storage:        baseStorage,
-			failStoreAfter: 1, // fail after 1 successful Store
+		baseStorage, err := transportsession.NewLocalSessionDataStorage(time.Hour)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = baseStorage.Close() })
+		failingStorage := &configurableFailDataStorage{
+			DataStorage:    baseStorage,
+			failStoreAfter: 1, // fail after 1 successful call (Generate's Create)
 			failDelete:     false,
 		}
-		storage := transportsession.NewManagerWithStorage(
-			time.Hour,
-			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
-			failingStorage,
-		)
-		t.Cleanup(func() { _ = storage.Stop() })
-		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
+		sm, cleanup, err := New(failingStorage, &FactoryConfig{Base: factory}, registry)
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = cleanup(context.Background()) })
 
-		// Generate a placeholder (first Store, succeeds).
+		// Generate a placeholder (first Create, succeeds).
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 
@@ -681,8 +686,9 @@ func TestSessionManager_Terminate(t *testing.T) {
 		assert.False(t, isNotAllowed)
 
 		// Placeholder should be deleted (not just marked terminated).
-		_, exists := storage.Get(sessionID)
-		assert.False(t, exists, "placeholder should be deleted when upsert fails")
+		_, loadErr := baseStorage.Load(context.Background(), sessionID)
+		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
+			"placeholder should be deleted when upsert fails")
 	})
 
 	t.Run("placeholder termination fails when both upsert and delete fail", func(t *testing.T) {
@@ -693,25 +699,22 @@ func TestSessionManager_Terminate(t *testing.T) {
 		factory := newMockFactory(t, ctrl, sess)
 		registry := newFakeRegistry()
 
-		// Create a storage that succeeds on the first Store (Generate creates
+		// Create a storage that succeeds on the first StoreIfAbsent (Generate creates
 		// placeholder) but fails on the second Store (Terminate tries to upsert)
 		// and also fails on Delete. This forces the error path.
-		baseStorage := transportsession.NewLocalStorage()
-		failingStorage := &configurableFailStorage{
-			Storage:        baseStorage,
-			failStoreAfter: 1, // fail after 1 successful Store
+		baseStorage, err := transportsession.NewLocalSessionDataStorage(time.Hour)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = baseStorage.Close() })
+		failingStorage := &configurableFailDataStorage{
+			DataStorage:    baseStorage,
+			failStoreAfter: 1, // fail after 1 successful call (Generate's Create)
 			failDelete:     true,
 		}
-		storage := transportsession.NewManagerWithStorage(
-			time.Hour,
-			func(id string) transportsession.Session { return transportsession.NewStreamableSession(id) },
-			failingStorage,
-		)
-		t.Cleanup(func() { _ = storage.Stop() })
-		sm, _, err := New(storage, &FactoryConfig{Base: factory}, registry)
+		sm, cleanup, err := New(failingStorage, &FactoryConfig{Base: factory}, registry)
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = cleanup(context.Background()) })
 
-		// Generate a placeholder (first Store, succeeds).
+		// Generate a placeholder (first Create, succeeds).
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 
@@ -720,7 +723,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, isNotAllowed)
 		assert.ErrorContains(t, err, "failed to persist terminated flag and delete placeholder")
-		assert.ErrorContains(t, err, "upsertErr=")
+		assert.ErrorContains(t, err, "storeErr=")
 		assert.ErrorContains(t, err, "deleteErr=")
 	})
 }
@@ -792,6 +795,100 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		assert.Equal(t, sessionID, multiSess.ID())
 		require.Len(t, multiSess.Tools(), 1)
 		assert.Equal(t, "hello", multiSess.Tools()[0].Name)
+	})
+
+	// Cross-pod restore path: session is in storage but not in the in-memory
+	// cache (simulates pod restart or eviction). loadSession is called on Get.
+
+	t.Run("restore path: placeholder in storage (absent token hash) is treated as not found", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		// RestoreSession must NOT be called for placeholders.
+		factory.EXPECT().RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+
+		sessionID := "restore-placeholder-session"
+		// Write placeholder metadata directly to storage, bypassing the cache.
+		// Generate() stores an empty map with no token hash.
+		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, map[string]string{}))
+
+		// loadSession detects absent MetadataKeyTokenHash → ErrSessionNotFound.
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "placeholder should not be restorable")
+		assert.Nil(t, multiSess)
+	})
+
+	t.Run("restore path: fully-initialized zero-backend session (has token hash) is restored", func(t *testing.T) {
+		t.Parallel()
+
+		tools := []vmcp.Tool{{Name: "zero-backend-tool", Description: "tool with no backends"}}
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		// MakeSessionWithID is only for Phase 2; unused in the restore path.
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-zero-backend-session"
+		restored := newMockSession(t, ctrl, sessionID, tools)
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+
+		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+
+		// Metadata matching what populateBackendMetadata now writes for a
+		// Phase-2-complete session with zero backends: MetadataKeyBackendIDs
+		// is always written (empty string for zero backends).
+		initializedMeta := map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "", // anonymous sentinel — present but empty
+			vmcpsession.MetadataKeyBackendIDs: "", // always written; empty = zero backends
+		}
+		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, initializedMeta))
+
+		// loadSession should call RestoreSession, not treat it as a placeholder.
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		require.True(t, ok, "initialized zero-backend session should be restorable")
+		require.NotNil(t, multiSess)
+		assert.Equal(t, sessionID, multiSess.ID())
+	})
+
+	t.Run("restore path: legacy record missing MetadataKeyBackendIDs is still restorable", func(t *testing.T) {
+		t.Parallel()
+
+		// Legacy sessions written before populateBackendMetadata was changed to
+		// always write MetadataKeyBackendIDs may omit the key entirely.
+		// filterBackendsByStoredIDs treats an absent key (single-value lookup → "")
+		// identically to an explicit empty string: zero backends are passed to
+		// RestoreSession. This test documents that backward-compat behaviour.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-legacy-session"
+		restored := newMockSession(t, ctrl, sessionID, nil)
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+
+		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+
+		// Legacy metadata: token hash present but MetadataKeyBackendIDs absent.
+		legacyMeta := map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "", // Phase 2 completion marker
+			// MetadataKeyBackendIDs intentionally absent (legacy record)
+		}
+		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, legacyMeta))
+
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		require.True(t, ok, "legacy record without MetadataKeyBackendIDs must still be restorable")
+		require.NotNil(t, multiSess)
+		assert.Equal(t, sessionID, multiSess.ID())
 	})
 }
 
@@ -1457,6 +1554,242 @@ func TestSessionManager_GetAdaptedResources(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: GetAdaptedPrompts
+// ---------------------------------------------------------------------------
+
+func TestSessionManager_GetAdaptedPrompts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns error for unknown session", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		sess := newMockSession(t, ctrl, "", nil)
+		factory := newMockFactory(t, ctrl, sess)
+		registry := newFakeRegistry()
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		_, err := sm.GetAdaptedPrompts("no-such-session")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found or not a multi-session")
+	})
+
+	t.Run("returns prompts with correct fields and arguments", func(t *testing.T) {
+		t.Parallel()
+
+		prompts := []vmcp.Prompt{
+			{
+				Name:        "greet",
+				Description: "Greet someone",
+				Arguments: []vmcp.PromptArgument{
+					{Name: "name", Description: "Who to greet", Required: true},
+					{Name: "language", Description: "Language to use", Required: false},
+				},
+			},
+			{
+				Name:        "summarize",
+				Description: "Summarize text",
+			},
+		}
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				// Create mock directly (without newMockSession) so there is no
+				// pre-existing Prompts().Return(nil).AnyTimes() that would win
+				// the FIFO expectation race over our specific prompts list.
+				sess := sessionmocks.NewMockMultiSession(ctrl)
+				sess.EXPECT().ID().Return(id).AnyTimes()
+				sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+				sess.EXPECT().Prompts().Return(prompts).AnyTimes()
+				return sess, nil
+			}).Times(1)
+
+		registry := newFakeRegistry()
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
+		require.NoError(t, err)
+		require.Len(t, adaptedPrompts, 2)
+
+		byName := map[string]mcp.Prompt{}
+		for _, sp := range adaptedPrompts {
+			byName[sp.Prompt.Name] = sp.Prompt
+		}
+
+		require.Contains(t, byName, "greet")
+		assert.Equal(t, "Greet someone", byName["greet"].Description)
+		require.Len(t, byName["greet"].Arguments, 2)
+		assert.Equal(t, "name", byName["greet"].Arguments[0].Name)
+		assert.True(t, byName["greet"].Arguments[0].Required)
+		assert.Equal(t, "language", byName["greet"].Arguments[1].Name)
+		assert.False(t, byName["greet"].Arguments[1].Required)
+
+		require.Contains(t, byName, "summarize")
+		assert.Equal(t, "Summarize text", byName["summarize"].Description)
+		assert.Empty(t, byName["summarize"].Arguments)
+	})
+
+	t.Run("handler delegates to session GetPrompt", func(t *testing.T) {
+		t.Parallel()
+
+		prompts := []vmcp.Prompt{
+			{
+				Name:        "hello",
+				Description: "Say hello",
+				Arguments:   []vmcp.PromptArgument{{Name: "name", Required: true}},
+			},
+		}
+		getResult := &vmcp.PromptGetResult{
+			Description: "A greeting",
+			Messages: []vmcp.PromptMessage{
+				{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello, world!"}},
+			},
+		}
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				sess := sessionmocks.NewMockMultiSession(ctrl)
+				sess.EXPECT().ID().Return(id).AnyTimes()
+				sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+				sess.EXPECT().Prompts().Return(prompts).AnyTimes()
+				sess.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), "hello", gomock.Any()).
+					Return(getResult, nil).Times(1)
+				return sess, nil
+			}).Times(1)
+
+		registry := newFakeRegistry()
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
+		require.NoError(t, err)
+		require.Len(t, adaptedPrompts, 1)
+
+		req := mcp.GetPromptRequest{}
+		req.Params.Name = "hello"
+		req.Params.Arguments = map[string]string{"name": "Alice"}
+		result, handlerErr := adaptedPrompts[0].Handler(context.Background(), req)
+		require.NoError(t, handlerErr)
+		require.NotNil(t, result)
+		assert.Equal(t, "A greeting", result.Description)
+		require.Len(t, result.Messages, 1)
+		assert.Equal(t, mcp.RoleAssistant, result.Messages[0].Role)
+	})
+
+	t.Run("handler returns error when GetPrompt fails", func(t *testing.T) {
+		t.Parallel()
+
+		prompts := []vmcp.Prompt{{Name: "broken"}}
+		getErr := errors.New("prompt backend error")
+
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().
+			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+				sess := sessionmocks.NewMockMultiSession(ctrl)
+				sess.EXPECT().ID().Return(id).AnyTimes()
+				sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+				sess.EXPECT().Prompts().Return(prompts).AnyTimes()
+				sess.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), "broken", gomock.Any()).
+					Return(nil, getErr).Times(1)
+				return sess, nil
+			}).Times(1)
+
+		registry := newFakeRegistry()
+		sm, _ := newTestSessionManager(t, factory, registry)
+
+		sessionID := sm.Generate()
+		_, err := sm.CreateSession(context.Background(), sessionID)
+		require.NoError(t, err)
+
+		adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
+		require.NoError(t, err)
+		require.Len(t, adaptedPrompts, 1)
+
+		req := mcp.GetPromptRequest{}
+		req.Params.Name = "broken"
+		result, handlerErr := adaptedPrompts[0].Handler(context.Background(), req)
+		require.Error(t, handlerErr)
+		assert.Nil(t, result)
+		assert.ErrorContains(t, handlerErr, "prompt backend error")
+	})
+
+	t.Run("handler terminates session on authorization errors", func(t *testing.T) {
+		t.Parallel()
+
+		testCases := []struct {
+			name      string
+			authError error
+		}{
+			{name: "ErrUnauthorizedCaller", authError: sessiontypes.ErrUnauthorizedCaller},
+			{name: "ErrNilCaller", authError: sessiontypes.ErrNilCaller},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				prompts := []vmcp.Prompt{{Name: "secret"}}
+				authErr := tc.authError
+
+				ctrl := gomock.NewController(t)
+				factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+				factory.EXPECT().
+					MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+						sess := sessionmocks.NewMockMultiSession(ctrl)
+						sess.EXPECT().ID().Return(id).AnyTimes()
+						sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+						sess.EXPECT().Prompts().Return(prompts).AnyTimes()
+						sess.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), "secret", gomock.Any()).
+							Return(nil, authErr).Times(1)
+						// Close() is called when the session is terminated after auth failure.
+						sess.EXPECT().Close().Return(nil).Times(1)
+						return sess, nil
+					}).Times(1)
+
+				registry := newFakeRegistry()
+				sm, _ := newTestSessionManager(t, factory, registry)
+
+				sessionID := sm.Generate()
+				_, err := sm.CreateSession(context.Background(), sessionID)
+				require.NoError(t, err)
+
+				adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
+				require.NoError(t, err)
+				require.Len(t, adaptedPrompts, 1)
+
+				req := mcp.GetPromptRequest{}
+				req.Params.Name = "secret"
+				result, handlerErr := adaptedPrompts[0].Handler(context.Background(), req)
+				require.Error(t, handlerErr, "handler should return an error for auth failures")
+				assert.Nil(t, result)
+				assert.ErrorContains(t, handlerErr, "unauthorized")
+
+				// Verify subsequent GetAdaptedPrompts fails (session no longer exists).
+				_, err = sm.GetAdaptedPrompts(sessionID)
+				assert.Error(t, err, "GetAdaptedPrompts should fail after session termination")
+				// gomock verifies Close() was called exactly once via Times(1)
+			})
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Tests: DecorateSession
 // ---------------------------------------------------------------------------
 
@@ -1554,11 +1887,65 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 			return sess
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "terminated during decoration")
+		assert.Contains(t, err.Error(), "was terminated or concurrently modified during decoration")
 
 		// The session must not be resurrected.
 		_, ok := sm.GetMultiSession(sessionID)
 		assert.False(t, ok, "terminated session must not be resurrected by DecorateSession")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Tests: checkSession liveness
+// ---------------------------------------------------------------------------
+
+// TestSessionManager_CheckSession verifies that checkSession correctly
+// distinguishes alive, terminated, and deleted sessions.
+func TestSessionManager_CheckSession(t *testing.T) {
+	t.Parallel()
+
+	makeFactory := func(t *testing.T) *sessionfactorymocks.MockMultiSessionFactory {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		f := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		f.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			AnyTimes().Return(nil, nil)
+		f.EXPECT().RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			AnyTimes().Return(nil, nil)
+		return f
+	}
+
+	t.Run("alive session returns nil", func(t *testing.T) {
+		t.Parallel()
+		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
+		sessionID := "alive-session"
+		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{}))
+
+		err := sm.checkSession(sessionID)
+		assert.NoError(t, err, "alive session must return nil")
+	})
+
+	t.Run("deleted session returns ErrExpired", func(t *testing.T) {
+		t.Parallel()
+		sm, _ := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
+
+		err := sm.checkSession("nonexistent-session")
+		assert.ErrorIs(t, err, ErrExpired, "deleted session must return ErrExpired")
+	})
+
+	t.Run("terminated session returns ErrExpired", func(t *testing.T) {
+		t.Parallel()
+		// A session terminated on another pod: storage entry exists but
+		// MetadataKeyTerminated is set. checkSession must return ErrExpired
+		// so the cache evicts the entry and onEvict closes backend connections.
+		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
+		sessionID := "terminated-session"
+		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+			MetadataKeyTerminated: MetadataValTrue,
+		}))
+
+		err := sm.checkSession(sessionID)
+		assert.ErrorIs(t, err, ErrExpired, "terminated session must return ErrExpired")
 	})
 }
 

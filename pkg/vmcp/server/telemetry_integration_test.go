@@ -121,6 +121,17 @@ func (f *backendAwareTestFactory) MakeSessionWithID(
 	}, nil
 }
 
+func (f *backendAwareTestFactory) RestoreSession(
+	_ context.Context, id string, _ map[string]string, _ []*vmcp.Backend,
+) (vmcpsession.MultiSession, error) {
+	return &backendAwareTestSession{
+		Session:      transportsession.NewStreamableSession(id),
+		tools:        f.tools,
+		routingTable: f.routingTable,
+		clientRef:    f.clientRef,
+	}, nil
+}
+
 // TestIntegration_TelemetryMiddleware tests that the vMCP server records telemetry
 // metrics when the telemetry middleware is enabled via TelemetryProvider.
 //

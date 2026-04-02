@@ -21,6 +21,7 @@ import (
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
+	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 const (
@@ -71,6 +72,24 @@ type MultiSessionFactory interface {
 		identity *auth.Identity,
 		allowAnonymous bool,
 		backends []*vmcp.Backend,
+	) (MultiSession, error)
+
+	// RestoreSession reconstructs a live MultiSession from persisted metadata.
+	// It reconnects to the backends whose IDs are listed in storedMetadata under
+	// MetadataKeyBackendIDs, rebuilds the routing table, and reapplies the
+	// hijack-prevention decorator using the stored token hash and salt.
+	//
+	// Use this when the node-local session cache misses — for example after a
+	// pod restart or when a request is routed to a different pod. It is more
+	// expensive than a cache hit because it opens new backend connections.
+	//
+	// allBackends is the current backend list from the registry; RestoreSession
+	// filters it to the subset originally included in this session.
+	RestoreSession(
+		ctx context.Context,
+		id string,
+		storedMetadata map[string]string,
+		allBackends []*vmcp.Backend,
 	) (MultiSession, error)
 }
 
@@ -363,30 +382,30 @@ func validateSessionID(id string) error {
 // usable hint. IDs are extracted from the already-sorted results slice to avoid
 // a second sort.
 func populateBackendMetadata(transportSess transportsession.Session, results []initResult) {
-	if len(results) > 0 {
-		ids := make([]string, len(results))
-		for i, r := range results {
-			ids[i] = r.target.WorkloadID
-			if sessID := r.conn.SessionID(); sessID != "" {
-				transportSess.SetMetadata(MetadataKeyBackendSessionPrefix+r.target.WorkloadID, sessID)
-			}
+	ids := make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.target.WorkloadID
+		if sessID := r.conn.SessionID(); sessID != "" {
+			transportSess.SetMetadata(MetadataKeyBackendSessionPrefix+r.target.WorkloadID, sessID)
 		}
-		transportSess.SetMetadata(MetadataKeyBackendIDs, strings.Join(ids, ","))
 	}
+	// Always write MetadataKeyBackendIDs, even for zero-backend sessions ("").
+	// This distinguishes an explicit zero-backend state from absent/corrupted metadata
+	// in RestoreSession, preventing filterBackendsByStoredIDs from silently
+	// falling back to all backends when the key is missing.
+	transportSess.SetMetadata(MetadataKeyBackendIDs, strings.Join(ids, ","))
 }
 
-// makeSession is the shared implementation for MakeSession and MakeSessionWithID.
-// It initialises backends in parallel, builds the routing table, and returns
-// a fully-formed MultiSession using the provided sessID.
-func (f *defaultMultiSessionFactory) makeSession(
+// makeBaseSession initialises backends and assembles a defaultMultiSession
+// WITHOUT applying the hijack-prevention security wrapper.
+// Callers are responsible for wrapping the result with the appropriate decorator
+// (PreventSessionHijacking for new sessions, RestoreHijackPrevention for restored ones).
+func (f *defaultMultiSessionFactory) makeBaseSession(
 	ctx context.Context,
 	sessID string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
-) (MultiSession, error) {
-	// Filter nil entries upfront so that every downstream dereference of a
-	// *vmcp.Backend is safe. Nil entries are logged and skipped, consistent
-	// with the partial-initialisation approach used for failed backends.
+) (*defaultMultiSession, error) {
 	filtered := make([]*vmcp.Backend, 0, len(backends))
 	for _, b := range backends {
 		if b == nil {
@@ -397,8 +416,6 @@ func (f *defaultMultiSessionFactory) makeSession(
 	}
 	backends = filtered
 
-	// Initialise backends in parallel with bounded concurrency.
-	// Each goroutine writes to its own index so no lock on the slice is needed.
 	rawResults := make([]*initResult, len(backends))
 	sem := make(chan struct{}, f.maxConcurrency)
 	var wg sync.WaitGroup
@@ -413,9 +430,6 @@ func (f *defaultMultiSessionFactory) makeSession(
 	}
 	wg.Wait()
 
-	// Collect successful results; sort by WorkloadID so that capability-name
-	// conflicts are resolved deterministically: the alphabetically-earlier
-	// backend always wins.
 	connections := make(map[string]backend.Session, len(backends))
 	backendSessions := make(map[string]string, len(backends))
 	results := make([]initResult, 0, len(backends))
@@ -436,18 +450,12 @@ func (f *defaultMultiSessionFactory) makeSession(
 			"backendCount", len(backends))
 	}
 
-	// Build the routing table and capability lists.
-	// When an aggregator is configured, apply the full transformation pipeline
-	// (per-backend overrides, conflict resolution, advertising filter) to produce
-	// resolved tool names — identical to the standard aggregation path.
-	// Without an aggregator, the raw backend names are used directly.
 	var (
 		routingTable *vmcp.RoutingTable
 		allTools     []vmcp.Tool
 		allResources []vmcp.Resource
 		allPrompts   []vmcp.Prompt
 	)
-
 	if f.aggregator != nil {
 		var aggErr error
 		routingTable, allTools, allResources, allPrompts, aggErr = buildRoutingTableWithAggregator(ctx, f.aggregator, results)
@@ -455,23 +463,16 @@ func (f *defaultMultiSessionFactory) makeSession(
 			return nil, fmt.Errorf("failed to process backend capabilities: %w", aggErr)
 		}
 	} else {
-		// Build the routing table; first-writer (alphabetically) wins on conflicts.
 		routingTable, allTools, allResources, allPrompts = buildRoutingTable(results)
 	}
 
 	transportSess := transportsession.NewStreamableSession(sessID)
-
-	// Populate serialisable metadata so that the embedded transport session
-	// carries the identity reference and connected backend list when persisted
-	// via transportsession.Storage.
 	if identity != nil && identity.Subject != "" {
 		transportSess.SetMetadata(MetadataKeyIdentitySubject, identity.Subject)
 	}
-
 	populateBackendMetadata(transportSess, results)
 
-	// Create the base session
-	baseSession := &defaultMultiSession{
+	return &defaultMultiSession{
 		Session:         transportSess,
 		connections:     connections,
 		routingTable:    routingTable,
@@ -480,16 +481,129 @@ func (f *defaultMultiSessionFactory) makeSession(
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
 		queue:           newAdmissionQueue(),
-	}
+	}, nil
+}
 
-	// Apply hijack prevention: computes token binding, stores metadata, and wraps
-	// the session with validation logic. This encapsulates all security initialization.
-	decorated, err := security.PreventSessionHijacking(baseSession, f.hmacSecret, identity)
+// makeSession is the shared implementation for MakeSession and MakeSessionWithID.
+// It builds the base session via makeBaseSession, then applies the hijack-prevention
+// security wrapper using the caller's identity.
+func (f *defaultMultiSessionFactory) makeSession(
+	ctx context.Context,
+	sessID string,
+	identity *auth.Identity,
+	backends []*vmcp.Backend,
+) (MultiSession, error) {
+	baseSession, err := f.makeBaseSession(ctx, sessID, identity, backends)
 	if err != nil {
 		return nil, err
 	}
 
-	// The decorator implements MultiSession through pass-through methods, so it can
-	// be returned directly without a runtime cast.
+	// Apply hijack prevention: computes token binding, stores metadata, and wraps
+	// the session with validation logic.
+	decorated, err := security.PreventSessionHijacking(baseSession, f.hmacSecret, identity)
+	if err != nil {
+		_ = baseSession.Close()
+		return nil, err
+	}
 	return decorated, nil
+}
+
+// RestoreSession implements MultiSessionFactory.
+// It reconnects to the backends whose IDs are listed in storedMetadata, rebuilds
+// the routing table, and reapplies the hijack-prevention decorator from the stored
+// token hash and salt — without recomputing them from a (unavailable) token.
+func (f *defaultMultiSessionFactory) RestoreSession(
+	ctx context.Context,
+	id string,
+	storedMetadata map[string]string,
+	allBackends []*vmcp.Backend,
+) (MultiSession, error) {
+	if err := validateSessionID(id); err != nil {
+		return nil, err
+	}
+
+	// Filter allBackends to the subset originally connected in this session.
+	filteredBackends := filterBackendsByStoredIDs(allBackends, storedMetadata[MetadataKeyBackendIDs])
+
+	// Reconstruct a minimal identity from stored metadata. The original bearer
+	// token is never persisted (only its HMAC-SHA256 hash is), so Token is empty.
+	// The security decorator is restored from the stored hash/salt below.
+	var identity *auth.Identity
+	if subject := storedMetadata[MetadataKeyIdentitySubject]; subject != "" {
+		identity = &auth.Identity{}
+		identity.Subject = subject
+	}
+
+	// Build the base session (backend connections + routing table) without the
+	// security wrapper. The wrapper is applied separately using stored hash/salt.
+	baseSession, err := f.makeBaseSession(ctx, id, identity, filteredBackends)
+	if err != nil {
+		return nil, fmt.Errorf("RestoreSession: failed to rebuild backend connections: %w", err)
+	}
+
+	// Restore only the security keys (token hash and salt) from stored metadata.
+	// MetadataKeyIdentitySubject is already set by makeBaseSession via the
+	// reconstructed identity. MetadataKeyBackendIDs and the per-backend session
+	// keys (MetadataKeyBackendSessionPrefix.*) are freshly computed by
+	// makeBaseSession from the actual reconnected backends; overwriting them with
+	// stored values would make metadata inconsistent if any backend failed to
+	// reconnect during restore.
+	for _, key := range []string{
+		sessiontypes.MetadataKeyTokenHash,
+		sessiontypes.MetadataKeyTokenSalt,
+	} {
+		if v, ok := storedMetadata[key]; ok {
+			baseSession.SetMetadata(key, v)
+		}
+	}
+
+	// Recreate the hijack-prevention decorator using the stored hash and salt,
+	// not by recomputing from identity.Token (which is unavailable at restore time).
+	//
+	// Fail closed if the token-hash key is entirely absent from stored metadata:
+	// PreventSessionHijacking always writes the key (empty string for anonymous,
+	// non-empty for authenticated), so an absent key indicates corrupted or
+	// truncated metadata — not a legitimately anonymous session.
+	storedHash, hashKeyPresent := storedMetadata[sessiontypes.MetadataKeyTokenHash]
+	if !hashKeyPresent {
+		_ = baseSession.Close()
+		return nil, fmt.Errorf("RestoreSession: token hash metadata key absent (corrupted session metadata)")
+	}
+	storedSalt := storedMetadata[sessiontypes.MetadataKeyTokenSalt]
+	restored, err := security.RestoreHijackPrevention(baseSession, f.hmacSecret, storedHash, storedSalt)
+	if err != nil {
+		_ = baseSession.Close()
+		return nil, fmt.Errorf("RestoreSession: failed to restore hijack prevention: %w", err)
+	}
+	return restored, nil
+}
+
+// filterBackendsByStoredIDs returns the subset of allBackends whose ID appears in
+// the comma-separated storedIDs string. If storedIDs is empty, nil is returned (no backends).
+//
+// The empty-string case intentionally returns nil rather than all backends: callers
+// that store an explicit empty string mean "zero backends connected", and callers that
+// omit the key entirely (corrupted/absent metadata) must be handled by the caller before
+// invoking this function — relying on empty-string to mean "all backends" is a footgun.
+func filterBackendsByStoredIDs(allBackends []*vmcp.Backend, storedIDs string) []*vmcp.Backend {
+	if storedIDs == "" {
+		return nil
+	}
+	parts := strings.Split(storedIDs, ",")
+	idSet := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			idSet[t] = struct{}{}
+		}
+	}
+	filtered := make([]*vmcp.Backend, 0, len(idSet))
+	for _, b := range allBackends {
+		if b == nil {
+			continue
+		}
+		if _, ok := idSet[b.ID]; ok {
+			filtered = append(filtered, b)
+		}
+	}
+	return filtered
 }

@@ -712,10 +712,10 @@ type MCPExternalAuthConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
-	// ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig
-	// This helps track which servers need to be reconciled when this config changes
+	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
+	// Each entry identifies the workload by kind and name.
 	// +optional
-	ReferencingServers []string `json:"referencingServers,omitempty"`
+	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -723,7 +723,7 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingServers`
+// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.

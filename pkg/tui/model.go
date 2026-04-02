@@ -63,6 +63,16 @@ type inspectorState struct {
 	treeVisH     int       // available render height (set by resizeViewport)
 }
 
+// runFormState holds state for the "run from registry" form overlay.
+type runFormState struct {
+	open    bool
+	item    regtypes.ServerMetadata
+	fields  []formField
+	idx     int
+	running bool
+	scroll  int
+}
+
 // registryState holds state for the registry browser overlay.
 type registryState struct {
 	open         bool
@@ -137,6 +147,9 @@ type Model struct {
 
 	// Registry overlay state
 	registry registryState
+
+	// Run-from-registry form state
+	runForm runFormState
 
 	// Inspector panel state
 	insp inspectorState

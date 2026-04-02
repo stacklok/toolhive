@@ -1717,6 +1717,7 @@ The referenced MCPOIDCConfig must be in the same namespace as the MCPServer.
 
 _Appears in:_
 - [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
+- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -2100,6 +2101,7 @@ _Appears in:_
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
 | `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the proxy<br />This validates incoming tokens from clients. Required for proxy mode. |  | Required: \{\} <br /> |
+| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
 | `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like X-Tenant-ID or correlation IDs. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  | Optional: \{\} <br /> |
@@ -2135,6 +2137,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRemoteProxy's state |  | Optional: \{\} <br /> |
 | `toolConfigHash` _string_ | ToolConfigHash stores the hash of the referenced ToolConfig for change detection |  | Optional: \{\} <br /> |
 | `externalAuthConfigHash` _string_ | ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec |  | Optional: \{\} <br /> |
+| `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection |  | Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 
 

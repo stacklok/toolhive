@@ -147,6 +147,15 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Register the MCPRemoteProxy controller (needed because MCPOIDCConfig watches
+	// MCPRemoteProxy changes and we test cross-resource interactions)
+	err = (&controllers.MCPRemoteProxyReconciler{
+		Client:           k8sManager.GetClient(),
+		Scheme:           k8sManager.GetScheme(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
 	// Start the manager in a goroutine
 	go func() {
 		defer GinkgoRecover()

@@ -409,6 +409,34 @@ spec:
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
                 - message: kubernetes must not be set when type is not 'kubernetes'
                   rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) : true'
+              oidcConfigRef:
+                description: |-
+                  OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+                  The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Per-server overrides (audience, scopes) are specified here; shared provider config
+                  lives in the MCPOIDCConfig resource.
+                properties:
+                  audience:
+                    description: |-
+                      Audience is the expected audience for token validation.
+                      This MUST be unique per server to prevent token replay attacks.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the MCPOIDCConfig resource
+                    minLength: 1
+                    type: string
+                  scopes:
+                    description: |-
+                      Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
+                      If empty, defaults to ["openid"].
+                    items:
+                      type: string
+                    type: array
+                required:
+                - audience
+                - name
+                type: object
               proxyPort:
                 default: 8080
                 description: ProxyPort is the port to expose the MCP proxy on
@@ -741,6 +769,10 @@ spec:
                   recently observed MCPRemoteProxy
                 format: int64
                 type: integer
+              oidcConfigHash:
+                description: OIDCConfigHash is the hash of the referenced MCPOIDCConfig
+                  spec for change detection
+                type: string
               phase:
                 description: Phase is the current phase of the MCPRemoteProxy
                 enum:

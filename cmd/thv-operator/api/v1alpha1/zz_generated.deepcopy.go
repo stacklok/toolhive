@@ -1465,6 +1465,11 @@ func (in *MCPRemoteProxyList) DeepCopyObject() runtime.Object {
 func (in *MCPRemoteProxySpec) DeepCopyInto(out *MCPRemoteProxySpec) {
 	*out = *in
 	in.OIDCConfig.DeepCopyInto(&out.OIDCConfig)
+	if in.OIDCConfigRef != nil {
+		in, out := &in.OIDCConfigRef, &out.OIDCConfigRef
+		*out = new(MCPOIDCConfigReference)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ExternalAuthConfigRef != nil {
 		in, out := &in.ExternalAuthConfigRef, &out.ExternalAuthConfigRef
 		*out = new(ExternalAuthConfigRef)

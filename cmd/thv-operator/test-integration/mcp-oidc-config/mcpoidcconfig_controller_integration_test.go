@@ -20,7 +20,7 @@ const (
 )
 
 var _ = Describe("MCPOIDCConfig Controller", func() {
-	It("should set Valid condition and config hash on creation", func() {
+	It("should set Ready condition and config hash on creation", func() {
 		oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-oidc-creation",
@@ -50,7 +50,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 			return fetched.Status.ConfigHash != ""
 		}, timeout, interval).Should(BeTrue())
 
-		// Verify Valid condition is set to True
+		// Verify Ready condition is set to True
 		Eventually(func() bool {
 			fetched := &mcpv1alpha1.MCPOIDCConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
@@ -61,7 +61,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 				return false
 			}
 			for _, cond := range fetched.Status.Conditions {
-				if cond.Type == "Valid" && cond.Status == metav1.ConditionTrue {
+				if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
 					return true
 				}
 			}

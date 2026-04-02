@@ -61,7 +61,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}
 			Expect(k8sClient.Create(ctx, oidcConfig)).Should(Succeed())
 
-			// Wait for Valid condition and ConfigHash to be set
+			// Wait for Ready condition and ConfigHash to be set
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -75,7 +75,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == "Valid" && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}

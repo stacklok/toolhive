@@ -83,9 +83,9 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := oidcConfig.Validate(); err != nil {
 		logger.Error(err, "MCPOIDCConfig spec validation failed")
 		meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               mcpv1alpha1.ConditionTypeOIDCConfigReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             "ValidationFailed",
+			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigInvalid,
 			Message:            err.Error(),
 			ObservedGeneration: oidcConfig.Generation,
 		})
@@ -95,11 +95,11 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
 
-	// Validation succeeded - set Valid=True condition
+	// Validation succeeded - set Ready=True condition
 	conditionChanged := meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-		Type:               "Valid",
+		Type:               mcpv1alpha1.ConditionTypeOIDCConfigReady,
 		Status:             metav1.ConditionTrue,
-		Reason:             "ValidationSucceeded",
+		Reason:             mcpv1alpha1.ConditionReasonOIDCConfigValid,
 		Message:            "Spec validation passed",
 		ObservedGeneration: oidcConfig.Generation,
 	})

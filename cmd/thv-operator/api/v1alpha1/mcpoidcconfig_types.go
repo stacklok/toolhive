@@ -18,6 +18,18 @@ const (
 	MCPOIDCConfigTypeInline MCPOIDCConfigSourceType = "inline"
 )
 
+// Condition type and reasons for MCPOIDCConfig status (RFC-0023)
+const (
+	// ConditionTypeOIDCConfigReady indicates whether the MCPOIDCConfig is ready for use
+	ConditionTypeOIDCConfigReady = "Ready"
+
+	// ConditionReasonOIDCConfigValid indicates spec validation passed
+	ConditionReasonOIDCConfigValid = "ConfigValid"
+
+	// ConditionReasonOIDCConfigInvalid indicates spec validation failed
+	ConditionReasonOIDCConfigInvalid = "ConfigInvalid"
+)
+
 // MCPOIDCConfigSourceType represents the type of OIDC configuration source for MCPOIDCConfig
 type MCPOIDCConfigSourceType string
 

@@ -95,18 +95,6 @@ type MCPTelemetryConfigSpec struct {
 	Prometheus *PrometheusConfig `json:"prometheus,omitempty"`
 }
 
-// WorkloadReference identifies a Kubernetes workload that references a shared config resource.
-type WorkloadReference struct {
-	// Kind is the resource kind (e.g., "MCPServer")
-	Kind string `json:"kind"`
-
-	// Namespace is the resource namespace
-	Namespace string `json:"namespace"`
-
-	// Name is the resource name
-	Name string `json:"name"`
-}
-
 // MCPTelemetryConfigStatus defines the observed state of MCPTelemetryConfig
 type MCPTelemetryConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPTelemetryConfig's state

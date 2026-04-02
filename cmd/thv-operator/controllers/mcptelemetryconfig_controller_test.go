@@ -704,8 +704,8 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 
 	// ReferencingWorkloads should list server-a and server-b (sorted), but not server-c
 	assert.Equal(t, []mcpv1alpha1.WorkloadReference{
-		{Kind: "MCPServer", Namespace: "default", Name: "server-a"},
-		{Kind: "MCPServer", Namespace: "default", Name: "server-b"},
+		{Kind: "MCPServer", Name: "server-a"},
+		{Kind: "MCPServer", Name: "server-b"},
 	}, updated.Status.ReferencingWorkloads)
 }
 

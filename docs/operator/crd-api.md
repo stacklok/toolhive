@@ -698,7 +698,6 @@ Config holds the configuration for OpenTelemetry instrumentation.
 
 _Appears in:_
 - [vmcp.config.Config](#vmcpconfigconfig)
-- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2336,10 +2335,8 @@ _Appears in:_
 
 
 MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.
-It embeds telemetry.Config from pkg/telemetry to eliminate the conversion
-layer between CRD and application types. The environmentVariables field is
-CLI-only and rejected by CEL validation; customAttributes is allowed for
-setting shared OTel resource attributes (e.g., deployment.environment).
+The spec uses a nested structure with openTelemetry and prometheus sub-objects
+for clear separation of concerns.
 
 
 
@@ -2348,19 +2345,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `endpoint` _string_ | Endpoint is the OTLP endpoint URL |  | Optional: \{\} <br /> |
-| `serviceName` _string_ | ServiceName is the service name for telemetry.<br />When omitted, defaults to the server name (e.g., VirtualMCPServer name). |  | Optional: \{\} <br /> |
-| `serviceVersion` _string_ | ServiceVersion is the service version for telemetry.<br />When omitted, defaults to the ToolHive version. |  | Optional: \{\} <br /> |
-| `tracingEnabled` _boolean_ | TracingEnabled controls whether distributed tracing is enabled.<br />When false, no tracer provider is created even if an endpoint is configured. | false | Optional: \{\} <br /> |
-| `metricsEnabled` _boolean_ | MetricsEnabled controls whether OTLP metrics are enabled.<br />When false, OTLP metrics are not sent even if an endpoint is configured.<br />This is independent of EnablePrometheusMetricsPath. | false | Optional: \{\} <br /> |
-| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) as a string.<br />Only used when TracingEnabled is true.<br />Example: "0.05" for 5% sampling. | 0.05 | Optional: \{\} <br /> |
-| `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint. |  | Optional: \{\} <br /> |
-| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint. | false | Optional: \{\} <br /> |
-| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.<br />The metrics are served on the main transport port at /metrics.<br />This is separate from OTLP metrics which are sent to the Endpoint. | false | Optional: \{\} <br /> |
-| `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"] |  | Optional: \{\} <br /> |
-| `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs. |  | Optional: \{\} <br /> |
-| `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names<br />are emitted alongside the new standard attribute names. When true, spans include both<br />old and new attribute names for backward compatibility with existing dashboards.<br />Currently defaults to true; this will change to false in a future release. | true | Optional: \{\} <br /> |
-| `sensitiveHeaders` _[api.v1alpha1.SensitiveHeader](#apiv1alpha1sensitiveheader) array_ | SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.<br />Use this for credential headers (e.g., API keys, bearer tokens) instead of<br />embedding secrets in the headers field. |  | Optional: \{\} <br /> |
+| `openTelemetry` _[api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)_ | OpenTelemetry defines OpenTelemetry configuration (OTLP endpoint, tracing, metrics) |  | Optional: \{\} <br /> |
+| `prometheus` _[api.v1alpha1.PrometheusConfig](#apiv1alpha1prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPTelemetryConfigStatus
@@ -2379,7 +2365,36 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPTelemetryConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPTelemetryConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPTelemetryConfig |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPTelemetryOTelConfig
+
+
+
+MCPTelemetryOTelConfig defines OpenTelemetry configuration for shared MCPTelemetryConfig resources.
+Unlike OpenTelemetryConfig (used by inline MCPServer telemetry), this type:
+  - Omits ServiceName (per-server field set via MCPTelemetryConfigReference)
+  - Uses map[string]string for Headers (not []string)
+  - Adds SensitiveHeaders for Kubernetes Secret-backed credentials
+  - Adds ResourceAttributes for shared OTel resource attributes
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether OpenTelemetry is enabled | false | Optional: \{\} <br /> |
+| `endpoint` _string_ | Endpoint is the OTLP endpoint URL for tracing and metrics |  | Optional: \{\} <br /> |
+| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint | false | Optional: \{\} <br /> |
+| `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint.<br />For secret-backed credentials, use sensitiveHeaders instead. |  | Optional: \{\} <br /> |
+| `sensitiveHeaders` _[api.v1alpha1.SensitiveHeader](#apiv1alpha1sensitiveheader) array_ | SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.<br />Use this for credential headers (e.g., API keys, bearer tokens) instead of<br />embedding secrets in the headers field. |  | Optional: \{\} <br /> |
+| `resourceAttributes` _object (keys:string, values:string)_ | ResourceAttributes contains custom resource attributes to be added to all telemetry signals.<br />These become OTel resource attributes (e.g., deployment.environment, service.namespace).<br />Note: service.name is intentionally excluded — it is set per-server via<br />MCPTelemetryConfigReference.ServiceName. |  | Optional: \{\} <br /> |
+| `metrics` _[api.v1alpha1.OpenTelemetryMetricsConfig](#apiv1alpha1opentelemetrymetricsconfig)_ | Metrics defines OpenTelemetry metrics-specific configuration |  | Optional: \{\} <br /> |
+| `tracing` _[api.v1alpha1.OpenTelemetryTracingConfig](#apiv1alpha1opentelemetrytracingconfig)_ | Tracing defines OpenTelemetry tracing configuration |  | Optional: \{\} <br /> |
+| `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy attribute names are emitted alongside<br />the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.<br />This will change to false in a future release and eventually be removed. | true | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPToolConfig
@@ -2618,6 +2633,7 @@ OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
 
 
 _Appears in:_
+- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
 - [api.v1alpha1.OpenTelemetryConfig](#apiv1alpha1opentelemetryconfig)
 
 | Field | Description | Default | Validation |
@@ -2634,6 +2650,7 @@ OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
 
 
 _Appears in:_
+- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
 - [api.v1alpha1.OpenTelemetryConfig](#apiv1alpha1opentelemetryconfig)
 
 | Field | Description | Default | Validation |
@@ -2724,6 +2741,7 @@ PrometheusConfig defines Prometheus-specific configuration
 
 
 _Appears in:_
+- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
 - [api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)
 
 | Field | Description | Default | Validation |
@@ -3000,7 +3018,7 @@ referenced without embedding secrets inline in the MCPTelemetryConfig resource.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
+- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -3631,6 +3649,7 @@ Namespace is implicit — cross-namespace references are not supported.
 
 _Appears in:_
 - [api.v1alpha1.MCPOIDCConfigStatus](#apiv1alpha1mcpoidcconfigstatus)
+- [api.v1alpha1.MCPTelemetryConfigStatus](#apiv1alpha1mcptelemetryconfigstatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

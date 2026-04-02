@@ -196,7 +196,7 @@ func (r *MCPTelemetryConfigReconciler) handleDeletion(
 	if len(referencingWorkloads) > 0 {
 		names := make([]string, 0, len(referencingWorkloads))
 		for _, ref := range referencingWorkloads {
-			names = append(names, fmt.Sprintf("%s/%s", ref.Namespace, ref.Name))
+			names = append(names, fmt.Sprintf("%s/%s", ref.Kind, ref.Name))
 		}
 		msg := fmt.Sprintf("cannot delete: still referenced by MCPServer(s): %v", names)
 		logger.Info(msg, "telemetryConfig", telemetryConfig.Name)
@@ -239,19 +239,12 @@ func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 		if server.Spec.TelemetryConfigRef != nil &&
 			server.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
 			refs = append(refs, mcpv1alpha1.WorkloadReference{
-				Kind:      "MCPServer",
-				Namespace: server.Namespace,
-				Name:      server.Name,
+				Kind: "MCPServer",
+				Name: server.Name,
 			})
 		}
 	}
 	slices.SortFunc(refs, func(a, b mcpv1alpha1.WorkloadReference) int {
-		if a.Namespace != b.Namespace {
-			if a.Namespace < b.Namespace {
-				return -1
-			}
-			return 1
-		}
 		if a.Name < b.Name {
 			return -1
 		}
@@ -266,6 +259,6 @@ func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 // workloadRefsEqual compares two WorkloadReference slices for equality.
 func workloadRefsEqual(a, b []mcpv1alpha1.WorkloadReference) bool {
 	return slices.EqualFunc(a, b, func(x, y mcpv1alpha1.WorkloadReference) bool {
-		return x.Kind == y.Kind && x.Namespace == y.Namespace && x.Name == y.Name
+		return x.Kind == y.Kind && x.Name == y.Name
 	})
 }

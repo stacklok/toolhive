@@ -250,22 +250,24 @@ spec:
                 description: ReferencingWorkloads lists workloads that reference this
                   MCPTelemetryConfig
                 items:
-                  description: WorkloadReference identifies a Kubernetes workload
-                    that references a shared config resource.
+                  description: |-
+                    WorkloadReference identifies a workload that references a shared configuration resource.
+                    Namespace is implicit — cross-namespace references are not supported.
                   properties:
                     kind:
-                      description: Kind is the resource kind (e.g., "MCPServer")
+                      description: Kind is the type of workload resource
+                      enum:
+                      - MCPServer
+                      - VirtualMCPServer
+                      - MCPRemoteProxy
                       type: string
                     name:
-                      description: Name is the resource name
-                      type: string
-                    namespace:
-                      description: Namespace is the resource namespace
+                      description: Name is the name of the workload resource
+                      minLength: 1
                       type: string
                   required:
                   - kind
                   - name
-                  - namespace
                   type: object
                 type: array
             type: object

@@ -716,7 +716,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				return true
 			}, timeout, interval).Should(BeTrue())
 
-			// MCPRemoteProxy OIDCConfigHash should be cleared
+			// MCPRemoteProxy OIDCConfigHash should be cleared and condition removed
 			Eventually(func() bool {
 				proxyUpdated := &mcpv1alpha1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -726,7 +726,12 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				return proxyUpdated.Status.OIDCConfigHash == ""
+				if proxyUpdated.Status.OIDCConfigHash != "" {
+					return false
+				}
+				// Verify the OIDCConfigRefValidated condition was removed
+				cond := meta.FindStatusCondition(proxyUpdated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+				return cond == nil
 			}, timeout, interval).Should(BeTrue())
 		})
 	})

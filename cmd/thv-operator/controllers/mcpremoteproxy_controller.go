@@ -719,7 +719,8 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 	ctxLogger := log.FromContext(ctx)
 
 	if proxy.Spec.OIDCConfigRef == nil {
-		// No MCPOIDCConfig referenced, clear any stored hash
+		// Remove condition if OIDCConfigRef is not set
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
 		if proxy.Status.OIDCConfigHash != "" {
 			proxy.Status.OIDCConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {

@@ -50,7 +50,7 @@ func TestDefaultAuthManager_UnsetAuth(t *testing.T) {
 					cfg := &config.Config{
 						RegistryAuth: config.RegistryAuth{
 							Type: config.RegistryAuthTypeOAuth,
-							OAuth: &config.RegistryOAuthConfig{
+							OAuth: &config.OAuthConfig{
 								Issuer:   "https://auth.example.com",
 								ClientID: "my-client",
 							},
@@ -93,7 +93,7 @@ func TestDefaultAuthManager_GetAuthInfo(t *testing.T) {
 			name: "returns oauth type without cached tokens when OAuth section has no ref",
 			registryAuth: config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
+				OAuth: &config.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
@@ -105,7 +105,7 @@ func TestDefaultAuthManager_GetAuthInfo(t *testing.T) {
 			name: "returns oauth type with cached tokens when CachedRefreshTokenRef is set",
 			registryAuth: config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
+				OAuth: &config.OAuthConfig{
 					Issuer:                "https://auth.example.com",
 					ClientID:              "my-client",
 					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",
@@ -164,7 +164,7 @@ func TestDefaultAuthManager_GetAuthStatus(t *testing.T) {
 			name: "returns configured when OAuth set but no cached tokens",
 			registryAuth: config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
+				OAuth: &config.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
@@ -176,7 +176,7 @@ func TestDefaultAuthManager_GetAuthStatus(t *testing.T) {
 			name: "returns authenticated when OAuth set with cached tokens",
 			registryAuth: config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
+				OAuth: &config.OAuthConfig{
 					Issuer:                "https://auth.example.com",
 					ClientID:              "my-client",
 					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",
@@ -241,7 +241,7 @@ func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
 			name: "returns config with all fields populated",
 			registryAuth: config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
+				OAuth: &config.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 					Audience: "api://toolhive",
@@ -259,7 +259,7 @@ func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
 			name: "returns config without optional fields",
 			registryAuth: config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
+				OAuth: &config.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
@@ -273,7 +273,7 @@ func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
 			name: "excludes cached token fields",
 			registryAuth: config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
+				OAuth: &config.OAuthConfig{
 					Issuer:                "https://auth.example.com",
 					ClientID:              "my-client",
 					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",

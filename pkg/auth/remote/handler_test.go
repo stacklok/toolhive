@@ -6,6 +6,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,8 +15,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
 const (
@@ -852,4 +856,320 @@ func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
 		assert.Equal(t, "my-configured-token", token.AccessToken)
 		assert.Equal(t, "Bearer", token.TokenType)
 	})
+}
+
+// stubTokenSource is a minimal oauth2.TokenSource used in wrapWithPersistence tests.
+type stubTokenSource struct{}
+
+func (*stubTokenSource) Token() (*oauth2.Token, error) { return &oauth2.Token{}, nil }
+
+func TestBuildOAuthFlowConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		config         *Config
+		scopes         []string
+		authServerInfo *discovery.AuthServerInfo
+		wantConfig     *discovery.OAuthFlowConfig
+	}{
+		{
+			name: "nil authServerInfo — config fields copied as-is",
+			config: &Config{
+				ClientID:     "client-id",
+				ClientSecret: "client-secret",
+				AuthorizeURL: "https://auth.example.com/authorize",
+				TokenURL:     "https://auth.example.com/token",
+				CallbackPort: 8080,
+				SkipBrowser:  true,
+				Resource:     "https://api.example.com",
+				OAuthParams:  map[string]string{"audience": "myapi"},
+			},
+			scopes:         []string{"openid", "profile"},
+			authServerInfo: nil,
+			wantConfig: &discovery.OAuthFlowConfig{
+				ClientID:     "client-id",
+				ClientSecret: "client-secret",
+				AuthorizeURL: "https://auth.example.com/authorize",
+				TokenURL:     "https://auth.example.com/token",
+				Scopes:       []string{"openid", "profile"},
+				CallbackPort: 8080,
+				SkipBrowser:  true,
+				Resource:     "https://api.example.com",
+				OAuthParams:  map[string]string{"audience": "myapi"},
+			},
+		},
+		{
+			name: "authServerInfo used when config URLs are empty",
+			config: &Config{
+				ClientID: "client-id",
+			},
+			scopes: []string{"openid"},
+			authServerInfo: &discovery.AuthServerInfo{
+				AuthorizationURL:     "https://discovered.example.com/authorize",
+				TokenURL:             "https://discovered.example.com/token",
+				RegistrationEndpoint: "https://discovered.example.com/register",
+			},
+			wantConfig: &discovery.OAuthFlowConfig{
+				ClientID:             "client-id",
+				AuthorizeURL:         "https://discovered.example.com/authorize",
+				TokenURL:             "https://discovered.example.com/token",
+				RegistrationEndpoint: "https://discovered.example.com/register",
+				Scopes:               []string{"openid"},
+			},
+		},
+		{
+			name: "config AuthorizeURL preserved when set",
+			config: &Config{
+				AuthorizeURL: "https://static.example.com/authorize",
+			},
+			scopes: nil,
+			authServerInfo: &discovery.AuthServerInfo{
+				AuthorizationURL: "https://discovered.example.com/authorize",
+				TokenURL:         "https://discovered.example.com/token",
+			},
+			wantConfig: &discovery.OAuthFlowConfig{
+				// AuthorizeURL set → authServerInfo is NOT used (TokenURL also not overwritten)
+				AuthorizeURL: "https://static.example.com/authorize",
+				TokenURL:     "",
+			},
+		},
+		{
+			name: "config TokenURL preserved when set",
+			config: &Config{
+				TokenURL: "https://static.example.com/token",
+			},
+			scopes: nil,
+			authServerInfo: &discovery.AuthServerInfo{
+				AuthorizationURL: "https://discovered.example.com/authorize",
+				TokenURL:         "https://discovered.example.com/token",
+			},
+			wantConfig: &discovery.OAuthFlowConfig{
+				// TokenURL set → authServerInfo is NOT used (AuthorizeURL also not overwritten)
+				AuthorizeURL: "",
+				TokenURL:     "https://static.example.com/token",
+			},
+		},
+		{
+			name: "Resource and OAuthParams passed through unchanged",
+			config: &Config{
+				Resource:    "https://api.example.com/resource",
+				OAuthParams: map[string]string{"key": "value"},
+			},
+			scopes:         nil,
+			authServerInfo: nil,
+			wantConfig: &discovery.OAuthFlowConfig{
+				Resource:    "https://api.example.com/resource",
+				OAuthParams: map[string]string{"key": "value"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := &Handler{config: tt.config}
+			got := handler.buildOAuthFlowConfig(tt.scopes, tt.authServerInfo)
+
+			assert.Equal(t, tt.wantConfig.ClientID, got.ClientID, "ClientID")
+			assert.Equal(t, tt.wantConfig.ClientSecret, got.ClientSecret, "ClientSecret")
+			assert.Equal(t, tt.wantConfig.AuthorizeURL, got.AuthorizeURL, "AuthorizeURL")
+			assert.Equal(t, tt.wantConfig.TokenURL, got.TokenURL, "TokenURL")
+			assert.Equal(t, tt.wantConfig.RegistrationEndpoint, got.RegistrationEndpoint, "RegistrationEndpoint")
+			assert.Equal(t, tt.wantConfig.Scopes, got.Scopes, "Scopes")
+			assert.Equal(t, tt.wantConfig.Resource, got.Resource, "Resource")
+			assert.Equal(t, tt.wantConfig.OAuthParams, got.OAuthParams, "OAuthParams")
+			assert.Equal(t, tt.wantConfig.CallbackPort, got.CallbackPort, "CallbackPort")
+			assert.Equal(t, tt.wantConfig.SkipBrowser, got.SkipBrowser, "SkipBrowser")
+		})
+	}
+}
+
+func TestWrapWithPersistence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                       string
+		tokenPersister             TokenPersister
+		clientCredentialsPersister ClientCredentialsPersister
+		result                     *discovery.OAuthFlowResult
+		wantPersistingSource       bool // true if returned source should be a *PersistingTokenSource
+	}{
+		{
+			name:                 "nil persisters — returns original token source unwrapped",
+			tokenPersister:       nil,
+			result:               &discovery.OAuthFlowResult{TokenSource: &stubTokenSource{}, RefreshToken: "rt"},
+			wantPersistingSource: false,
+		},
+		{
+			name: "token persister called when refresh token present",
+			tokenPersister: func(_ string, _ time.Time) error {
+				return nil
+			},
+			result:               &discovery.OAuthFlowResult{TokenSource: &stubTokenSource{}, RefreshToken: "rt"},
+			wantPersistingSource: true,
+		},
+		{
+			name: "token persister NOT called when refresh token empty",
+			tokenPersister: func(_ string, _ time.Time) error {
+				// This should NOT be called; if it is, returning an error makes the test meaningful
+				return errors.New("persister should not have been called")
+			},
+			result: &discovery.OAuthFlowResult{
+				TokenSource:  &stubTokenSource{},
+				RefreshToken: "", // empty — persister must not be invoked
+			},
+			// tokenPersister is set so source is still wrapped
+			wantPersistingSource: true,
+		},
+		{
+			name: "token persister error is non-fatal",
+			tokenPersister: func(_ string, _ time.Time) error {
+				return errors.New("persist failed")
+			},
+			result:               &discovery.OAuthFlowResult{TokenSource: &stubTokenSource{}, RefreshToken: "rt"},
+			wantPersistingSource: true,
+		},
+		{
+			name: "client credentials persister called when clientID present",
+			clientCredentialsPersister: func(clientID, clientSecret string) error {
+				assert.Equal(t, "my-client-id", clientID)
+				assert.Equal(t, "my-client-secret", clientSecret)
+				return nil
+			},
+			result: &discovery.OAuthFlowResult{
+				TokenSource:  &stubTokenSource{},
+				ClientID:     "my-client-id",
+				ClientSecret: "my-client-secret",
+			},
+			wantPersistingSource: false, // no tokenPersister set
+		},
+		{
+			name: "client credentials persister NOT called when clientID empty",
+			clientCredentialsPersister: func(_, _ string) error {
+				return errors.New("persister should not have been called")
+			},
+			result: &discovery.OAuthFlowResult{
+				TokenSource: &stubTokenSource{},
+				ClientID:    "", // empty — persister must not be invoked
+			},
+			wantPersistingSource: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := &Handler{
+				config:                     &Config{},
+				tokenPersister:             tt.tokenPersister,
+				clientCredentialsPersister: tt.clientCredentialsPersister,
+			}
+
+			got := handler.wrapWithPersistence(tt.result)
+
+			require.NotNil(t, got)
+			if tt.wantPersistingSource {
+				_, ok := got.(*PersistingTokenSource)
+				assert.True(t, ok, "expected *PersistingTokenSource, got %T", got)
+			} else {
+				assert.Equal(t, tt.result.TokenSource, got)
+			}
+		})
+	}
+}
+
+func TestResolveClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		config           *Config
+		setupMock        func(provider *mocks.MockProvider)
+		wantClientID     string
+		wantClientSecret string
+	}{
+		{
+			name: "no cached credentials — static config used",
+			config: &Config{
+				ClientID:     "static-id",
+				ClientSecret: "static-secret",
+			},
+			setupMock:        nil,
+			wantClientID:     "static-id",
+			wantClientSecret: "static-secret",
+		},
+		{
+			name: "cached client ID overrides static",
+			config: &Config{
+				ClientID:       "static-id",
+				ClientSecret:   "static-secret",
+				CachedClientID: "cached-id",
+				// CachedClientSecretRef empty → no secret fetch; static secret kept
+			},
+			setupMock:        nil,
+			wantClientID:     "cached-id",
+			wantClientSecret: "static-secret", // static secret preserved when no ref to override it
+		},
+		{
+			name: "cached client ID with secret ref — secret fetched",
+			config: &Config{
+				CachedClientID:        "cached-id",
+				CachedClientSecretRef: "secret-ref",
+			},
+			setupMock: func(provider *mocks.MockProvider) {
+				provider.EXPECT().
+					GetSecret(gomock.Any(), "secret-ref").
+					Return("cached-secret", nil)
+			},
+			wantClientID:     "cached-id",
+			wantClientSecret: "cached-secret",
+		},
+		{
+			name: "cached secret ref with provider error — falls back to empty secret",
+			config: &Config{
+				CachedClientID:        "cached-id",
+				CachedClientSecretRef: "secret-ref",
+			},
+			setupMock: func(provider *mocks.MockProvider) {
+				provider.EXPECT().
+					GetSecret(gomock.Any(), "secret-ref").
+					Return("", errors.New("storage error"))
+			},
+			wantClientID:     "cached-id",
+			wantClientSecret: "",
+		},
+		{
+			name: "nil secret provider — empty secret used even if ref set",
+			config: &Config{
+				CachedClientID:        "cached-id",
+				CachedClientSecretRef: "secret-ref",
+			},
+			setupMock:        nil, // secretProvider stays nil
+			wantClientID:     "cached-id",
+			wantClientSecret: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := &Handler{config: tt.config}
+
+			if tt.setupMock != nil {
+				ctrl := gomock.NewController(t)
+				mockProvider := mocks.NewMockProvider(ctrl)
+				tt.setupMock(mockProvider)
+				handler.secretProvider = mockProvider
+			}
+
+			gotID, gotSecret := handler.resolveClientCredentials(context.Background())
+
+			assert.Equal(t, tt.wantClientID, gotID, "clientID")
+			assert.Equal(t, tt.wantClientSecret, gotSecret, "clientSecret")
+		})
+	}
 }

@@ -82,7 +82,7 @@ func Login(
 
 	registryURL := registryURLFromConfig(cfg)
 
-	ts, err := NewTokenSource(cfg.RegistryAuth.OAuth, registryURL, secretsProvider, true)
+	ts, err := NewTokenSource(cfg.RegistryAuth.OAuth, registryURL, secretsProvider, true, RegistryConfigUpdater())
 	if err != nil {
 		return fmt.Errorf("creating token source: %w", err)
 	}
@@ -284,7 +284,7 @@ func ConfigureOAuth(
 	return func(c *config.Config) {
 		c.RegistryAuth = config.RegistryAuth{
 			Type: config.RegistryAuthTypeOAuth,
-			OAuth: &config.RegistryOAuthConfig{
+			OAuth: &config.OAuthConfig{
 				Issuer:       issuer,
 				ClientID:     clientID,
 				Scopes:       resolvedScopes,

@@ -101,9 +101,46 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Set up field indexing for MCPServer.Spec.GroupRef (required by VirtualMCPServer controller)
+	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
+		mcpServer := obj.(*mcpv1alpha1.MCPServer)
+		if mcpServer.Spec.GroupRef == "" {
+			return nil
+		}
+		return []string{mcpServer.Spec.GroupRef}
+	}); err != nil {
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef (required by VirtualMCPServer controller)
+	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
+		mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
+		if mcpRemoteProxy.Spec.GroupRef == "" {
+			return nil
+		}
+		return []string{mcpRemoteProxy.Spec.GroupRef}
+	}); err != nil {
+		Expect(err).ToNot(HaveOccurred())
+	}
+
 	// Register the MCPServer controller (needed because MCPOIDCConfig watches
 	// MCPServer changes and we test cross-resource interactions)
 	err = (&controllers.MCPServerReconciler{
+		Client:           k8sManager.GetClient(),
+		Scheme:           k8sManager.GetScheme(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Register the MCPGroup controller (VirtualMCPServer depends on MCPGroup)
+	err = (&controllers.MCPGroupReconciler{
+		Client: k8sManager.GetClient(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Register the VirtualMCPServer controller (needed because MCPOIDCConfig watches
+	// VirtualMCPServer changes and we test cross-resource interactions)
+	err = (&controllers.VirtualMCPServerReconciler{
 		Client:           k8sManager.GetClient(),
 		Scheme:           k8sManager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),

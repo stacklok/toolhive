@@ -92,6 +92,7 @@ func Close() {
 		return
 	}
 	sentry.Flush(flushTimeout)
+	initialized.Store(false)
 	slog.Debug("sentry flushed and closed")
 }
 

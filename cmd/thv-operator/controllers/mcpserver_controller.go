@@ -2085,9 +2085,9 @@ func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alph
 		return fmt.Errorf("%s", msg)
 	}
 
-	// Update ReferencingServers on the MCPOIDCConfig status
-	if err := r.updateOIDCConfigReferencingServers(ctx, oidcConfig, m.Name); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingServers")
+	// Update ReferencingWorkloads on the MCPOIDCConfig status
+	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, m.Name); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
 		// Non-fatal: continue with reconciliation
 	}
 
@@ -2124,24 +2124,29 @@ func setOIDCConfigRefCondition(m *mcpv1alpha1.MCPServer, status metav1.Condition
 	})
 }
 
-// updateOIDCConfigReferencingServers ensures the MCPServer name is listed in
-// the MCPOIDCConfig's ReferencingServers status field.
-func (r *MCPServerReconciler) updateOIDCConfigReferencingServers(
+// updateOIDCConfigReferencingWorkloads ensures the MCPServer is listed in
+// the MCPOIDCConfig's ReferencingWorkloads status field.
+func (r *MCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	ctx context.Context,
 	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
 	serverName string,
 ) error {
+	ref := mcpv1alpha1.WorkloadReference{
+		Kind: "MCPServer",
+		Name: serverName,
+	}
+
 	// Check if already listed
-	for _, name := range oidcConfig.Status.ReferencingServers {
-		if name == serverName {
+	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
+		if entry.Kind == ref.Kind && entry.Name == ref.Name {
 			return nil
 		}
 	}
 
-	// Add the server name
-	oidcConfig.Status.ReferencingServers = append(oidcConfig.Status.ReferencingServers, serverName)
+	// Add the workload reference
+	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
-		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingServers: %w", err)
+		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}
 
 	return nil

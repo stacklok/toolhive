@@ -139,7 +139,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("should track MCPServer in MCPOIDCConfig ReferencingServers", func() {
+		It("should track MCPServer in MCPOIDCConfig ReferencingWorkloads", func() {
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -149,8 +149,9 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == serverName {
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: serverName}
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == expectedRef {
 						return true
 					}
 				}
@@ -159,7 +160,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 		})
 	})
 
-	Context("When MCPServer is deleted, should clean up ReferencingServers", Ordered, func() {
+	Context("When MCPServer is deleted, should clean up ReferencingWorkloads", Ordered, func() {
 		var (
 			namespace  string
 			configName string
@@ -228,7 +229,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			// Wait for ReferencingServers to contain the server
+			// Wait for ReferencingWorkloads to contain the server
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -238,8 +239,9 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == serverName {
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: serverName}
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == expectedRef {
 						return true
 					}
 				}
@@ -252,11 +254,11 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should remove server from ReferencingServers after MCPServer deletion", func() {
+		It("should remove server from ReferencingWorkloads after MCPServer deletion", func() {
 			// Delete the MCPServer
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
 
-			// Eventually the referencing servers list should be empty
+			// Eventually the referencing workloads list should be empty
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -266,7 +268,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 				if err != nil {
 					return false
 				}
-				return len(updated.Status.ReferencingServers) == 0
+				return len(updated.Status.ReferencingWorkloads) == 0
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
@@ -340,7 +342,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			// Wait for ReferencingServers to be populated
+			// Wait for ReferencingWorkloads to be populated
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -350,8 +352,9 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == serverName {
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: serverName}
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref == expectedRef {
 						return true
 					}
 				}

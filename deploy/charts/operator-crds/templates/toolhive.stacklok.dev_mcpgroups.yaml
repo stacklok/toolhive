@@ -23,9 +23,18 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .status.serverCount
+      name: Servers
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
     - jsonPath: .status.conditions[?(@.type=='MCPServersChecked')].status
       name: Ready
       type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:

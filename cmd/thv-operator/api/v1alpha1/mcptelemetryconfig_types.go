@@ -68,8 +68,8 @@ type MCPTelemetryConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=mcpotel,categories=toolhive
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.spec.endpoint`
-// +kubebuilder:printcolumn:name="Tracing",type=boolean,JSONPath=`.spec.tracingEnabled`
-// +kubebuilder:printcolumn:name="Metrics",type=boolean,JSONPath=`.spec.metricsEnabled`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingServers`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPTelemetryConfig is the Schema for the mcptelemetryconfigs API.

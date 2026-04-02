@@ -778,8 +778,6 @@ func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 	return result
 }
 
-// generateNonce creates a cryptographically random nonce for server instance
-// identification. It returns a 32-character hex string (16 random bytes).
 // chiRouteSpanNamer is a middleware that renames the active OTEL span to reflect
 // the matched chi route pattern (e.g. "GET /api/v1beta/workloads/{name}") and
 // records each URL path parameter as a span attribute for drill-down visibility.

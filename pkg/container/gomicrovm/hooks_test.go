@@ -108,13 +108,13 @@ func TestInjectInitBinary(t *testing.T) {
 func TestInjectEntrypointOverride(t *testing.T) {
 	t.Parallel()
 
-	t.Run("valid override", func(t *testing.T) {
+	t.Run("prepends OCI entrypoint to override", func(t *testing.T) {
 		t.Parallel()
 		rootfs := t.TempDir()
 
-		override := []string{"/custom/server", "--flag"}
+		override := []string{"stdio", "--toolsets", "all"}
 		imgConfig := &image.OCIConfig{
-			Entrypoint: []string{"/original"},
+			Entrypoint: []string{"/usr/bin/github-mcp-server"},
 			Env:        []string{"FROM_IMAGE=true"},
 			WorkingDir: "/app",
 		}
@@ -128,9 +128,48 @@ func TestInjectEntrypointOverride(t *testing.T) {
 
 		var cfg entrypointConfig
 		require.NoError(t, json.Unmarshal(data, &cfg))
-		require.Equal(t, override, cfg.Cmd, "should use override cmd, not OCI entrypoint")
+		require.Equal(t, []string{"/usr/bin/github-mcp-server", "stdio", "--toolsets", "all"}, cfg.Cmd,
+			"should prepend OCI entrypoint to override args")
 		require.Equal(t, []string{"FROM_IMAGE=true"}, cfg.Env, "should preserve OCI env")
 		require.Equal(t, "/app", cfg.WorkingDir, "should preserve OCI workdir")
+	})
+
+	t.Run("no OCI entrypoint uses override as-is", func(t *testing.T) {
+		t.Parallel()
+		rootfs := t.TempDir()
+
+		override := []string{"/custom/server", "--flag"}
+		imgConfig := &image.OCIConfig{
+			Env: []string{"FROM_IMAGE=true"},
+		}
+
+		hook := InjectEntrypointOverride(override)
+		err := hook(rootfs, imgConfig)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(rootfs, "etc", "thv-entrypoint.json"))
+		require.NoError(t, err)
+
+		var cfg entrypointConfig
+		require.NoError(t, json.Unmarshal(data, &cfg))
+		require.Equal(t, override, cfg.Cmd, "should use override as-is when no entrypoint")
+	})
+
+	t.Run("nil imgConfig uses override as-is", func(t *testing.T) {
+		t.Parallel()
+		rootfs := t.TempDir()
+
+		override := []string{"/custom/server"}
+		hook := InjectEntrypointOverride(override)
+		err := hook(rootfs, nil)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(rootfs, "etc", "thv-entrypoint.json"))
+		require.NoError(t, err)
+
+		var cfg entrypointConfig
+		require.NoError(t, json.Unmarshal(data, &cfg))
+		require.Equal(t, override, cfg.Cmd)
 	})
 
 	t.Run("empty cmd rejected", func(t *testing.T) {

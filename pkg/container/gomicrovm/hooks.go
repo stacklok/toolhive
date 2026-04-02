@@ -72,16 +72,25 @@ func buildCmd(imgConfig *image.OCIConfig) []string {
 	return cmd
 }
 
-// InjectEntrypointOverride returns a RootFS hook that writes an explicit
-// command as the entrypoint config, ignoring the OCI image's entrypoint/cmd.
-// Used when the caller provides an explicit command override.
+// InjectEntrypointOverride returns a RootFS hook that uses the caller's
+// command as a CMD override while preserving the OCI image's ENTRYPOINT.
+// This matches Docker/Podman behavior: user args replace CMD, not ENTRYPOINT.
+// The final command is ENTRYPOINT + override.
 func InjectEntrypointOverride(cmd []string) microvm.RootFSHook {
 	return func(rootfsPath string, imgConfig *image.OCIConfig) error {
 		if len(cmd) == 0 {
 			return fmt.Errorf("entrypoint override has empty cmd")
 		}
+		// Prepend OCI ENTRYPOINT (if any) to match Docker semantics:
+		//   docker run image arg1 arg2  =>  ENTRYPOINT + [arg1, arg2]
+		fullCmd := cmd
+		if imgConfig != nil && len(imgConfig.Entrypoint) > 0 {
+			fullCmd = make([]string, 0, len(imgConfig.Entrypoint)+len(cmd))
+			fullCmd = append(fullCmd, imgConfig.Entrypoint...)
+			fullCmd = append(fullCmd, cmd...)
+		}
 		cfg := entrypointConfig{
-			Cmd: cmd,
+			Cmd: fullCmd,
 		}
 		if imgConfig != nil {
 			cfg.Env = imgConfig.Env

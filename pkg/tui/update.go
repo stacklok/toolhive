@@ -216,6 +216,18 @@ func (m *Model) handleMsg(msg tea.Msg) (tea.Cmd, bool) {
 			notifCmd = m.showNotif("✓ "+msg.name+" "+msg.action, true)
 		}
 		return tea.Batch(m.refreshWorkloads(), notifCmd), false
+	case runFormResultMsg:
+		m.runForm.running = false
+		m.runForm.open = false
+		m.registry.detail = false
+		m.registry.open = false
+		var notifCmd tea.Cmd
+		if msg.err != nil {
+			notifCmd = m.showNotif("✗ "+msg.server+": "+msg.err.Error(), false)
+		} else {
+			notifCmd = m.showNotif("✓ "+msg.name+" started", true)
+		}
+		return tea.Batch(m.refreshWorkloads(), notifCmd), false
 	case notifClearMsg:
 		m.notifMsg = ""
 		return nil, false

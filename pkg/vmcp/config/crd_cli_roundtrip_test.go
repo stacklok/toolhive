@@ -447,7 +447,7 @@ func TestConfigRoundtrip(t *testing.T) {
 		Name:  "test-server",
 		Group: "test-group",
 		IncomingAuth: &IncomingAuthConfig{
-			Type: IncomingAuthTypeOIDC,
+			Type: "oidc",
 			OIDC: &OIDCConfig{
 				Issuer:   "https://issuer.example.com",
 				ClientID: "client-123",
@@ -517,8 +517,8 @@ func TestConfigRoundtrip(t *testing.T) {
 	if parsedConfig.IncomingAuth == nil {
 		t.Fatal("IncomingAuth is nil")
 	}
-	if parsedConfig.IncomingAuth.Type != IncomingAuthTypeOIDC {
-		t.Errorf("IncomingAuth.Type = %q, want %q", parsedConfig.IncomingAuth.Type, IncomingAuthTypeOIDC)
+	if parsedConfig.IncomingAuth.Type != "oidc" {
+		t.Errorf("IncomingAuth.Type = %q, want %q", parsedConfig.IncomingAuth.Type, "oidc")
 	}
 	if len(parsedConfig.CompositeTools) != 1 {
 		t.Fatalf("CompositeTools length = %d, want 1", len(parsedConfig.CompositeTools))

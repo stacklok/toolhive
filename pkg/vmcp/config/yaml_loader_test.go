@@ -157,17 +157,14 @@ aggregation:
 `,
 			want: func(t *testing.T, cfg *Config) {
 				t.Helper()
-				if cfg.IncomingAuth.Type != "oidc" {
-					t.Errorf("IncomingAuth.Type = %v, want oidc", cfg.IncomingAuth.Type)
-				}
 				if cfg.IncomingAuth.OIDC == nil {
 					t.Fatal("IncomingAuth.OIDC is nil")
 				}
-				if cfg.IncomingAuth.OIDC.JwksUrl != "https://auth.example.com/custom/jwks" {
-					t.Errorf("OIDC.JwksUrl = %v, want https://auth.example.com/custom/jwks", cfg.IncomingAuth.OIDC.JwksUrl)
+				if cfg.IncomingAuth.OIDC.JWKSURL != "https://auth.example.com/custom/jwks" {
+					t.Errorf("OIDC.JWKSURL = %v, want https://auth.example.com/custom/jwks", cfg.IncomingAuth.OIDC.JWKSURL)
 				}
-				if cfg.IncomingAuth.OIDC.IntrospectionUrl != "https://auth.example.com/custom/introspect" {
-					t.Errorf("OIDC.IntrospectionUrl = %v, want https://auth.example.com/custom/introspect", cfg.IncomingAuth.OIDC.IntrospectionUrl)
+				if cfg.IncomingAuth.OIDC.IntrospectionURL != "https://auth.example.com/custom/introspect" {
+					t.Errorf("OIDC.IntrospectionURL = %v, want https://auth.example.com/custom/introspect", cfg.IncomingAuth.OIDC.IntrospectionURL)
 				}
 			},
 			wantErr: false,

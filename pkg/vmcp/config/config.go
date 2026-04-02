@@ -218,16 +218,16 @@ type OIDCConfig struct {
 	// If not specified, defaults to Audience.
 	Resource string `json:"resource,omitempty" yaml:"resource,omitempty"`
 
-	// JwksUrl is the explicit JWKS endpoint URL.
+	// JWKSURL is the explicit JWKS endpoint URL.
 	// When set, skips OIDC discovery and fetches the JWKS directly from this URL.
 	// This is useful when the OIDC issuer does not serve a /.well-known/openid-configuration.
 	// +optional
-	JwksUrl string `json:"jwksUrl,omitempty" yaml:"jwksUrl,omitempty"`
+	JWKSURL string `json:"jwksUrl,omitempty" yaml:"jwksUrl,omitempty"`
 
-	// IntrospectionUrl is the token introspection endpoint URL (RFC 7662).
+	// IntrospectionURL is the token introspection endpoint URL (RFC 7662).
 	// When set, enables token introspection for opaque (non-JWT) tokens.
 	// +optional
-	IntrospectionUrl string `json:"introspectionUrl,omitempty" yaml:"introspectionUrl,omitempty"`
+	IntrospectionURL string `json:"introspectionUrl,omitempty" yaml:"introspectionUrl,omitempty"`
 
 	// Scopes are the required OAuth scopes.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`

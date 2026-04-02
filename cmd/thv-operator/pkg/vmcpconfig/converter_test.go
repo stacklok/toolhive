@@ -98,8 +98,8 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				assert.Equal(t, "https://issuer.example.com", config.IncomingAuth.OIDC.Issuer)
 				assert.Equal(t, "my-audience", config.IncomingAuth.OIDC.Audience)
 				assert.Equal(t, "https://resource.example.com", config.IncomingAuth.OIDC.Resource)
-				assert.Equal(t, "https://issuer.example.com/jwks", config.IncomingAuth.OIDC.JwksUrl)
-				assert.Equal(t, "https://issuer.example.com/introspect", config.IncomingAuth.OIDC.IntrospectionUrl)
+				assert.Equal(t, "https://issuer.example.com/jwks", config.IncomingAuth.OIDC.JWKSURL)
+				assert.Equal(t, "https://issuer.example.com/introspect", config.IncomingAuth.OIDC.IntrospectionURL)
 				assert.True(t, config.IncomingAuth.OIDC.ProtectedResourceAllowPrivateIP)
 			},
 		},
@@ -333,8 +333,8 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 				Issuer:           "https://auth.example.com",
 				ClientID:         "test-client",
 				Audience:         "test-audience",
-				JwksUrl:          "https://auth.example.com/custom/jwks",
-				IntrospectionUrl: "https://auth.example.com/custom/introspect",
+				JWKSURL:          "https://auth.example.com/custom/jwks",
+				IntrospectionURL: "https://auth.example.com/custom/introspect",
 			},
 			description: "Should correctly convert OIDC auth config with jwksUrl and introspectionUrl",
 		},
@@ -365,8 +365,8 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					Issuer:           tt.expectedOIDCConfig.Issuer,
 					ClientID:         tt.expectedOIDCConfig.ClientID,
 					Audience:         tt.expectedOIDCConfig.Audience,
-					JWKSURL:          tt.expectedOIDCConfig.JwksUrl,
-					IntrospectionURL: tt.expectedOIDCConfig.IntrospectionUrl,
+					JWKSURL:          tt.expectedOIDCConfig.JWKSURL,
+					IntrospectionURL: tt.expectedOIDCConfig.IntrospectionURL,
 					Scopes:           tt.expectedOIDCConfig.Scopes,
 				}, nil)
 			} else {
@@ -391,8 +391,8 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					assert.Equal(t, tt.expectedOIDCConfig.Issuer, config.IncomingAuth.OIDC.Issuer, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.ClientID, config.IncomingAuth.OIDC.ClientID, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.Audience, config.IncomingAuth.OIDC.Audience, tt.description)
-					assert.Equal(t, tt.expectedOIDCConfig.JwksUrl, config.IncomingAuth.OIDC.JwksUrl, tt.description)
-					assert.Equal(t, tt.expectedOIDCConfig.IntrospectionUrl, config.IncomingAuth.OIDC.IntrospectionUrl, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.JWKSURL, config.IncomingAuth.OIDC.JWKSURL, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.IntrospectionURL, config.IncomingAuth.OIDC.IntrospectionURL, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.Scopes, config.IncomingAuth.OIDC.Scopes, tt.description)
 				} else {
 					assert.Nil(t, config.IncomingAuth.OIDC, tt.description)

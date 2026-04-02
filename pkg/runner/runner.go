@@ -22,6 +22,7 @@ import (
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -81,6 +82,11 @@ type Runner struct {
 	// server is initialized in Run().
 	// Nil when no embedded auth server is configured.
 	upstreamTokenReader upstreamtoken.TokenReader
+
+	// keyProvider provides in-process JWKS key lookups from the embedded
+	// auth server, eliminating self-referential HTTP calls.
+	// Nil when no embedded auth server is configured.
+	keyProvider keys.PublicKeyProvider
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -136,6 +142,13 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 // server is configured.
 func (r *Runner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
 	return r.upstreamTokenReader
+}
+
+// GetKeyProvider returns the embedded auth server's public key provider
+// for in-process JWKS key lookups. Returns nil if no embedded auth server
+// is configured.
+func (r *Runner) GetKeyProvider() keys.PublicKeyProvider {
+	return r.keyProvider
 }
 
 // GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
@@ -259,6 +272,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		stor := r.embeddedAuthServer.IDPTokenStorage()
 		refresher := r.embeddedAuthServer.UpstreamTokenRefresher()
 		r.upstreamTokenReader = upstreamtoken.NewInProcessService(stor, refresher)
+
+		// Expose key provider for in-process JWKS lookups (avoids self-referential HTTP)
+		r.keyProvider = r.embeddedAuthServer.KeyProvider()
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)

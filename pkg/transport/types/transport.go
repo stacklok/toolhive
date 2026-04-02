@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 )
@@ -80,6 +81,11 @@ type MiddlewareRunner interface {
 	// GetUpstreamTokenReader returns a TokenReader for identity enrichment.
 	// Returns nil if the embedded auth server is not configured.
 	GetUpstreamTokenReader() upstreamtoken.TokenReader
+
+	// GetKeyProvider returns the embedded auth server's public key provider
+	// for in-process JWKS key lookups. Returns nil if no embedded auth server
+	// is configured.
+	GetKeyProvider() keys.PublicKeyProvider
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration

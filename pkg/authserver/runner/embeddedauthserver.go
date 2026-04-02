@@ -37,9 +37,10 @@ const (
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
 type EmbeddedAuthServer struct {
-	server    authserver.Server
-	closeOnce sync.Once
-	closeErr  error
+	server      authserver.Server
+	keyProvider keys.KeyProvider
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
@@ -105,7 +106,8 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	}
 
 	return &EmbeddedAuthServer{
-		server: server,
+		server:      server,
+		keyProvider: keyProvider,
 	}, nil
 }
 
@@ -140,6 +142,13 @@ func (e *EmbeddedAuthServer) IDPTokenStorage() storage.UpstreamTokenStorage {
 // tokens using the upstream provider's refresh token grant.
 func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	return e.server.UpstreamTokenRefresher()
+}
+
+// KeyProvider returns the signing key provider used by the authorization server.
+// This enables in-process JWKS key lookups, eliminating the need for
+// self-referential HTTP calls when the token validator runs in the same process.
+func (e *EmbeddedAuthServer) KeyProvider() keys.KeyProvider {
+	return e.keyProvider
 }
 
 // Routes returns the authorization server's HTTP route map.

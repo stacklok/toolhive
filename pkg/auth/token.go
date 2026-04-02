@@ -832,23 +832,32 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 // getKeyFromLocalProvider attempts to find a verification key from the local
 // key provider (embedded auth server). Returns (key, nil) on success,
 // (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
+// validateTokenHeader checks the signing method is supported (RSA or ECDSA) and
+// extracts the key ID from the token header. Returns an error for unsupported
+// methods or a missing kid claim.
+func validateTokenHeader(token *jwt.Token) (string, error) {
+	switch token.Method.(type) {
+	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+		// Supported signing methods
+	default:
+		return "", fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+	}
+
+	kid, ok := token.Header["kid"].(string)
+	if !ok {
+		return "", fmt.Errorf("token header missing kid")
+	}
+	return kid, nil
+}
+
 func (v *TokenValidator) getKeyFromLocalProvider(ctx context.Context, token *jwt.Token) (interface{}, error) {
 	if v.keyProvider == nil {
 		return nil, nil
 	}
 
-	// Validate the signing method
-	switch token.Method.(type) {
-	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
-		// Supported signing methods
-	default:
-		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-	}
-
-	// Get the key ID from the token header
-	kid, ok := token.Header["kid"].(string)
-	if !ok {
-		return nil, fmt.Errorf("token header missing kid")
+	kid, err := validateTokenHeader(token)
+	if err != nil {
+		return nil, err
 	}
 
 	pubKeys, err := v.keyProvider.PublicKeys(ctx)
@@ -892,18 +901,9 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, fmt.Errorf("JWKS registration failed: %w", err)
 	}
 
-	// Validate the signing method
-	switch token.Method.(type) {
-	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
-		// Supported RSA signing methods
-	default:
-		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-	}
-
-	// Get the key ID from the token header
-	kid, ok := token.Header["kid"].(string)
-	if !ok {
-		return nil, fmt.Errorf("token header missing kid")
+	kid, err := validateTokenHeader(token)
+	if err != nil {
+		return nil, err
 	}
 
 	// Get the key set from the JWKS

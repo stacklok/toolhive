@@ -5,6 +5,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -74,8 +75,13 @@ func renderInfoConfig(cfg *runner.RunConfig, s infoStyles) []string {
 	}
 	if len(cfg.EnvVars) > 0 {
 		lines = append(lines, s.section("Environment"))
-		for k, v := range cfg.EnvVars {
-			lines = append(lines, s.cyan.Render(fmt.Sprintf("  %-16s", k))+s.dim2.Render(v))
+		envKeys := make([]string, 0, len(cfg.EnvVars))
+		for k := range cfg.EnvVars {
+			envKeys = append(envKeys, k)
+		}
+		slices.Sort(envKeys)
+		for _, k := range envKeys {
+			lines = append(lines, s.cyan.Render(fmt.Sprintf("  %-16s", k))+s.dim2.Render(cfg.EnvVars[k]))
 		}
 	}
 	if len(cfg.Volumes) > 0 {

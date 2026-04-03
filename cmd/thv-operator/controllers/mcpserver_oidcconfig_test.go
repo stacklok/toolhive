@@ -141,6 +141,40 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 			expectConditionReason:   mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
 			expectReferencingServer: true,
 		},
+		{
+			name: "condition persisted when recovering from transient error with same hash",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:         "img",
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
+				},
+				Status: mcpv1alpha1.MCPServerStatus{
+					// Hash is already current — only the condition is stale.
+					OIDCConfigHash: "same-hash",
+					Conditions: []metav1.Condition{{
+						Type:   mcpv1alpha1.ConditionOIDCConfigRefValidated,
+						Status: metav1.ConditionFalse,
+						Reason: mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+					}},
+				},
+			},
+			oidcConfig: &mcpv1alpha1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x", ClientID: "c"},
+				},
+				Status: mcpv1alpha1.MCPOIDCConfigStatus{
+					ConfigHash: "same-hash",
+					Conditions: validOIDCCondition,
+				},
+			},
+			expectHash:              "same-hash",
+			expectConditionStatus:   conditionStatusPtr(metav1.ConditionTrue),
+			expectConditionReason:   mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+			expectReferencingServer: true,
+		},
 	}
 
 	for _, tt := range tests {

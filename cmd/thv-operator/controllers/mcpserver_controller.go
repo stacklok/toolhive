@@ -2048,7 +2048,54 @@ func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alph
 		return nil
 	}
 
-	// Get the referenced MCPOIDCConfig
+	// Fetch and validate the referenced MCPOIDCConfig
+	oidcConfig, err := r.fetchAndValidateOIDCConfig(ctx, m)
+	if err != nil {
+		return err
+	}
+
+	// Update ReferencingWorkloads on the MCPOIDCConfig status
+	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, m.Name); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
+		// Non-fatal: continue with reconciliation
+	}
+
+	// Detect whether the condition is transitioning to True (e.g. recovering from
+	// a transient error). Without this check the status update is skipped when the
+	// hash is unchanged, leaving a stale False condition (#4511).
+	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
+
+	setOIDCConfigRefCondition(m, metav1.ConditionTrue,
+		mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+		fmt.Sprintf("MCPOIDCConfig %s is valid and ready", m.Spec.OIDCConfigRef.Name))
+
+	if m.Status.OIDCConfigHash != oidcConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPOIDCConfig has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"oidcConfig", oidcConfig.Name,
+			"oldHash", m.Status.OIDCConfigHash,
+			"newHash", oidcConfig.Status.ConfigHash)
+		m.Status.OIDCConfigHash = oidcConfig.Status.ConfigHash
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update MCPOIDCConfig status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// fetchAndValidateOIDCConfig fetches the referenced MCPOIDCConfig, validates it is
+// ready, and sets appropriate failure conditions on the MCPServer if not.
+func (r *MCPServerReconciler) fetchAndValidateOIDCConfig(
+	ctx context.Context, m *mcpv1alpha1.MCPServer,
+) (*mcpv1alpha1.MCPOIDCConfig, error) {
+	ctxLogger := log.FromContext(ctx)
+
 	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
 	if err != nil {
 		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
@@ -2057,7 +2104,7 @@ func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alph
 		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig lookup error")
 		}
-		return err
+		return nil, err
 	}
 
 	if oidcConfig == nil {
@@ -2067,10 +2114,9 @@ func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alph
 		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig not found")
 		}
-		return fmt.Errorf("MCPOIDCConfig %s not found", m.Spec.OIDCConfigRef.Name)
+		return nil, fmt.Errorf("MCPOIDCConfig %s not found", m.Spec.OIDCConfigRef.Name)
 	}
 
-	// Check that the MCPOIDCConfig is ready
 	readyCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
 	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
 		msg := fmt.Sprintf("MCPOIDCConfig %s is not ready", m.Spec.OIDCConfigRef.Name)
@@ -2082,35 +2128,10 @@ func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alph
 		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig validation check")
 		}
-		return fmt.Errorf("%s", msg)
+		return nil, fmt.Errorf("%s", msg)
 	}
 
-	// Update ReferencingWorkloads on the MCPOIDCConfig status
-	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, m.Name); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
-		// Non-fatal: continue with reconciliation
-	}
-
-	// Set valid condition
-	setOIDCConfigRefCondition(m, metav1.ConditionTrue,
-		mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
-		fmt.Sprintf("MCPOIDCConfig %s is valid and ready", m.Spec.OIDCConfigRef.Name))
-
-	// Check if the MCPOIDCConfig hash has changed
-	if m.Status.OIDCConfigHash != oidcConfig.Status.ConfigHash {
-		ctxLogger.Info("MCPOIDCConfig has changed, updating MCPServer",
-			"mcpserver", m.Name,
-			"oidcConfig", oidcConfig.Name,
-			"oldHash", m.Status.OIDCConfigHash,
-			"newHash", oidcConfig.Status.ConfigHash)
-
-		m.Status.OIDCConfigHash = oidcConfig.Status.ConfigHash
-		if err := r.Status().Update(ctx, m); err != nil {
-			return fmt.Errorf("failed to update MCPOIDCConfig hash in status: %w", err)
-		}
-	}
-
-	return nil
+	return oidcConfig, nil
 }
 
 // setOIDCConfigRefCondition sets the OIDCConfigRefValidated status condition

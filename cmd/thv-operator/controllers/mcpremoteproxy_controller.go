@@ -730,7 +730,58 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 		return nil
 	}
 
-	// Get the referenced MCPOIDCConfig
+	// Fetch and validate the referenced MCPOIDCConfig
+	oidcConfig, err := r.fetchAndValidateOIDCConfig(ctx, proxy)
+	if err != nil {
+		return err
+	}
+
+	// Update ReferencingWorkloads on the MCPOIDCConfig status
+	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, proxy.Name); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
+		// Non-fatal: continue with reconciliation
+	}
+
+	// Detect whether the condition is transitioning to True (e.g. recovering from
+	// a transient error). Without this check the status update is skipped when the
+	// hash is unchanged, leaving a stale False condition (#4511).
+	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
+
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+		Message:            fmt.Sprintf("MCPOIDCConfig %s is valid and ready", proxy.Spec.OIDCConfigRef.Name),
+		ObservedGeneration: proxy.Generation,
+	})
+
+	if proxy.Status.OIDCConfigHash != oidcConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPOIDCConfig has changed, updating MCPRemoteProxy",
+			"proxy", proxy.Name,
+			"oidcConfig", oidcConfig.Name,
+			"oldHash", proxy.Status.OIDCConfigHash,
+			"newHash", oidcConfig.Status.ConfigHash)
+		proxy.Status.OIDCConfigHash = oidcConfig.Status.ConfigHash
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := r.Status().Update(ctx, proxy); err != nil {
+			return fmt.Errorf("failed to update MCPOIDCConfig status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// fetchAndValidateOIDCConfig fetches the referenced MCPOIDCConfig, validates it is
+// ready, and sets appropriate failure conditions on the MCPRemoteProxy if not.
+func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*mcpv1alpha1.MCPOIDCConfig, error) {
+	ctxLogger := log.FromContext(ctx)
+
 	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
 	if err != nil {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
@@ -743,7 +794,7 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig lookup error")
 		}
-		return err
+		return nil, err
 	}
 
 	if oidcConfig == nil {
@@ -757,10 +808,9 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig not found")
 		}
-		return fmt.Errorf("MCPOIDCConfig %s not found", proxy.Spec.OIDCConfigRef.Name)
+		return nil, fmt.Errorf("MCPOIDCConfig %s not found", proxy.Spec.OIDCConfigRef.Name)
 	}
 
-	// Check that the MCPOIDCConfig is ready
 	readyCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
 	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
 		msg := fmt.Sprintf("MCPOIDCConfig %s is not ready", proxy.Spec.OIDCConfigRef.Name)
@@ -777,39 +827,10 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig validation check")
 		}
-		return fmt.Errorf("%s", msg)
+		return nil, fmt.Errorf("%s", msg)
 	}
 
-	// Update ReferencingWorkloads on the MCPOIDCConfig status
-	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, proxy.Name); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
-		// Non-fatal: continue with reconciliation
-	}
-
-	// Set valid condition
-	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
-		Message:            fmt.Sprintf("MCPOIDCConfig %s is valid and ready", proxy.Spec.OIDCConfigRef.Name),
-		ObservedGeneration: proxy.Generation,
-	})
-
-	// Check if the MCPOIDCConfig hash has changed
-	if proxy.Status.OIDCConfigHash != oidcConfig.Status.ConfigHash {
-		ctxLogger.Info("MCPOIDCConfig has changed, updating MCPRemoteProxy",
-			"proxy", proxy.Name,
-			"oidcConfig", oidcConfig.Name,
-			"oldHash", proxy.Status.OIDCConfigHash,
-			"newHash", oidcConfig.Status.ConfigHash)
-
-		proxy.Status.OIDCConfigHash = oidcConfig.Status.ConfigHash
-		if err := r.Status().Update(ctx, proxy); err != nil {
-			return fmt.Errorf("failed to update MCPOIDCConfig hash in status: %w", err)
-		}
-	}
-
-	return nil
+	return oidcConfig, nil
 }
 
 // updateOIDCConfigReferencingWorkloads ensures the MCPRemoteProxy is listed in

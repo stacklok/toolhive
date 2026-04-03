@@ -7,6 +7,7 @@ package transport
 
 import (
 	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -36,6 +37,18 @@ func WithTargetURI(targetURI string) Option {
 	return func(t types.Transport) error {
 		if setter, ok := t.(interface{ setTargetURI(string) }); ok {
 			setter.setTargetURI(targetURI)
+		}
+		return nil
+	}
+}
+
+// WithSessionStorage returns an option that injects a custom session storage backend.
+// Transports that support session storage (StdioTransport, HTTPTransport) will use it
+// instead of the default in-memory store, enabling session sharing across replicas.
+func WithSessionStorage(storage session.Storage) Option {
+	return func(t types.Transport) error {
+		if setter, ok := t.(interface{ SetSessionStorage(session.Storage) }); ok {
+			setter.SetSessionStorage(storage)
 		}
 		return nil
 	}

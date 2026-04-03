@@ -22,6 +22,7 @@ import (
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -72,6 +73,10 @@ type HTTPTransport struct {
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
+
+	// sessionStorage overrides the default in-memory session store when set.
+	// Used for Redis-backed session sharing across replicas.
+	sessionStorage session.Storage
 
 	// Transparent proxy
 	proxy types.Proxy
@@ -140,6 +145,13 @@ func (t *HTTPTransport) SetRemoteURL(remoteURL string) {
 // SetTokenSource sets the OAuth token source for remote authentication
 func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 	t.tokenSource = tokenSource
+}
+
+// SetSessionStorage configures a custom session storage backend.
+// When set, the underlying proxy will use this storage instead of the default
+// in-memory store, enabling session sharing across replicas (e.g. Redis-backed).
+func (t *HTTPTransport) SetSessionStorage(storage session.Storage) {
+	t.sessionStorage = storage
 }
 
 // SetOnHealthCheckFailed sets the callback for health check failures
@@ -236,6 +248,8 @@ func (t *HTTPTransport) setTargetURI(targetURI string) {
 
 // Start initializes the transport and begins processing messages.
 // The transport is responsible for starting the container.
+//
+//nolint:gocyclo // Start is a candidate for refactoring; keeping this PR focused on the Redis wiring
 func (t *HTTPTransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -319,6 +333,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		proxyOptions = append(proxyOptions, transparent.WithRemoteBasePath(remoteBasePath))
 	}
 	proxyOptions = append(proxyOptions, transparent.WithRemoteRawQuery(remoteRawQuery))
+	if t.sessionStorage != nil {
+		proxyOptions = append(proxyOptions, transparent.WithSessionStorage(t.sessionStorage))
+	}
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxyWithOptions(

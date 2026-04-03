@@ -5,15 +5,15 @@
 package virtualmcp
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os/exec"
-	"strings"
 	"time"
 
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -143,31 +143,6 @@ func waitForMCPServerRunning(name, namespace string, timeout, pollInterval time.
 		}
 		return nil
 	}, timeout, pollInterval).Should(gomega.Succeed())
-}
-
-// sendJSONRPCToLocalPort sends a raw JSON-RPC request to localhost:localPort and returns the response body.
-func sendJSONRPCToLocalPort(localPort int, sessionID, method, params string) ([]byte, int, error) {
-	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}`, method, params)
-	url := fmt.Sprintf("http://localhost:%d/mcp", localPort)
-
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", sessionID)
-	}
-
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	return respBody, resp.StatusCode, err
 }
 
 // portForwardToPod starts a kubectl port-forward to a specific pod and returns the
@@ -326,45 +301,40 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			defer cleanupB()
 
-			ginkgo.By("Initializing a session via pod A's port-forward")
-			mcpClient, err := CreateInitializedMCPClient(int32(localPortA), "e2e-cross-pod-test", 30*time.Second)
+			ginkgo.By("Initializing a session on pod A")
+			clientA, err := CreateInitializedMCPClient(int32(localPortA), "e2e-cross-pod-test", 30*time.Second)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			sessionID := mcpClient.Client.GetSessionId()
+			defer clientA.Close()
+
+			sessionID := clientA.Client.GetSessionId()
 			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
-			mcpClient.Close()
 
-			ginkgo.By(fmt.Sprintf("Sending tools/list to pod A (%s) with the session ID", podA.Name))
-			bodyA, statusA, err := sendJSONRPCToLocalPort(localPortA, sessionID, "tools/list", "{}")
+			ginkgo.By(fmt.Sprintf("Listing tools on pod A (%s)", podA.Name))
+			toolsA, err := clientA.Client.ListTools(clientA.Ctx, mcp.ListToolsRequest{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(statusA).To(gomega.Equal(http.StatusOK),
-				"pod A should accept the session; got body: %s", string(bodyA))
-
-			var rpcRespA struct {
-				Result struct {
-					Tools []json.RawMessage `json:"tools"`
-				} `json:"result"`
-			}
-			gomega.Expect(json.Unmarshal(bodyA, &rpcRespA)).To(gomega.Succeed())
-			gomega.Expect(rpcRespA.Result.Tools).NotTo(gomega.BeEmpty(),
+			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty(),
 				"pod A should return tools for this session")
 
-			ginkgo.By(fmt.Sprintf("Sending tools/list to pod B (%s) with the SAME session ID", podB.Name))
-			bodyB, statusB, err := sendJSONRPCToLocalPort(localPortB, sessionID, "tools/list", "{}")
+			ginkgo.By(fmt.Sprintf("Creating a new client to pod B (%s) with the SAME session ID", podB.Name))
+			serverURLB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
+			clientB, err := mcpclient.NewStreamableHttpClient(serverURLB, transport.WithSession(sessionID))
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(statusB).To(gomega.Equal(http.StatusOK),
-				"pod B should accept the session via Redis; got body: %s", string(bodyB))
+			defer func() { _ = clientB.Close() }()
 
-			var rpcRespB struct {
-				Result struct {
-					Tools []json.RawMessage `json:"tools"`
-				} `json:"result"`
-			}
-			gomega.Expect(json.Unmarshal(bodyB, &rpcRespB)).To(gomega.Succeed())
-			gomega.Expect(rpcRespB.Result.Tools).NotTo(gomega.BeEmpty(),
-				"pod B should return the same tools for this session")
+			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer startCancel()
+			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
+
+			ginkgo.By("Listing tools on pod B using the session from pod A")
+			listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer listCancel()
+			toolsB, err := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(),
+				"pod B should return tools via Redis-shared session")
 
 			ginkgo.By("Verifying both pods returned the same tool count")
-			gomega.Expect(len(rpcRespB.Result.Tools)).To(gomega.Equal(len(rpcRespA.Result.Tools)),
+			gomega.Expect(toolsB.Tools).To(gomega.HaveLen(len(toolsA.Tools)),
 				"Both replicas should see the same session state and return identical tools")
 		})
 	})

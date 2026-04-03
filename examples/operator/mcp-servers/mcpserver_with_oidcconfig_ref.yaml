@@ -27,9 +27,8 @@ metadata:
   namespace: toolhive-system
 spec:
   type: kubernetesServiceAccount
-  kubernetesServiceAccount:
-    audience: toolhive
-    # serviceAccount and namespace default to the pod's own SA and namespace
+  # serviceAccount and namespace default to the pod's own SA and namespace
+  kubernetesServiceAccount: {}
 
 ---
 # Shared MCPOIDCConfig — inline provider variant

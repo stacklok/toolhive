@@ -12,8 +12,7 @@ metadata:
   namespace: toolhive-system
 spec:
   type: kubernetesServiceAccount
-  kubernetesServiceAccount:
-    audience: toolhive
+  kubernetesServiceAccount: {}
 
 ---
 # MCPRemoteProxy using oidcConfigRef instead of inline oidcConfig
@@ -23,7 +22,7 @@ metadata:
   name: github-proxy
   namespace: toolhive-system
 spec:
-  upstreamURL: "https://api.github.com/mcp"
+  remoteURL: "https://api.github.com/mcp"
   transport: streamable-http
   oidcConfigRef:
     name: proxy-idp

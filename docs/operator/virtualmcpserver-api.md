@@ -459,13 +459,12 @@ spec:
           toolConfigRef:
             name: jira-tool-config
 
-  # Client authentication
+  # Client authentication (preferred: reference a shared MCPOIDCConfig)
   incomingAuth:
     type: oidc
-    oidcConfig:
-      type: kubernetes
-      kubernetes:
-        audience: vmcp
+    oidcConfigRef:
+      name: engineering-idp   # references an MCPOIDCConfig in the same namespace
+      audience: engineering-vmcp
     authzConfig:
       type: inline
       inline:

@@ -450,49 +450,6 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 // Note: Workflow step validation is now handled by the shared ValidateWorkflowSteps function
 // in composite_validation.go, which is called by ValidateCompositeToolConfig.
 
-// InjectSubjectProviderNames auto-populates SubjectProviderName on every
-// token_exchange strategy in cfg.OutgoingAuth that has it unset, when an
-// embedded auth server RunConfig is active.
-//
-// This mirrors the operator's injectSubjectProviderIfNeeded helper and ensures
-// YAML-based vMCP deployments receive the same automatic default: without it a
-// token_exchange strategy with no SubjectProviderName would silently fall back to
-// identity.Token (the ToolHive-issued JWT), which the exchange endpoint rejects.
-//
-// When rc is nil the config is returned unchanged. The provider name is resolved
-// from the first upstream in rc.Upstreams (normalised via authserver.ResolveUpstreamName);
-// if there are no upstreams it falls back to authserver.DefaultUpstreamName.
-func InjectSubjectProviderNames(cfg *Config, rc *authserver.RunConfig) {
-	if rc == nil || cfg.OutgoingAuth == nil {
-		return
-	}
-
-	providerName := func() string {
-		if len(rc.Upstreams) > 0 {
-			return authserver.ResolveUpstreamName(rc.Upstreams[0].Name)
-		}
-		return authserver.DefaultUpstreamName
-	}()
-
-	injectIntoStrategy(cfg.OutgoingAuth.Default, providerName)
-	for _, strategy := range cfg.OutgoingAuth.Backends {
-		injectIntoStrategy(strategy, providerName)
-	}
-}
-
-// injectIntoStrategy sets SubjectProviderName on a token_exchange strategy when
-// the field is empty. It mutates the strategy in place because the OutgoingAuth
-// maps hold pointers that are already owned by cfg.
-func injectIntoStrategy(strategy *authtypes.BackendAuthStrategy, providerName string) {
-	if strategy == nil ||
-		strategy.Type != authtypes.StrategyTypeTokenExchange ||
-		strategy.TokenExchange == nil ||
-		strategy.TokenExchange.SubjectProviderName != "" {
-		return
-	}
-	strategy.TokenExchange.SubjectProviderName = providerName
-}
-
 // ValidateAuthServerIntegration validates cross-cutting rules between the
 // embedded auth server configuration and backend auth strategies.
 // This is called separately from Validate() because it needs the runtime-only

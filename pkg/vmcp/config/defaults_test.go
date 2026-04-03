@@ -9,6 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestDefaultOperationalConfig(t *testing.T) {
@@ -209,6 +212,179 @@ func TestEnsureOperationalDefaults(t *testing.T) {
 
 			require.NotNil(t, cfg.Operational, "Operational should not be nil after EnsureOperationalDefaults")
 			tt.validate(t, cfg.Operational)
+		})
+	}
+}
+
+// TestInjectSubjectProviderNames tests the InjectSubjectProviderNames defaulting helper.
+// Modelled on TestInjectUpstreamProviderIfNeeded in pkg/runner/middleware_test.go.
+func TestInjectSubjectProviderNames(t *testing.T) {
+	t.Parallel()
+
+	makeTokenExchangeStrategy := func(subjectProviderName string) *authtypes.BackendAuthStrategy {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeTokenExchange,
+			TokenExchange: &authtypes.TokenExchangeConfig{
+				TokenURL:            "https://oauth.example.com/token",
+				SubjectProviderName: subjectProviderName,
+			},
+		}
+	}
+
+	makeRunConfig := func(upstreamNames ...string) *authserver.RunConfig {
+		rc := &authserver.RunConfig{}
+		for _, name := range upstreamNames {
+			rc.Upstreams = append(rc.Upstreams, authserver.UpstreamRunConfig{Name: name})
+		}
+		return rc
+	}
+
+	tests := []struct {
+		name          string
+		cfg           *Config
+		rc            *authserver.RunConfig
+		wantDefault   string
+		wantBackends  map[string]string // backend name → expected SubjectProviderName
+		wantUnchanged bool              // OutgoingAuth must not be touched
+	}{
+		{
+			name:          "nil_cfg_is_a_noop",
+			cfg:           nil,
+			rc:            makeRunConfig("github"),
+			wantUnchanged: true,
+		},
+		{
+			name:          "nil_run_config_leaves_config_unchanged",
+			cfg:           &Config{OutgoingAuth: &OutgoingAuthConfig{Default: makeTokenExchangeStrategy("")}},
+			rc:            nil,
+			wantUnchanged: true,
+		},
+		{
+			name:          "nil_outgoing_auth_leaves_config_unchanged",
+			cfg:           &Config{OutgoingAuth: nil},
+			rc:            makeRunConfig("github"),
+			wantUnchanged: true,
+		},
+		{
+			name: "named_upstream_populates_default_and_backend",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"svc": makeTokenExchangeStrategy(""),
+					},
+				},
+			},
+			rc:           makeRunConfig("github"),
+			wantDefault:  "github",
+			wantBackends: map[string]string{"svc": "github"},
+		},
+		{
+			name: "unnamed_upstream_falls_back_to_default",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+				},
+			},
+			rc:          makeRunConfig(""),
+			wantDefault: authserver.DefaultUpstreamName,
+		},
+		{
+			name: "empty_upstreams_falls_back_to_default",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+				},
+			},
+			rc:          makeRunConfig(), // no upstreams
+			wantDefault: authserver.DefaultUpstreamName,
+		},
+		{
+			name: "first_upstream_used_when_multiple_configured",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+				},
+			},
+			rc:          makeRunConfig("first", "second"),
+			wantDefault: "first",
+		},
+		{
+			name: "already_set_subject_provider_not_overridden",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy("explicit"),
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"svc": makeTokenExchangeStrategy("also-explicit"),
+					},
+				},
+			},
+			rc:           makeRunConfig("github"),
+			wantDefault:  "explicit",
+			wantBackends: map[string]string{"svc": "also-explicit"},
+		},
+		{
+			name: "non_token_exchange_strategy_left_unchanged",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeHeaderInjection,
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:  "Authorization",
+							HeaderValue: "Bearer token",
+						},
+					},
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "", // no TokenExchange on this strategy
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Snapshot the default strategy pointer before calling so we can verify
+			// InjectSubjectProviderNames mutates in place rather than replacing pointers.
+			var beforeDefault *authtypes.BackendAuthStrategy
+			if tt.cfg != nil && tt.cfg.OutgoingAuth != nil {
+				beforeDefault = tt.cfg.OutgoingAuth.Default
+			}
+
+			assert.NotPanics(t, func() { InjectSubjectProviderNames(tt.cfg, tt.rc) })
+
+			if tt.wantUnchanged {
+				if tt.cfg != nil && tt.cfg.OutgoingAuth != nil &&
+					tt.cfg.OutgoingAuth.Default != nil &&
+					tt.cfg.OutgoingAuth.Default.TokenExchange != nil {
+					assert.Empty(t, tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName,
+						"SubjectProviderName should not have been set")
+				}
+				return
+			}
+
+			require.NotNil(t, tt.cfg.OutgoingAuth)
+
+			// Verify the Default strategy.
+			if tt.cfg.OutgoingAuth.Default != nil {
+				if tt.cfg.OutgoingAuth.Default.TokenExchange != nil {
+					assert.Equal(t, tt.wantDefault, tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName,
+						"Default SubjectProviderName mismatch")
+				}
+				// The pointer must not have changed — mutation must be in place.
+				assert.Same(t, beforeDefault, tt.cfg.OutgoingAuth.Default,
+					"Default strategy pointer must not change: InjectSubjectProviderNames should mutate in place")
+			}
+
+			// Verify per-backend strategies.
+			for backendName, wantProvider := range tt.wantBackends {
+				strategy, ok := tt.cfg.OutgoingAuth.Backends[backendName]
+				require.True(t, ok, "backend %q not found in OutgoingAuth.Backends", backendName)
+				require.NotNil(t, strategy.TokenExchange, "backend %q: TokenExchange is nil", backendName)
+				assert.Equal(t, wantProvider, strategy.TokenExchange.SubjectProviderName,
+					"backend %q SubjectProviderName mismatch", backendName)
+			}
 		})
 	}
 }

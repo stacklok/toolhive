@@ -22,10 +22,10 @@ spec:
     - jsonPath: .spec.type
       name: Source
       type: string
-    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
-    - jsonPath: .status.referencingServers
+    - jsonPath: .status.referencingWorkloads
       name: References
       type: string
     - jsonPath: .metadata.creationTimestamp

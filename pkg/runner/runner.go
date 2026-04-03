@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
@@ -346,6 +347,31 @@ func (r *Runner) Run(ctx context.Context) error {
 		if setupResult.TargetURI != "" {
 			transportOpts = append(transportOpts, transport.WithTargetURI(setupResult.TargetURI))
 		}
+	}
+
+	// When Redis session storage is configured, create a Redis-backed session store
+	// so sessions are shared across proxy replicas instead of being pod-local.
+	if r.Config.ScalingConfig != nil && r.Config.ScalingConfig.SessionRedis != nil {
+		redisCfg := r.Config.ScalingConfig.SessionRedis
+		keyPrefix := redisCfg.KeyPrefix
+		if keyPrefix == "" {
+			keyPrefix = "thv:proxy:session:"
+		}
+		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
+			Addr:      redisCfg.Address,
+			Password:  os.Getenv(session.RedisPasswordEnvVar),
+			DB:        int(redisCfg.DB),
+			KeyPrefix: keyPrefix,
+		}, session.DefaultSessionTTL)
+		if err != nil {
+			return fmt.Errorf("failed to create Redis session storage: %w", err)
+		}
+		slog.Info("using Redis session storage",
+			"address", redisCfg.Address,
+			"db", redisCfg.DB,
+			"key_prefix", keyPrefix,
+		)
+		transportConfig.SessionStorage = storage
 	}
 
 	// Create transport with options

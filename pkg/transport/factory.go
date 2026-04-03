@@ -47,13 +47,17 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 
 	switch config.Type {
 	case types.TransportTypeStdio:
-		tr = NewStdioTransport(
+		stdio := NewStdioTransport(
 			config.Host, config.ProxyPort, config.Deployer, config.Debug, config.TrustProxyHeaders,
 			config.PrometheusHandler, config.Middlewares...,
 		)
-		tr.(*StdioTransport).SetProxyMode(config.ProxyMode)
+		stdio.SetProxyMode(config.ProxyMode)
+		if config.SessionStorage != nil {
+			stdio.SetSessionStorage(config.SessionStorage)
+		}
+		tr = stdio
 	case types.TransportTypeSSE:
-		tr = NewHTTPTransport(
+		httpTransport := NewHTTPTransport(
 			types.TransportTypeSSE,
 			config.Host,
 			config.ProxyPort,
@@ -68,8 +72,10 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.sessionStorage = config.SessionStorage
+		tr = httpTransport
 	case types.TransportTypeStreamableHTTP:
-		tr = NewHTTPTransport(
+		httpTransport := NewHTTPTransport(
 			types.TransportTypeStreamableHTTP,
 			config.Host,
 			config.ProxyPort,
@@ -84,6 +90,8 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.sessionStorage = config.SessionStorage
+		tr = httpTransport
 	case types.TransportTypeInspector:
 		// HTTP transport is not implemented yet
 		return nil, errors.ErrUnsupportedTransport

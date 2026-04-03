@@ -113,6 +113,10 @@ type TokenExchangeConfig struct {
 	// SubjectProviderName selects which upstream provider's token to use as the
 	// subject token. When set, the token is looked up from Identity.UpstreamTokens
 	// instead of using Identity.Token.
+	// When left empty and an embedded authorization server is configured, the system
+	// automatically populates this field with the first configured upstream provider name.
+	// Set it explicitly to override that default or to select a specific provider when
+	// multiple upstreams are configured.
 	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
 }
 

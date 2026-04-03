@@ -19,6 +19,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -961,4 +962,314 @@ func TestGenerateUniqueHeaderInjectionEnvVarName(t *testing.T) {
 			assert.Regexp(t, envVarPattern, result, "Result should be a valid environment variable name")
 		})
 	}
+}
+
+// tokenExchangeStrategy returns a minimal token_exchange BackendAuthStrategy for tests.
+func tokenExchangeStrategy(subjectProviderName string) *authtypes.BackendAuthStrategy {
+	return &authtypes.BackendAuthStrategy{
+		Type: authtypes.StrategyTypeTokenExchange,
+		TokenExchange: &authtypes.TokenExchangeConfig{
+			TokenURL:            "https://oauth.example.com/token",
+			SubjectProviderName: subjectProviderName,
+		},
+	}
+}
+
+// embeddedAuthServerCfg builds a minimal EmbeddedAuthServerConfig with the given upstream names.
+func embeddedAuthServerCfg(upstreamNames ...string) *mcpv1alpha1.EmbeddedAuthServerConfig {
+	cfg := &mcpv1alpha1.EmbeddedAuthServerConfig{}
+	for _, name := range upstreamNames {
+		cfg.UpstreamProviders = append(cfg.UpstreamProviders, mcpv1alpha1.UpstreamProviderConfig{
+			Name: name,
+			Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+		})
+	}
+	return cfg
+}
+
+// TestInjectSubjectProviderIfNeeded tests the injectSubjectProviderIfNeeded helper.
+// Modelled on TestInjectUpstreamProviderIfNeeded in pkg/runner/middleware_test.go.
+func TestInjectSubjectProviderIfNeeded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		strategy                *authtypes.BackendAuthStrategy
+		embeddedCfg             *mcpv1alpha1.EmbeddedAuthServerConfig
+		wantSubjectProviderName string
+		wantSamePointer         bool
+	}{
+		{
+			name:            "nil_strategy_returned_unchanged",
+			strategy:        nil,
+			embeddedCfg:     embeddedAuthServerCfg("github"),
+			wantSamePointer: true,
+		},
+		{
+			name:            "nil_embedded_config_returned_unchanged",
+			strategy:        tokenExchangeStrategy(""),
+			embeddedCfg:     nil,
+			wantSamePointer: true,
+		},
+		{
+			name: "non_token_exchange_strategy_returned_unchanged",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "Authorization",
+					HeaderValue: "Bearer token",
+				},
+			},
+			embeddedCfg:     embeddedAuthServerCfg("github"),
+			wantSamePointer: true,
+		},
+		{
+			name:                    "already_set_subject_provider_not_overridden",
+			strategy:                tokenExchangeStrategy("explicit-provider"),
+			embeddedCfg:             embeddedAuthServerCfg("github"),
+			wantSamePointer:         true,
+			wantSubjectProviderName: "explicit-provider",
+		},
+		{
+			name:                    "named_upstream_populates_subject_provider",
+			strategy:                tokenExchangeStrategy(""),
+			embeddedCfg:             embeddedAuthServerCfg("github"),
+			wantSubjectProviderName: "github",
+		},
+		{
+			name:                    "unnamed_upstream_falls_back_to_default",
+			strategy:                tokenExchangeStrategy(""),
+			embeddedCfg:             embeddedAuthServerCfg(""),
+			wantSubjectProviderName: authserver.DefaultUpstreamName,
+		},
+		{
+			name:                    "empty_upstream_providers_falls_back_to_default",
+			strategy:                tokenExchangeStrategy(""),
+			embeddedCfg:             embeddedAuthServerCfg(), // no upstreams
+			wantSubjectProviderName: authserver.DefaultUpstreamName,
+		},
+		{
+			name:                    "first_upstream_used_when_multiple_configured",
+			strategy:                tokenExchangeStrategy(""),
+			embeddedCfg:             embeddedAuthServerCfg("first", "second"),
+			wantSubjectProviderName: "first",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := injectSubjectProviderIfNeeded(tt.strategy, tt.embeddedCfg)
+
+			if tt.wantSamePointer {
+				assert.Same(t, tt.strategy, result)
+				// When the pointer is unchanged and a provider was set, verify it wasn't mutated.
+				if tt.wantSubjectProviderName != "" && result != nil && result.TokenExchange != nil {
+					assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
+				}
+				return
+			}
+
+			require.NotNil(t, result)
+			require.NotNil(t, result.TokenExchange)
+			assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
+
+			// Verify the original strategy was not mutated.
+			if tt.strategy != nil && tt.strategy.TokenExchange != nil {
+				assert.Empty(t, tt.strategy.TokenExchange.SubjectProviderName,
+					"original strategy must not be mutated")
+			}
+		})
+	}
+}
+
+// TestBuildOutgoingAuthConfig_SubjectProviderInjection tests that buildOutgoingAuthConfig
+// auto-populates SubjectProviderName on token_exchange strategies (both default and
+// discovered-backend) when AuthServerConfig is set on the VirtualMCPServer.
+func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	// A shared MCPExternalAuthConfig with token_exchange and no SubjectProviderName.
+	defaultAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default-auth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				// SubjectProviderName intentionally left empty
+			},
+		},
+	}
+
+	discoveredAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "discovered-auth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				// SubjectProviderName intentionally left empty
+			},
+		},
+	}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "backend-1",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "discovered-auth",
+			},
+		},
+	}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "discovered",
+				// Default references an MCPExternalAuthConfig (the only supported form
+				// for a default auth in the CRD).
+				Default: &mcpv1alpha1.BackendAuthConfig{
+					Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "default-auth",
+					},
+				},
+			},
+			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "myidp",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, mcpServer, defaultAuthConfig, discoveredAuthConfig).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	workloadNames := []workloads.TypedWorkload{
+		{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer},
+	}
+
+	config, _, allAuthErrors := r.buildOutgoingAuthConfig(context.Background(), vmcp, workloadNames)
+
+	require.NotNil(t, config)
+	require.Empty(t, allAuthErrors)
+
+	// Default strategy: SubjectProviderName should be auto-populated from the first upstream.
+	require.NotNil(t, config.Default)
+	require.NotNil(t, config.Default.TokenExchange)
+	assert.Equal(t, "myidp", config.Default.TokenExchange.SubjectProviderName,
+		"default strategy SubjectProviderName should be injected from first upstream")
+
+	// Discovered backend strategy: SubjectProviderName should also be auto-populated.
+	require.Contains(t, config.Backends, "backend-1")
+	require.NotNil(t, config.Backends["backend-1"].TokenExchange)
+	assert.Equal(t, "myidp", config.Backends["backend-1"].TokenExchange.SubjectProviderName,
+		"discovered backend SubjectProviderName should be injected from first upstream")
+}
+
+// TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection verifies that
+// SubjectProviderName is auto-populated for the inline Spec.OutgoingAuth.Backends path
+// (virtualmcpserver_controller.go:2007) when AuthServerConfig is set.
+func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	// MCPExternalAuthConfig referenced by the inline Backends override.
+	inlineAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "inline-auth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				// SubjectProviderName intentionally left empty
+			},
+		},
+	}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "discovered",
+				// Inline Backends override — the path exercised by this test.
+				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+					"inline-backend": {
+						Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "inline-auth",
+						},
+					},
+				},
+			},
+			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "corporate-idp",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, inlineAuthConfig).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	config, _, allAuthErrors := r.buildOutgoingAuthConfig(context.Background(), vmcp, nil)
+
+	require.NotNil(t, config)
+	require.Empty(t, allAuthErrors)
+
+	// Inline backend override: SubjectProviderName must be auto-populated from
+	// the first upstream in AuthServerConfig.
+	require.Contains(t, config.Backends, "inline-backend")
+	require.NotNil(t, config.Backends["inline-backend"].TokenExchange)
+	assert.Equal(t, "corporate-idp", config.Backends["inline-backend"].TokenExchange.SubjectProviderName,
+		"inline backend SubjectProviderName should be injected from first upstream")
 }

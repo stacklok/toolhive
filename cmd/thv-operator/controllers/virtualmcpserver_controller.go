@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -1904,10 +1905,10 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 
 		// Only add if not already overridden in inline config
 		if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
-			outgoing.Backends[workloadInfo.Name] = strategy
+			outgoing.Backends[workloadInfo.Name] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
 		} else if _, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; !exists {
 			// Only add discovered config if not explicitly overridden
-			outgoing.Backends[workloadInfo.Name] = strategy
+			outgoing.Backends[workloadInfo.Name] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
 		}
 	}
 
@@ -1978,7 +1979,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
 			})
 		} else {
-			outgoing.Default = defaultStrategy
+			outgoing.Default = injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig)
 		}
 	}
 
@@ -2003,12 +2004,45 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
 				})
 			} else {
-				outgoing.Backends[backendName] = strategy
+				outgoing.Backends[backendName] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
 			}
 		}
 	}
 
 	return outgoing, backendsWithAuthConfig, allAuthErrors
+}
+
+// injectSubjectProviderIfNeeded auto-populates SubjectProviderName on a token_exchange
+// strategy when it is empty and an embedded auth server is configured on the VirtualMCPServer.
+// Mirrors injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the same
+// for Cedar's PrimaryUpstreamProvider.
+// Returns strategy unchanged when it is nil, not a token_exchange strategy, already has
+// SubjectProviderName set, or no embedded auth server is configured.
+func injectSubjectProviderIfNeeded(
+	strategy *authtypes.BackendAuthStrategy,
+	embeddedCfg *mcpv1alpha1.EmbeddedAuthServerConfig,
+) *authtypes.BackendAuthStrategy {
+	if strategy == nil ||
+		strategy.Type != authtypes.StrategyTypeTokenExchange ||
+		strategy.TokenExchange == nil ||
+		strategy.TokenExchange.SubjectProviderName != "" ||
+		embeddedCfg == nil {
+		return strategy
+	}
+
+	providerName := func() string {
+		if len(embeddedCfg.UpstreamProviders) > 0 {
+			return authserver.ResolveUpstreamName(embeddedCfg.UpstreamProviders[0].Name)
+		}
+		return authserver.DefaultUpstreamName
+	}()
+
+	// Copy the strategy to avoid mutating the original.
+	copied := *strategy
+	teCopied := *strategy.TokenExchange
+	teCopied.SubjectProviderName = providerName
+	copied.TokenExchange = &teCopied
+	return &copied
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.

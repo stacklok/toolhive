@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"dario.cat/mergo"
+
+	"github.com/stacklok/toolhive/pkg/authserver"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // Default constants for operational configuration.
@@ -83,4 +86,47 @@ func (c *Config) EnsureOperationalDefaults() {
 	// Merge defaults into target, only filling zero/nil values.
 	// User-provided values are preserved.
 	_ = mergo.Merge(c.Operational, DefaultOperationalConfig())
+}
+
+// InjectSubjectProviderNames auto-populates SubjectProviderName on every
+// token_exchange strategy in cfg.OutgoingAuth that has it unset, when an
+// embedded auth server RunConfig is active.
+//
+// This is a defaulting operation: it ensures YAML-based vMCP deployments
+// behave the same as the Kubernetes operator path. Without it a token_exchange
+// strategy with no SubjectProviderName would silently fall back to
+// identity.Token (the ToolHive-issued JWT), which the exchange endpoint rejects.
+//
+// When cfg or rc is nil the call is a no-op. The provider name is resolved from
+// the first upstream in rc.Upstreams (normalised via authserver.ResolveUpstreamName);
+// if there are no upstreams it falls back to authserver.DefaultUpstreamName.
+func InjectSubjectProviderNames(cfg *Config, rc *authserver.RunConfig) {
+	if cfg == nil || rc == nil || cfg.OutgoingAuth == nil {
+		return
+	}
+
+	providerName := func() string {
+		if len(rc.Upstreams) > 0 {
+			return authserver.ResolveUpstreamName(rc.Upstreams[0].Name)
+		}
+		return authserver.DefaultUpstreamName
+	}()
+
+	injectIntoStrategy(cfg.OutgoingAuth.Default, providerName)
+	for _, strategy := range cfg.OutgoingAuth.Backends {
+		injectIntoStrategy(strategy, providerName)
+	}
+}
+
+// injectIntoStrategy sets SubjectProviderName on a token_exchange strategy when
+// the field is empty. It mutates the strategy in place because the OutgoingAuth
+// maps hold pointers that are already owned by cfg.
+func injectIntoStrategy(strategy *authtypes.BackendAuthStrategy, providerName string) {
+	if strategy == nil ||
+		strategy.Type != authtypes.StrategyTypeTokenExchange ||
+		strategy.TokenExchange == nil ||
+		strategy.TokenExchange.SubjectProviderName != "" {
+		return
+	}
+	strategy.TokenExchange.SubjectProviderName = providerName
 }

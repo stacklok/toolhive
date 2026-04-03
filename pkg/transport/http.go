@@ -147,13 +147,6 @@ func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 	t.tokenSource = tokenSource
 }
 
-// SetSessionStorage configures a custom session storage backend.
-// When set, the underlying proxy will use this storage instead of the default
-// in-memory store, enabling session sharing across replicas (e.g. Redis-backed).
-func (t *HTTPTransport) SetSessionStorage(storage session.Storage) {
-	t.sessionStorage = storage
-}
-
 // SetOnHealthCheckFailed sets the callback for health check failures
 func (t *HTTPTransport) SetOnHealthCheckFailed(callback types.HealthCheckFailedCallback) {
 	t.onHealthCheckFailed = callback

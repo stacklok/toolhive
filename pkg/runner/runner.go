@@ -372,7 +372,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			"db", redisCfg.DB,
 			"key_prefix", keyPrefix,
 		)
-		transportOpts = append(transportOpts, transport.WithSessionStorage(storage))
+		transportConfig.SessionStorage = storage
 	}
 
 	// Create transport with options

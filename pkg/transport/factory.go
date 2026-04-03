@@ -7,7 +7,6 @@ package transport
 
 import (
 	"github.com/stacklok/toolhive/pkg/transport/errors"
-	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -42,31 +41,23 @@ func WithTargetURI(targetURI string) Option {
 	}
 }
 
-// WithSessionStorage returns an option that injects a custom session storage backend.
-// Transports that support session storage (StdioTransport, HTTPTransport) will use it
-// instead of the default in-memory store, enabling session sharing across replicas.
-func WithSessionStorage(storage session.Storage) Option {
-	return func(t types.Transport) error {
-		if setter, ok := t.(interface{ SetSessionStorage(session.Storage) }); ok {
-			setter.SetSessionStorage(storage)
-		}
-		return nil
-	}
-}
-
 // Create creates a transport based on the provided configuration
 func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, error) {
 	var tr types.Transport
 
 	switch config.Type {
 	case types.TransportTypeStdio:
-		tr = NewStdioTransport(
+		stdio := NewStdioTransport(
 			config.Host, config.ProxyPort, config.Deployer, config.Debug, config.TrustProxyHeaders,
 			config.PrometheusHandler, config.Middlewares...,
 		)
-		tr.(*StdioTransport).SetProxyMode(config.ProxyMode)
+		stdio.SetProxyMode(config.ProxyMode)
+		if config.SessionStorage != nil {
+			stdio.SetSessionStorage(config.SessionStorage)
+		}
+		tr = stdio
 	case types.TransportTypeSSE:
-		tr = NewHTTPTransport(
+		httpTransport := NewHTTPTransport(
 			types.TransportTypeSSE,
 			config.Host,
 			config.ProxyPort,
@@ -81,8 +72,10 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.sessionStorage = config.SessionStorage
+		tr = httpTransport
 	case types.TransportTypeStreamableHTTP:
-		tr = NewHTTPTransport(
+		httpTransport := NewHTTPTransport(
 			types.TransportTypeStreamableHTTP,
 			config.Host,
 			config.ProxyPort,
@@ -97,6 +90,8 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.sessionStorage = config.SessionStorage
+		tr = httpTransport
 	case types.TransportTypeInspector:
 		// HTTP transport is not implemented yet
 		return nil, errors.ErrUnsupportedTransport

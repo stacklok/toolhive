@@ -54,6 +54,43 @@ type StatusProvider interface {
 	QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool)
 }
 
+// backendCheck manages the health check goroutine lifecycle for a single backend.
+// It owns the backend snapshot and the cancel function for its goroutine, keeping
+// per-backend lifecycle mechanics out of the Monitor's coordination logic.
+//
+// Thread-safety: backendCheck is NOT independently thread-safe. All calls must be
+// made while holding the Monitor's locks — see start() and stop() for details.
+type backendCheck struct {
+	backend vmcp.Backend
+	cancel  context.CancelFunc
+}
+
+// start begins the health check goroutine for this backend.
+// The monitor's wg is incremented before the goroutine launches.
+// If isInitial is true, the monitor's initialCheckWg is also incremented.
+//
+// Locking: the caller must hold both m.mu and m.backendsMu. m.mu prevents
+// wg.Add() from racing with wg.Wait() in Stop().
+func (bc *backendCheck) start(parentCtx context.Context, m *Monitor, isInitial bool) {
+	ctx, cancel := context.WithCancel(parentCtx)
+	bc.cancel = cancel
+	m.wg.Add(1)
+	if isInitial {
+		m.initialCheckWg.Add(1)
+	}
+	go m.monitorBackend(ctx, &bc.backend, isInitial)
+}
+
+// stop cancels the health check goroutine for this backend.
+// The goroutine will exit on its next context check and call wg.Done().
+//
+// Locking: the caller must hold m.backendsMu.
+func (bc *backendCheck) stop() {
+	if bc.cancel != nil {
+		bc.cancel()
+	}
+}
+
 // Monitor performs periodic health checks on backend MCP servers.
 // It runs background goroutines for each backend, tracking their health status
 // and consecutive failure counts. The monitor supports graceful shutdown and
@@ -73,9 +110,10 @@ type Monitor struct {
 	backends   []vmcp.Backend
 	backendsMu sync.RWMutex
 
-	// activeChecks maps backend IDs to their cancel functions for dynamic backend management.
+	// activeChecks maps backend IDs to their per-backend check lifecycle.
+	// Each backendCheck owns the backend snapshot and cancel function for its goroutine.
 	// Protected by backendsMu.
-	activeChecks map[string]context.CancelFunc
+	activeChecks map[string]*backendCheck
 
 	// ctx is the context for the monitor's lifecycle.
 	ctx context.Context
@@ -199,7 +237,7 @@ func NewMonitor(
 		statusTracker: statusTracker,
 		checkInterval: config.CheckInterval,
 		backends:      backends,
-		activeChecks:  make(map[string]context.CancelFunc),
+		activeChecks:  make(map[string]*backendCheck),
 	}, nil
 }
 
@@ -238,14 +276,10 @@ func (m *Monitor) Start(ctx context.Context) error {
 
 	// Start health check goroutine for each backend
 	m.backendsMu.Lock()
-	for i := range m.backends {
-		backend := &m.backends[i] // Capture backend pointer for this iteration
-
-		backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
-		m.activeChecks[backend.ID] = cancel
-		m.wg.Add(1)
-		m.initialCheckWg.Add(1)                        // Track initial health check
-		go m.monitorBackend(backendCtx, backend, true) // true = initial backend
+	for _, b := range m.backends {
+		bc := &backendCheck{backend: b}
+		bc.start(m.ctx, m, true) // true = initial backend
+		m.activeChecks[b.ID] = bc
 	}
 	m.backendsMu.Unlock()
 
@@ -308,13 +342,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	m.backendsMu.Lock()
 	defer m.backendsMu.Unlock()
 
-	// Build maps of old and new backend IDs for comparison
-	oldBackends := make(map[string]vmcp.Backend)
-	for _, b := range m.backends {
-		oldBackends[b.ID] = b
-	}
-
-	newBackendsMap := make(map[string]vmcp.Backend)
+	newBackendsMap := make(map[string]vmcp.Backend, len(newBackends))
 	for _, b := range newBackends {
 		newBackendsMap[b.ID] = b
 	}
@@ -325,45 +353,33 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 
 	// Start monitoring for new or changed backends
 	for id, backend := range newBackendsMap {
-		oldBackend, exists := oldBackends[id]
-		if exists && !backendChanged(oldBackend, backend) {
-			continue // Existing backend with no relevant changes
-		}
-
-		if exists {
-			// Backend properties changed (e.g., URL updated after operator reconcile).
-			// Cancel the old goroutine so a new one starts with the updated properties.
-			slog.Info("restarting health monitoring for changed backend",
-				"backend", backend.Name, "old_url", oldBackend.BaseURL, "new_url", backend.BaseURL)
-			if cancel, ok := m.activeChecks[id]; ok {
-				cancel()
-				delete(m.activeChecks, id)
+		if existing, ok := m.activeChecks[id]; ok {
+			if !backendChanged(existing.backend, backend) {
+				continue // Existing backend with no relevant changes
 			}
+			// Backend properties changed (e.g., URL updated after operator reconcile).
+			// Stop the old goroutine so a new one starts with the updated properties.
+			slog.Info("restarting health monitoring for changed backend",
+				"backend", backend.Name, "old_url", existing.backend.BaseURL, "new_url", backend.BaseURL)
+			existing.stop()
 		} else {
 			slog.Info("starting health monitoring for new backend", "backend", backend.Name)
 		}
 
-		backendCopy := backend
-
-		// Circuit breaker will be lazily initialized on first health check
-
-		backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
-		m.activeChecks[id] = cancel
-		m.wg.Add(1)
+		bc := &backendCheck{backend: backend}
 		// Clear the "removed" flag if this backend was previously removed
 		// This allows health check results to be recorded again
 		m.statusTracker.ClearRemovedFlag(id)
-		go m.monitorBackend(backendCtx, &backendCopy, false) // false = dynamically added backend
+		bc.start(m.ctx, m, false) // false = dynamically added backend
+		m.activeChecks[id] = bc
 	}
 
 	// Stop monitoring for removed backends and clean up their state
-	for id, backend := range oldBackends {
+	for id, bc := range m.activeChecks {
 		if _, exists := newBackendsMap[id]; !exists {
-			slog.Info("stopping health monitoring for removed backend", "backend", backend.Name)
-			if cancel, ok := m.activeChecks[id]; ok {
-				cancel()
-				delete(m.activeChecks, id)
-			}
+			slog.Info("stopping health monitoring for removed backend", "backend", bc.backend.Name)
+			bc.stop()
+			delete(m.activeChecks, id)
 			// Remove backend from status tracker so it no longer appears in status reports
 			m.statusTracker.RemoveBackend(id)
 		}

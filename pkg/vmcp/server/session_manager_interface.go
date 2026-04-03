@@ -48,4 +48,11 @@ type SessionManager interface {
 
 	// Terminate terminates the session with the given ID, closing all backend connections.
 	Terminate(sessionID string) (bool, error)
+
+	// NotifyBackendExpired updates session metadata in storage to reflect that the
+	// backend identified by workloadID is no longer connected. It is a best-effort,
+	// metadata-only operation intended to be called by keepalive or health-monitoring
+	// components when they detect that a backend session has expired or been lost.
+	// Storage errors are logged but not returned.
+	NotifyBackendExpired(sessionID, workloadID string)
 }

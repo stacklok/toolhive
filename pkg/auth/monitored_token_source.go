@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -173,10 +174,11 @@ func (mts *MonitoredTokenSource) Stopped() <-chan struct{} {
 	return mts.stopped
 }
 
-// Token retrieves a token, retrying with exponential backoff on transient network
-// errors (DNS failures, TCP errors). On non-transient errors (OAuth 4xx, TLS failures)
-// it marks the workload as unauthenticated and returns immediately. Context cancellation
-// (workload removal) stops the retry without marking the workload as unauthenticated.
+// Token retrieves a token, retrying with exponential backoff on transient errors
+// (see isTransientNetworkError for the full list). On non-transient errors
+// (OAuth 4xx, TLS failures) it marks the workload as unauthenticated and returns
+// immediately. Context cancellation (workload removal) stops the retry without
+// marking the workload as unauthenticated.
 //
 // Concurrent callers are deduplicated via singleflight so that only one retry
 // loop runs at a time during transient failures.
@@ -322,18 +324,37 @@ func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 	return false, wait
 }
 
-// isTransientNetworkError reports whether err represents a transient network condition
-// (DNS failure, TCP transport error, timeout) that is likely to resolve when the network
-// recovers — for example, after a VPN reconnects.
+// isTransientNetworkError reports whether err represents a transient condition
+// (DNS failure, TCP transport error, timeout, OAuth server 5xx, unparseable
+// token response) that is likely to resolve on its own.
 //
-// OAuth2 HTTP-level auth failures (invalid_grant, 401, 400) and TLS errors
+// OAuth2 client-level auth failures (invalid_grant, 401, 400) and TLS errors
 // (certificate verification, handshake failure) are NOT considered transient and
 // return false so the workload is marked unauthenticated immediately.
 func isTransientNetworkError(err error) bool {
 	if err == nil ||
-		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.As(err, new(*oauth2.RetrieveError)) {
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+
+	// OAuth HTTP-level errors: 5xx (Bad Gateway, Service Unavailable, Gateway
+	// Timeout) are transient server-side issues that typically resolve on their
+	// own. 4xx errors (invalid_grant, invalid_client) are permanent auth failures.
+	if retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
+		if retrieveErr.Response != nil && retrieveErr.Response.StatusCode >= 500 {
+			slog.Debug("treating OAuth server error as transient",
+				"status_code", retrieveErr.Response.StatusCode,
+			)
+			return true
+		}
+		return false
+	}
+
+	// Non-JSON responses from the OAuth server (e.g. load balancer HTML pages).
+	// The oauth2 library returns a plain error (not *RetrieveError) when the
+	// HTTP status is 2xx but the body cannot be parsed as JSON.
+	if isOAuthParseError(err) {
+		return true
 	}
 
 	// DNS lookup failures — covers VPN-disconnect scenarios where the corporate DNS
@@ -358,6 +379,21 @@ func isTransientNetworkError(err error) bool {
 	}
 
 	return false
+}
+
+// isOAuthParseError detects errors from the oauth2 library that indicate the
+// token endpoint returned an unparseable response body on a 2xx status. This
+// typically happens when a load balancer, CDN, or reverse proxy intercepts the
+// request and returns its own HTML page instead of the expected JSON token
+// response. The oauth2 library uses fmt.Errorf with %v (not %w) for these
+// errors, so string matching is the only reliable detection method.
+func isOAuthParseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "oauth2: cannot parse json") ||
+		strings.Contains(msg, "oauth2: cannot parse response")
 }
 
 // markAsUnauthenticated marks the workload as unauthenticated and stops background monitoring.

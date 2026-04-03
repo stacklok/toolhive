@@ -325,7 +325,7 @@ func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 }
 
 // isTransientNetworkError reports whether err represents a transient condition
-// (DNS failure, TCP transport error, timeout, OAuth server 5xx, unparseable
+// (DNS failure, TCP transport error, timeout, OAuth server 5xx, unparsable
 // token response) that is likely to resolve on its own.
 //
 // OAuth2 client-level auth failures (invalid_grant, 401, 400) and TLS errors
@@ -382,7 +382,7 @@ func isTransientNetworkError(err error) bool {
 }
 
 // isOAuthParseError detects errors from the oauth2 library that indicate the
-// token endpoint returned an unparseable response body on a 2xx status. This
+// token endpoint returned an unparsable response body on a 2xx status. This
 // typically happens when a load balancer, CDN, or reverse proxy intercepts the
 // request and returns its own HTML page instead of the expected JSON token
 // response. The oauth2 library uses fmt.Errorf with %v (not %w) for these

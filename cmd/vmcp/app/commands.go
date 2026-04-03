@@ -625,6 +625,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
+		SessionStorage:          cfg.SessionStorage,
 	}
 
 	// Convert composite tool configurations to workflow definitions

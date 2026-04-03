@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -171,6 +173,13 @@ type Config struct {
 	// SessionFactory creates MultiSessions for session management.
 	// Required; must not be nil.
 	SessionFactory vmcpsession.MultiSessionFactory
+
+	// SessionStorage configures the session storage backend.
+	// When nil or provider is "memory", local in-process storage is used.
+	// When provider is "redis", a Redis-backed store is created for cross-pod
+	// session persistence; the Redis password is read from the
+	// THV_SESSION_REDIS_PASSWORD environment variable.
+	SessionStorage *vmcpconfig.SessionStorageConfig
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -243,6 +252,42 @@ type Server struct {
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
 	shutdownFuncs []func(context.Context) error
+}
+
+// buildSessionDataStorage constructs the DataStorage backend from cfg.
+// When cfg.SessionStorage is nil or provider is "memory" (or empty), local in-process
+// storage is used. When provider is "redis", a Redis-backed store is created
+// using the address, DB, and key prefix from cfg.SessionStorage; the password
+// is read from the THV_SESSION_REDIS_PASSWORD environment variable.
+// Any other provider value is a misconfiguration and returns an error.
+func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession.DataStorage, error) {
+	// Default to in-process storage when session storage is not configured,
+	// or when the provider is explicitly "memory" or left empty.
+	if cfg.SessionStorage == nil ||
+		cfg.SessionStorage.Provider == "" ||
+		strings.EqualFold(cfg.SessionStorage.Provider, "memory") {
+		return transportsession.NewLocalSessionDataStorage(cfg.SessionTTL)
+	}
+	if cfg.SessionStorage.Provider != "redis" {
+		return nil, fmt.Errorf("unsupported session storage provider %q (supported: \"memory\", \"redis\")",
+			cfg.SessionStorage.Provider)
+	}
+	keyPrefix := cfg.SessionStorage.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "thv:vmcp:session:"
+	}
+	redisCfg := transportsession.RedisConfig{
+		Addr:      cfg.SessionStorage.Address,
+		Password:  os.Getenv(vmcpconfig.RedisPasswordEnvVar),
+		DB:        int(cfg.SessionStorage.DB),
+		KeyPrefix: keyPrefix,
+	}
+	slog.Info("using Redis session storage",
+		"address", cfg.SessionStorage.Address,
+		"db", cfg.SessionStorage.DB,
+		"key_prefix", keyPrefix,
+	)
+	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, cfg.SessionTTL)
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -366,9 +411,7 @@ func New(
 	// keyed by the same session ID.
 	sessionManager := transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
 
-	// Create session data storage. Default to local in-memory storage; a future
-	// SessionStorageConfig field can wire up Redis for multi-pod deployments.
-	sessionDataStorage, err := transportsession.NewLocalSessionDataStorage(cfg.SessionTTL)
+	sessionDataStorage, err := buildSessionDataStorage(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session data storage: %w", err)
 	}

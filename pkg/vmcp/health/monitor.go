@@ -57,6 +57,9 @@ type StatusProvider interface {
 // backendCheck manages the health check goroutine lifecycle for a single backend.
 // It owns the backend snapshot and the cancel function for its goroutine, keeping
 // per-backend lifecycle mechanics out of the Monitor's coordination logic.
+//
+// Thread-safety: backendCheck is NOT independently thread-safe. All calls must be
+// made while holding the Monitor's locks — see start() and stop() for details.
 type backendCheck struct {
 	backend vmcp.Backend
 	cancel  context.CancelFunc
@@ -65,6 +68,9 @@ type backendCheck struct {
 // start begins the health check goroutine for this backend.
 // The monitor's wg is incremented before the goroutine launches.
 // If isInitial is true, the monitor's initialCheckWg is also incremented.
+//
+// Locking: the caller must hold both m.mu and m.backendsMu. m.mu prevents
+// wg.Add() from racing with wg.Wait() in Stop().
 func (bc *backendCheck) start(parentCtx context.Context, m *Monitor, isInitial bool) {
 	ctx, cancel := context.WithCancel(parentCtx) //nolint:gosec // G118 - cancel stored in bc.cancel, called via stop()
 	bc.cancel = cancel
@@ -77,6 +83,8 @@ func (bc *backendCheck) start(parentCtx context.Context, m *Monitor, isInitial b
 
 // stop cancels the health check goroutine for this backend.
 // The goroutine will exit on its next context check and call wg.Done().
+//
+// Locking: the caller must hold m.backendsMu.
 func (bc *backendCheck) stop() {
 	if bc.cancel != nil {
 		bc.cancel()

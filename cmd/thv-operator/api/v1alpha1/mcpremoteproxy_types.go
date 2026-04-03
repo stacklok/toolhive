@@ -34,6 +34,10 @@ type HeaderFromSecret struct {
 }
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
@@ -51,10 +55,18 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:default=streamable-http
 	Transport string `json:"transport,omitempty"`
 
-	// OIDCConfig defines OIDC authentication configuration for the proxy
-	// This validates incoming tokens from clients. Required for proxy mode.
-	// +kubebuilder:validation:Required
-	OIDCConfig OIDCConfigRef `json:"oidcConfig"`
+	// OIDCConfig defines OIDC authentication configuration for the proxy.
+	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
+	// +optional
+	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Per-server overrides (audience, scopes) are specified here; shared provider config
+	// lives in the MCPOIDCConfig resource.
+	// +optional
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
 	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
 	// When specified, the proxy will exchange validated incoming tokens for remote service tokens.
@@ -155,6 +167,10 @@ type MCPRemoteProxyStatus struct {
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
+	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
+	// +optional
+	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
 
 	// Message provides additional information about the current phase
 	// +optional
@@ -325,7 +341,7 @@ func (m *MCPRemoteProxy) GetNamespace() string {
 
 // GetOIDCConfig returns the OIDC configuration reference
 func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
-	return &m.Spec.OIDCConfig
+	return m.Spec.OIDCConfig
 }
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy

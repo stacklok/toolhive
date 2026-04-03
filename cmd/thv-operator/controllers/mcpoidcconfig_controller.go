@@ -46,6 +46,7 @@ type MCPOIDCConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -199,7 +200,7 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-// findReferencingWorkloads returns the workload resources (MCPServer and VirtualMCPServer)
+// findReferencingWorkloads returns the workload resources (MCPServer, VirtualMCPServer, and MCPRemoteProxy)
 // that reference this MCPOIDCConfig via their OIDCConfigRef field.
 func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
@@ -230,12 +231,23 @@ func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 		}
 	}
 
+	// Check MCPRemoteProxies
+	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	if err := r.List(ctx, proxyList, client.InNamespace(oidcConfig.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	}
+	for _, proxy := range proxyList.Items {
+		if proxy.Spec.OIDCConfigRef != nil && proxy.Spec.OIDCConfigRef.Name == oidcConfig.Name {
+			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
+		}
+	}
+
 	ctrlutil.SortWorkloadRefs(refs)
 	return refs, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer and VirtualMCPServer changes to maintain accurate ReferencingWorkloads status.
+// Watches MCPServer, VirtualMCPServer, and MCPRemoteProxy changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPOIDCConfigs.
 	// This handler enqueues both the currently-referenced MCPOIDCConfig AND any
@@ -293,6 +305,10 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1alpha1.VirtualMCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToOIDCConfig),
 		).
+		Watches(
+			&mcpv1alpha1.MCPRemoteProxy{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToOIDCConfig),
+		).
 		Complete(r)
 }
 
@@ -334,6 +350,53 @@ func (r *MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
 		}
 		for _, ref := range cfg.Status.ReferencingWorkloads {
 			if ref.Kind == mcpv1alpha1.WorkloadKindVirtualMCPServer && ref.Name == vmcp.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
+				break
+			}
+		}
+	}
+
+	return requests
+}
+
+// mapMCPRemoteProxyToOIDCConfig maps MCPRemoteProxy changes to MCPOIDCConfig reconciliation requests.
+// Enqueues both the currently-referenced config and any config that still lists this
+// MCPRemoteProxy in ReferencingWorkloads (handles ref-removal / deletion).
+func (r *MCPOIDCConfigReconciler) mapMCPRemoteProxyToOIDCConfig(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	proxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+
+	// Enqueue the currently-referenced MCPOIDCConfig (if any)
+	if proxy.Spec.OIDCConfigRef != nil {
+		nn := types.NamespacedName{
+			Name:      proxy.Spec.OIDCConfigRef.Name,
+			Namespace: proxy.Namespace,
+		}
+		seen[nn] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: nn})
+	}
+
+	// Also enqueue any MCPOIDCConfig that still lists this MCPRemoteProxy in
+	// ReferencingWorkloads — handles ref-removal and deletion cases.
+	oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
+	if err := r.List(ctx, oidcConfigList, client.InNamespace(proxy.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for MCPRemoteProxy watch")
+		return requests
+	}
+	for _, cfg := range oidcConfigList.Items {
+		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+		if _, already := seen[nn]; already {
+			continue
+		}
+		for _, ref := range cfg.Status.ReferencingWorkloads {
+			if ref.Kind == mcpv1alpha1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}

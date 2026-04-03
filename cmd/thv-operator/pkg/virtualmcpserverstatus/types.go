@@ -32,6 +32,9 @@ type StatusManager interface {
 	// SetObservedGeneration sets the observed generation
 	SetObservedGeneration(generation int64)
 
+	// SetOIDCConfigHash sets the OIDC config hash for change detection
+	SetOIDCConfigHash(hash string)
+
 	// SetGroupRefValidatedCondition sets the GroupRef validation condition
 	SetGroupRefValidatedCondition(reason, message string, status metav1.ConditionStatus)
 

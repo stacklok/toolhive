@@ -25,6 +25,7 @@ type StatusCollector struct {
 	message            *string
 	url                *string
 	observedGeneration *int64
+	oidcConfigHash     *string
 	conditions         map[string]metav1.Condition
 	discoveredBackends []mcpv1alpha1.DiscoveredBackend
 }
@@ -69,6 +70,12 @@ func (s *StatusCollector) SetURL(url string) {
 // SetObservedGeneration sets the observed generation to be updated.
 func (s *StatusCollector) SetObservedGeneration(generation int64) {
 	s.observedGeneration = &generation
+	s.hasChanges = true
+}
+
+// SetOIDCConfigHash sets the OIDC config hash to be updated.
+func (s *StatusCollector) SetOIDCConfigHash(hash string) {
+	s.oidcConfigHash = &hash
 	s.hasChanges = true
 }
 
@@ -169,6 +176,11 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			vmcpStatus.ObservedGeneration = *s.observedGeneration
 		}
 
+		// Apply OIDC config hash change
+		if s.oidcConfigHash != nil {
+			vmcpStatus.OIDCConfigHash = *s.oidcConfigHash
+		}
+
 		// Apply condition changes
 		for _, condition := range s.conditions {
 			if condition.Status == "" {
@@ -195,6 +207,7 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 		ctxLogger.V(1).Info("Batched status update applied",
 			"phase", s.phase,
 			"message", s.message,
+			"oidcConfigHash", s.oidcConfigHash,
 			"conditionsCount", len(s.conditions),
 			"discoveredBackendsCount", len(s.discoveredBackends))
 		return true

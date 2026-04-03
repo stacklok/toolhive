@@ -2772,10 +2772,7 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	if vmcp.Spec.IncomingAuth == nil || vmcp.Spec.IncomingAuth.OIDCConfigRef == nil {
 		// No MCPOIDCConfig referenced, clear any stored hash
 		if vmcp.Status.OIDCConfigHash != "" {
-			vmcp.Status.OIDCConfigHash = ""
-			if err := r.Status().Update(ctx, vmcp); err != nil {
-				return fmt.Errorf("failed to clear MCPOIDCConfig hash from status: %w", err)
-			}
+			statusManager.SetOIDCConfigHash("")
 		}
 		return nil
 	}
@@ -2842,10 +2839,7 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 			"oldHash", vmcp.Status.OIDCConfigHash,
 			"newHash", oidcConfig.Status.ConfigHash)
 
-		vmcp.Status.OIDCConfigHash = oidcConfig.Status.ConfigHash
-		if err := r.Status().Update(ctx, vmcp); err != nil {
-			return fmt.Errorf("failed to update MCPOIDCConfig hash in status: %w", err)
-		}
+		statusManager.SetOIDCConfigHash(oidcConfig.Status.ConfigHash)
 	}
 
 	return nil

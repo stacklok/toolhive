@@ -412,6 +412,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		})
 	}
 
+	// Configure stateless mode if requested. Stateless mode applies to any
+	// streamable-HTTP server (remote or local container) where the upstream
+	// only accepts POST and does not support SSE-based sessions.
+	if r.Config.Stateless {
+		httpT, ok := transportHandler.(*transport.HTTPTransport)
+		if !ok {
+			return fmt.Errorf("--stateless requires streamable-HTTP or SSE transport, got %T", transportHandler)
+		}
+		httpT.SetStateless(true)
+	}
+
 	// Start the transport (which also starts the container and monitoring)
 	slog.Debug("starting transport", "transport", r.Config.Transport, "container", r.Config.ContainerName)
 	if err := transportHandler.Start(ctx); err != nil {

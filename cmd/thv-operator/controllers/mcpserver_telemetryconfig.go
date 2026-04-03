@@ -72,7 +72,12 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 		return fmt.Errorf("MCPTelemetryConfig %s is invalid: %w", m.Spec.TelemetryConfigRef.Name, err)
 	}
 
-	// Set condition to valid
+	// Detect whether the condition is transitioning to True (e.g. recovering from
+	// a transient error). Without this check the status update is skipped when the
+	// hash is unchanged, leaving a stale False condition (#4511).
+	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1alpha1.ConditionTelemetryConfigRefValidated)
+	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
+
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 		Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
 		Status:             metav1.ConditionTrue,
@@ -81,17 +86,19 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 		ObservedGeneration: m.Generation,
 	})
 
-	// Check if the MCPTelemetryConfig hash has changed
 	if m.Status.TelemetryConfigHash != telemetryConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPTelemetryConfig has changed, updating MCPServer",
 			"mcpserver", m.Name,
 			"telemetryConfig", telemetryConfig.Name,
 			"oldHash", m.Status.TelemetryConfigHash,
 			"newHash", telemetryConfig.Status.ConfigHash)
-
 		m.Status.TelemetryConfigHash = telemetryConfig.Status.ConfigHash
+		needsUpdate = true
+	}
+
+	if needsUpdate {
 		if err := r.Status().Update(ctx, m); err != nil {
-			return fmt.Errorf("failed to update MCPTelemetryConfig hash in status: %w", err)
+			return fmt.Errorf("failed to update MCPTelemetryConfig status: %w", err)
 		}
 	}
 

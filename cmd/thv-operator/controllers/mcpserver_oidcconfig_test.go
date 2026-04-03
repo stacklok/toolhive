@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -251,6 +252,70 @@ func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) 
 		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "existing"))
 		assert.Len(t, cfg.Status.ReferencingWorkloads, 1)
 	})
+}
+
+// TestMCPServerReconciler_handleOIDCConfig_ConditionPersistedOnRecovery verifies that the
+// OIDCConfigRefValidated condition is actually persisted to the API server (not just set
+// in memory) when recovering from a transient error with an unchanged config hash (#4511).
+func TestMCPServerReconciler_handleOIDCConfig_ConditionPersistedOnRecovery(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	validOIDCCondition := []metav1.Condition{{
+		Type: mcpv1alpha1.ConditionTypeOIDCConfigReady, Status: metav1.ConditionTrue, Reason: mcpv1alpha1.ConditionReasonOIDCConfigValid,
+	}}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:         "img",
+			OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
+		},
+		Status: mcpv1alpha1.MCPServerStatus{
+			// Hash is already current — only the condition is stale (simulating recovery).
+			OIDCConfigHash: "same-hash",
+			Conditions: []metav1.Condition{{
+				Type:   mcpv1alpha1.ConditionOIDCConfigRefValidated,
+				Status: metav1.ConditionFalse,
+				Reason: mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			}},
+		},
+	}
+	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
+		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+			Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x", ClientID: "c"},
+		},
+		Status: mcpv1alpha1.MCPOIDCConfigStatus{
+			ConfigHash: "same-hash",
+			Conditions: validOIDCCondition,
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(mcpServer, oidcConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}, &mcpv1alpha1.MCPOIDCConfig{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+	require.NoError(t, reconciler.handleOIDCConfig(ctx, mcpServer))
+
+	// Re-read from the fake client to verify the condition was actually persisted,
+	// not just set in the in-memory Go struct.
+	var persisted mcpv1alpha1.MCPServer
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(mcpServer), &persisted))
+
+	cond := meta.FindStatusCondition(persisted.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+	require.NotNil(t, cond, "OIDCConfigRefValidated condition must be persisted")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status, "condition should be True after recovery")
+	assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigRefValid, cond.Reason)
+	assert.Equal(t, "same-hash", persisted.Status.OIDCConfigHash, "hash should remain unchanged")
 }
 
 func TestMCPOIDCConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.T) {

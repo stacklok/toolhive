@@ -81,6 +81,9 @@ jobs:
         export KUBECONFIG=kconfig.yaml
         task operator-install-crds
 
+    - name: Build vm-init binary for embedding
+      run: task build-vm-init
+
     - name: Build and load test images
       run: |
         # Build and load vmcp image

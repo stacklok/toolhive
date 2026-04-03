@@ -90,7 +90,7 @@ tasks:
 
   docs:
     desc: Regenerate the docs
-    deps: [swagger-install, helm-docs]
+    deps: [swagger-install, helm-docs, build-vm-init]
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
@@ -142,6 +142,7 @@ tasks:
 
   lint:
     desc: Run linting tools
+    deps: [build-vm-init]
     cmds:
       - golangci-lint run --allow-parallel-runners ./...
       - go vet ./...
@@ -175,7 +176,7 @@ tasks:
 
   test:
     desc: Run unit tests (excluding e2e tests)
-    deps: [gen]
+    deps: [gen, build-vm-init]
     cmds:
       - task: test-unixlike
         platforms: [linux, darwin]
@@ -227,6 +228,7 @@ tasks:
 
   test-coverage:
     desc: Run unit tests with coverage analysis (excluding e2e tests)
+    deps: [build-vm-init]
     cmds:
       - task: test-coverage-unixlike
         platforms: [linux, darwin]

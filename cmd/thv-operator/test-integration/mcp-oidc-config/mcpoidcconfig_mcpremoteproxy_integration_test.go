@@ -168,7 +168,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: proxyName}
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -522,7 +522,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: proxyName}
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -657,7 +657,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: proxyName}
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -707,7 +707,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: proxyName}
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return false
@@ -801,7 +801,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: proxyName}
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -830,7 +830,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: proxyName}
+				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return false

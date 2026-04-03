@@ -820,7 +820,7 @@ func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 	proxyName string,
 ) error {
 	ref := mcpv1alpha1.WorkloadReference{
-		Kind: "MCPRemoteProxy",
+		Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy,
 		Name: proxyName,
 	}
 

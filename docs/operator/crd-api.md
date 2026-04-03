@@ -116,7 +116,7 @@ _Appears in:_
 | `audience` _string_ | Audience is the target audience for the exchanged token. |  |  |
 | `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
 | `subjectTokenType` _string_ | SubjectTokenType is the token type of the incoming subject token.<br />Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified. |  |  |
-| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />subject token. When set, the token is looked up from Identity.UpstreamTokens<br />instead of using Identity.Token. |  |  |
+| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />subject token. When set, the token is looked up from Identity.UpstreamTokens<br />instead of using Identity.Token.<br />When left empty and an embedded authorization server is configured, the system<br />automatically populates this field with the first configured upstream provider name.<br />Set it explicitly to override that default or to select a specific provider when<br />multiple upstreams are configured. |  |  |
 
 
 #### auth.types.UpstreamInjectConfig
@@ -3205,7 +3205,7 @@ _Appears in:_
 | `scopes` _string array_ | Scopes is a list of OAuth 2.0 scopes to request for the exchanged token |  | Optional: \{\} <br /> |
 | `subjectTokenType` _string_ | SubjectTokenType is the type of the incoming subject token.<br />Accepts short forms: "access_token" (default), "id_token", "jwt"<br />Or full URNs: "urn:ietf:params:oauth:token-type:access_token",<br />              "urn:ietf:params:oauth:token-type:id_token",<br />              "urn:ietf:params:oauth:token-type:jwt"<br />For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token" |  | Pattern: `^(access_token\|id_token\|jwt\|urn:ietf:params:oauth:token-type:(access_token\|id_token\|jwt))?$` <br />Optional: \{\} <br /> |
 | `externalTokenHeaderName` _string_ | ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.<br />If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").<br />If empty or not set, the exchanged token will replace the Authorization header (default behavior). |  | Optional: \{\} <br /> |
-| `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose token is used as the<br />RFC 8693 subject token instead of identity.Token when performing token exchange. |  | Optional: \{\} <br /> |
+| `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose token is used as the<br />RFC 8693 subject token instead of identity.Token when performing token exchange.<br />When left empty and an embedded authorization server is configured on the VirtualMCPServer,<br />the controller automatically populates this field with the first configured upstream<br />provider name. Set it explicitly to override that default or to select a specific<br />provider when multiple upstreams are configured. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.TokenLifespanConfig

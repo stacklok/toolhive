@@ -1195,3 +1195,81 @@ func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 	assert.Equal(t, "myidp", config.Backends["backend-1"].TokenExchange.SubjectProviderName,
 		"discovered backend SubjectProviderName should be injected from first upstream")
 }
+
+// TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection verifies that
+// SubjectProviderName is auto-populated for the inline Spec.OutgoingAuth.Backends path
+// (virtualmcpserver_controller.go:2007) when AuthServerConfig is set.
+func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	// MCPExternalAuthConfig referenced by the inline Backends override.
+	inlineAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "inline-auth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				// SubjectProviderName intentionally left empty
+			},
+		},
+	}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "discovered",
+				// Inline Backends override — the path exercised by this test.
+				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+					"inline-backend": {
+						Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "inline-auth",
+						},
+					},
+				},
+			},
+			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "corporate-idp",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, inlineAuthConfig).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	config, _, allAuthErrors := r.buildOutgoingAuthConfig(context.Background(), vmcp, nil)
+
+	require.NotNil(t, config)
+	require.Empty(t, allAuthErrors)
+
+	// Inline backend override: SubjectProviderName must be auto-populated from
+	// the first upstream in AuthServerConfig.
+	require.Contains(t, config.Backends, "inline-backend")
+	require.NotNil(t, config.Backends["inline-backend"].TokenExchange)
+	assert.Equal(t, "corporate-idp", config.Backends["inline-backend"].TokenExchange.SubjectProviderName,
+		"inline backend SubjectProviderName should be injected from first upstream")
+}

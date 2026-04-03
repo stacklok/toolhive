@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -143,63 +145,10 @@ func waitForMCPServerRunning(name, namespace string, timeout, pollInterval time.
 	}, timeout, pollInterval).Should(gomega.Succeed())
 }
 
-// getMCPServerNodePort creates a NodePort service targeting MCPServer proxy pods
-// with SessionAffinity=None so requests round-robin across replicas.
-// MCPServer does not expose a ServiceType field, so tests create their own NodePort service.
-func getMCPServerNodePort(
-	mcpServerName, testSvcName, namespace string,
-	proxyPort int32,
-	timeout, pollInterval time.Duration,
-) int32 {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      testSvcName,
-			Namespace: namespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeNodePort,
-			Selector: map[string]string{
-				"app.kubernetes.io/name":     "mcpserver",
-				"app.kubernetes.io/instance": mcpServerName,
-			},
-			SessionAffinity: corev1.ServiceAffinityNone,
-			Ports: []corev1.ServicePort{{
-				Port:       proxyPort,
-				TargetPort: intstr.FromInt32(proxyPort),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
-		},
-	}
-	gomega.Expect(k8sClient.Create(ctx, svc)).To(gomega.Succeed())
-
-	var nodePort int32
-	gomega.Eventually(func() error {
-		fetched := &corev1.Service{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: testSvcName, Namespace: namespace}, fetched); err != nil {
-			return err
-		}
-		if len(fetched.Spec.Ports) == 0 || fetched.Spec.Ports[0].NodePort == 0 {
-			return fmt.Errorf("nodePort not assigned for service %s", testSvcName)
-		}
-		nodePort = fetched.Spec.Ports[0].NodePort
-
-		if err := checkPortAccessible(nodePort, 1*time.Second); err != nil {
-			return fmt.Errorf("nodePort %d not accessible: %w", nodePort, err)
-		}
-		if err := checkHTTPHealthReady(nodePort, 2*time.Second); err != nil {
-			return fmt.Errorf("nodePort %d accessible but HTTP not ready: %w", nodePort, err)
-		}
-		return nil
-	}, timeout, pollInterval).Should(gomega.Succeed(), "NodePort should be assigned and HTTP server ready")
-
-	return nodePort
-}
-
-// sendJSONRPCToPod sends a raw JSON-RPC request to a specific pod IP and returns the response body.
-func sendJSONRPCToPod(podIP string, port int32, sessionID, method, params string) ([]byte, int, error) {
+// sendJSONRPCToLocalPort sends a raw JSON-RPC request to localhost:localPort and returns the response body.
+func sendJSONRPCToLocalPort(localPort int, sessionID, method, params string) ([]byte, int, error) {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}`, method, params)
-	url := fmt.Sprintf("http://%s:%d/mcp", podIP, port)
+	url := fmt.Sprintf("http://localhost:%d/mcp", localPort)
 
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
@@ -221,6 +170,49 @@ func sendJSONRPCToPod(podIP string, port int32, sessionID, method, params string
 	return respBody, resp.StatusCode, err
 }
 
+// portForwardToPod starts a kubectl port-forward to a specific pod and returns the
+// local port and a cleanup function. The caller must call cleanup to stop the port-forward.
+func portForwardToPod(podName, namespace string, targetPort int32) (int, func(), error) {
+	// Find a free local port
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to find free port: %w", err)
+	}
+	localPort := listener.Addr().(*net.TCPAddr).Port
+	// Close immediately so kubectl can bind to it
+	_ = listener.Close()
+
+	kubeconfigArg := fmt.Sprintf("--kubeconfig=%s", kubeconfig)
+	//nolint:gosec // kubeconfig, namespace, podName, and ports are test-controlled values
+	cmd := exec.Command("kubectl", kubeconfigArg,
+		"-n", namespace, "port-forward",
+		fmt.Sprintf("pod/%s", podName),
+		fmt.Sprintf("%d:%d", localPort, targetPort))
+	if err := cmd.Start(); err != nil {
+		return 0, nil, fmt.Errorf("failed to start port-forward to %s: %w", podName, err)
+	}
+
+	cleanup := func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}
+
+	// Wait for the port-forward to be ready
+	for i := 0; i < 30; i++ {
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", localPort), 500*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return localPort, cleanup, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	cleanup()
+	return 0, nil, fmt.Errorf("port-forward to %s never became ready on localhost:%d", podName, localPort)
+}
+
 var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", func() {
 	const (
 		timeout          = time.Minute * 5
@@ -233,15 +225,12 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 		var (
 			mcpServerName string
 			redisName     string
-			testSvcName   string
-			nodePort      int32
 		)
 
 		ginkgo.BeforeAll(func() {
 			ts := time.Now().UnixNano()
 			mcpServerName = fmt.Sprintf("e2e-scale-redis-%d", ts)
 			redisName = fmt.Sprintf("e2e-redis-%d", ts)
-			testSvcName = fmt.Sprintf("e2e-scale-redis-np-%d", ts)
 
 			ginkgo.By("Deploying Redis for session storage")
 			deployRedis(defaultNamespace, redisName, timeout, pollInterval)
@@ -277,15 +266,9 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 				}
 				return len(pods), nil
 			}, timeout, pollInterval).Should(gomega.Equal(2))
-
-			ginkgo.By("Creating NodePort service for external access")
-			nodePort = getMCPServerNodePort(mcpServerName, testSvcName, defaultNamespace, proxyPort, timeout, pollInterval)
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: testSvcName, Namespace: defaultNamespace},
-			})
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
 			})
@@ -317,7 +300,7 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 		})
 
 		ginkgo.It("Should allow a session established on pod A to be used on pod B", func() {
-			ginkgo.By("Getting the two ready pod IPs")
+			ginkgo.By("Getting the two ready pods")
 			var pods []corev1.Pod
 			gomega.Eventually(func() (int, error) {
 				var err error
@@ -330,20 +313,28 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 
 			podA := pods[0]
 			podB := pods[1]
-			gomega.Expect(podA.Status.PodIP).NotTo(gomega.BeEmpty())
-			gomega.Expect(podB.Status.PodIP).NotTo(gomega.BeEmpty())
-			gomega.Expect(podA.Status.PodIP).NotTo(gomega.Equal(podB.Status.PodIP),
-				"The two pods must have distinct IPs")
+			gomega.Expect(podA.Name).NotTo(gomega.Equal(podB.Name),
+				"The two pods must be distinct")
 
-			ginkgo.By("Initializing a session on pod A via the NodePort service")
-			mcpClient, err := CreateInitializedMCPClient(nodePort, "e2e-cross-pod-test", 30*time.Second)
+			ginkgo.By(fmt.Sprintf("Setting up port-forward to pod A (%s)", podA.Name))
+			localPortA, cleanupA, err := portForwardToPod(podA.Name, defaultNamespace, proxyPort)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			defer cleanupA()
+
+			ginkgo.By(fmt.Sprintf("Setting up port-forward to pod B (%s)", podB.Name))
+			localPortB, cleanupB, err := portForwardToPod(podB.Name, defaultNamespace, proxyPort)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			defer cleanupB()
+
+			ginkgo.By("Initializing a session via pod A's port-forward")
+			mcpClient, err := CreateInitializedMCPClient(int32(localPortA), "e2e-cross-pod-test", 30*time.Second)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			sessionID := mcpClient.Client.GetSessionId()
 			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
 			mcpClient.Close()
 
-			ginkgo.By(fmt.Sprintf("Sending tools/list directly to pod A (%s) with the session ID", podA.Name))
-			bodyA, statusA, err := sendJSONRPCToPod(podA.Status.PodIP, proxyPort, sessionID, "tools/list", "{}")
+			ginkgo.By(fmt.Sprintf("Sending tools/list to pod A (%s) with the session ID", podA.Name))
+			bodyA, statusA, err := sendJSONRPCToLocalPort(localPortA, sessionID, "tools/list", "{}")
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(statusA).To(gomega.Equal(http.StatusOK),
 				"pod A should accept the session; got body: %s", string(bodyA))
@@ -357,8 +348,8 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 			gomega.Expect(rpcRespA.Result.Tools).NotTo(gomega.BeEmpty(),
 				"pod A should return tools for this session")
 
-			ginkgo.By(fmt.Sprintf("Sending tools/list directly to pod B (%s) with the SAME session ID", podB.Name))
-			bodyB, statusB, err := sendJSONRPCToPod(podB.Status.PodIP, proxyPort, sessionID, "tools/list", "{}")
+			ginkgo.By(fmt.Sprintf("Sending tools/list to pod B (%s) with the SAME session ID", podB.Name))
+			bodyB, statusB, err := sendJSONRPCToLocalPort(localPortB, sessionID, "tools/list", "{}")
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(statusB).To(gomega.Equal(http.StatusOK),
 				"pod B should accept the session via Redis; got body: %s", string(bodyB))

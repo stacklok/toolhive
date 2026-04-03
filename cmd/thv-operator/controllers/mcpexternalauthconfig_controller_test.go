@@ -252,17 +252,17 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 					"MCPExternalAuthConfig status should have config hash")
 			}
 
-			// Check referencing servers in status
+			// Check referencing workloads in status
 			if tt.existingMCPServer != nil {
-				assert.Contains(t, updatedConfig.Status.ReferencingServers,
-					tt.existingMCPServer.Name,
-					"Status should contain referencing MCPServer")
+				assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+					mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
+					"Status should contain referencing MCPServer as WorkloadReference")
 			}
 		})
 	}
 }
 
-func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers(t *testing.T) {
+func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -335,18 +335,13 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers(t *testing.T)
 	}
 
 	ctx := t.Context()
-	servers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
+	refs, err := r.findReferencingWorkloads(ctx, externalAuthConfig)
 	require.NoError(t, err)
 
-	assert.Len(t, servers, 2, "Should find 2 referencing MCPServers")
-
-	serverNames := make([]string, len(servers))
-	for i, s := range servers {
-		serverNames[i] = s.Name
-	}
-	assert.Contains(t, serverNames, "server1")
-	assert.Contains(t, serverNames, "server2")
-	assert.NotContains(t, serverNames, "server3")
+	assert.Len(t, refs, 2, "Should find 2 referencing workloads")
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
+	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
 }
 
 func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
@@ -471,7 +466,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 		name                   string
 		externalAuthConfig     *mcpv1alpha1.MCPExternalAuthConfig
 		referencingServers     []*mcpv1alpha1.MCPServer
-		expectError            bool
+		expectRequeue          bool
 		expectFinalizerRemoved bool
 	}{
 		{
@@ -498,7 +493,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 					},
 				},
 			},
-			expectError:            false,
+			expectRequeue:          false,
 			expectFinalizerRemoved: true,
 		},
 		{
@@ -539,7 +534,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 					},
 				},
 			},
-			expectError:            true,
+			expectRequeue:          true,
 			expectFinalizerRemoved: false,
 		},
 	}
@@ -562,6 +557,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
+				WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
 				Build()
 
 			r := &MCPExternalAuthConfigReconciler{
@@ -571,19 +567,18 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 
 			// Call handleDeletion directly
 			result, err := r.handleDeletion(ctx, tt.externalAuthConfig)
+			require.NoError(t, err)
 
-			if tt.expectError {
-				assert.Error(t, err)
-				// When there's an error, finalizer should still be present
+			if tt.expectRequeue {
+				// When still referenced, deletion is blocked with requeue
+				assert.Greater(t, result.RequeueAfter, time.Duration(0),
+					"Should requeue when references exist")
 				assert.Contains(t, tt.externalAuthConfig.Finalizers, ExternalAuthConfigFinalizerName,
-					"Finalizer should still be present after error")
+					"Finalizer should still be present when blocked")
 			} else {
-				assert.NoError(t, err)
 				assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 				// Check if finalizer was removed from the object in memory
-				// Note: We check the original object because after finalizer removal,
-				// Kubernetes will delete the object and it won't be in the fake client store
 				if tt.expectFinalizerRemoved {
 					assert.NotContains(t, tt.externalAuthConfig.Finalizers, ExternalAuthConfigFinalizerName,
 						"Finalizer should be removed")
@@ -700,7 +695,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 		"MCPServer should have annotation with new config hash")
 }
 
-func TestMCPExternalAuthConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *testing.T) {
+func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -760,7 +755,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingServersUpdatedWithoutHashCha
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
-	assert.Empty(t, updatedConfig.Status.ReferencingServers, "No servers should be referencing yet")
+	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No workloads should be referencing yet")
 
 	// Now add an MCPServer that references this config (without changing the config spec)
 	mcpServer := &mcpv1alpha1.MCPServer{
@@ -783,11 +778,12 @@ func TestMCPExternalAuthConfigReconciler_ReferencingServersUpdatedWithoutHashCha
 
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingServers, "new-server",
-		"ReferencingServers should be updated even without hash change")
+	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
+		"ReferencingWorkloads should be updated even without hash change")
 }
 
-func TestMCPExternalAuthConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testing.T) {
+func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -859,7 +855,8 @@ func TestMCPExternalAuthConfigReconciler_ReferencingServersRemovedOnServerDeleti
 	var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingServers, "server-to-delete")
+	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
 
 	// Delete the MCPServer
 	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
@@ -870,6 +867,6 @@ func TestMCPExternalAuthConfigReconciler_ReferencingServersRemovedOnServerDeleti
 
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Empty(t, updatedConfig.Status.ReferencingServers,
-		"ReferencingServers should be empty after server deletion")
+	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
+		"ReferencingWorkloads should be empty after server deletion")
 }

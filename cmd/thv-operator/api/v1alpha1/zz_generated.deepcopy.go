@@ -876,9 +876,9 @@ func (in *MCPExternalAuthConfigStatus) DeepCopyInto(out *MCPExternalAuthConfigSt
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
-	if in.ReferencingServers != nil {
-		in, out := &in.ReferencingServers, &out.ReferencingServers
-		*out = make([]string, len(*in))
+	if in.ReferencingWorkloads != nil {
+		in, out := &in.ReferencingWorkloads, &out.ReferencingWorkloads
+		*out = make([]WorkloadReference, len(*in))
 		copy(*out, *in)
 	}
 }

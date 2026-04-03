@@ -242,8 +242,8 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("Should update MCPExternalAuthConfig status with referencing server", func() {
-			// Wait for the auth config status to be updated with the referencing server
+		It("Should update MCPExternalAuthConfig status with referencing workload", func() {
+			// Wait for the auth config status to be updated with the referencing workload
 			Eventually(func() bool {
 				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -253,9 +253,9 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				// Check if the server is in the referencing servers list
-				for _, server := range updatedAuthConfig.Status.ReferencingServers {
-					if server == mcpServerName {
+				// Check if the server is in the referencing workloads list
+				for _, ref := range updatedAuthConfig.Status.ReferencingWorkloads {
+					if ref.Kind == "MCPServer" && ref.Name == mcpServerName {
 						return true
 					}
 				}

@@ -143,7 +143,7 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	// Update the status with the list of referencing workloads
 	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(referencingServers))
 	for _, server := range referencingServers {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
 	}
 	ctrlutil.SortWorkloadRefs(refs)
 	toolConfig.Status.ReferencingWorkloads = refs
@@ -293,7 +293,7 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					continue
 				}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == "MCPServer" && ref.Name == server.Name {
+					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
 						requests = append(requests, reconcile.Request{NamespacedName: nn})
 						break
 					}

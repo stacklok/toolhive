@@ -179,7 +179,7 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 					continue
 				}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == "MCPServer" && ref.Name == server.Name {
+					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
 						requests = append(requests, reconcile.Request{NamespacedName: nn})
 						break
 					}

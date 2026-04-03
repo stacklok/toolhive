@@ -114,7 +114,7 @@ func FindWorkloadRefsFromMCPServers(
 	}
 	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(servers))
 	for _, server := range servers {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
 	}
 	SortWorkloadRefs(refs)
 	return refs, nil

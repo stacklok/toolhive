@@ -2824,7 +2824,7 @@ func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
 	vmcpName string,
 ) error {
-	ref := mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcpName}
+	ref := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindVirtualMCPServer, Name: vmcpName}
 	// Check if already listed
 	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
 		if entry.Kind == ref.Kind && entry.Name == ref.Name {

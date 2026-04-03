@@ -226,7 +226,7 @@ func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 		if vmcp.Spec.IncomingAuth != nil &&
 			vmcp.Spec.IncomingAuth.OIDCConfigRef != nil &&
 			vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == oidcConfig.Name {
-			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "VirtualMCPServer", Name: vmcp.Name})
+			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
 		}
 	}
 
@@ -275,7 +275,7 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					continue
 				}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == "MCPServer" && ref.Name == server.Name {
+					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
 						requests = append(requests, reconcile.Request{NamespacedName: nn})
 						break
 					}
@@ -333,7 +333,7 @@ func (r *MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
 			continue
 		}
 		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == "VirtualMCPServer" && ref.Name == vmcp.Name {
+			if ref.Kind == mcpv1alpha1.WorkloadKindVirtualMCPServer && ref.Name == vmcp.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}

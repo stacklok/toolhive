@@ -6,7 +6,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -102,7 +101,7 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	referencingWorkloads, err := r.findReferencingWorkloads(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing workloads")
-	} else if !slices.Equal(toolConfig.Status.ReferencingWorkloads, referencingWorkloads) {
+	} else if !ctrlutil.WorkloadRefsEqual(toolConfig.Status.ReferencingWorkloads, referencingWorkloads) {
 		toolConfig.Status.ReferencingWorkloads = referencingWorkloads
 		conditionChanged = true
 	}
@@ -146,6 +145,7 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	for _, server := range referencingServers {
 		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
 	}
+	ctrlutil.SortWorkloadRefs(refs)
 	toolConfig.Status.ReferencingWorkloads = refs
 
 	// Update the MCPToolConfig status
@@ -228,18 +228,13 @@ func (r *ToolConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	toolConfig *mcpv1alpha1.MCPToolConfig,
 ) ([]mcpv1alpha1.WorkloadReference, error) {
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
-	if err := r.List(ctx, mcpServerList, client.InNamespace(toolConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	var refs []mcpv1alpha1.WorkloadReference
-	for _, server := range mcpServerList.Items {
-		if server.Spec.ToolConfigRef != nil && server.Spec.ToolConfigRef.Name == toolConfig.Name {
-			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
-		}
-	}
-	return refs, nil
+	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
+			if server.Spec.ToolConfigRef != nil {
+				return &server.Spec.ToolConfigRef.Name
+			}
+			return nil
+		})
 }
 
 // findReferencingMCPServers finds all MCPServers that reference the given MCPToolConfig.

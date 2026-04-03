@@ -6,7 +6,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -160,21 +159,7 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	for _, server := range referencingServers {
 		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
 	}
-	slices.SortFunc(refs, func(a, b mcpv1alpha1.WorkloadReference) int {
-		if a.Kind != b.Kind {
-			if a.Kind < b.Kind {
-				return -1
-			}
-			return 1
-		}
-		if a.Name < b.Name {
-			return -1
-		}
-		if a.Name > b.Name {
-			return 1
-		}
-		return 0
-	})
+	ctrlutil.SortWorkloadRefs(refs)
 	externalAuthConfig.Status.ReferencingWorkloads = refs
 
 	// Update the MCPExternalAuthConfig status
@@ -271,18 +256,13 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) ([]mcpv1alpha1.WorkloadReference, error) {
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
-	if err := r.List(ctx, mcpServerList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	var refs []mcpv1alpha1.WorkloadReference
-	for _, server := range mcpServerList.Items {
-		if server.Spec.ExternalAuthConfigRef != nil && server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
-			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: server.Name})
-		}
-	}
-	return refs, nil
+	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
+			if server.Spec.ExternalAuthConfigRef != nil {
+				return &server.Spec.ExternalAuthConfigRef.Name
+			}
+			return nil
+		})
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -356,7 +336,7 @@ func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing workloads: %w", err)
 	}
 
-	if !slices.Equal(externalAuthConfig.Status.ReferencingWorkloads, refs) {
+	if !ctrlutil.WorkloadRefsEqual(externalAuthConfig.Status.ReferencingWorkloads, refs) {
 		externalAuthConfig.Status.ReferencingWorkloads = refs
 		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
 			logger := log.FromContext(ctx)

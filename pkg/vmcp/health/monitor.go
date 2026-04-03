@@ -72,7 +72,7 @@ type backendCheck struct {
 // Locking: the caller must hold both m.mu and m.backendsMu. m.mu prevents
 // wg.Add() from racing with wg.Wait() in Stop().
 func (bc *backendCheck) start(parentCtx context.Context, m *Monitor, isInitial bool) {
-	ctx, cancel := context.WithCancel(parentCtx) //nolint:gosec // G118 - cancel stored in bc.cancel, called via stop()
+	ctx, cancel := context.WithCancel(parentCtx)
 	bc.cancel = cancel
 	m.wg.Add(1)
 	if isInitial {

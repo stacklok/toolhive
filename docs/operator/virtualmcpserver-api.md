@@ -47,7 +47,11 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
 - `type` (string, required): Authentication type. Must be explicitly specified.
   - `anonymous`: No authentication required (use this when no auth is needed)
   - `oidc`: OIDC/OAuth2 authentication
-- `oidcConfig` (OIDCConfigRef, optional): OIDC authentication configuration (required when type=oidc)
+- `oidcConfigRef` (MCPOIDCConfigReference, optional): Reference to a shared MCPOIDCConfig resource (preferred, required when type=oidc). Mutually exclusive with `oidcConfig`.
+  - `name` (string, required): Name of the MCPOIDCConfig resource (same namespace)
+  - `audience` (string, required): Must be unique per server to prevent token replay
+  - `scopes` ([]string, optional): Defaults to `["openid"]`
+- `oidcConfig` (OIDCConfigRef, optional): Inline OIDC authentication configuration. **Deprecated**: use `oidcConfigRef` with an MCPOIDCConfig resource instead. Will be removed in v1beta1. Mutually exclusive with `oidcConfigRef` (CEL enforced).
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
 
 **Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
@@ -59,7 +63,28 @@ spec:
     type: anonymous
 ```
 
-**Example (OIDC auth)**:
+**Example (OIDC auth with shared MCPOIDCConfig — preferred)**:
+```yaml
+spec:
+  incomingAuth:
+    type: oidc
+    oidcConfigRef:
+      name: corporate-idp       # references an MCPOIDCConfig resource
+      audience: vmcp-api         # unique per server
+      scopes: ["openid"]
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - |
+            permit(
+              principal,
+              action == Action::"tools/call",
+              resource
+            );
+```
+
+**Example (OIDC auth with inline config — deprecated)**:
 ```yaml
 spec:
   incomingAuth:
@@ -398,6 +423,12 @@ URL where the Virtual MCP server can be accessed.
 
 **Type**: `string`
 
+### `.status.oidcConfigHash`
+
+Hash of the referenced MCPOIDCConfig spec, used for change detection. Only present when `oidcConfigRef` is set.
+
+**Type**: `string`
+
 ### `.status.observedGeneration`
 
 The most recent generation observed for this VirtualMCPServer.
@@ -561,6 +592,7 @@ The VirtualMCPServer CRD includes comprehensive validation:
 
 - [MCPGroup](./mcpgroup-api.md): Defines groups of MCPServers
 - [MCPServer](./mcpserver-api.md): Individual MCP server instances
+- [MCPOIDCConfig](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml): Shared OIDC provider configuration (referenced via `oidcConfigRef`)
 - [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
 - [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation

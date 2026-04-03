@@ -1,0 +1,75 @@
+# Shared MCPOIDCConfig with MCPServer using oidcConfigRef.
+#
+# Define OIDC provider configuration once and reference it from multiple
+# MCPServers, MCPRemoteProxies, or VirtualMCPServers.
+# Each workload provides a unique audience to prevent token replay.
+#
+# This is the preferred pattern — the inline oidcConfig field is deprecated
+# and will be removed in v1beta1.
+
+---
+# Kubernetes Secret for the OIDC client secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: corporate-idp-secret
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  client-secret: "your-oidc-client-secret-value"
+
+---
+# Shared MCPOIDCConfig — Kubernetes service account variant
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: k8s-sa-idp
+  namespace: toolhive-system
+spec:
+  type: kubernetesServiceAccount
+  kubernetesServiceAccount:
+    audience: toolhive
+    # serviceAccount and namespace default to the pod's own SA and namespace
+
+---
+# Shared MCPOIDCConfig — inline provider variant
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: corporate-idp
+  namespace: toolhive-system
+spec:
+  type: inline
+  inline:
+    issuer: "https://auth.example.com"
+    jwksUrl: "https://auth.example.com/.well-known/jwks.json"
+    clientId: "toolhive-client"
+    clientSecretRef:
+      name: corporate-idp-secret
+      key: client-secret
+
+---
+# MCPServer referencing the shared MCPOIDCConfig.
+# The oidcConfigRef replaces the deprecated inline spec.oidcConfig field.
+# audience must be unique per server to prevent token replay attacks.
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch-with-shared-oidc
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  oidcConfigRef:
+    name: corporate-idp
+    audience: fetch-server
+    scopes: ["openid"]
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

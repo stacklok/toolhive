@@ -276,7 +276,7 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
-// WithStateless declares the remote server is stateless (POST-only, no SSE).
+// WithStateless declares the server is stateless (POST-only, no SSE).
 func WithStateless(stateless bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.Stateless = stateless

@@ -57,7 +57,7 @@ type HTTPTransport struct {
 	// Remote MCP server support
 	remoteURL string
 
-	// stateless indicates the remote server is POST-only (no SSE/GET support)
+	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
 	// tokenSource is the OAuth token source for remote authentication
@@ -150,7 +150,7 @@ func (t *HTTPTransport) SetOnHealthCheckFailed(callback types.HealthCheckFailedC
 	t.onHealthCheckFailed = callback
 }
 
-// SetStateless configures the transport for a stateless remote server.
+// SetStateless configures the transport for a stateless server.
 func (t *HTTPTransport) SetStateless(stateless bool) {
 	t.stateless = stateless
 }

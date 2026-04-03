@@ -22,21 +22,25 @@ func TestStatelessMethodGate(t *testing.T) {
 		name           string
 		method         string
 		expectedStatus int
+		expectAllow    bool
 	}{
 		{
-			name:           "GET returns 405",
+			name:           "GET returns 405 with Allow header",
 			method:         http.MethodGet,
 			expectedStatus: http.StatusMethodNotAllowed,
+			expectAllow:    true,
 		},
 		{
-			name:           "HEAD returns 405",
+			name:           "HEAD returns 405 with Allow header",
 			method:         http.MethodHead,
 			expectedStatus: http.StatusMethodNotAllowed,
+			expectAllow:    true,
 		},
 		{
-			name:           "DELETE returns 405",
+			name:           "DELETE returns 405 with Allow header",
 			method:         http.MethodDelete,
 			expectedStatus: http.StatusMethodNotAllowed,
+			expectAllow:    true,
 		},
 		{
 			name:           "POST is forwarded",
@@ -61,6 +65,9 @@ func TestStatelessMethodGate(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 
 			assert.Equal(t, tc.expectedStatus, rec.Code)
+			if tc.expectAllow {
+				assert.Equal(t, "POST, OPTIONS", rec.Header().Get("Allow"))
+			}
 		})
 	}
 }

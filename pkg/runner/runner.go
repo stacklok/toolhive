@@ -304,12 +304,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set up the transport
 	slog.Debug("setting up transport", "transport", r.Config.Transport)
 
-	// Warn if stateless mode is set for a non-remote workload — it has no effect.
-	if r.Config.Stateless && r.Config.RemoteURL == "" {
-		slog.Warn("--stateless has no effect for local container workloads; use it only with remote URLs",
-			"server", r.Config.BaseName)
-	}
-
 	// Prepare transport options based on workload type
 	var transportOpts []transport.Option
 	var setupResult *runtime.SetupResult
@@ -400,16 +394,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		})
 
-		// Configure stateless mode if requested. Remote workloads always use
-		// HTTPTransport, so a failed cast here is a programming error.
-		if r.Config.Stateless {
-			httpT, ok := transportHandler.(*transport.HTTPTransport)
-			if !ok {
-				return fmt.Errorf("internal error: remote transport is not an HTTPTransport")
-			}
-			httpT.SetStateless(true)
-		}
-
 		// Set the unauthorized response callback for bearer token authentication
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
 		transportHandler.SetOnUnauthorizedResponse(func() {
@@ -426,6 +410,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				slog.Error("failed to update workload status", "error", err)
 			}
 		})
+	}
+
+	// Configure stateless mode if requested. Stateless mode applies to any
+	// streamable-HTTP server (remote or local container) where the upstream
+	// only accepts POST and does not support SSE-based sessions.
+	if r.Config.Stateless {
+		httpT, ok := transportHandler.(*transport.HTTPTransport)
+		if !ok {
+			return fmt.Errorf("--stateless requires streamable-HTTP or SSE transport, got %T", transportHandler)
+		}
+		httpT.SetStateless(true)
 	}
 
 	// Start the transport (which also starts the container and monitoring)

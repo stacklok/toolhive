@@ -1205,7 +1205,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "stateless": {
-                        "description": "Stateless indicates the remote server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nOnly meaningful when RemoteURL is set.",
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
                         "type": "boolean"
                     },
                     "target_host": {

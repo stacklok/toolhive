@@ -35,7 +35,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
 
@@ -360,7 +359,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
 			Addr:      redisCfg.Address,
-			Password:  os.Getenv(vmcpconfig.RedisPasswordEnvVar),
+			Password:  os.Getenv(session.RedisPasswordEnvVar),
 			DB:        int(redisCfg.DB),
 			KeyPrefix: keyPrefix,
 		}, session.DefaultSessionTTL)

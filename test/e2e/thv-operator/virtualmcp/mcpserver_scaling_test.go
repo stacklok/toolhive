@@ -28,9 +28,6 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-// redisImage is the Redis container image used for session storage in scaling tests.
-const redisImage = "redis:7-alpine"
-
 // deployRedis creates a single-replica Redis Deployment and ClusterIP Service.
 // Returns after the deployment has at least one ready replica.
 func deployRedis(namespace, name string, timeout, pollInterval time.Duration) {
@@ -50,7 +47,7 @@ func deployRedis(namespace, name string, timeout, pollInterval time.Duration) {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Name:  "redis",
-						Image: redisImage,
+						Image: images.RedisImage,
 						Ports: []corev1.ContainerPort{{ContainerPort: 6379, Name: "redis"}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{

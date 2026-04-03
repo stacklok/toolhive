@@ -55,7 +55,8 @@ func (*OTLPTracerStrategy) CreateTracerProvider(
 	//nolint:gosec // G706: OTLP endpoint from config
 	slog.Debug("creating OTLP tracer provider",
 		"endpoint", config.OTLPEndpoint,
-		"sampling_rate", config.SamplingRate)
+		"sampling_rate", config.SamplingRate,
+		"extra_processors", len(config.ExtraSpanProcessors))
 
 	otlpConfig := otlp.Config{
 		Endpoint:     config.OTLPEndpoint,
@@ -64,7 +65,7 @@ func (*OTLPTracerStrategy) CreateTracerProvider(
 		SamplingRate: config.SamplingRate,
 	}
 
-	provider, shutdown, err := otlp.NewTracerProviderWithShutdown(ctx, otlpConfig, res)
+	provider, shutdown, err := otlp.NewTracerProviderWithShutdown(ctx, otlpConfig, res, config.ExtraSpanProcessors...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OTLP tracer provider for endpoint %s: %w", config.OTLPEndpoint, err)
 	}
@@ -200,6 +201,13 @@ func (s *StrategySelector) SelectTracerStrategy() TracerStrategy {
 		slog.Debug("otlp endpoint configured but tracing is disabled")
 	}
 
+	// Extra processors (e.g. Sentry bridge) need a real SDK tracer provider so spans
+	// reach the processors. OTLPTracerStrategy handles the no-endpoint case when
+	// extraProcessors are present — it skips the OTLP exporter but still registers them.
+	if s.hasExtraProcessors() {
+		return &OTLPTracerStrategy{}
+	}
+
 	return &NoOpTracerStrategy{}
 }
 
@@ -222,7 +230,7 @@ func (s *StrategySelector) SelectMeterStrategy() MeterStrategy {
 
 // IsFullyNoOp returns true if both tracer and meter would be no-op.
 func (s *StrategySelector) IsFullyNoOp() bool {
-	return !s.hasOTLPMetrics() && !s.hasOTLPTracing() && !s.hasPrometheus()
+	return !s.hasOTLPMetrics() && !s.hasOTLPTracing() && !s.hasPrometheus() && !s.hasExtraProcessors()
 }
 
 // hasOTLPMetrics returns true if OTLP metrics are wanted.
@@ -238,4 +246,9 @@ func (s *StrategySelector) hasOTLPTracing() bool {
 // hasPrometheus returns true if Prometheus metrics are wanted.
 func (s *StrategySelector) hasPrometheus() bool {
 	return s.config.EnablePrometheusMetricsPath
+}
+
+// hasExtraProcessors returns true if extra span processors (e.g. a Sentry bridge) are registered.
+func (s *StrategySelector) hasExtraProcessors() bool {
+	return len(s.config.ExtraSpanProcessors) > 0
 }

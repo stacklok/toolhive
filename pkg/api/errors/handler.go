@@ -5,10 +5,15 @@
 package errors
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/stacklok/toolhive-core/httperr"
+	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 )
 
 // HandlerWithError is an HTTP handler that can return an error.
@@ -42,6 +47,15 @@ func ErrorHandler(fn HandlerWithError) http.HandlerFunc {
 		// For 5xx errors, log the full error but return a generic message
 		if code >= http.StatusInternalServerError {
 			slog.Error("internal server error", "error", err)
+			span := trace.SpanFromContext(r.Context())
+			// Use a generic message on the span to avoid sending potentially
+			// sensitive error chains (e.g. from database drivers or container
+			// runtimes that may include connection strings) to external backends.
+			span.RecordError(fmt.Errorf("internal server error"))
+			span.SetStatus(codes.Error, "internal server error")
+			// Sentry span processor only creates transactions; call CaptureException
+			// explicitly so 5xx errors also appear as Issues in the Sentry Issues tab.
+			sentrypkg.CaptureException(r, err)
 			http.Error(w, http.StatusText(code), code)
 			return
 		}

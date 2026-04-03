@@ -218,3 +218,30 @@ Use `recover()` sparingly. It should only be used at well-defined boundaries to 
 - Do not use `recover()` deep in the call stack - let panics propagate to the top-level handlers
 - Do not use `recover()` for expected error conditions - use normal error handling
 
+## Sentry Error Reporting
+
+The API server supports optional [Sentry](https://sentry.io) integration for error and panic capture. When enabled (via `--sentry-dsn`), the following are automatically reported:
+
+### What Gets Reported
+
+1. **Panics** - The recovery middleware in `pkg/recovery/recovery.go` reports recovered panics to Sentry via `sentrypkg.RecoverPanic()` before returning a 500 response.
+
+2. **5xx errors** - The error handler in `pkg/api/errors/handler.go` captures server errors to Sentry via `sentrypkg.CaptureException()`. This provides visibility into internal errors without requiring panics.
+
+### How It Works
+
+The Sentry integration is implemented in `pkg/sentry/sentry.go` and wired into two places:
+
+- **Recovery middleware** catches panics and reports them to Sentry using `RecoverPanic()`.
+- **Error handler** captures 5xx errors to Sentry using `CaptureException()`.
+
+For distributed tracing, `thv serve` uses **OTEL `otelhttp` middleware** (not `sentryhttp`) to extract W3C `traceparent` headers. When a Sentry DSN is configured alongside an OTEL endpoint, the `pkg/sentry.SpanProcessor()` is registered with the OTEL SDK so spans are exported to **both** the configured OTLP backend and Sentry simultaneously.
+
+### When Sentry Is Disabled
+
+When no DSN is configured, all Sentry operations are no-ops. `sentrypkg.Enabled()`, `sentrypkg.CaptureException()`, `sentrypkg.RecoverPanic()`, and `sentrypkg.SpanProcessor()` all check an atomic boolean and return immediately, adding no overhead.
+
+### Configuration
+
+See [Deployment Modes - Observability](arch/01-deployment-modes.md#observability-otel-distributed-tracing-and-sentry-error-reporting) for CLI flags, environment variables, and OTEL configuration.
+

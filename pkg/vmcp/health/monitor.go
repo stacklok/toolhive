@@ -323,22 +323,37 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// This ensures GetHealthSummary sees new backends before their health checks complete
 	m.backends = newBackends
 
-	// Start monitoring for new backends
+	// Start monitoring for new or changed backends
 	for id, backend := range newBackendsMap {
-		if _, exists := oldBackends[id]; !exists {
-			slog.Info("starting health monitoring for new backend", "backend", backend.Name)
-			backendCopy := backend
-
-			// Circuit breaker will be lazily initialized on first health check
-
-			backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
-			m.activeChecks[id] = cancel
-			m.wg.Add(1)
-			// Clear the "removed" flag if this backend was previously removed
-			// This allows health check results to be recorded again
-			m.statusTracker.ClearRemovedFlag(id)
-			go m.monitorBackend(backendCtx, &backendCopy, false) // false = dynamically added backend
+		oldBackend, exists := oldBackends[id]
+		if exists && !backendChanged(oldBackend, backend) {
+			continue // Existing backend with no relevant changes
 		}
+
+		if exists {
+			// Backend properties changed (e.g., URL updated after operator reconcile).
+			// Cancel the old goroutine so a new one starts with the updated properties.
+			slog.Info("restarting health monitoring for changed backend",
+				"backend", backend.Name, "old_url", oldBackend.BaseURL, "new_url", backend.BaseURL)
+			if cancel, ok := m.activeChecks[id]; ok {
+				cancel()
+				delete(m.activeChecks, id)
+			}
+		} else {
+			slog.Info("starting health monitoring for new backend", "backend", backend.Name)
+		}
+
+		backendCopy := backend
+
+		// Circuit breaker will be lazily initialized on first health check
+
+		backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
+		m.activeChecks[id] = cancel
+		m.wg.Add(1)
+		// Clear the "removed" flag if this backend was previously removed
+		// This allows health check results to be recorded again
+		m.statusTracker.ClearRemovedFlag(id)
+		go m.monitorBackend(backendCtx, &backendCopy, false) // false = dynamically added backend
 	}
 
 	// Stop monitoring for removed backends and clean up their state
@@ -848,4 +863,11 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	}
 
 	return conditions
+}
+
+// backendChanged returns true if the backend's health-check-relevant properties have changed.
+// This is used by UpdateBackends to detect when an existing backend needs its monitoring
+// goroutine restarted (e.g., URL updated after operator reconcile).
+func backendChanged(old, updated vmcp.Backend) bool {
+	return old.BaseURL != updated.BaseURL || old.TransportType != updated.TransportType
 }

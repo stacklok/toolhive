@@ -23,7 +23,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Ready
       type: string
-    - jsonPath: .status.referencingServers
+    - jsonPath: .status.referencingWorkloads
       name: References
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -187,12 +187,30 @@ spec:
                   It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
-              referencingServers:
+              referencingWorkloads:
                 description: |-
-                  ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig
-                  This helps track which servers need to be reconciled when this config changes
+                  ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.
+                  Each entry identifies the workload by kind and name.
                 items:
-                  type: string
+                  description: |-
+                    WorkloadReference identifies a workload that references a shared configuration resource.
+                    Namespace is implicit — cross-namespace references are not supported.
+                  properties:
+                    kind:
+                      description: Kind is the type of workload resource
+                      enum:
+                      - MCPServer
+                      - VirtualMCPServer
+                      - MCPRemoteProxy
+                      type: string
+                    name:
+                      description: Name is the name of the workload resource
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
                 type: array
             type: object
         type: object

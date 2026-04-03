@@ -303,7 +303,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should track referencing servers in status", func() {
+		It("should track referencing workloads in status", func() {
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -313,8 +313,8 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == mcpServerName {
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref.Kind == "MCPServer" && ref.Name == mcpServerName {
 						return true
 					}
 				}
@@ -326,7 +326,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			// Delete the MCPServer
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
 
-			// Eventually the referencing servers list should be empty
+			// Eventually the referencing workloads list should be empty
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -336,7 +336,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				return len(updated.Status.ReferencingServers) == 0
+				return len(updated.Status.ReferencingWorkloads) == 0
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
@@ -404,7 +404,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			}
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			// Wait for ReferencingServers to be populated
+			// Wait for ReferencingWorkloads to be populated
 			Eventually(func() bool {
 				updated := &mcpv1alpha1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -414,8 +414,8 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				for _, server := range updated.Status.ReferencingServers {
-					if server == mcpServerName {
+				for _, ref := range updated.Status.ReferencingWorkloads {
+					if ref.Kind == "MCPServer" && ref.Name == mcpServerName {
 						return true
 					}
 				}

@@ -58,7 +58,7 @@ type RunFlags struct {
 	// Remote MCP server support
 	RemoteURL string
 
-	// Stateless indicates the remote server is stateless (POST-only, no SSE)
+	// Stateless indicates the server is stateless (POST-only, no SSE)
 	Stateless bool
 
 	// Security and audit
@@ -257,7 +257,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
 	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
-		"Declare the remote server as stateless (POST-only, no SSE). "+
+		"Declare the server as stateless (POST-only, no SSE). "+
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")

@@ -89,7 +89,7 @@ type TransparentProxy struct {
 	// Transport type (sse, streamable-http)
 	transportType string
 
-	// stateless indicates the remote server is POST-only (no SSE/GET support)
+	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
 	// Callback when health check fails (for remote servers)
@@ -1229,12 +1229,13 @@ func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.
 }
 
 // statelessMethodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405.
-// Used in stateless mode where the remote server only supports POST.
+// Used in stateless mode where the server only supports POST.
 // HEAD is blocked alongside GET because HEAD is semantically a GET without a response body;
 // a server that cannot handle GET will not handle HEAD either.
 func statelessMethodGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete {
+			w.Header().Set("Allow", "POST, OPTIONS")
 			http.Error(w, "method not allowed: server is stateless (POST only)", http.StatusMethodNotAllowed)
 			return
 		}

@@ -136,6 +136,10 @@ type TokenExchangeConfig struct {
 
 	// SubjectProviderName is the name of the upstream provider whose token is used as the
 	// RFC 8693 subject token instead of identity.Token when performing token exchange.
+	// When left empty and an embedded authorization server is configured on the VirtualMCPServer,
+	// the controller automatically populates this field with the first configured upstream
+	// provider name. Set it explicitly to override that default or to select a specific
+	// provider when multiple upstreams are configured.
 	// +optional
 	SubjectProviderName string `json:"subjectProviderName,omitempty"`
 }

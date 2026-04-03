@@ -1165,3 +1165,182 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 		})
 	}
 }
+
+// TestInjectSubjectProviderNames tests the InjectSubjectProviderNames helper.
+// Modelled on TestInjectUpstreamProviderIfNeeded in pkg/runner/middleware_test.go.
+func TestInjectSubjectProviderNames(t *testing.T) {
+	t.Parallel()
+
+	makeTokenExchangeStrategy := func(subjectProviderName string) *authtypes.BackendAuthStrategy {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeTokenExchange,
+			TokenExchange: &authtypes.TokenExchangeConfig{
+				TokenURL:            "https://oauth.example.com/token",
+				SubjectProviderName: subjectProviderName,
+			},
+		}
+	}
+
+	makeRunConfig := func(upstreamNames ...string) *authserver.RunConfig {
+		rc := &authserver.RunConfig{}
+		for _, name := range upstreamNames {
+			rc.Upstreams = append(rc.Upstreams, authserver.UpstreamRunConfig{Name: name})
+		}
+		return rc
+	}
+
+	tests := []struct {
+		name          string
+		cfg           *Config
+		rc            *authserver.RunConfig
+		wantDefault   string
+		wantBackends  map[string]string // backend name → expected SubjectProviderName
+		wantUnchanged bool              // cfg.OutgoingAuth must not be touched at all
+	}{
+		{
+			name:          "nil_run_config_leaves_config_unchanged",
+			cfg:           &Config{OutgoingAuth: &OutgoingAuthConfig{Default: makeTokenExchangeStrategy("")}},
+			rc:            nil,
+			wantUnchanged: true,
+		},
+		{
+			name:          "nil_outgoing_auth_leaves_config_unchanged",
+			cfg:           &Config{OutgoingAuth: nil},
+			rc:            makeRunConfig("github"),
+			wantUnchanged: true,
+		},
+		{
+			name: "named_upstream_populates_default_and_backend",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"svc": makeTokenExchangeStrategy(""),
+					},
+				},
+			},
+			rc:           makeRunConfig("github"),
+			wantDefault:  "github",
+			wantBackends: map[string]string{"svc": "github"},
+		},
+		{
+			name: "unnamed_upstream_falls_back_to_default",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+				},
+			},
+			rc:          makeRunConfig(""),
+			wantDefault: authserver.DefaultUpstreamName,
+		},
+		{
+			name: "empty_upstreams_falls_back_to_default",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+				},
+			},
+			rc:          makeRunConfig(), // no upstreams
+			wantDefault: authserver.DefaultUpstreamName,
+		},
+		{
+			name: "first_upstream_used_when_multiple_configured",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy(""),
+				},
+			},
+			rc:          makeRunConfig("first", "second"),
+			wantDefault: "first",
+		},
+		{
+			name: "already_set_subject_provider_not_overridden",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeTokenExchangeStrategy("explicit"),
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"svc": makeTokenExchangeStrategy("also-explicit"),
+					},
+				},
+			},
+			rc:           makeRunConfig("github"),
+			wantDefault:  "explicit",
+			wantBackends: map[string]string{"svc": "also-explicit"},
+		},
+		{
+			name: "non_token_exchange_strategy_left_unchanged",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeHeaderInjection,
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:  "Authorization",
+							HeaderValue: "Bearer token",
+						},
+					},
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "", // no TokenExchange on this strategy
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Snapshot the outgoing auth pointer before calling so we can detect
+			// whether it was replaced (it must not be).
+			var beforeDefault *authtypes.BackendAuthStrategy
+			if tt.cfg.OutgoingAuth != nil {
+				beforeDefault = tt.cfg.OutgoingAuth.Default
+			}
+
+			InjectSubjectProviderNames(tt.cfg, tt.rc)
+
+			if tt.wantUnchanged {
+				if tt.cfg.OutgoingAuth != nil {
+					// Pointer must be the same object — nothing was replaced.
+					if tt.cfg.OutgoingAuth.Default != nil && tt.cfg.OutgoingAuth.Default.TokenExchange != nil {
+						if tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName != "" {
+							t.Errorf("SubjectProviderName should not have been set; got %q",
+								tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName)
+						}
+					}
+				}
+				return
+			}
+
+			// Verify Default strategy.
+			if tt.cfg.OutgoingAuth != nil && tt.cfg.OutgoingAuth.Default != nil {
+				if tt.cfg.OutgoingAuth.Default.TokenExchange != nil {
+					if tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName != tt.wantDefault {
+						t.Errorf("Default SubjectProviderName = %q, want %q",
+							tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName, tt.wantDefault)
+					}
+				}
+				// The pointer itself must not have changed — InjectSubjectProviderNames mutates in place.
+				if tt.cfg.OutgoingAuth.Default != beforeDefault {
+					t.Error("Default strategy pointer must not change: InjectSubjectProviderNames should mutate in place")
+				}
+			}
+
+			// Verify per-backend strategies.
+			for backendName, wantProvider := range tt.wantBackends {
+				strategy, ok := tt.cfg.OutgoingAuth.Backends[backendName]
+				if !ok {
+					t.Errorf("backend %q not found in OutgoingAuth.Backends", backendName)
+					continue
+				}
+				if strategy.TokenExchange == nil {
+					t.Errorf("backend %q: TokenExchange is nil", backendName)
+					continue
+				}
+				if strategy.TokenExchange.SubjectProviderName != wantProvider {
+					t.Errorf("backend %q SubjectProviderName = %q, want %q",
+						backendName, strategy.TokenExchange.SubjectProviderName, wantProvider)
+				}
+			}
+		})
+	}
+}

@@ -403,6 +403,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Auto-populate SubjectProviderName on any token_exchange strategy that
+	// omitted it when an embedded auth server is active.  Without this, the
+	// strategy silently falls back to identity.Token (the ToolHive JWT) as the
+	// RFC 8693 subject token, which the exchange endpoint rejects.
+	config.InjectSubjectProviderNames(cfg, authServerRC)
+
 	// Construct embedded authorization server if configured.
 	// Hard failure — if the auth server is configured but cannot be
 	// created, we must not silently fall back to unauthenticated mode.

@@ -20,8 +20,9 @@ const (
 	testRemoteURL       = "https://remote.example.com/mcp"
 )
 
-// newTestMCPRemoteProxy creates an MCPRemoteProxy with the required OIDCConfig inline field
-// and an optional OIDCConfigRef pointing to a shared MCPOIDCConfig.
+// newTestMCPRemoteProxy creates an MCPRemoteProxy with either an OIDCConfigRef pointing
+// to a shared MCPOIDCConfig (when oidcConfigRefName is non-empty) or a legacy inline
+// OIDCConfig. The two fields are mutually exclusive per CEL validation.
 func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mcpv1alpha1.MCPRemoteProxy {
 	proxy := &mcpv1alpha1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -32,14 +33,6 @@ func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mc
 			RemoteURL: testRemoteURL,
 			ProxyPort: 8080,
 			Transport: "streamable-http",
-			OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type: "inline",
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://auth.example.com",
-					Audience: "test-audience",
-					ClientID: "test-client",
-				},
-			},
 		},
 	}
 
@@ -48,6 +41,15 @@ func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mc
 			Name:     oidcConfigRefName,
 			Audience: "test-proxy-audience",
 			Scopes:   []string{"openid"},
+		}
+	} else {
+		proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
+			Type: "inline",
+			Inline: &mcpv1alpha1.InlineOIDCConfig{
+				Issuer:   "https://auth.example.com",
+				Audience: "test-audience",
+				ClientID: "test-client",
+			},
 		}
 	}
 
@@ -694,7 +696,16 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				Namespace: namespace,
 			}, updated)).Should(Succeed())
 
+			// Switch from OIDCConfigRef to inline OIDCConfig (mutually exclusive)
 			updated.Spec.OIDCConfigRef = nil
+			updated.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
+				Type: "inline",
+				Inline: &mcpv1alpha1.InlineOIDCConfig{
+					Issuer:   "https://auth.example.com",
+					Audience: "test-audience",
+					ClientID: "test-client",
+				},
+			}
 			Expect(k8sClient.Update(ctx, updated)).Should(Succeed())
 
 			// MCPOIDCConfig should no longer list MCPRemoteProxy in ReferencingWorkloads

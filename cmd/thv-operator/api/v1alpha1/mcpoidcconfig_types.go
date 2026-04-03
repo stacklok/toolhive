@@ -144,6 +144,13 @@ type InlineOIDCSharedConfig struct {
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
 }
 
+// Well-known WorkloadReference Kind values.
+const (
+	WorkloadKindMCPServer        = "MCPServer"
+	WorkloadKindVirtualMCPServer = "VirtualMCPServer"
+	WorkloadKindMCPRemoteProxy   = "MCPRemoteProxy"
+)
+
 // WorkloadReference identifies a workload that references a shared configuration resource.
 // Namespace is implicit — cross-namespace references are not supported.
 type WorkloadReference struct {

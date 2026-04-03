@@ -2132,7 +2132,7 @@ func (r *MCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	serverName string,
 ) error {
 	ref := mcpv1alpha1.WorkloadReference{
-		Kind: "MCPServer",
+		Kind: mcpv1alpha1.WorkloadKindMCPServer,
 		Name: serverName,
 	}
 

@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/dump"
@@ -70,6 +72,52 @@ func FindReferencingMCPServers(
 	}
 
 	return referencingServers, nil
+}
+
+// CompareWorkloadRefs compares two WorkloadReference values by Kind then Name.
+// Suitable for use with slices.SortFunc.
+func CompareWorkloadRefs(a, b mcpv1alpha1.WorkloadReference) int {
+	if a.Kind != b.Kind {
+		return strings.Compare(a.Kind, b.Kind)
+	}
+	return strings.Compare(a.Name, b.Name)
+}
+
+// SortWorkloadRefs sorts a WorkloadReference slice by Kind then Name for deterministic ordering.
+// This prevents unnecessary API server writes when the same set of workloads is discovered
+// in a different list order across reconcile runs.
+func SortWorkloadRefs(refs []mcpv1alpha1.WorkloadReference) {
+	slices.SortFunc(refs, CompareWorkloadRefs)
+}
+
+// WorkloadRefsEqual reports whether two WorkloadReference slices contain the same entries.
+// Both slices must already be sorted (use SortWorkloadRefs) for correct results.
+func WorkloadRefsEqual(a, b []mcpv1alpha1.WorkloadReference) bool {
+	return slices.EqualFunc(a, b, func(x, y mcpv1alpha1.WorkloadReference) bool {
+		return x.Kind == y.Kind && x.Name == y.Name
+	})
+}
+
+// FindWorkloadRefsFromMCPServers returns a sorted list of WorkloadReference for MCPServers
+// in the given namespace that reference a config identified by configName.
+// The refExtractor determines which spec field contains the config reference name.
+func FindWorkloadRefsFromMCPServers(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	configName string,
+	refExtractor func(*mcpv1alpha1.MCPServer) *string,
+) ([]mcpv1alpha1.WorkloadReference, error) {
+	servers, err := FindReferencingMCPServers(ctx, c, namespace, configName, refExtractor)
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(servers))
+	for _, server := range servers {
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
+	}
+	SortWorkloadRefs(refs)
+	return refs, nil
 }
 
 // GetToolConfigForMCPRemoteProxy fetches MCPToolConfig referenced by MCPRemoteProxy

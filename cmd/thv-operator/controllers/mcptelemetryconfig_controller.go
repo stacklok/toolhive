@@ -6,7 +6,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -116,7 +115,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check what changed
 	hashChanged := telemetryConfig.Status.ConfigHash != configHash
-	refsChanged := !workloadRefsEqual(telemetryConfig.Status.ReferencingWorkloads, referencingWorkloads)
+	refsChanged := !ctrlutil.WorkloadRefsEqual(telemetryConfig.Status.ReferencingWorkloads, referencingWorkloads)
 	needsUpdate := hashChanged || refsChanged || conditionChanged
 
 	if hashChanged {
@@ -180,7 +179,7 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 					continue
 				}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == "MCPServer" && ref.Name == server.Name {
+					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
 						requests = append(requests, reconcile.Request{NamespacedName: nn})
 						break
 					}
@@ -257,36 +256,11 @@ func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
 ) ([]mcpv1alpha1.WorkloadReference, error) {
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
-	if err := r.List(ctx, mcpServerList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	var refs []mcpv1alpha1.WorkloadReference
-	for _, server := range mcpServerList.Items {
-		if server.Spec.TelemetryConfigRef != nil &&
-			server.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
-			refs = append(refs, mcpv1alpha1.WorkloadReference{
-				Kind: "MCPServer",
-				Name: server.Name,
-			})
-		}
-	}
-	slices.SortFunc(refs, func(a, b mcpv1alpha1.WorkloadReference) int {
-		if a.Name < b.Name {
-			return -1
-		}
-		if a.Name > b.Name {
-			return 1
-		}
-		return 0
-	})
-	return refs, nil
-}
-
-// workloadRefsEqual compares two WorkloadReference slices for equality.
-func workloadRefsEqual(a, b []mcpv1alpha1.WorkloadReference) bool {
-	return slices.EqualFunc(a, b, func(x, y mcpv1alpha1.WorkloadReference) bool {
-		return x.Kind == y.Kind && x.Name == y.Name
-	})
+	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
+			if server.Spec.TelemetryConfigRef != nil {
+				return &server.Spec.TelemetryConfigRef.Name
+			}
+			return nil
+		})
 }

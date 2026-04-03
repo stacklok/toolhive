@@ -11,6 +11,8 @@ package container
 import (
 	// Import Docker runtime to register it
 	_ "github.com/stacklok/toolhive/pkg/container/docker"
+	// Import go-microvm microVM runtime to register it
+	_ "github.com/stacklok/toolhive/pkg/container/gomicrovm"
 	// Import Kubernetes runtime to register it
 	_ "github.com/stacklok/toolhive/pkg/container/kubernetes"
 )

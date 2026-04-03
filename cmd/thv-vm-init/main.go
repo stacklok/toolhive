@@ -1,0 +1,178 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build linux
+
+// thv-vm-init is the PID 1 init process for ToolHive go-microvm guest VMs.
+// It boots the guest (mounts, DHCP, SSH), reads the original OCI entrypoint
+// from /etc/thv-entrypoint.json, starts the MCP server as a child process,
+// and forwards termination signals.
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/stacklok/go-microvm/guest/boot"
+	microvmenv "github.com/stacklok/go-microvm/guest/env"
+	"github.com/stacklok/go-microvm/guest/reaper"
+)
+
+const shutdownTimeout = 5 * time.Second
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// PID 1 must reap orphaned children.
+	stopReaper := reaper.Start(logger)
+	defer stopReaper()
+
+	// Boot: essential mounts, DHCP networking, SSH server.
+	shutdown, err := boot.Run(logger,
+		boot.WithSSHKeysPath("/root/.ssh/authorized_keys"),
+		boot.WithEnvFilePath("/etc/environment"),
+	)
+	if err != nil {
+		logger.Error("boot failed", "error", err)
+		halt()
+		return
+	}
+
+	// Load the original OCI entrypoint that was captured by the
+	// InjectEntrypoint rootfs hook before WithInitOverride replaced it.
+	ep, err := loadEntrypoint(DefaultEntrypointPath)
+	if err != nil {
+		logger.Error("failed to load entrypoint", "error", err)
+		gracefulHalt(logger, shutdown)
+		return
+	}
+
+	// Build the child environment.  The layering order matches Docker's
+	// convention where runtime-injected vars override image defaults:
+	//   1. OCI image ENV (base defaults from ep.Env)
+	//   2. ToolHive runtime vars from /etc/environment (MCP_TRANSPORT,
+	//      MCP_PORT, API keys, egress proxy settings, etc.)
+	// Note: boot.Run() also loads /etc/environment for the SSH server, but
+	// does not expose the parsed env to us -- we load it separately here.
+	childEnv := ep.Env
+	if runtimeEnv, err := microvmenv.Load("/etc/environment"); err != nil {
+		logger.Warn("failed to load /etc/environment", "error", err)
+	} else {
+		childEnv = mergeEnv(childEnv, runtimeEnv)
+	}
+
+	// Build the child command.
+	cmd := exec.Command(ep.Cmd[0], ep.Cmd[1:]...) //nolint:gosec // cmd comes from trusted OCI config
+	cmd.Env = childEnv
+	if ep.WorkingDir != "" {
+		cmd.Dir = ep.WorkingDir
+	}
+
+	// Check if stdio relay mode is requested. When MCP_TRANSPORT=stdio and
+	// THV_STDIO_RELAY_PORT is set, the init process bridges the child's
+	// stdin/stdout over TCP so the host proxy can attach.
+	transport := getEnvValue(childEnv, "MCP_TRANSPORT")
+	relayPortStr := getEnvValue(childEnv, "THV_STDIO_RELAY_PORT")
+
+	if transport == "stdio" && relayPortStr != "" {
+		relayPort, parseErr := strconv.Atoi(relayPortStr)
+		if parseErr != nil {
+			logger.Error("invalid THV_STDIO_RELAY_PORT", "value", relayPortStr, "error", parseErr)
+			gracefulHalt(logger, shutdown)
+			return
+		}
+
+		// runStdioRelay starts the child, bridges TCP ↔ stdin/stdout, and
+		// blocks until the child exits.
+		if err := runStdioRelay(logger, relayPort, cmd); err != nil {
+			logChildExit(logger, err)
+		}
+		gracefulHalt(logger, shutdown)
+		return
+	}
+
+	// Default path: connect child stdout/stderr to console log.
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		logger.Error("failed to start MCP server", "error", err, "cmd", ep.Cmd)
+		gracefulHalt(logger, shutdown)
+		return
+	}
+	logger.Info("MCP server started", "pid", cmd.Process.Pid, "cmd", ep.Cmd)
+
+	// Forward SIGTERM/SIGINT to the child process.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		for received := range sig {
+			logger.Info("received signal, forwarding to child", "signal", received)
+			_ = cmd.Process.Signal(received)
+		}
+	}()
+
+	// Wait for the child to exit.
+	if err := cmd.Wait(); err != nil {
+		logChildExit(logger, err)
+	}
+
+	gracefulHalt(logger, shutdown)
+}
+
+// gracefulHalt shuts down the boot services with a timeout and then halts the VM.
+func gracefulHalt(logger *slog.Logger, shutdown func()) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		shutdown()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Info("shutdown complete")
+	case <-ctx.Done():
+		logger.Warn("shutdown timed out")
+	}
+
+	halt()
+}
+
+// halt powers off the VM. As PID 1 inside a VM, Reboot with POWER_OFF
+// is the clean way to stop — calling os.Exit() would cause a kernel panic.
+func halt() {
+	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
+}
+
+// getEnvValue extracts the value for a key from a []string environment slice
+// of "KEY=value" entries. Returns "" if not found.
+func getEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
+}
+
+// logChildExit logs the child process exit in a consistent way.
+func logChildExit(logger *slog.Logger, err error) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		logger.Info("MCP server exited", "code", exitErr.ExitCode())
+	} else {
+		logger.Error("error waiting for MCP server", "error", err)
+	}
+}

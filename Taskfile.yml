@@ -1,14 +1,96 @@
 version: '3'
 
+vars:
+  GOMICROVM_VERSION:
+    sh: go list -m github.com/stacklok/go-microvm | awk '{print $2}'
+
 includes:
   operator:
     taskfile: ./cmd/thv-operator/Taskfile.yml
     flatten: true
 
 tasks:
+  fetch-runtime:
+    desc: Download pre-built go-microvm runtime (go-microvm-runner) from GitHub Release
+    platforms: [linux, darwin]
+    status:
+      - test -f bin/go-microvm-runner
+    cmds:
+      - mkdir -p bin
+      - |
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "NOTE: gh CLI not found -- skipping go-microvm-runner download."
+          echo "  Install gh (https://cli.github.com) and run 'task fetch-runtime',"
+          echo "  or download go-microvm-runner manually from:"
+          echo "  https://github.com/stacklok/go-microvm/releases/tag/{{.GOMICROVM_VERSION}}"
+          exit 0
+        fi
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64)  arch="amd64" ;;
+          aarch64) arch="arm64" ;;
+        esac
+        archive="go-microvm-runtime-${os}-${arch}.tar.gz"
+        echo "Downloading go-microvm runtime {{.GOMICROVM_VERSION}} (${os}/${arch})..."
+        gh release download {{.GOMICROVM_VERSION}} \
+          --repo stacklok/go-microvm \
+          --dir bin/ \
+          --clobber \
+          --pattern "${archive}"
+        tar -xzf "bin/${archive}" -C bin/ --strip-components=1
+        rm -f "bin/${archive}"
+        echo "Installed bin/go-microvm-runner"
+
+  fetch-runtime-embed:
+    desc: Download go-microvm runtime into runtimebin for embedding
+    platforms: [linux]
+    status:
+      - test -f pkg/container/gomicrovm/runtimebin/go-microvm-runner
+    cmds:
+      - mkdir -p pkg/container/gomicrovm/runtimebin
+      - |
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "NOTE: gh CLI not found -- skipping embedded runtime download."
+          echo "  Install gh (https://cli.github.com) and run 'task fetch-runtime-embed',"
+          echo "  or download go-microvm-runner manually from:"
+          echo "  https://github.com/stacklok/go-microvm/releases/tag/{{.GOMICROVM_VERSION}}"
+          exit 0
+        fi
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64)  arch="amd64" ;;
+          aarch64) arch="arm64" ;;
+        esac
+        archive="go-microvm-runtime-${os}-${arch}.tar.gz"
+        echo "Downloading go-microvm runtime {{.GOMICROVM_VERSION}} (${os}/${arch}) for embedding..."
+        gh release download {{.GOMICROVM_VERSION}} \
+          --repo stacklok/go-microvm \
+          --dir pkg/container/gomicrovm/runtimebin/ \
+          --clobber \
+          --pattern "${archive}"
+        tar -xzf "pkg/container/gomicrovm/runtimebin/${archive}" -C pkg/container/gomicrovm/runtimebin/ --strip-components=1
+        rm -f "pkg/container/gomicrovm/runtimebin/${archive}"
+        echo "Installed runtime binaries for embedding"
+
+  build-embed:
+    desc: Build thv with embedded go-microvm runtime
+    deps: [gen, build-vm-init, fetch-runtime-embed]
+    platforms: [linux]
+    vars:
+      VERSION:
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+    cmds:
+      - mkdir -p bin
+      - go build -tags embed_runtime -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}} -X github.com/stacklok/toolhive/pkg/container/gomicrovm/runtimebin.Version={{.GOMICROVM_VERSION}}" -o bin/thv ./cmd/thv
+
   docs:
     desc: Regenerate the docs
-    deps: [swagger-install, helm-docs]
+    deps: [swagger-install, helm-docs, build-vm-init]
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
@@ -60,6 +142,7 @@ tasks:
 
   lint:
     desc: Run linting tools
+    deps: [build-vm-init]
     cmds:
       - golangci-lint run --allow-parallel-runners ./...
       - go vet ./...
@@ -93,7 +176,7 @@ tasks:
 
   test:
     desc: Run unit tests (excluding e2e tests)
-    deps: [gen]
+    deps: [gen, build-vm-init]
     cmds:
       - task: test-unixlike
         platforms: [linux, darwin]
@@ -145,6 +228,7 @@ tasks:
 
   test-coverage:
     desc: Run unit tests with coverage analysis (excluding e2e tests)
+    deps: [build-vm-init]
     cmds:
       - task: test-coverage-unixlike
         platforms: [linux, darwin]
@@ -206,9 +290,23 @@ tasks:
     desc: Run all tests (unit, integration, and e2e)
     deps: [test, test-integration, test-e2e]
 
+  build-vm-init:
+    desc: Cross-compile the thv-vm-init guest binary for Linux
+    sources:
+      - cmd/thv-vm-init/**/*.go
+    generates:
+      - pkg/container/gomicrovm/initbin/thv-vm-init
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+      # GOARCH is intentionally not set — it inherits the host architecture.
+      # libkrun runs guest VMs with the same arch as the host (no cross-arch).
+    cmds:
+      - go build -ldflags "-s -w" -o pkg/container/gomicrovm/initbin/thv-vm-init ./cmd/thv-vm-init
+
   build:
     desc: Build the binary
-    deps: [gen]
+    deps: [gen, build-vm-init, fetch-runtime]
     vars:
       VERSION:
         sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
@@ -228,6 +326,7 @@ tasks:
 
   install:
     desc: Install the thv binary to GOPATH/bin
+    deps: [build-vm-init, fetch-runtime]
     vars:
       VERSION:
         sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
@@ -236,6 +335,13 @@ tasks:
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
     cmds:
       - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
+      - cmd: |
+          if [ -f bin/go-microvm-runner ]; then
+            gobin="$(go env GOPATH)/bin"
+            cp bin/go-microvm-runner "$gobin/go-microvm-runner"
+            echo "Installed go-microvm-runner to $gobin/"
+          fi
+        platforms: [linux, darwin]
 
   build-vmcp:
     desc: Build the vmcp binary

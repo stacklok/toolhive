@@ -15,6 +15,13 @@ jobs:
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version-file: go.mod
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.44.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build vm-init binary for embedding
+        run: task build-vm-init
       - name: Install swag
         run: go install github.com/swaggo/swag/v2/cmd/swag@latest
       - run: ./cmd/help/verify.sh

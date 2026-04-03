@@ -36,6 +36,15 @@ jobs:
             ${{ runner.os }}-go-build-lint-
             ${{ runner.os }}-go-build-
 
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.44.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build vm-init binary for embedding
+        run: task build-vm-init
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:

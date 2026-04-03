@@ -57,6 +57,9 @@ type HTTPTransport struct {
 	// Remote MCP server support
 	remoteURL string
 
+	// stateless indicates the remote server is POST-only (no SSE/GET support)
+	stateless bool
+
 	// tokenSource is the OAuth token source for remote authentication
 	tokenSource oauth2.TokenSource
 
@@ -145,6 +148,11 @@ func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 // SetOnHealthCheckFailed sets the callback for health check failures
 func (t *HTTPTransport) SetOnHealthCheckFailed(callback types.HealthCheckFailedCallback) {
 	t.onHealthCheckFailed = callback
+}
+
+// SetStateless configures the transport for a stateless remote server.
+func (t *HTTPTransport) SetStateless(stateless bool) {
+	t.stateless = stateless
 }
 
 // SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses
@@ -314,11 +322,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	enableHealthCheck := shouldEnableHealthCheck(isRemote)
 
 	// Build proxy options
-	var proxyOptions []transparent.Option
-	if remoteBasePath != "" {
-		proxyOptions = append(proxyOptions, transparent.WithRemoteBasePath(remoteBasePath))
-	}
-	proxyOptions = append(proxyOptions, transparent.WithRemoteRawQuery(remoteRawQuery))
+	proxyOptions := t.buildProxyOptions(remoteBasePath, remoteRawQuery)
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxyWithOptions(
@@ -409,6 +413,19 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// buildProxyOptions constructs the transparent proxy options for this transport.
+func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string) []transparent.Option {
+	var opts []transparent.Option
+	if remoteBasePath != "" {
+		opts = append(opts, transparent.WithRemoteBasePath(remoteBasePath))
+	}
+	opts = append(opts, transparent.WithRemoteRawQuery(remoteRawQuery))
+	if t.stateless {
+		opts = append(opts, transparent.WithStateless())
+	}
+	return opts
 }
 
 // handleContainerExit handles container exit events.

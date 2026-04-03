@@ -171,6 +171,12 @@ type RunConfig struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
+	// Stateless indicates the remote server only supports POST (no SSE/GET).
+	// When true, the proxy returns 405 for incoming GET requests and uses a
+	// POST-based health check instead of the default GET probe.
+	// Only meaningful when RemoteURL is set.
+	Stateless bool `json:"stateless,omitempty" yaml:"stateless,omitempty"`
+
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).
 	// For direct transports (sse/streamable-http), this matches the transport type.

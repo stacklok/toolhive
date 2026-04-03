@@ -47,7 +47,7 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
 		require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -105,7 +105,7 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
 		require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -163,7 +163,7 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 		},
 	}
 
-	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil)
+	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil, nil)
 	require.NoError(t, err, "middleware creation should succeed")
 	require.NotNil(t, authMw, "auth middleware should not be nil")
 	require.NotNil(t, authzMw, "authz middleware should not be nil")

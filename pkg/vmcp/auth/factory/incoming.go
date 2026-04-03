@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -51,6 +52,7 @@ func NewIncomingAuthMiddleware(
 	cfg *config.IncomingAuthConfig,
 	passThroughTools map[string]struct{},
 	upstreamReader upstreamtoken.TokenReader,
+	keyProvider keys.PublicKeyProvider,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -65,7 +67,7 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader, keyProvider)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -151,6 +153,7 @@ func newOIDCAuthMiddleware(
 	ctx context.Context,
 	oidcCfg *config.OIDCConfig,
 	reader upstreamtoken.TokenReader,
+	keyProvider keys.PublicKeyProvider,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -175,9 +178,13 @@ func newOIDCAuthMiddleware(
 		Scopes:            oidcCfg.Scopes,
 	}
 
-	// Wire the upstream token reader so the JWT validator can enrich Identity
-	// with upstream provider tokens (needed for upstream_inject auth strategy).
+	// Wire optional dependencies from the embedded auth server so the JWT
+	// validator can (a) resolve JWKS keys in-process instead of self-referential
+	// HTTP calls, and (b) enrich Identity with upstream provider tokens.
 	var opts []auth.TokenValidatorOption
+	if keyProvider != nil {
+		opts = append(opts, auth.WithKeyProvider(keyProvider))
+	}
 	if reader != nil {
 		opts = append(opts, auth.WithUpstreamTokenReader(reader))
 	}

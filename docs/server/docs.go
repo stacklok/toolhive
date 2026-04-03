@@ -2016,6 +2016,9 @@ const docTemplate = `{
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
                     },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
+                    },
                     "secrets": {
                         "description": "Secret parameters to inject",
                         "items": {
@@ -2616,6 +2619,9 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
                     "secrets": {
                         "description": "Secret parameters to inject",

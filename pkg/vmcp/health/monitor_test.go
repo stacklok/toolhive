@@ -895,6 +895,111 @@ func TestMonitor_UpdateBackends(t *testing.T) {
 	assert.Equal(t, 1, summary.Healthy, "backend-2 should be healthy")
 }
 
+func TestBackendChanged(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		old      vmcp.Backend
+		new      vmcp.Backend
+		expected bool
+	}{
+		{
+			name:     "same URL and transport",
+			old:      vmcp.Backend{BaseURL: "http://svc:8080", TransportType: "sse"},
+			new:      vmcp.Backend{BaseURL: "http://svc:8080", TransportType: "sse"},
+			expected: false,
+		},
+		{
+			name:     "different URL",
+			old:      vmcp.Backend{BaseURL: "http://old-svc:8080", TransportType: "sse"},
+			new:      vmcp.Backend{BaseURL: "http://new-svc:8080", TransportType: "sse"},
+			expected: true,
+		},
+		{
+			name:     "different transport",
+			old:      vmcp.Backend{BaseURL: "http://svc:8080", TransportType: "sse"},
+			new:      vmcp.Backend{BaseURL: "http://svc:8080", TransportType: "streamable-http"},
+			expected: true,
+		},
+		{
+			name:     "both different",
+			old:      vmcp.Backend{BaseURL: "http://old-svc:8080", TransportType: "sse"},
+			new:      vmcp.Backend{BaseURL: "http://new-svc:9090", TransportType: "streamable-http"},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := backendChanged(tt.old, tt.new)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestMonitor_UpdateBackends_PropertyChange(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockBackendClient(ctrl)
+
+	// Start with one backend at an old URL
+	initialBackends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://old-url:8080", TransportType: "sse"},
+	}
+
+	config := MonitorConfig{
+		CheckInterval:      50 * time.Millisecond,
+		UnhealthyThreshold: 1,
+		Timeout:            10 * time.Millisecond,
+	}
+
+	// Mock health checks for all backends (old and new URLs)
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(&vmcp.CapabilityList{}, nil).
+		AnyTimes()
+
+	monitor, err := NewMonitor(mockClient, initialBackends, config)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = monitor.Start(ctx)
+	require.NoError(t, err)
+	defer func() {
+		_ = monitor.Stop()
+	}()
+
+	// Wait for initial backend to become healthy
+	require.Eventually(t, func() bool {
+		return monitor.IsBackendHealthy("backend-1")
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend-1 should become healthy")
+
+	// Update the same backend with a new URL (simulating operator reconcile
+	// setting Status.URL after the Service is created)
+	updatedBackends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://new-url:8080", TransportType: "sse"},
+	}
+
+	monitor.UpdateBackends(updatedBackends)
+
+	// The backend should still be monitored and become healthy at the new URL.
+	// The old goroutine is cancelled and a new one started with the updated properties.
+	require.Eventually(t, func() bool {
+		return monitor.IsBackendHealthy("backend-1")
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend-1 should remain healthy after URL change")
+
+	// Verify the backend is the only one being monitored
+	summary := monitor.GetHealthSummary()
+	assert.Equal(t, 1, summary.Total, "should still have exactly 1 backend")
+	assert.Equal(t, 1, summary.Healthy, "backend should be healthy")
+}
+
 func TestMonitor_CircuitBreakerDisabled(t *testing.T) {
 	t.Parallel()
 

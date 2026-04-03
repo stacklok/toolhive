@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -589,18 +590,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Create an upstream token reader from the embedded auth server so that
-	// the OIDC middleware can enrich Identity with upstream provider tokens.
-	// This is required for the upstream_inject outgoing auth strategy.
+	// Extract dependencies from the embedded auth server so the OIDC middleware
+	// can (a) resolve JWKS keys in-process instead of self-referential HTTP
+	// calls, and (b) enrich Identity with upstream provider tokens.
 	var upstreamReader upstreamtoken.TokenReader
+	var keyProvider keys.PublicKeyProvider
 	if embeddedAuthServer != nil {
 		stor := embeddedAuthServer.IDPTokenStorage()
 		refresher := embeddedAuthServer.UpstreamTokenRefresher()
 		upstreamReader = upstreamtoken.NewInProcessService(stor, refresher)
+		keyProvider = embeddedAuthServer.KeyProvider()
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth, passThroughTools, upstreamReader)
+		factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth, passThroughTools, upstreamReader, keyProvider)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}

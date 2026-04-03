@@ -68,7 +68,24 @@ jobs:
           #   Indirect dependency via mcp-go, invopop/jsonschema, wk8/go-ordered-map.
           #   The vulnerability is in the Delete function which is not called by ToolHive
           #   or any of its dependencies. No fixed version exists yet (all versions affected).
-          IGNORED_VULNS="GO-2025-4192 GO-2026-4514"
+          # GO-2026-4883: docker/docker plugin privilege validation off-by-one (CVE-2026-33997)
+          #   CVSS 6.8 (Moderate). Affects Docker Engine's plugin installation privilege
+          #   comparison logic, allowing a malicious plugin to receive privileges the user
+          #   did not approve. ToolHive is a pure Docker API client -- it never installs,
+          #   enables, or manages Docker plugins. No plugin-related APIs are called anywhere
+          #   in the codebase. Fixed in Docker Engine 29.3.1 / moby/moby/v2 v2.0.0-beta.8,
+          #   but no fix exists for the github.com/docker/docker v28.x module path we use.
+          # GO-2026-4887: docker/docker AuthZ plugin bypass via oversized body (CVE-2026-34040)
+          #   CVSS 8.8 (High). Incomplete fix for CVE-2024-41110. Allows bypassing AuthZ
+          #   plugins by sending requests with oversized bodies so the daemon forwards the
+          #   request without the body, causing plugins to approve requests they should deny.
+          #   Exploitable only when the Docker *daemon* is configured with AuthZ plugins and
+          #   an attacker has local API access. ToolHive is a client-only consumer of the
+          #   Docker API via the standard Go SDK -- it does not run a daemon, does not expose
+          #   Docker API endpoints, and does not implement any AuthZ plugin middleware.
+          #   Fixed in Docker Engine 29.3.1 / moby/moby/v2 v2.0.0-beta.8, but no fix
+          #   exists for the github.com/docker/docker v28.x module path we use.
+          IGNORED_VULNS="GO-2025-4192 GO-2026-4514 GO-2026-4883 GO-2026-4887"
 
           # Show the raw output for debugging
           echo "::group::govulncheck raw output"

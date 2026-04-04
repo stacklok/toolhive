@@ -1786,7 +1786,7 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 		}, nil
 	}
 
-	// For type="external_auth_config_ref", fetch and convert the referenced config
+	// For type="externalAuthConfigRef", fetch and convert the referenced config
 	if crdConfig.ExternalAuthConfigRef != nil {
 		// Fetch the MCPExternalAuthConfig and convert it
 		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(

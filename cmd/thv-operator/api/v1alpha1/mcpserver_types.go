@@ -71,12 +71,18 @@ const (
 const (
 	// ConditionTypeExternalAuthConfigValidated indicates whether the ExternalAuthConfig is valid
 	ConditionTypeExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+
+	// ConditionTypeWebhookConfigValidated indicates whether the WebhookConfig is valid
+	ConditionTypeWebhookConfigValidated = "WebhookConfigValidated"
 )
 
 const (
 	// ConditionReasonExternalAuthConfigMultiUpstream indicates the ExternalAuthConfig has multiple upstreams,
 	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonWebhookConfigInvalid indicates the referenced webhook config is invalid or missing
+	ConditionReasonWebhookConfigInvalid = "WebhookConfigInvalid"
 )
 
 // ConditionStdioReplicaCapped indicates spec.replicas was capped at 1 for stdio transport.
@@ -221,6 +227,11 @@ type MCPServerSpec struct {
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
+	// WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.
+	// The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer.
+	// +optional
+	WebhookConfigRef *WebhookConfigRef `json:"webhookConfigRef,omitempty"`
 
 	// Telemetry defines observability configuration for the MCP server
 	// +optional
@@ -734,6 +745,14 @@ type ExternalAuthConfigRef struct {
 	Name string `json:"name"`
 }
 
+// WebhookConfigRef defines a reference to a MCPWebhookConfig resource.
+// The referenced MCPWebhookConfig must be in the same namespace as the MCPServer.
+type WebhookConfigRef struct {
+	// Name is the name of the MCPWebhookConfig resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
 // ToolConfigRef defines a reference to a MCPToolConfig resource.
 // The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 type ToolConfigRef struct {
@@ -859,6 +878,10 @@ type MCPServerStatus struct {
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
+	// WebhookConfigHash is the hash of the referenced MCPWebhookConfig spec
+	// +optional
+	WebhookConfigHash string `json:"webhookConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional

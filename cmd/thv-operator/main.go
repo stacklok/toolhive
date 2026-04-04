@@ -258,6 +258,14 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create controller MCPExternalAuthConfig: %w", err)
 	}
 
+	// Set up MCPWebhookConfig controller
+	if err := (&controllers.MCPWebhookConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPWebhookConfig: %w", err)
+	}
+
 	// Set up MCPRemoteProxy controller
 	if err := (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),

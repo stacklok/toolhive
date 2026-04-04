@@ -44,6 +44,7 @@ var crdFeatureFlags = map[string][]string{
 	"virtualmcpservers":                  {"virtualMcp"},
 	"virtualmcpcompositetooldefinitions": {"virtualMcp"},
 	"mcpexternalauthconfigs":             {"server", "virtualMcp"},
+	"mcpwebhookconfigs":                  {"server"},
 }
 
 func main() {

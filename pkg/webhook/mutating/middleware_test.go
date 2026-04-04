@@ -157,7 +157,8 @@ func TestMutatingMiddleware_AllowedFalse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+	cfg := makeConfig(server.URL, webhook.FailurePolicyIgnore)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
 
 	var nextCalled bool
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
@@ -166,7 +167,8 @@ func TestMutatingMiddleware_AllowedFalse(t *testing.T) {
 	mw(nextHandler).ServeHTTP(rr, makeMCPRequest(t, []byte(`{"jsonrpc":"2.0","id":1}`)))
 
 	assert.False(t, nextCalled)
-	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Request denied by webhook policy")
 }
 
 func TestMutatingMiddleware_WebhookError_FailPolicy(t *testing.T) {
@@ -576,7 +578,8 @@ func TestMutatingMiddleware_StringRequestID(t *testing.T) {
 	rr := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})).ServeHTTP(rr, req)
 
-	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Request denied by webhook policy")
 
 	// Confirm JSON-RPC error has the string ID.
 	var errResp map[string]interface{}

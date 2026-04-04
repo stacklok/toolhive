@@ -11,7 +11,7 @@ import (
 	jsonpatch "github.com/evanphx/json-patch/v5"
 )
 
-// patchTypJSONPatch is the patch_type value for RFC 6902 JSON Patch.
+// patchTypeJSONPatch is the patch_type value for RFC 6902 JSON Patch.
 const patchTypeJSONPatch = "json_patch"
 
 // mcpRequestPathPrefix is the required prefix for all patch paths.
@@ -61,6 +61,8 @@ func ValidatePatch(patch []JSONPatchOp) error {
 // IsPatchScopedToMCPRequest returns true if all patch operations target paths
 // within the mcp_request container. This prevents webhooks from accidentally
 // or maliciously modifying principal, context, or other immutable envelope fields.
+// The root "/mcp_request" path is intentionally rejected so webhooks must make
+// granular changes beneath the MCP request instead of replacing it wholesale.
 func IsPatchScopedToMCPRequest(patch []JSONPatchOp) bool {
 	for _, op := range patch {
 		if !strings.HasPrefix(op.Path, mcpRequestPathPrefix) {

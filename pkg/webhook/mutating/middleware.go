@@ -180,9 +180,11 @@ func executeSingleMutation(
 		return nil, err
 	}
 
+	// Explicit denial from a mutating webhook is always honored, regardless of failure policy.
+	// This differs from operational errors (network, timeout) where the failure policy applies.
 	if !resp.Allowed {
 		slog.Info("Mutating webhook denied request", "webhook", whName, "reason", resp.Reason)
-		sendErrorResponse(w, http.StatusInternalServerError, "Request mutation denied by webhook", msgID)
+		sendErrorResponse(w, http.StatusForbidden, "Request denied by webhook policy", msgID)
 		return nil, fmt.Errorf("webhook denied request")
 	}
 
@@ -199,12 +201,11 @@ func executeSingleMutation(
 		return nil, fmt.Errorf("unsupported patch type")
 	}
 
-	return applyMutationPatch(resp, whReq, whName, exec.config.FailurePolicy, currentBody, msgID, w)
+	return applyMutationPatch(resp, whName, exec.config.FailurePolicy, currentBody, msgID, w)
 }
 
 func applyMutationPatch(
 	resp *webhook.MutatingResponse,
-	whReq *webhook.Request,
 	whName string,
 	failurePolicy webhook.FailurePolicy,
 	currentBody []byte,
@@ -239,7 +240,11 @@ func applyMutationPatch(
 		return nil, fmt.Errorf("patch scope violation")
 	}
 
-	envelopeJSON, err := json.Marshal(whReq)
+	envelopeJSON, err := json.Marshal(struct {
+		MCPRequest json.RawMessage `json:"mcp_request"`
+	}{
+		MCPRequest: json.RawMessage(currentBody),
+	})
 	if err != nil {
 		slog.Error("Failed to marshal webhook request envelope", "webhook", whName, "error", err)
 		if failurePolicy == webhook.FailurePolicyIgnore {

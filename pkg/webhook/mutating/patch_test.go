@@ -127,6 +127,11 @@ func TestIsPatchScopedToMCPRequest(t *testing.T) {
 			want: false,
 		},
 		{
+			name:  "reject exact mcp_request root replacement",
+			patch: []JSONPatchOp{{Op: "replace", Path: "/mcp_request", Value: json.RawMessage(`{"method":"tools/call"}`)}},
+			want:  false,
+		},
+		{
 			name:  "copy from outside mcp_request",
 			patch: []JSONPatchOp{{Op: "copy", Path: "/mcp_request/params/dest", From: "/principal/email"}},
 			want:  false,

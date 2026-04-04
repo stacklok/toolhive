@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
@@ -19,9 +20,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
+	"github.com/stacklok/toolhive/pkg/webhook/mutating"
+	"github.com/stacklok/toolhive/pkg/webhook/validating"
 )
 
 // createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
@@ -735,4 +741,41 @@ func TestAddAuthzMiddleware_EmptyPath(t *testing.T) {
 	result, err := addAuthzMiddleware(nil, "", nil)
 	require.NoError(t, err)
 	assert.Empty(t, result, "empty path should produce no middleware")
+}
+
+func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
+	t.Parallel()
+
+	config := NewRunConfig()
+	config.Name = "test-server"
+	config.Transport = types.TransportTypeStdio
+
+	// Setup options to hit all branches
+	config.MutatingWebhooks = []webhook.Config{{Name: "m-hook", URL: "http://example.com/m"}}
+	config.ValidatingWebhooks = []webhook.Config{{Name: "v-hook", URL: "http://example.com/v"}}
+
+	config.ToolsFilter = []string{"tool1"}
+	config.ToolsOverride = map[string]ToolOverride{"tool1": {Name: "newtool1"}}
+
+	config.TelemetryConfig = &telemetry.Config{}
+	config.AuthzConfig = &authz.Config{}
+
+	config.AuditConfig = &audit.Config{Component: "test-component"}
+
+	err := PopulateMiddlewareConfigs(config)
+	require.NoError(t, err)
+
+	// Ensure they are populated
+	typeIndex := make(map[string]bool)
+	for _, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = true
+	}
+
+	assert.True(t, typeIndex[mutating.MiddlewareType])
+	assert.True(t, typeIndex[validating.MiddlewareType])
+	assert.True(t, typeIndex[mcp.ToolFilterMiddlewareType])
+	assert.True(t, typeIndex[mcp.ToolCallFilterMiddlewareType])
+	assert.True(t, typeIndex[telemetry.MiddlewareType])
+	assert.True(t, typeIndex[authz.MiddlewareType])
+	assert.True(t, typeIndex[audit.MiddlewareType])
 }

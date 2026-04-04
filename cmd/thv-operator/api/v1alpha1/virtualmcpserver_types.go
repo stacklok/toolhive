@@ -162,12 +162,12 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	// Only used when Type is "external_auth_config_ref"
+	// Only used when Type is "externalAuthConfigRef"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 }
@@ -341,7 +341,7 @@ const (
 	BackendAuthTypeDiscovered = "discovered"
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
+	BackendAuthTypeExternalAuthConfigRef = "externalAuthConfigRef"
 )
 
 // Workflow step types
@@ -498,7 +498,7 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 	case BackendAuthTypeExternalAuthConfigRef:
 		if auth.ExternalAuthConfigRef == nil {
 			return fmt.Errorf(
-				"spec.outgoingAuth.backends[%s].externalAuthConfigRef is required when type is external_auth_config_ref",
+				"spec.outgoingAuth.backends[%s].externalAuthConfigRef is required when type is externalAuthConfigRef",
 				backendName)
 		}
 		if auth.ExternalAuthConfigRef.Name == "" {
@@ -510,7 +510,7 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 
 	default:
 		return fmt.Errorf(
-			"spec.outgoingAuth.backends[%s].type must be one of: discovered, external_auth_config_ref",
+			"spec.outgoingAuth.backends[%s].type must be one of: discovered, externalAuthConfigRef",
 			backendName)
 	}
 

@@ -751,7 +751,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Default: &mcpv1alpha1.BackendAuthConfig{
-								Type: "external_auth_config_ref",
+								Type: "externalAuthConfigRef",
 								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 									Name: "test-auth",
 								},
@@ -781,7 +781,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 								"backend1": {
-									Type: "external_auth_config_ref",
+									Type: "externalAuthConfigRef",
 									ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 										Name: "test-auth",
 									},
@@ -831,7 +831,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Default: &mcpv1alpha1.BackendAuthConfig{
-								Type: "external_auth_config_ref",
+								Type: "externalAuthConfigRef",
 								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 									Name: "test-auth",
 								},
@@ -1406,7 +1406,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Default: &mcpv1alpha1.BackendAuthConfig{
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: "test-auth",
 							},
@@ -1424,7 +1424,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 							"backend1": {
-								Type: "external_auth_config_ref",
+								Type: "externalAuthConfigRef",
 								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 									Name: "test-auth",
 								},
@@ -1460,7 +1460,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Default: &mcpv1alpha1.BackendAuthConfig{
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: "other-auth",
 							},
@@ -1478,13 +1478,13 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 							"backend1": {
-								Type: "external_auth_config_ref",
+								Type: "externalAuthConfigRef",
 								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 									Name: "other-auth",
 								},
 							},
 							"backend2": {
-								Type: "external_auth_config_ref",
+								Type: "externalAuthConfigRef",
 								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 									Name: "test-auth",
 								},

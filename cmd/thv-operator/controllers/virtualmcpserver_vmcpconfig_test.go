@@ -196,7 +196,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 					Name: "auth-config",
 				},
 			},
-			// For external_auth_config_ref, the type comes from the referenced MCPExternalAuthConfig
+			// For externalAuthConfigRef, the type comes from the referenced MCPExternalAuthConfig
 			expectedType: "unauthenticated",
 		},
 	}
@@ -219,7 +219,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				},
 			}
 
-			// For external_auth_config_ref test, create the referenced MCPExternalAuthConfig
+			// For externalAuthConfigRef test, create the referenced MCPExternalAuthConfig
 			var converter *vmcpconfigconv.Converter
 			if tt.authConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
 				// Create a fake MCPExternalAuthConfig
@@ -259,7 +259,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 
 			// Note: HeaderInjection and TokenExchange are nil because the CRD's
 			// BackendAuthConfig only stores type and reference information.
-			// For external_auth_config_ref, the actual auth config is resolved
+			// For externalAuthConfigRef, the actual auth config is resolved
 			// at runtime from the referenced MCPExternalAuthConfig resource.
 			assert.Nil(t, strategy.HeaderInjection)
 			assert.Nil(t, strategy.TokenExchange)

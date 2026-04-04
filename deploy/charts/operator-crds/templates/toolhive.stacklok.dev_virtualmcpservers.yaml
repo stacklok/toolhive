@@ -2139,7 +2139,7 @@ spec:
                         externalAuthConfigRef:
                           description: |-
                             ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                            Only used when Type is "external_auth_config_ref"
+                            Only used when Type is "externalAuthConfigRef"
                           properties:
                             name:
                               description: Name is the name of the MCPExternalAuthConfig
@@ -2152,7 +2152,7 @@ spec:
                           description: Type defines the authentication type
                           enum:
                           - discovered
-                          - external_auth_config_ref
+                          - externalAuthConfigRef
                           type: string
                       required:
                       - type
@@ -2168,7 +2168,7 @@ spec:
                       externalAuthConfigRef:
                         description: |-
                           ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                          Only used when Type is "external_auth_config_ref"
+                          Only used when Type is "externalAuthConfigRef"
                         properties:
                           name:
                             description: Name is the name of the MCPExternalAuthConfig
@@ -2181,7 +2181,7 @@ spec:
                         description: Type defines the authentication type
                         enum:
                         - discovered
-                        - external_auth_config_ref
+                        - externalAuthConfigRef
                         type: string
                     required:
                     - type

@@ -191,6 +191,8 @@ type DiscoveredBackend = vmcptypes.DiscoveredBackend
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 

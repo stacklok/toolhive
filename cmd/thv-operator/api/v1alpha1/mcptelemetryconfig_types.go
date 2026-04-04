@@ -98,6 +98,8 @@ type MCPTelemetryConfigSpec struct {
 // MCPTelemetryConfigStatus defines the observed state of MCPTelemetryConfig
 type MCPTelemetryConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPTelemetryConfig's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 

@@ -264,6 +264,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               configHash:
                 description: ConfigHash is a hash of the current configuration for
                   change detection

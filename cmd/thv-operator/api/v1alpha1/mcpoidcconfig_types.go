@@ -168,6 +168,8 @@ type WorkloadReference struct {
 // MCPOIDCConfigStatus defines the observed state of MCPOIDCConfig
 type MCPOIDCConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPOIDCConfig's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 

@@ -42,6 +42,8 @@ type MCPGroupStatus struct {
 	RemoteProxyCount int `json:"remoteProxyCount,omitempty"`
 
 	// Conditions represent observations
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

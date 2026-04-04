@@ -27,11 +27,11 @@ type MCPGroupStatus struct {
 
 	// Servers lists MCPServer names in this group
 	// +optional
-	Servers []string `json:"servers"`
+	Servers []string `json:"servers,omitempty"`
 
 	// ServerCount is the number of MCPServers
 	// +optional
-	ServerCount int `json:"serverCount"`
+	ServerCount int `json:"serverCount,omitempty"`
 
 	// RemoteProxies lists MCPRemoteProxy names in this group
 	// +optional

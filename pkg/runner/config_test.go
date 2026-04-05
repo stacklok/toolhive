@@ -829,7 +829,8 @@ func TestRunConfigBuilder(t *testing.T) {
 	}
 	host := localhostStr
 	debug := true
-	volumes := []string{"/host:/container"}
+	hostDir := t.TempDir()
+	volumes := []string{hostDir + ":/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "" // Empty to skip loading the authorization configuration
 	permissionProfile := permissions.ProfileNone

@@ -1385,9 +1385,12 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
+	hostReadDir := t.TempDir()
+	hostWriteDir := t.TempDir()
+
 	volumes := []string{
-		"/host/read:/container/read:ro",
-		"/host/write:/container/write",
+		hostReadDir + ":/container/read:ro",
+		hostWriteDir + ":/container/write",
 	}
 
 	config, err := NewRunConfigBuilder(context.Background(), nil, nil, validator,

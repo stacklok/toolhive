@@ -243,6 +243,12 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
+	// Create real temp directories for volume source paths
+	hostDir := t.TempDir()
+	hostDir1 := t.TempDir()
+	hostDir2 := t.TempDir()
+	hostDir3 := t.TempDir()
+
 	testCases := []struct {
 		name                string
 		builderOptions      []RunConfigBuilderOption
@@ -262,7 +268,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Volumes without permission profile but with profile name",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{hostDir + ":/container"}),
 				WithPermissionProfileNameOrPath(permissions.ProfileNone),
 			},
 			expectError:         false,
@@ -272,7 +278,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-only volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container:ro"}),
+				WithVolumes([]string{hostDir + ":/container:ro"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -282,7 +288,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-write volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{hostDir + ":/container"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -293,9 +299,9 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			name: "Multiple volumes with existing profile",
 			builderOptions: []RunConfigBuilderOption{
 				WithVolumes([]string{
-					"/host1:/container1:ro",
-					"/host2:/container2",
-					"/host3:/container3:ro",
+					hostDir1 + ":/container1:ro",
+					hostDir2 + ":/container2",
+					hostDir3 + ":/container3:ro",
 				}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},

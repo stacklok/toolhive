@@ -22,6 +22,11 @@ func RenderClientStatusTable(clientStatuses []client.ClientAppStatus) error {
 		return nil
 	}
 
+	// Sort clients alphabetically by name
+	sort.Slice(clientStatuses, func(i, j int) bool {
+		return clientStatuses[i].ClientType < clientStatuses[j].ClientType
+	})
+
 	table := tablewriter.NewWriter(os.Stdout)
 	table.Options(
 		tablewriter.WithHeader([]string{"Client Type", "Installed", "Registered"}),

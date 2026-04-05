@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1218,4 +1219,71 @@ func TestEmbeddedAuthServerScopePropagation(t *testing.T) {
 		assert.Empty(t, config.OIDCConfig.Scopes,
 			"OIDCConfig.Scopes should remain empty when no embedded AS is configured")
 	})
+}
+
+func TestProcessVolumeMounts_SourcePathValidation(t *testing.T) {
+	t.Parallel()
+
+	// Create a real directory and file for valid-path tests
+	existingDir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(existingDir)
+	require.NoError(t, err)
+
+	existingFile := filepath.Join(resolved, "somefile.txt")
+	require.NoError(t, os.WriteFile(existingFile, []byte("test"), 0o600))
+
+	nonExistentPath := filepath.Join(resolved, "does-not-exist")
+
+	testCases := []struct {
+		name         string
+		volumes      []string
+		buildContext BuildContext
+		expectError  bool
+		errContains  string
+	}{
+		{
+			name:         "valid directory path",
+			volumes:      []string{resolved + ":/container/data"},
+			buildContext: BuildContextCLI,
+		},
+		{
+			name:         "valid file path",
+			volumes:      []string{existingFile + ":/container/somefile.txt"},
+			buildContext: BuildContextCLI,
+		},
+		{
+			name:         "nonexistent source path in CLI context",
+			volumes:      []string{nonExistentPath + ":/container/data"},
+			buildContext: BuildContextCLI,
+			expectError:  true,
+			errContains:  "volume source path does not exist",
+		},
+		{
+			name:         "nonexistent source path in operator context skips validation",
+			volumes:      []string{nonExistentPath + ":/container/data"},
+			buildContext: BuildContextOperator,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := &runConfigBuilder{
+				config: &RunConfig{
+					Volumes:           tc.volumes,
+					PermissionProfile: &permissions.Profile{},
+				},
+				buildContext: tc.buildContext,
+			}
+
+			err := b.processVolumeMounts()
+			if tc.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

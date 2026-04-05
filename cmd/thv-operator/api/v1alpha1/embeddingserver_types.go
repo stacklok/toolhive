@@ -156,6 +156,8 @@ type EmbeddingStatefulSetOverrides struct {
 // EmbeddingServerStatus defines the observed state of EmbeddingServer
 type EmbeddingServerStatus struct {
 	// Conditions represent the latest available observations of the EmbeddingServer's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 

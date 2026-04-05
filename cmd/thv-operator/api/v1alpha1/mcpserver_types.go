@@ -882,6 +882,8 @@ type OpenTelemetryMetricsConfig struct {
 // MCPServerStatus defines the observed state of MCPServer
 type MCPServerStatus struct {
 	// Conditions represent the latest available observations of the MCPServer's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 

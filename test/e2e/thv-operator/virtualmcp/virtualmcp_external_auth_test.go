@@ -281,7 +281,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 					// Explicitly configure unauthenticated for specific backend
 					Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 						backendName: {
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: externalAuthConfigName,
 							},
@@ -328,7 +328,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
-			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
+			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("externalAuthConfigRef"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
 
 			By("Creating MCP client and listing tools")
@@ -680,7 +680,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 					// Explicitly configure headerInjection for specific backend
 					Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 						backendName: {
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: externalAuthConfigName,
 							},
@@ -730,7 +730,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
-			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
+			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("externalAuthConfigRef"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
 
 			By("Creating MCP client and listing tools")

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -136,7 +137,12 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, statu
 	vmcpServer.Status.Message = status.Message
 
 	// Update backend count (only counts healthy/ready backends)
-	vmcpServer.Status.BackendCount = status.BackendCount
+	// Cap at MaxInt32 to prevent integer overflow (gosec G115)
+	backendCount := status.BackendCount
+	if backendCount > math.MaxInt32 {
+		backendCount = math.MaxInt32
+	}
+	vmcpServer.Status.BackendCount = int32(backendCount) //nolint:gosec // bounds checked above
 
 	// Update discovered backends
 	vmcpServer.Status.DiscoveredBackends = make([]mcpv1alpha1.DiscoveredBackend, 0, len(status.DiscoveredBackends))

@@ -201,7 +201,7 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 					readyCount++
 				}
 			}
-			vmcpStatus.BackendCount = readyCount
+			vmcpStatus.BackendCount = int32(readyCount)
 		}
 
 		ctxLogger.V(1).Info("Batched status update applied",

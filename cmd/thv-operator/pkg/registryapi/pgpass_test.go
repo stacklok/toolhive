@@ -277,7 +277,7 @@ func baseMCPRegistry(t *testing.T, opts ...func(*mcpv1alpha1.MCPRegistry)) *mcpv
 }
 
 func withPort(port int) func(*mcpv1alpha1.MCPRegistry) {
-	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.Port = port }
+	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.Port = int32(port) }
 }
 
 func withHost(host string) func(*mcpv1alpha1.MCPRegistry) {

@@ -89,7 +89,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 		name           string
 		phase          vmcptypes.Phase
 		expectedPhase  mcpv1alpha1.VirtualMCPServerPhase
-		backendCount   int
+		backendCount   int32
 		conditionCount int
 	}{
 		{
@@ -137,7 +137,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 			}
 
 			// Add backends if specified
-			for i := 0; i < tt.backendCount; i++ {
+			for i := int32(0); i < tt.backendCount; i++ {
 				status.DiscoveredBackends = append(status.DiscoveredBackends, vmcptypes.DiscoveredBackend{
 					Name:            fmt.Sprintf("backend-%d", i+1),
 					URL:             "http://backend:8080",
@@ -146,7 +146,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 				})
 			}
 			// Set backend count to match number of healthy backends
-			status.BackendCount = tt.backendCount
+			status.BackendCount = int(tt.backendCount)
 
 			// Add conditions if specified
 			for i := 0; i < tt.conditionCount; i++ {
@@ -179,7 +179,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 
 			// Verify backend count
 			assert.Equal(t, tt.backendCount, updated.Status.BackendCount)
-			assert.Len(t, updated.Status.DiscoveredBackends, tt.backendCount)
+			assert.Len(t, updated.Status.DiscoveredBackends, int(tt.backendCount))
 
 			// Verify conditions
 			assert.Len(t, updated.Status.Conditions, tt.conditionCount)
@@ -312,7 +312,7 @@ func TestK8sReporter_ReportStatus_ConcurrentUpdates(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Update 5", updated.Status.Message)
-	assert.Equal(t, 1, updated.Status.BackendCount)
+	assert.Equal(t, int32(1), updated.Status.BackendCount)
 	assert.Equal(t, "backend-5", updated.Status.DiscoveredBackends[0].Name)
 }
 

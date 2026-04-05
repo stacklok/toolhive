@@ -593,7 +593,7 @@ func buildDatabaseConfig(dbConfig *mcpv1alpha1.MCPRegistryDatabaseConfig) *Datab
 		config.Host = dbConfig.Host
 	}
 	if dbConfig.Port != 0 {
-		config.Port = dbConfig.Port
+		config.Port = int(dbConfig.Port)
 	}
 	if dbConfig.User != "" {
 		config.User = dbConfig.User
@@ -608,10 +608,10 @@ func buildDatabaseConfig(dbConfig *mcpv1alpha1.MCPRegistryDatabaseConfig) *Datab
 		config.SSLMode = dbConfig.SSLMode
 	}
 	if dbConfig.MaxOpenConns != 0 {
-		config.MaxOpenConns = dbConfig.MaxOpenConns
+		config.MaxOpenConns = int(dbConfig.MaxOpenConns)
 	}
 	if dbConfig.MaxIdleConns != 0 {
-		config.MaxIdleConns = dbConfig.MaxIdleConns
+		config.MaxIdleConns = int(dbConfig.MaxIdleConns)
 	}
 	if dbConfig.ConnMaxLifetime != "" {
 		config.ConnMaxLifetime = dbConfig.ConnMaxLifetime

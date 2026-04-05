@@ -84,7 +84,7 @@ func (h *StatusTestHelper) WaitForServerCount(registryName string, expectedCount
 		if err != nil {
 			return -1
 		}
-		return status.SyncStatus.ServerCount
+		return int(status.SyncStatus.ServerCount)
 	}, timeout, time.Second).Should(gomega.Equal(expectedCount),
 		"MCPRegistry %s should have server count %d", registryName, expectedCount)
 }

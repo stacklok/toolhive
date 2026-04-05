@@ -304,6 +304,7 @@ const (
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteURL"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPRemoteProxy is the Schema for the mcpremoteproxies API

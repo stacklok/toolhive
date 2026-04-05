@@ -66,3 +66,11 @@ type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
 }
+
+// buildListResponse represents the response for listing locally-built OCI skill artifacts.
+//
+//	@Description	Response containing a list of locally-built OCI skill artifacts
+type buildListResponse struct {
+	// List of locally-built OCI skill artifacts
+	Builds []skills.LocalBuild `json:"builds"`
+}

@@ -2745,3 +2745,92 @@ func TestQualifiedOCIRef(t *testing.T) {
 		})
 	}
 }
+
+func TestListBuilds(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil oci store returns 500", func(t *testing.T) {
+		t.Parallel()
+		svc := New(&storage.NoopSkillStore{})
+		_, err := svc.ListBuilds(t.Context())
+		require.Error(t, err)
+		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
+	})
+
+	t.Run("empty store returns empty list", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, artifacts)
+	})
+
+	t.Run("lists tagged artifacts with metadata", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// Build a real artifact via the packager so extractOCIContent works.
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.2.3")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "my-skill"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+
+		assert.Equal(t, "my-skill", artifacts[0].Tag)
+		assert.Contains(t, artifacts[0].Digest, "sha256:")
+		assert.Equal(t, "my-skill", artifacts[0].Name)
+		assert.Equal(t, "1.2.3", artifacts[0].Version)
+	})
+
+	t.Run("lists multiple tagged artifacts", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		d1 := buildTestArtifact(t, ociStore, "skill-a", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d1, "skill-a"))
+		d2 := buildTestArtifact(t, ociStore, "skill-b", "2.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d2, "skill-b"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Len(t, artifacts, 2)
+
+		// Collect names for assertion (order may vary).
+		names := make(map[string]string)
+		for _, a := range artifacts {
+			names[a.Tag] = a.Version
+		}
+		assert.Equal(t, "1.0.0", names["skill-a"])
+		assert.Equal(t, "2.0.0", names["skill-b"])
+	})
+
+	t.Run("artifact with no metadata still appears", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// Store a minimal manifest with no config labels — extractOCIContent will fail
+		// but the artifact should still appear with empty metadata fields.
+		d, putErr := ociStore.PutManifest(t.Context(), []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}`))
+		require.NoError(t, putErr)
+		require.NoError(t, ociStore.Tag(t.Context(), d, "bare-tag"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+
+		assert.Equal(t, "bare-tag", artifacts[0].Tag)
+		assert.Contains(t, artifacts[0].Digest, "sha256:")
+		assert.Empty(t, artifacts[0].Name)
+		assert.Empty(t, artifacts[0].Version)
+	})
+}

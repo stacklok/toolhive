@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
@@ -94,9 +95,9 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 
 	// Convert environment variables
 	if len(config.EnvVars) > 0 {
-		mcpServer.Spec.Env = make([]v1alpha1.EnvVar, 0, len(config.EnvVars))
+		mcpServer.Spec.Env = make([]corev1.EnvVar, 0, len(config.EnvVars))
 		for key, value := range config.EnvVars {
-			mcpServer.Spec.Env = append(mcpServer.Spec.Env, v1alpha1.EnvVar{
+			mcpServer.Spec.Env = append(mcpServer.Spec.Env, corev1.EnvVar{
 				Name:  key,
 				Value: value,
 			})

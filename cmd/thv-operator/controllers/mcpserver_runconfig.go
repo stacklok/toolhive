@@ -551,7 +551,7 @@ func (*MCPServerReconciler) validateToolsFilter(config *runner.RunConfig) error 
 }
 
 // convertEnvVarsFromMCPServer converts MCPServer environment variables to builder format
-func convertEnvVarsFromMCPServer(envs []mcpv1alpha1.EnvVar) map[string]string {
+func convertEnvVarsFromMCPServer(envs []corev1.EnvVar) map[string]string {
 	if len(envs) == 0 {
 		return nil
 	}

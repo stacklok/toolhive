@@ -69,7 +69,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					ProxyPort: 8080,
 					McpPort:   8080,
 					Args:      []string{"--verbose"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []corev1.EnvVar{
 						{
 							Name:  "DEBUG",
 							Value: "true",
@@ -113,7 +113,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		})
 
 		It("Should create a Deployment with proper configuration", func() {
-
 			// Wait for Deployment to be created
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
@@ -229,11 +228,9 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(container.ReadinessProbe.ProbeHandler.HTTPGet.Port).To(Equal(intstr.FromString("http")))
 			Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(5)))
 			Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(5)))
-
 		})
 
 		It("Should create the RunConfig ConfigMap", func() {
-
 			// Wait for Service to be created (using the correct naming pattern)
 			configMap := &corev1.ConfigMap{}
 			configMapName := mcpServerName + "-runconfig"
@@ -253,7 +250,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		})
 
 		It("Should create a Service for the MCPServer Proxy", func() {
-
 			// Wait for Service to be created (using the correct naming pattern)
 			service := &corev1.Service{}
 			serviceName := "mcp-" + mcpServerName + "-proxy"
@@ -271,11 +267,9 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(service.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
 			Expect(service.Spec.Ports).To(HaveLen(1))
 			Expect(service.Spec.Ports[0].Port).To(Equal(int32(8080)))
-
 		})
 
 		It("Should create RBAC resources when ServiceAccount is not specified", func() {
-
 			// Wait for ServiceAccount to be created
 			serviceAccountName := mcpServerName + "-proxy-runner"
 			serviceAccount := &corev1.ServiceAccount{}
@@ -320,7 +314,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(roleBinding.Subjects).To(HaveLen(1))
 			Expect(roleBinding.Subjects[0].Name).To(Equal(serviceAccountName))
 			Expect(roleBinding.RoleRef.Name).To(Equal(serviceAccountName))
-
 		})
 
 		It("Should set ObservedGeneration in status after reconciliation", func() {
@@ -359,7 +352,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		})
 
 		It("Should update Deployment when MCPServer spec changes", func() {
-
 			// Wait for Deployment to be created
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {

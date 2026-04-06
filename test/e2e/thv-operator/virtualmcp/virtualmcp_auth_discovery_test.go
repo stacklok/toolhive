@@ -1454,7 +1454,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: workingAuthConfigName,
 				},
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},
@@ -1477,7 +1477,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: missingAuthConfigName,
 				},
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},

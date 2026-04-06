@@ -193,7 +193,7 @@ type MCPServerSpec struct {
 
 	// Env are environment variables to set in the MCP server container
 	// +optional
-	Env []EnvVar `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Volumes are volumes to mount in the MCP server container
 	// +optional
@@ -348,7 +348,7 @@ type ProxyDeploymentOverrides struct {
 	// These affect the toolhive proxy itself, not the MCP server it manages
 	// Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
 	// +optional
-	Env []EnvVar `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// ImagePullSecrets allows specifying image pull secrets for the proxy runner
 	// These are applied to both the Deployment and the ServiceAccount

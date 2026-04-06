@@ -673,7 +673,7 @@ func CreateMCPServerAndWait(
 			ProxyPort: 8080,
 			McpPort:   8080,
 			Resources: defaultMCPServerResources(),
-			Env: []mcpv1alpha1.EnvVar{
+			Env: []corev1.EnvVar{
 				{Name: "TRANSPORT", Value: "streamable-http"},
 			},
 		},
@@ -707,7 +707,7 @@ type BackendConfig struct {
 	Transport             string // defaults to "streamable-http" if empty
 	ExternalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
 	Secrets               []mcpv1alpha1.SecretRef
-	Env                   []mcpv1alpha1.EnvVar // additional env vars beyond TRANSPORT
+	Env                   []corev1.EnvVar // additional env vars beyond TRANSPORT
 	// Resources overrides the default resource requests/limits. When nil,
 	// defaultMCPServerResources() is used to ensure containers are scheduled
 	// with reasonable resource guarantees and do not compete excessively.
@@ -765,7 +765,7 @@ func CreateMultipleMCPServersInParallel(
 				ExternalAuthConfigRef: backends[idx].ExternalAuthConfigRef,
 				Secrets:               backends[idx].Secrets,
 				Resources:             resources,
-				Env: append([]mcpv1alpha1.EnvVar{
+				Env: append([]corev1.EnvVar{
 					{Name: "TRANSPORT", Value: backendTransport},
 				}, backends[idx].Env...),
 			},

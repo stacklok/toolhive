@@ -57,7 +57,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},
@@ -76,7 +76,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},

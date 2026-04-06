@@ -197,7 +197,7 @@ type MCPServerSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	Env []EnvVar `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Volumes are volumes to mount in the MCP server container
 	// +listType=map
@@ -363,7 +363,7 @@ type ProxyDeploymentOverrides struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	Env []EnvVar `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// ImagePullSecrets allows specifying image pull secrets for the proxy runner
 	// These are applied to both the Deployment and the ServiceAccount

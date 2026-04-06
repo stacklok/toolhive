@@ -136,7 +136,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 									"custom-annotation": "custom-annotation-value",
 								},
 							},
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{Name: "CUSTOM_ENV", Value: "custom-value"},
 								{Name: "TOOLHIVE_DEBUG", Value: "true"},
 							},

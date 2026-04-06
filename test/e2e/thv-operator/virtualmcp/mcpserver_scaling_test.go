@@ -106,6 +106,8 @@ func cleanupRedis(namespace, name string) {
 }
 
 // getReadyMCPServerPods returns all Running+Ready pods for an MCPServer.
+//
+//nolint:unparam // namespace kept as parameter for reusability across test contexts
 func getReadyMCPServerPods(mcpServerName, namespace string) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
 	if err := k8sClient.List(ctx, podList,

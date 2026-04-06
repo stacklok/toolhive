@@ -452,8 +452,15 @@ func (c *Converter) convertBackendAuthConfig(
 		}, nil
 	}
 
-	// If type is "externalAuthConfigRef", resolve the MCPExternalAuthConfig
-	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
+	// Handle deprecated snake_case value
+	if crdConfig.Type == mcpv1alpha1.DeprecatedBackendAuthTypeExternalAuthConfigRef {
+		log.FromContext(ctx).Info("backend auth type value \"external_auth_config_ref\" is deprecated, use \"externalAuthConfigRef\" instead",
+			"backend", backendName, "vmcp", vmcp.Name)
+	}
+
+	// If type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref"), resolve the MCPExternalAuthConfig
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef ||
+		crdConfig.Type == mcpv1alpha1.DeprecatedBackendAuthTypeExternalAuthConfigRef {
 		if crdConfig.ExternalAuthConfigRef == nil {
 			return nil, fmt.Errorf("backend %s: externalAuthConfigRef type requires externalAuthConfigRef field", backendName)
 		}

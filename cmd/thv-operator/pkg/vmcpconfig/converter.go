@@ -454,8 +454,11 @@ func (c *Converter) convertBackendAuthConfig(
 
 	// Handle deprecated snake_case value
 	if crdConfig.Type == mcpv1alpha1.DeprecatedBackendAuthTypeExternalAuthConfigRef {
-		log.FromContext(ctx).Info("backend auth type value \"external_auth_config_ref\" is deprecated, use \"externalAuthConfigRef\" instead",
-			"backend", backendName, "vmcp", vmcp.Name)
+		log.FromContext(ctx).Info(
+			"backend auth type \"external_auth_config_ref\" is deprecated,"+
+				" use \"externalAuthConfigRef\" instead",
+			"backend", backendName, "vmcp", vmcp.Name,
+		)
 	}
 
 	// If type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref"), resolve the MCPExternalAuthConfig

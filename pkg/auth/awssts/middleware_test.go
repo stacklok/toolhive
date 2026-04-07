@@ -303,6 +303,86 @@ func TestMiddlewareFunc_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestMiddlewareFunc_ProxyHeadersExcludedFromSignature verifies that volatile
+// proxy-injected headers are stripped from the signing clone so they never
+// appear in the SigV4 SignedHeaders field. These headers are rewritten by
+// httputil.ReverseProxy.SetXForwarded() after signing, which would
+// invalidate the signature if they were included.
+func TestMiddlewareFunc_ProxyHeadersExcludedFromSignature(t *testing.T) {
+	t.Parallel()
+
+	expiration := time.Now().Add(time.Hour)
+	successResponse := &sts.AssumeRoleWithWebIdentityOutput{
+		Credentials: &ststypes.Credentials{
+			AccessKeyId: aws.String("AKIATEST"), SecretAccessKey: aws.String("secret"),
+			SessionToken: aws.String("session"), Expiration: &expiration,
+		},
+	}
+
+	targetURL, err := url.Parse("https://aws-mcp.us-east-1.api.aws")
+	require.NoError(t, err)
+
+	exchanger := &Exchanger{client: &mockSTSClient{response: successResponse}}
+	roleMapper, err := NewRoleMapper(&Config{
+		Region:          "us-east-1",
+		FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+	})
+	require.NoError(t, err)
+	signer, err := newRequestSigner("us-east-1")
+	require.NoError(t, err)
+
+	middlewareFunc := createAWSStsMiddlewareFunc(exchanger, roleMapper, signer, "sub", 3600, targetURL)
+
+	var capturedAuth string
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost:8080/mcp/v1", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer test-jwt-token")
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Forwarded-Host", "proxy.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Real-Ip", "10.0.0.1")
+	req.Header.Set("Forwarded", "for=1.2.3.4")
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user123",
+		Claims:  map[string]interface{}{"sub": "user123"},
+	}}
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	rec := httptest.NewRecorder()
+	middlewareFunc(testHandler).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, capturedAuth, "SignedHeaders=")
+
+	// Extract the SignedHeaders value from the Authorization header.
+	// Format: AWS4-HMAC-SHA256 Credential=..., SignedHeaders=h1;h2;h3, Signature=...
+	signedHeadersStart := strings.Index(capturedAuth, "SignedHeaders=")
+	require.NotEqual(t, -1, signedHeadersStart)
+	signedHeadersSub := capturedAuth[signedHeadersStart+len("SignedHeaders="):]
+	signedHeadersEnd := strings.Index(signedHeadersSub, ",")
+	require.NotEqual(t, -1, signedHeadersEnd)
+	signedHeaders := signedHeadersSub[:signedHeadersEnd]
+
+	excludedHeaders := []string{
+		"x-forwarded-for",
+		"x-forwarded-host",
+		"x-forwarded-proto",
+		"x-real-ip",
+		"forwarded",
+	}
+	for _, h := range excludedHeaders {
+		for _, signed := range strings.Split(signedHeaders, ";") {
+			assert.NotEqual(t, h, signed,
+				"proxy header %q must not appear in SignedHeaders", h)
+		}
+	}
+}
+
 // TestMiddlewareFunc_RoleMapperFailure tests that the middleware returns 403
 // when the role mapper cannot determine an IAM role for the request.
 func TestMiddlewareFunc_RoleMapperFailure(t *testing.T) {

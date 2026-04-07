@@ -40,7 +40,7 @@ operator:
   proxyHost: 0.0.0.0
 
 # -- Environment variables to set in the operator container
-  env: {}
+  env: []
 
   # -- List of ports to expose from the operator container
   ports:

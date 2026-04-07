@@ -2812,25 +2812,49 @@ func TestListBuilds(t *testing.T) {
 		assert.Equal(t, "2.0.0", names["skill-b"])
 	})
 
-	t.Run("artifact with no metadata still appears", func(t *testing.T) {
+	t.Run("skill artifact with no extractable metadata still appears", func(t *testing.T) {
 		t.Parallel()
 		ociStore, err := ociskills.NewStore(t.TempDir())
 		require.NoError(t, err)
 
-		// Store a minimal manifest with no config labels — extractOCIContent will fail
-		// but the artifact should still appear with empty metadata fields.
-		d, putErr := ociStore.PutManifest(t.Context(), []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}`))
+		// Store an index with ArtifactType set to the skill type but no child manifests —
+		// extractOCIContent will fail but the artifact should still appear with empty metadata fields.
+		skillIndex := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","artifactType":"dev.toolhive.skills.v1","manifests":[]}`
+		d, putErr := ociStore.PutManifest(t.Context(), []byte(skillIndex))
 		require.NoError(t, putErr)
-		require.NoError(t, ociStore.Tag(t.Context(), d, "bare-tag"))
+		require.NoError(t, ociStore.Tag(t.Context(), d, "bare-skill-tag"))
 
 		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
 		require.NoError(t, err)
 		require.Len(t, artifacts, 1)
 
-		assert.Equal(t, "bare-tag", artifacts[0].Tag)
+		assert.Equal(t, "bare-skill-tag", artifacts[0].Tag)
 		assert.Contains(t, artifacts[0].Digest, "sha256:")
 		assert.Empty(t, artifacts[0].Name)
 		assert.Empty(t, artifacts[0].Version)
+	})
+
+	t.Run("non-skill artifact is excluded", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// Store a valid skill artifact that should be returned.
+		skillDigest := buildTestArtifact(t, ociStore, "real-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), skillDigest, "real-skill"))
+
+		// Store an index whose ArtifactType is not the skill type — simulates a
+		// remotely-pulled non-skill OCI artifact sharing the same store.
+		otherIndex := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","artifactType":"application/vnd.docker.distribution.manifest.v2","manifests":[]}`
+		otherDigest, putErr := ociStore.PutManifest(t.Context(), []byte(otherIndex))
+		require.NoError(t, putErr)
+		require.NoError(t, ociStore.Tag(t.Context(), otherDigest, "non-skill-tag"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+		assert.Equal(t, "real-skill", artifacts[0].Tag)
 	})
 }

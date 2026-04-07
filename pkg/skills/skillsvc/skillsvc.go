@@ -523,6 +523,15 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 			continue
 		}
 
+		isSkill, typeErr := s.isSkillArtifact(ctx, d)
+		if typeErr != nil {
+			slog.Debug("failed to check artifact type in local OCI store", "tag", tag, "error", typeErr)
+			continue
+		}
+		if !isSkill {
+			continue
+		}
+
 		build := skills.LocalBuild{
 			Tag:    tag,
 			Digest: d.String(),
@@ -984,6 +993,34 @@ func buildGitReferenceFromRegistryURL(rawURL string) (string, error) {
 		return "", err
 	}
 	return gitURL, nil
+}
+
+// isSkillArtifact reports whether the OCI descriptor at digest d carries
+// ArtifactType == ArtifactTypeSkill. It inspects the top-level index or
+// manifest without descending into layers, so it is cheap to call.
+func (s *service) isSkillArtifact(ctx context.Context, d digest.Digest) (bool, error) {
+	isIndex, err := s.ociStore.IsIndex(ctx, d)
+	if err != nil {
+		return false, fmt.Errorf("checking OCI content type: %w", err)
+	}
+
+	if isIndex {
+		index, indexErr := s.ociStore.GetIndex(ctx, d)
+		if indexErr != nil {
+			return false, fmt.Errorf("reading OCI index: %w", indexErr)
+		}
+		return index.ArtifactType == ociskills.ArtifactTypeSkill, nil
+	}
+
+	manifestBytes, err := s.ociStore.GetManifest(ctx, d)
+	if err != nil {
+		return false, fmt.Errorf("reading OCI manifest: %w", err)
+	}
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return false, fmt.Errorf("parsing OCI manifest: %w", err)
+	}
+	return manifest.ArtifactType == ociskills.ArtifactTypeSkill, nil
 }
 
 // extractOCIContent navigates the OCI content graph from a pulled digest,

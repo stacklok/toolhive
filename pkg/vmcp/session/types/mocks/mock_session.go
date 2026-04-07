@@ -216,18 +216,6 @@ func (mr *MockMultiSessionMockRecorder) ReadResource(ctx, caller, uri any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadResource", reflect.TypeOf((*MockMultiSession)(nil).ReadResource), ctx, caller, uri)
 }
 
-// RemoveBackendFromMetadata mocks base method.
-func (m *MockMultiSession) RemoveBackendFromMetadata(workloadID string) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "RemoveBackendFromMetadata", workloadID)
-}
-
-// RemoveBackendFromMetadata indicates an expected call of RemoveBackendFromMetadata.
-func (mr *MockMultiSessionMockRecorder) RemoveBackendFromMetadata(workloadID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveBackendFromMetadata", reflect.TypeOf((*MockMultiSession)(nil).RemoveBackendFromMetadata), workloadID)
-}
-
 // Resources mocks base method.
 func (m *MockMultiSession) Resources() []vmcp.Resource {
 	m.ctrl.T.Helper()

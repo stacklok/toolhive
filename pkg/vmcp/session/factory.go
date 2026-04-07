@@ -35,7 +35,9 @@ const (
 
 	// MetadataKeyBackendIDs is the transport-session metadata key that holds
 	// a comma-separated, sorted list of successfully-connected backend IDs.
-	// The key is omitted entirely when no backends connected.
+	// The key is always written, even as an empty string for zero-backend
+	// sessions. Key presence distinguishes an explicit zero-backend state from
+	// absent/corrupted metadata in RestoreSession.
 	MetadataKeyBackendIDs = "vmcp.backend.ids"
 
 	// MetadataKeyBackendSessionPrefix is the key prefix for per-backend session IDs.
@@ -522,8 +524,18 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 		return nil, err
 	}
 
+	// MetadataKeyBackendIDs must be present. An absent key means the metadata
+	// was never fully initialised (placeholder session) or is corrupted; treat
+	// it as a hard error so we don't silently connect to zero backends when a
+	// non-empty list was expected.
+	storedBackendIDs, backendIDsPresent := storedMetadata[MetadataKeyBackendIDs]
+	if !backendIDsPresent {
+		return nil, fmt.Errorf("RestoreSession: %q metadata key absent (corrupted or placeholder metadata)",
+			MetadataKeyBackendIDs)
+	}
+
 	// Filter allBackends to the subset originally connected in this session.
-	filteredBackends := filterBackendsByStoredIDs(allBackends, storedMetadata[MetadataKeyBackendIDs])
+	filteredBackends := filterBackendsByStoredIDs(allBackends, storedBackendIDs)
 
 	// Reconstruct a minimal identity from stored metadata. The original bearer
 	// token is never persisted (only its HMAC-SHA256 hash is), so Token is empty.

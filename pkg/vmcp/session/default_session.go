@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"strings"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -195,27 +194,6 @@ func (s *defaultMultiSession) GetPrompt(
 		return nil, fmt.Errorf("backend %q request failure: %w", target.WorkloadID, err)
 	}
 	return result, nil
-}
-
-// RemoveBackendFromMetadata implements MultiSession.
-// It clears the per-backend session ID key and rebuilds MetadataKeyBackendIDs
-// on the embedded transport session to reflect that workloadID is no longer
-// connected. Intended to be called before flushing updated metadata to storage.
-func (s *defaultMultiSession) RemoveBackendFromMetadata(workloadID string) {
-	s.SetMetadata(MetadataKeyBackendSessionPrefix+workloadID, "")
-
-	current, _ := s.GetMetadataValue(MetadataKeyBackendIDs)
-	if current == "" {
-		return
-	}
-	parts := strings.Split(current, ",")
-	remaining := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" && t != workloadID {
-			remaining = append(remaining, t)
-		}
-	}
-	s.SetMetadata(MetadataKeyBackendIDs, strings.Join(remaining, ","))
 }
 
 // Close releases all resources. CloseAndDrain blocks until in-flight

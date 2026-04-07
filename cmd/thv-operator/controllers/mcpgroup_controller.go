@@ -184,7 +184,7 @@ func (*MCPGroupReconciler) populateServerStatus(
 	mcpGroup *mcpv1alpha1.MCPGroup,
 	mcpServers []mcpv1alpha1.MCPServer,
 ) {
-	mcpGroup.Status.ServerCount = len(mcpServers)
+	mcpGroup.Status.ServerCount = int32(len(mcpServers)) //nolint:gosec // count is bounded by k8s list size
 	if len(mcpServers) == 0 {
 		mcpGroup.Status.Servers = []string{}
 		return
@@ -201,7 +201,7 @@ func (*MCPGroupReconciler) populateRemoteProxyStatus(
 	mcpGroup *mcpv1alpha1.MCPGroup,
 	mcpRemoteProxies []mcpv1alpha1.MCPRemoteProxy,
 ) {
-	mcpGroup.Status.RemoteProxyCount = len(mcpRemoteProxies)
+	mcpGroup.Status.RemoteProxyCount = int32(len(mcpRemoteProxies)) //nolint:gosec // count is bounded by k8s list size
 	if len(mcpRemoteProxies) == 0 {
 		mcpGroup.Status.RemoteProxies = []string{}
 		return

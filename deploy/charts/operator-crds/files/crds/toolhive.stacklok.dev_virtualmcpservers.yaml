@@ -2274,6 +2274,7 @@ spec:
                 description: |-
                   BackendCount is the number of healthy/ready backends
                   (excludes unavailable, degraded, and unknown backends)
+                format: int32
                 type: integer
               conditions:
                 description: Conditions represent the latest available observations

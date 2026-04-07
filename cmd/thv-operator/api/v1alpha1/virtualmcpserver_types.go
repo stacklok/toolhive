@@ -222,7 +222,7 @@ type VirtualMCPServerStatus struct {
 	// BackendCount is the number of healthy/ready backends
 	// (excludes unavailable, degraded, and unknown backends)
 	// +optional
-	BackendCount int `json:"backendCount,omitempty"`
+	BackendCount int32 `json:"backendCount,omitempty"`
 
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.
 	// Only populated when IncomingAuth.OIDCConfigRef is set.

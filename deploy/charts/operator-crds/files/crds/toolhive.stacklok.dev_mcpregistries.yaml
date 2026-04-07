@@ -340,12 +340,14 @@ spec:
                     default: 2
                     description: MaxIdleConns is the maximum number of idle connections
                       in the pool
+                    format: int32
                     minimum: 0
                     type: integer
                   maxOpenConns:
                     default: 10
                     description: MaxOpenConns is the maximum number of open connections
                       to the database
+                    format: int32
                     minimum: 1
                     type: integer
                   migrationUser:
@@ -358,6 +360,7 @@ spec:
                   port:
                     default: 5432
                     description: Port is the database server port
+                    format: int32
                     maximum: 65535
                     minimum: 1
                     type: integer
@@ -825,6 +828,7 @@ spec:
                   attemptCount:
                     description: AttemptCount is the number of sync attempts since
                       last success
+                    format: int32
                     minimum: 0
                     type: integer
                   lastAttempt:
@@ -860,6 +864,7 @@ spec:
                   serverCount:
                     description: ServerCount is the total number of servers in the
                       registry
+                    format: int32
                     minimum: 0
                     type: integer
                 required:

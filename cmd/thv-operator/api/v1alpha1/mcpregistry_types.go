@@ -299,7 +299,7 @@ type MCPRegistryDatabaseConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
-	Port int `json:"port,omitempty"`
+	Port int32 `json:"port,omitempty"`
 
 	// User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
 	// Credentials should be provided via pgpass file or environment variables
@@ -330,13 +330,13 @@ type MCPRegistryDatabaseConfig struct {
 	// +kubebuilder:default=10
 	// +kubebuilder:validation:Minimum=1
 	// +optional
-	MaxOpenConns int `json:"maxOpenConns,omitempty"`
+	MaxOpenConns int32 `json:"maxOpenConns,omitempty"`
 
 	// MaxIdleConns is the maximum number of idle connections in the pool
 	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=0
 	// +optional
-	MaxIdleConns int `json:"maxIdleConns,omitempty"`
+	MaxIdleConns int32 `json:"maxIdleConns,omitempty"`
 
 	// ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)
 	// Examples: "30m", "1h", "24h"
@@ -550,7 +550,7 @@ type SyncStatus struct {
 	// AttemptCount is the number of sync attempts since last success
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	AttemptCount int `json:"attemptCount,omitempty"`
+	AttemptCount int32 `json:"attemptCount,omitempty"`
 
 	// LastSyncTime is the timestamp of the last successful sync
 	// +optional
@@ -564,7 +564,7 @@ type SyncStatus struct {
 	// ServerCount is the total number of servers in the registry
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	ServerCount int `json:"serverCount,omitempty"`
+	ServerCount int32 `json:"serverCount,omitempty"`
 }
 
 // APIStatus provides detailed information about the API service
@@ -832,7 +832,7 @@ func (r *MCPRegistry) GetDatabaseConfig() *MCPRegistryDatabaseConfig {
 // If the port is not specified, it returns 5432.
 // We do this because its likely to be 5432 due to
 // it being the default port for PostgreSQL.
-func (r *MCPRegistry) GetDatabasePort() int {
+func (r *MCPRegistry) GetDatabasePort() int32 {
 	if r.Spec.DatabaseConfig == nil || r.Spec.DatabaseConfig.Port == 0 {
 		return 5432
 	}

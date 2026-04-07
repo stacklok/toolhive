@@ -33,7 +33,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 		name                string
 		mcpGroup            *mcpv1alpha1.MCPGroup
 		mcpServers          []*mcpv1alpha1.MCPServer
-		expectedServerCount int
+		expectedServerCount int32
 		expectedServerNames []string
 		expectedPhase       mcpv1alpha1.MCPGroupPhase
 	}{
@@ -251,7 +251,7 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 		namespace           string
 		mcpServers          []*mcpv1alpha1.MCPServer
 		expectedServerNames []string
-		expectedCount       int
+		expectedCount       int32
 	}{
 		{
 			name:      "filters servers by exact groupRef match",

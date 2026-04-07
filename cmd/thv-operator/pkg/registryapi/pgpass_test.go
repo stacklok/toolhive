@@ -276,7 +276,7 @@ func baseMCPRegistry(t *testing.T, opts ...func(*mcpv1alpha1.MCPRegistry)) *mcpv
 	return reg
 }
 
-func withPort(port int) func(*mcpv1alpha1.MCPRegistry) {
+func withPort(port int32) func(*mcpv1alpha1.MCPRegistry) {
 	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.Port = port }
 }
 

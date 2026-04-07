@@ -80,7 +80,7 @@ type DatabaseConfig struct {
 	Host string `yaml:"host"`
 
 	// Port is the database server port
-	Port int `yaml:"port"`
+	Port int32 `yaml:"port"`
 
 	// User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
 	// Credentials provided via pgpass file
@@ -98,10 +98,10 @@ type DatabaseConfig struct {
 	SSLMode string `yaml:"sslMode"`
 
 	// MaxOpenConns is the maximum number of open connections to the database
-	MaxOpenConns int `yaml:"maxOpenConns"`
+	MaxOpenConns int32 `yaml:"maxOpenConns"`
 
 	// MaxIdleConns is the maximum number of idle connections in the pool
-	MaxIdleConns int `yaml:"maxIdleConns"`
+	MaxIdleConns int32 `yaml:"maxIdleConns"`
 
 	// ConnMaxLifetime is the maximum amount of time a connection may be reused
 	ConnMaxLifetime string `yaml:"connMaxLifetime"`

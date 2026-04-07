@@ -27,6 +27,8 @@ type MCPRegistrySpec struct {
 	// Registries defines the configuration for the registry data sources
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	Registries []MCPRegistryConfig `json:"registries"`
 
 	// EnforceServers indicates whether MCPServers in this namespace must have their images
@@ -261,10 +263,12 @@ type RegistryFilter struct {
 // NameFilter defines name-based filtering
 type NameFilter struct {
 	// Include is a list of glob patterns to include
+	// +listType=atomic
 	// +optional
 	Include []string `json:"include,omitempty"`
 
 	// Exclude is a list of glob patterns to exclude
+	// +listType=atomic
 	// +optional
 	Exclude []string `json:"exclude,omitempty"`
 }
@@ -272,10 +276,12 @@ type NameFilter struct {
 // TagFilter defines tag-based filtering
 type TagFilter struct {
 	// Include is a list of tags to include
+	// +listType=atomic
 	// +optional
 	Include []string `json:"include,omitempty"`
 
 	// Exclude is a list of tags to exclude
+	// +listType=atomic
 	// +optional
 	Exclude []string `json:"exclude,omitempty"`
 }
@@ -293,7 +299,7 @@ type MCPRegistryDatabaseConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
-	Port int `json:"port,omitempty"`
+	Port int32 `json:"port,omitempty"`
 
 	// User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
 	// Credentials should be provided via pgpass file or environment variables
@@ -324,13 +330,13 @@ type MCPRegistryDatabaseConfig struct {
 	// +kubebuilder:default=10
 	// +kubebuilder:validation:Minimum=1
 	// +optional
-	MaxOpenConns int `json:"maxOpenConns,omitempty"`
+	MaxOpenConns int32 `json:"maxOpenConns,omitempty"`
 
 	// MaxIdleConns is the maximum number of idle connections in the pool
 	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=0
 	// +optional
-	MaxIdleConns int `json:"maxIdleConns,omitempty"`
+	MaxIdleConns int32 `json:"maxIdleConns,omitempty"`
 
 	// ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)
 	// Examples: "30m", "1h", "24h"
@@ -391,11 +397,14 @@ type MCPRegistryOAuthConfig struct {
 	// Providers defines the OAuth/OIDC providers for authentication
 	// Multiple providers can be configured (e.g., Kubernetes + external IDP)
 	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Providers []MCPRegistryOAuthProviderConfig `json:"providers,omitempty"`
 
 	// ScopesSupported defines the OAuth scopes supported by this resource (RFC 9728)
 	// Defaults to ["mcp-registry:read", "mcp-registry:write"] if not specified
+	// +listType=atomic
 	// +optional
 	ScopesSupported []string `json:"scopesSupported,omitempty"`
 
@@ -541,7 +550,7 @@ type SyncStatus struct {
 	// AttemptCount is the number of sync attempts since last success
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	AttemptCount int `json:"attemptCount,omitempty"`
+	AttemptCount int32 `json:"attemptCount,omitempty"`
 
 	// LastSyncTime is the timestamp of the last successful sync
 	// +optional
@@ -555,7 +564,7 @@ type SyncStatus struct {
 	// ServerCount is the total number of servers in the registry
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	ServerCount int `json:"serverCount,omitempty"`
+	ServerCount int32 `json:"serverCount,omitempty"`
 }
 
 // APIStatus provides detailed information about the API service
@@ -681,7 +690,7 @@ const (
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.syncStatus.serverCount"
 //+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.syncStatus.lastSyncTime"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-//+kubebuilder:resource:scope=Namespaced,categories=toolhive
+//+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
 //+kubebuilder:validation:XValidation:rule="size(self.spec.registries) > 0",message="at least one registry must be specified"
 
@@ -823,7 +832,7 @@ func (r *MCPRegistry) GetDatabaseConfig() *MCPRegistryDatabaseConfig {
 // If the port is not specified, it returns 5432.
 // We do this because its likely to be 5432 due to
 // it being the default port for PostgreSQL.
-func (r *MCPRegistry) GetDatabasePort() int {
+func (r *MCPRegistry) GetDatabasePort() int32 {
 	if r.Spec.DatabaseConfig == nil || r.Spec.DatabaseConfig.Port == 0 {
 		return 5432
 	}

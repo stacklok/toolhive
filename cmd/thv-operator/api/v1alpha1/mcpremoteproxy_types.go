@@ -16,6 +16,8 @@ type HeaderForwardConfig struct {
 	AddPlaintextHeaders map[string]string `json:"addPlaintextHeaders,omitempty"`
 
 	// AddHeadersFromSecret references Kubernetes Secrets for sensitive header values.
+	// +listType=map
+	// +listMapKey=headerName
 	// +optional
 	AddHeadersFromSecret []HeaderFromSecret `json:"addHeadersFromSecret,omitempty"`
 }
@@ -302,7 +304,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:categories=toolhive
+//+kubebuilder:resource:shortName=rp;mcprp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteURL"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"

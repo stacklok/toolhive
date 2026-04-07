@@ -16,6 +16,9 @@ spec:
     kind: MCPRegistry
     listKind: MCPRegistryList
     plural: mcpregistries
+    shortNames:
+    - mcpreg
+    - registry
     singular: mcpregistry
   scope: Namespaced
   versions:
@@ -233,6 +236,9 @@ spec:
                           type: object
                         minItems: 1
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       realm:
                         description: |-
                           Realm is the protection space identifier for WWW-Authenticate header (RFC 7235)
@@ -250,6 +256,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                     type: object
                 type: object
               databaseConfig:
@@ -339,12 +346,14 @@ spec:
                     default: 2
                     description: MaxIdleConns is the maximum number of idle connections
                       in the pool
+                    format: int32
                     minimum: 0
                     type: integer
                   maxOpenConns:
                     default: 10
                     description: MaxOpenConns is the maximum number of open connections
                       to the database
+                    format: int32
                     minimum: 1
                     type: integer
                   migrationUser:
@@ -357,6 +366,7 @@ spec:
                   port:
                     default: 5432
                     description: Port is the database server port
+                    format: int32
                     maximum: 65535
                     minimum: 1
                     type: integer
@@ -468,11 +478,13 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             include:
                               description: Include is a list of glob patterns to include
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                           type: object
                         tags:
                           description: Tags defines tag-based filtering
@@ -482,11 +494,13 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             include:
                               description: Include is a list of tags to include
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                           type: object
                       type: object
                     format:
@@ -654,6 +668,9 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             required:
             - registries
             type: object
@@ -817,6 +834,7 @@ spec:
                   attemptCount:
                     description: AttemptCount is the number of sync attempts since
                       last success
+                    format: int32
                     minimum: 0
                     type: integer
                   lastAttempt:
@@ -852,6 +870,7 @@ spec:
                   serverCount:
                     description: ServerCount is the total number of servers in the
                       registry
+                    format: int32
                     minimum: 0
                     type: integer
                 required:

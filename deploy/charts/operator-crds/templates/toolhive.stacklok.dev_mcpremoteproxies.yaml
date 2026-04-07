@@ -108,6 +108,7 @@ spec:
                           type: string
                         minItems: 1
                         type: array
+                        x-kubernetes-list-type: atomic
                     required:
                     - policies
                     type: object
@@ -187,6 +188,9 @@ spec:
                       - valueSecretRef
                       type: object
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - headerName
+                    x-kubernetes-list-type: map
                   addPlaintextHeaders:
                     additionalProperties:
                       type: string
@@ -347,6 +351,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                     required:
                     - issuer
                     type: object
@@ -440,6 +445,7 @@ spec:
                     items:
                       type: string
                     type: array
+                    x-kubernetes-list-type: atomic
                 required:
                 - audience
                 - name
@@ -488,6 +494,9 @@ spec:
                           - value
                           type: object
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       imagePullSecrets:
                         description: |-
                           ImagePullSecrets allows specifying image pull secrets for the proxy runner
@@ -509,6 +518,7 @@ spec:
                           type: object
                           x-kubernetes-map-type: atomic
                         type: array
+                        x-kubernetes-list-type: atomic
                       labels:
                         additionalProperties:
                           type: string
@@ -614,6 +624,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                       insecure:
                         default: false
                         description: Insecure indicates whether to use HTTP instead

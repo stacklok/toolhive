@@ -66,6 +66,7 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: atomic
               env:
                 description: Env are environment variables to set in the container
                 items:
@@ -82,6 +83,9 @@ spec:
                   - value
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               hfTokenSecretRef:
                 description: |-
                   HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.

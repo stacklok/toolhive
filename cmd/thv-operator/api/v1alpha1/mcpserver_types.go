@@ -159,6 +159,7 @@ const SessionStorageProviderRedis = "redis"
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
 	// Transport is the transport method for the MCP server (stdio, streamable-http or sse)

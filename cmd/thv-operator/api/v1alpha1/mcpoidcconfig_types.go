@@ -21,7 +21,7 @@ const (
 // Condition type and reasons for MCPOIDCConfig status (RFC-0023)
 const (
 	// ConditionTypeOIDCConfigValid indicates whether the MCPOIDCConfig configuration is valid
-	ConditionTypeOIDCConfigValid = "Valid"
+	ConditionTypeOIDCConfigValid = ConditionTypeValid
 
 	// ConditionReasonOIDCConfigValid indicates spec validation passed
 	ConditionReasonOIDCConfigValid = "ConfigValid"

@@ -6,6 +6,7 @@ metadata:
   name: {{ include "operator.fullname" . }}-manager-rolebinding
   labels:
     {{- include "operator.labels" . | nindent 4 }}
+    {{- include "toolhive.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -26,6 +27,7 @@ metadata:
   namespace: {{ . }}
   labels:
     {{- include "operator.labels" $ | nindent 4 }}
+    {{- include "toolhive.labels" $ | nindent 4 }}
 subjects:
 - kind: ServiceAccount
   name: {{ include "operator.serviceAccountName" $ }}

@@ -501,7 +501,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		slog.Info("running as detached process", "pid", os.Getpid())
 	} else {
 		// Notify that user that the workload has started successfully when using --foreground
-		fmt.Println("Workload started successfully. Press Ctrl+C to stop.")
+		slog.Info("workload started successfully, press Ctrl+C to stop")
 	}
 
 	// Create a done channel to signal when the server has been stopped

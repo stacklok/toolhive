@@ -16,6 +16,9 @@ spec:
     kind: MCPRemoteProxy
     listKind: MCPRemoteProxyList
     plural: mcpremoteproxies
+    shortNames:
+    - rp
+    - mcprp
     singular: mcpremoteproxy
   scope: Namespaced
   versions:

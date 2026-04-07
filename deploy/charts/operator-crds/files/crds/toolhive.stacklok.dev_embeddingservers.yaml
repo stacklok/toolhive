@@ -13,6 +13,9 @@ spec:
     kind: EmbeddingServer
     listKind: EmbeddingServerList
     plural: embeddingservers
+    shortNames:
+    - emb
+    - embedding
     singular: embeddingserver
   scope: Namespaced
   versions:

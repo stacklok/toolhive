@@ -142,17 +142,21 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: set
               remoteProxyCount:
                 description: RemoteProxyCount is the number of MCPRemoteProxies
+                format: int32
                 type: integer
               serverCount:
                 description: ServerCount is the number of MCPServers
+                format: int32
                 type: integer
               servers:
                 description: Servers lists MCPServer names in this group
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: set
             type: object
         type: object
     served: true

@@ -65,6 +65,7 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: atomic
               audit:
                 description: Audit defines audit logging configuration for the MCP
                   server
@@ -112,6 +113,7 @@ spec:
                           type: string
                         minItems: 1
                         type: array
+                        x-kubernetes-list-type: atomic
                     required:
                     - policies
                     type: object
@@ -165,6 +167,9 @@ spec:
                   - value
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               externalAuthConfigRef:
                 description: |-
                   ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
@@ -341,6 +346,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                     required:
                     - issuer
                     type: object
@@ -434,6 +440,7 @@ spec:
                     items:
                       type: string
                     type: array
+                    x-kubernetes-list-type: atomic
                 required:
                 - audience
                 - name
@@ -533,6 +540,9 @@ spec:
                           - value
                           type: object
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       imagePullSecrets:
                         description: |-
                           ImagePullSecrets allows specifying image pull secrets for the proxy runner
@@ -554,6 +564,7 @@ spec:
                           type: object
                           x-kubernetes-map-type: atomic
                         type: array
+                        x-kubernetes-list-type: atomic
                       labels:
                         additionalProperties:
                           type: string
@@ -644,6 +655,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               serviceAccount:
                 description: |-
                   ServiceAccount is the name of an already existing service account to use by the MCP server.
@@ -730,6 +744,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                       insecure:
                         default: false
                         description: Insecure indicates whether to use HTTP instead
@@ -761,6 +776,7 @@ spec:
                           samplingRate:
                             default: "0.05"
                             description: SamplingRate is the trace sampling rate (0.0-1.0)
+                            pattern: ^(0(\.\d+)?|1(\.0+)?)$
                             type: string
                         type: object
                       useLegacyAttributes:
@@ -857,6 +873,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             required:
             - image
             type: object

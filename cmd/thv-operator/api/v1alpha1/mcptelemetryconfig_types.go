@@ -56,6 +56,8 @@ type MCPTelemetryOTelConfig struct {
 	// SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.
 	// Use this for credential headers (e.g., API keys, bearer tokens) instead of
 	// embedding secrets in the headers field.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	SensitiveHeaders []SensitiveHeader `json:"sensitiveHeaders,omitempty"`
 
@@ -112,6 +114,8 @@ type MCPTelemetryConfigStatus struct {
 	ConfigHash string `json:"configHash,omitempty"`
 
 	// ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
@@ -120,7 +124,7 @@ type MCPTelemetryConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=mcpotel,categories=toolhive
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.spec.openTelemetry.endpoint`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 // +kubebuilder:printcolumn:name="Tracing",type=boolean,JSONPath=`.spec.openTelemetry.tracing.enabled`
 // +kubebuilder:printcolumn:name="Metrics",type=boolean,JSONPath=`.spec.openTelemetry.metrics.enabled`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

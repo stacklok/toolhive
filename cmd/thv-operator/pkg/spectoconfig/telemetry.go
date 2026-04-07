@@ -60,7 +60,7 @@ func ConvertTelemetryConfig(
 			if otel.Tracing.SamplingRate != "" {
 				// Parse sampling rate string to float64
 				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
-					otelSamplingRate = rate
+					otelSamplingRate = clampSamplingRate(rate)
 				} else {
 					logger := log.FromContext(ctx)
 					logger.Error(err, "Failed to parse sampling rate, using default",
@@ -128,7 +128,11 @@ func NormalizeMCPTelemetryConfig(
 
 		if otel.Tracing != nil {
 			config.TracingEnabled = otel.Tracing.Enabled
-			config.SamplingRate = otel.Tracing.SamplingRate
+			if otel.Tracing.SamplingRate != "" {
+				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
+					config.SetSamplingRateFromFloat(clampSamplingRate(rate))
+				}
+			}
 		}
 		if otel.Metrics != nil {
 			config.MetricsEnabled = otel.Metrics.Enabled
@@ -178,4 +182,15 @@ func NormalizeTelemetryConfig(config *telemetry.Config, defaultServiceName strin
 	}
 
 	return &normalized
+}
+
+// clampSamplingRate restricts a sampling rate to the valid range [0.0, 1.0].
+func clampSamplingRate(rate float64) float64 {
+	if rate < 0 {
+		return 0
+	}
+	if rate > 1 {
+		return 1
+	}
+	return rate
 }

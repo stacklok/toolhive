@@ -22,8 +22,8 @@ spec:
     - jsonPath: .spec.type
       name: Source
       type: string
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Valid
       type: string
     - jsonPath: .status.referencingWorkloads
       name: References
@@ -301,6 +301,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

@@ -1,3 +1,7 @@
+# DEPRECATED: Inline oidcConfig in incomingAuth will be removed in v1beta1.
+# Prefer using a shared MCPOIDCConfig with oidcConfigRef instead.
+# See vmcp_with_oidcconfig_ref.yaml for the recommended pattern.
+#
 # Example: VirtualMCPServer with Inline Incoming Auth Configuration
 #
 # This example demonstrates how to configure incoming authentication inline

@@ -108,6 +108,7 @@ spec:
                       - name
                       type: object
                     type: array
+                    x-kubernetes-list-type: atomic
                   issuer:
                     description: |-
                       Issuer is the issuer identifier for this authorization server.
@@ -136,6 +137,7 @@ spec:
                       type: object
                     maxItems: 5
                     type: array
+                    x-kubernetes-list-type: atomic
                   storage:
                     description: |-
                       Storage configures the storage backend for the embedded auth server.
@@ -214,6 +216,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               sentinelService:
                                 description: |-
                                   SentinelService enables automatic discovery from a Kubernetes Service.
@@ -397,6 +400,7 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             tokenEndpoint:
                               description: TokenEndpoint is the URL for the OAuth
                                 token endpoint.
@@ -464,6 +468,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     nameFields:
                                       description: |-
                                         NameFields is an ordered list of field names to try for the display name.
@@ -472,6 +477,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     subjectFields:
                                       description: |-
                                         SubjectFields is an ordered list of field names to try for the user ID.
@@ -480,6 +486,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                   type: object
                                 httpMethod:
                                   description: |-
@@ -541,6 +548,7 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             userInfoOverride:
                               description: |-
                                 UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
@@ -573,6 +581,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     nameFields:
                                       description: |-
                                         NameFields is an ordered list of field names to try for the display name.
@@ -581,6 +590,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     subjectFields:
                                       description: |-
                                         SubjectFields is an ordered list of field names to try for the user ID.
@@ -589,6 +599,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                   type: object
                                 httpMethod:
                                   description: |-
@@ -618,6 +629,9 @@ spec:
                       type: object
                     minItems: 1
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                 required:
                 - issuer
                 - upstreamProviders
@@ -1794,6 +1808,7 @@ spec:
                               type: string
                             minItems: 1
                             type: array
+                            x-kubernetes-list-type: atomic
                         required:
                         - policies
                         type: object
@@ -1966,6 +1981,7 @@ spec:
                             items:
                               type: string
                             type: array
+                            x-kubernetes-list-type: atomic
                         required:
                         - issuer
                         type: object
@@ -2061,6 +2077,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                     required:
                     - audience
                     - name
@@ -2257,6 +2274,7 @@ spec:
                 description: |-
                   BackendCount is the number of healthy/ready backends
                   (excludes unavailable, degraded, and unknown backends)
+                format: int32
                 type: integer
               conditions:
                 description: Conditions represent the latest available observations
@@ -2378,6 +2396,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               message:
                 description: Message provides additional information about the current
                   phase

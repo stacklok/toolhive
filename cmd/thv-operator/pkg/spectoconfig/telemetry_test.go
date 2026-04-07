@@ -450,3 +450,111 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertTelemetryConfig_ClampsSamplingRate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		samplingRate string
+		expected     string
+	}{
+		{
+			name:         "value above 1.0 is clamped to 1",
+			samplingRate: "42",
+			expected:     "1",
+		},
+		{
+			name:         "negative value is clamped to 0",
+			samplingRate: "-1",
+			expected:     "0",
+		},
+		{
+			name:         "value of 1.5 is clamped to 1",
+			samplingRate: "1.5",
+			expected:     "1",
+		},
+		{
+			name:         "valid value 0.5 is preserved",
+			samplingRate: "0.5",
+			expected:     "0.5",
+		},
+		{
+			name:         "boundary value 0 is preserved",
+			samplingRate: "0",
+			expected:     "0",
+		},
+		{
+			name:         "boundary value 1 is preserved",
+			samplingRate: "1",
+			expected:     "1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			input := &v1alpha1.TelemetryConfig{
+				OpenTelemetry: &v1alpha1.OpenTelemetryConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
+						Enabled:      true,
+						SamplingRate: tt.samplingRate,
+					},
+				},
+			}
+			result := ConvertTelemetryConfig(ctx, input, "test-server")
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected, result.SamplingRate)
+		})
+	}
+}
+
+func TestNormalizeMCPTelemetryConfig_ClampsSamplingRate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		samplingRate string
+		expected     string
+	}{
+		{
+			name:         "value above 1.0 is clamped to 1",
+			samplingRate: "42",
+			expected:     "1",
+		},
+		{
+			name:         "negative value is clamped to 0",
+			samplingRate: "-1",
+			expected:     "0",
+		},
+		{
+			name:         "valid value is preserved",
+			samplingRate: "0.3",
+			expected:     "0.3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			spec := &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
+						Enabled:      true,
+						SamplingRate: tt.samplingRate,
+					},
+				},
+			}
+			result := NormalizeMCPTelemetryConfig(spec, "test-service", "default")
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected, result.SamplingRate)
+		})
+	}
+}

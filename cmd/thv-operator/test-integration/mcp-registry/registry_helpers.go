@@ -245,10 +245,21 @@ func (rb *RegistryBuilder) WithTagExcludeFilter(tags []string) *RegistryBuilder 
 	return rb
 }
 
-// Build returns the constructed MCPRegistry
+// Build returns the constructed MCPRegistry.
+// It syncs the default registry view's source list with the actual source names.
 func (rb *RegistryBuilder) Build() *mcpv1alpha1.MCPRegistry {
 	rb.ensureSourceConfig()
 	rb.ensureRegistryView()
+
+	// Sync the default registry view's source list with actual source names
+	if len(rb.registry.Spec.Registries) == 1 && rb.registry.Spec.Registries[0].Name == "default" {
+		sourceNames := make([]string, 0, len(rb.registry.Spec.Sources))
+		for _, s := range rb.registry.Spec.Sources {
+			sourceNames = append(sourceNames, s.Name)
+		}
+		rb.registry.Spec.Registries[0].Sources = sourceNames
+	}
+
 	return rb.registry.DeepCopy()
 }
 

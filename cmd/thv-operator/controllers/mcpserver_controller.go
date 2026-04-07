@@ -181,6 +181,32 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Check if the MCPServer instance is marked to be deleted — do this before
+	// any validation or external API calls to avoid unnecessary work during deletion
+	if mcpServer.GetDeletionTimestamp() != nil {
+		if controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
+			if err := r.finalizeMCPServer(ctx, mcpServer); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			controllerutil.RemoveFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
+			err := r.Update(ctx, mcpServer)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer for this CR
+	if !controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
+		controllerutil.AddFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
+		err = r.Update(ctx, mcpServer)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Check if the restart annotation has been updated and trigger a rolling restart if needed
 	if shouldTriggerRestart, err := r.handleRestartAnnotation(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle restart annotation")
@@ -303,35 +329,6 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Update status to persist the condition
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after image validation")
-		}
-	}
-
-	// Check if the MCPServer instance is marked to be deleted
-	if mcpServer.GetDeletionTimestamp() != nil {
-		// The object is being deleted
-		if controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
-			// Run finalization logic. If the finalization logic fails,
-			// don't remove the finalizer so that we can retry during the next reconciliation.
-			if err := r.finalizeMCPServer(ctx, mcpServer); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
-			controllerutil.RemoveFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
-			err := r.Update(ctx, mcpServer)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Add finalizer for this CR
-	if !controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
-		controllerutil.AddFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
-		err = r.Update(ctx, mcpServer)
-		if err != nil {
-			return ctrl.Result{}, err
 		}
 	}
 

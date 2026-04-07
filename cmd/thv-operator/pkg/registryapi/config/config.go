@@ -350,9 +350,6 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 	return configMap, nil
 }
 
-// DefaultSourceName is the name of the auto-injected default Kubernetes source
-const DefaultSourceName = "default"
-
 func (cm *configManager) BuildConfig() (*Config, error) {
 	config := Config{}
 
@@ -381,18 +378,7 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 	}
 
 	// Build source configs
-	hasKubernetesSource := hasKubernetesSourceType(mcpRegistry.Spec.Sources)
-	sources := make([]SourceConfig, 0, len(mcpRegistry.Spec.Sources)+1)
-
-	// Auto-inject default Kubernetes source if none defined
-	if !hasKubernetesSource {
-		sources = append(sources, SourceConfig{
-			Name:       DefaultSourceName,
-			Format:     mcpv1alpha1.RegistryFormatUpstream,
-			Kubernetes: &KubernetesConfig{},
-		})
-	}
-
+	sources := make([]SourceConfig, 0, len(mcpRegistry.Spec.Sources))
 	for _, sourceSpec := range mcpRegistry.Spec.Sources {
 		sourceConfig, err := buildSourceConfig(&sourceSpec)
 		if err != nil {
@@ -410,17 +396,11 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 
 	// Build registry view configs
 	registries := make([]RegistryConfig, 0, len(mcpRegistry.Spec.Registries))
-	for i, regSpec := range mcpRegistry.Spec.Registries {
+	for _, regSpec := range mcpRegistry.Spec.Registries {
 		regConfig, err := buildRegistryViewConfig(&regSpec, sourceNames)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build registry configuration for %q: %w", regSpec.Name, err)
 		}
-
-		// If we auto-injected a default Kubernetes source, prepend it to the first registry's sources
-		if !hasKubernetesSource && i == 0 {
-			regConfig.Sources = append([]string{DefaultSourceName}, regConfig.Sources...)
-		}
-
 		registries = append(registries, *regConfig)
 	}
 	config.Registries = registries
@@ -466,16 +446,6 @@ func validateRegistryViewNames(registries []mcpv1alpha1.MCPRegistryViewConfig) e
 		seen[reg.Name] = true
 	}
 	return nil
-}
-
-// hasKubernetesSourceType checks if any source has a Kubernetes type
-func hasKubernetesSourceType(sources []mcpv1alpha1.MCPRegistrySourceConfig) bool {
-	for _, s := range sources {
-		if s.Kubernetes != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func buildFilePath(sourceName string) *FileConfig {

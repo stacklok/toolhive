@@ -244,23 +244,19 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified one
-		assert.Equal(t, "configmap-source", config.Sources[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[1].Format)
-		require.NotNil(t, config.Sources[1].File)
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "configmap-source", RegistryJSONFileName), config.Sources[1].File.Path)
-		require.NotNil(t, config.Sources[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Sources[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified one
+		assert.Equal(t, "configmap-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].File)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "configmap-source", RegistryJSONFileName), config.Sources[0].File.Path)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
 		// Verify registry view
 		require.Len(t, config.Registries, 1)
 		assert.Equal(t, "configmap-registry", config.Registries[0].Name)
-		// Default source should be prepended to first registry's sources
-		assert.Equal(t, []string{DefaultSourceName, "configmap-source"}, config.Registries[0].Sources)
+		assert.Equal(t, []string{"configmap-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -412,25 +408,22 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified git source
-		assert.Equal(t, "git-branch-source", config.Sources[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[1].Format)
-		require.NotNil(t, config.Sources[1].Git)
-		assert.Equal(t, "https://github.com/example/repo.git", config.Sources[1].Git.Repository)
-		assert.Equal(t, "main", config.Sources[1].Git.Branch)
-		assert.Empty(t, config.Sources[1].Git.Tag)
-		assert.Empty(t, config.Sources[1].Git.Commit)
-		require.NotNil(t, config.Sources[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Sources[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source
+		assert.Equal(t, "git-branch-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].Git)
+		assert.Equal(t, "https://github.com/example/repo.git", config.Sources[0].Git.Repository)
+		assert.Equal(t, "main", config.Sources[0].Git.Branch)
+		assert.Empty(t, config.Sources[0].Git.Tag)
+		assert.Empty(t, config.Sources[0].Git.Commit)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
 		// Verify registry view
 		require.Len(t, config.Registries, 1)
 		assert.Equal(t, "git-branch-registry", config.Registries[0].Name)
-		assert.Equal(t, []string{DefaultSourceName, "git-branch-source"}, config.Registries[0].Sources)
+		assert.Equal(t, []string{"git-branch-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -464,25 +457,22 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified git source
-		assert.Equal(t, "git-tag-source", config.Sources[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[1].Format)
-		require.NotNil(t, config.Sources[1].Git)
-		assert.Equal(t, "git@github.com:example/repo.git", config.Sources[1].Git.Repository)
-		assert.Empty(t, config.Sources[1].Git.Branch)
-		assert.Equal(t, "v1.2.3", config.Sources[1].Git.Tag)
-		assert.Empty(t, config.Sources[1].Git.Commit)
-		require.NotNil(t, config.Sources[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Sources[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source
+		assert.Equal(t, "git-tag-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].Git)
+		assert.Equal(t, "git@github.com:example/repo.git", config.Sources[0].Git.Repository)
+		assert.Empty(t, config.Sources[0].Git.Branch)
+		assert.Equal(t, "v1.2.3", config.Sources[0].Git.Tag)
+		assert.Empty(t, config.Sources[0].Git.Commit)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
 		// Verify registry view
 		require.Len(t, config.Registries, 1)
 		assert.Equal(t, "git-tag-registry", config.Registries[0].Name)
-		assert.Equal(t, []string{DefaultSourceName, "git-tag-source"}, config.Registries[0].Sources)
+		assert.Equal(t, []string{"git-tag-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -516,25 +506,22 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified git source
-		assert.Equal(t, "git-commit-source", config.Sources[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[1].Format)
-		require.NotNil(t, config.Sources[1].Git)
-		assert.Equal(t, "https://github.com/example/repo.git", config.Sources[1].Git.Repository)
-		assert.Empty(t, config.Sources[1].Git.Branch)
-		assert.Empty(t, config.Sources[1].Git.Tag)
-		assert.Equal(t, "abc123def456", config.Sources[1].Git.Commit)
-		require.NotNil(t, config.Sources[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Sources[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source
+		assert.Equal(t, "git-commit-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].Git)
+		assert.Equal(t, "https://github.com/example/repo.git", config.Sources[0].Git.Repository)
+		assert.Empty(t, config.Sources[0].Git.Branch)
+		assert.Empty(t, config.Sources[0].Git.Tag)
+		assert.Equal(t, "abc123def456", config.Sources[0].Git.Commit)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
 		// Verify registry view
 		require.Len(t, config.Registries, 1)
 		assert.Equal(t, "git-commit-registry", config.Registries[0].Name)
-		assert.Equal(t, []string{DefaultSourceName, "git-commit-source"}, config.Registries[0].Sources)
+		assert.Equal(t, []string{"git-commit-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -582,14 +569,14 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// Second source should be the user-specified git source with auth
-		assert.Equal(t, "private-git-source", config.Sources[1].Name)
-		require.NotNil(t, config.Sources[1].Git)
-		require.NotNil(t, config.Sources[1].Git.Auth)
-		assert.Equal(t, "git", config.Sources[1].Git.Auth.Username)
-		assert.Equal(t, "/secrets/git-credentials/token", config.Sources[1].Git.Auth.PasswordFile)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source with auth
+		assert.Equal(t, "private-git-source", config.Sources[0].Name)
+		require.NotNil(t, config.Sources[0].Git)
+		require.NotNil(t, config.Sources[0].Git.Auth)
+		assert.Equal(t, "git", config.Sources[0].Git.Auth.Username)
+		assert.Equal(t, "/secrets/git-credentials/token", config.Sources[0].Git.Auth.PasswordFile)
 	})
 
 	t.Run("git auth missing password secret key", func(t *testing.T) {
@@ -797,25 +784,22 @@ func TestBuildConfig_APISource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified API source
-		assert.Equal(t, "api-source", config.Sources[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[1].Format)
-		require.NotNil(t, config.Sources[1].API)
-		assert.Equal(t, "https://api.example.com/registry", config.Sources[1].API.Endpoint)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified API source
+		assert.Equal(t, "api-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].API)
+		assert.Equal(t, "https://api.example.com/registry", config.Sources[0].API.Endpoint)
 		// Verify that other source types are nil
-		assert.Nil(t, config.Sources[1].File)
-		assert.Nil(t, config.Sources[1].Git)
-		require.NotNil(t, config.Sources[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Sources[1].SyncPolicy.Interval)
+		assert.Nil(t, config.Sources[0].File)
+		assert.Nil(t, config.Sources[0].Git)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
 		// Verify registry view
 		require.Len(t, config.Registries, 1)
 		assert.Equal(t, "api-registry", config.Registries[0].Name)
-		assert.Equal(t, []string{DefaultSourceName, "api-source"}, config.Registries[0].Sources)
+		assert.Equal(t, []string{"api-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -854,13 +838,10 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should have nil sync policy
-		assert.Nil(t, config.Sources[1].SyncPolicy)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have nil sync policy
+		assert.Nil(t, config.Sources[0].SyncPolicy)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -929,14 +910,11 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should have valid sync policy
-		require.NotNil(t, config.Sources[1].SyncPolicy)
-		assert.Equal(t, "30m", config.Sources[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have valid sync policy
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "30m", config.Sources[0].SyncPolicy.Interval)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -978,13 +956,10 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
 		// Filter should be nil when not provided for the user-specified source
-		assert.Nil(t, config.Sources[1].Filter)
+		assert.Nil(t, config.Sources[0].Filter)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -1025,18 +1000,15 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should have the filter
-		require.NotNil(t, config.Sources[1].Filter)
-		require.NotNil(t, config.Sources[1].Filter.Names)
-		assert.Equal(t, []string{"server-*", "tool-*"}, config.Sources[1].Filter.Names.Include)
-		assert.Equal(t, []string{"*-deprecated", "*-test"}, config.Sources[1].Filter.Names.Exclude)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
+		require.NotNil(t, config.Sources[0].Filter.Names)
+		assert.Equal(t, []string{"server-*", "tool-*"}, config.Sources[0].Filter.Names.Include)
+		assert.Equal(t, []string{"*-deprecated", "*-test"}, config.Sources[0].Filter.Names.Exclude)
 		// Tags should be nil when not provided
-		assert.Nil(t, config.Sources[1].Filter.Tags)
+		assert.Nil(t, config.Sources[0].Filter.Tags)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -1076,18 +1048,15 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should have the filter
-		require.NotNil(t, config.Sources[1].Filter)
-		require.NotNil(t, config.Sources[1].Filter.Tags)
-		assert.Equal(t, []string{"stable", "production", "v1.*"}, config.Sources[1].Filter.Tags.Include)
-		assert.Equal(t, []string{"beta", "alpha", "experimental"}, config.Sources[1].Filter.Tags.Exclude)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
+		require.NotNil(t, config.Sources[0].Filter.Tags)
+		assert.Equal(t, []string{"stable", "production", "v1.*"}, config.Sources[0].Filter.Tags.Include)
+		assert.Equal(t, []string{"beta", "alpha", "experimental"}, config.Sources[0].Filter.Tags.Exclude)
 		// Names should be nil when not provided
-		assert.Nil(t, config.Sources[1].Filter.Names)
+		assert.Nil(t, config.Sources[0].Filter.Names)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -1129,20 +1098,17 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should have the filter
-		require.NotNil(t, config.Sources[1].Filter)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
 		// Both name filters and tags should be present
-		require.NotNil(t, config.Sources[1].Filter.Names)
-		assert.Equal(t, []string{"mcp-*"}, config.Sources[1].Filter.Names.Include)
-		assert.Equal(t, []string{"*-internal"}, config.Sources[1].Filter.Names.Exclude)
-		require.NotNil(t, config.Sources[1].Filter.Tags)
-		assert.Equal(t, []string{"latest", "stable"}, config.Sources[1].Filter.Tags.Include)
-		assert.Equal(t, []string{"dev", "test"}, config.Sources[1].Filter.Tags.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Names)
+		assert.Equal(t, []string{"mcp-*"}, config.Sources[0].Filter.Names.Include)
+		assert.Equal(t, []string{"*-internal"}, config.Sources[0].Filter.Names.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Tags)
+		assert.Equal(t, []string{"latest", "stable"}, config.Sources[0].Filter.Tags.Include)
+		assert.Equal(t, []string{"dev", "test"}, config.Sources[0].Filter.Tags.Exclude)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -1187,20 +1153,17 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should have the filter
-		require.NotNil(t, config.Sources[1].Filter)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
 		// Empty lists should still be set
-		require.NotNil(t, config.Sources[1].Filter.Names)
-		assert.Empty(t, config.Sources[1].Filter.Names.Include)
-		assert.Empty(t, config.Sources[1].Filter.Names.Exclude)
-		require.NotNil(t, config.Sources[1].Filter.Tags)
-		assert.Empty(t, config.Sources[1].Filter.Tags.Include)
-		assert.Empty(t, config.Sources[1].Filter.Tags.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Names)
+		assert.Empty(t, config.Sources[0].Filter.Names.Include)
+		assert.Empty(t, config.Sources[0].Filter.Names.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Tags)
+		assert.Empty(t, config.Sources[0].Filter.Tags.Include)
+		assert.Empty(t, config.Sources[0].Filter.Tags.Exclude)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -1345,36 +1308,31 @@ func TestBuildConfig_MultipleSources(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, config)
-	// Should have 3 sources: default kubernetes + 2 user-specified
-	require.Len(t, config.Sources, 3)
+	// Should have 2 sources: user-specified
+	require.Len(t, config.Sources, 2)
 
-	// First source should be the default kubernetes source
-	assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-	require.NotNil(t, config.Sources[0].Kubernetes)
+	// Verify first source
+	assert.Equal(t, "source1", config.Sources[0].Name)
+	require.NotNil(t, config.Sources[0].File)
+	assert.Equal(t, filepath.Join(RegistryJSONFilePath, "source1", RegistryJSONFileName), config.Sources[0].File.Path)
+	require.NotNil(t, config.Sources[0].SyncPolicy)
+	assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
+	assert.Nil(t, config.Sources[0].Filter)
 
-	// Verify second source (first user-specified)
-	assert.Equal(t, "source1", config.Sources[1].Name)
-	require.NotNil(t, config.Sources[1].File)
-	assert.Equal(t, filepath.Join(RegistryJSONFilePath, "source1", RegistryJSONFileName), config.Sources[1].File.Path)
+	// Verify second source
+	assert.Equal(t, "source2", config.Sources[1].Name)
+	require.NotNil(t, config.Sources[1].Git)
+	assert.Equal(t, "https://github.com/example/repo.git", config.Sources[1].Git.Repository)
 	require.NotNil(t, config.Sources[1].SyncPolicy)
-	assert.Equal(t, "1h", config.Sources[1].SyncPolicy.Interval)
-	assert.Nil(t, config.Sources[1].Filter)
-
-	// Verify third source (second user-specified)
-	assert.Equal(t, "source2", config.Sources[2].Name)
-	require.NotNil(t, config.Sources[2].Git)
-	assert.Equal(t, "https://github.com/example/repo.git", config.Sources[2].Git.Repository)
-	require.NotNil(t, config.Sources[2].SyncPolicy)
-	assert.Equal(t, "30m", config.Sources[2].SyncPolicy.Interval)
-	require.NotNil(t, config.Sources[2].Filter)
-	require.NotNil(t, config.Sources[2].Filter.Names)
-	assert.Equal(t, []string{"server-*"}, config.Sources[2].Filter.Names.Include)
+	assert.Equal(t, "30m", config.Sources[1].SyncPolicy.Interval)
+	require.NotNil(t, config.Sources[1].Filter)
+	require.NotNil(t, config.Sources[1].Filter.Names)
+	assert.Equal(t, []string{"server-*"}, config.Sources[1].Filter.Names.Include)
 
 	// Verify registry view
 	require.Len(t, config.Registries, 1)
 	assert.Equal(t, "registry1", config.Registries[0].Name)
-	// Default source should be prepended to first registry's sources
-	assert.Equal(t, []string{DefaultSourceName, "source1", "source2"}, config.Registries[0].Sources)
+	assert.Equal(t, []string{"source1", "source2"}, config.Registries[0].Sources)
 	assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 }
 
@@ -1409,17 +1367,14 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified PVC source
-		assert.Equal(t, "pvc-source", config.Sources[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[1].Format)
-		require.NotNil(t, config.Sources[1].File)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified PVC source
+		assert.Equal(t, "pvc-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].File)
 		// Path: /config/registry/{sourceName}/{pvcRef.path}
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "pvc-source", RegistryJSONFileName), config.Sources[1].File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "pvc-source", RegistryJSONFileName), config.Sources[0].File.Path)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -1452,16 +1407,13 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified PVC source
-		assert.Equal(t, "production-source", config.Sources[1].Name)
-		require.NotNil(t, config.Sources[1].File)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified PVC source
+		assert.Equal(t, "production-source", config.Sources[0].Name)
+		require.NotNil(t, config.Sources[0].File)
 		// Path: /config/registry/{sourceName}/{pvcRef.path}
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "production-source", "production/v1/servers.json"), config.Sources[1].File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "production-source", "production/v1/servers.json"), config.Sources[0].File.Path)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -1502,20 +1454,17 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 sources: default kubernetes + user-specified
-		require.Len(t, config.Sources, 2)
-		// First source should be the default kubernetes source
-		assert.Equal(t, DefaultSourceName, config.Sources[0].Name)
-		require.NotNil(t, config.Sources[0].Kubernetes)
-		// Second source should be the user-specified PVC source
-		assert.Equal(t, "filtered-pvc-source", config.Sources[1].Name)
-		require.NotNil(t, config.Sources[1].File)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified PVC source
+		assert.Equal(t, "filtered-pvc-source", config.Sources[0].Name)
+		require.NotNil(t, config.Sources[0].File)
 		// Verify filter is preserved
-		require.NotNil(t, config.Sources[1].Filter)
-		require.NotNil(t, config.Sources[1].Filter.Names)
-		assert.Equal(t, []string{"prod-*"}, config.Sources[1].Filter.Names.Include)
-		require.NotNil(t, config.Sources[1].Filter.Tags)
-		assert.Equal(t, []string{"production"}, config.Sources[1].Filter.Tags.Include)
+		require.NotNil(t, config.Sources[0].Filter)
+		require.NotNil(t, config.Sources[0].Filter.Names)
+		assert.Equal(t, []string{"prod-*"}, config.Sources[0].Filter.Names.Include)
+		require.NotNil(t, config.Sources[0].Filter.Tags)
+		assert.Equal(t, []string{"production"}, config.Sources[0].Filter.Tags.Include)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }

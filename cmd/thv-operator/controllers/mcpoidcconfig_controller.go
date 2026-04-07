@@ -174,7 +174,7 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 				"referencingWorkloads", referencingWorkloads)
 
 			meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-				Type:               "DeletionBlocked",
+				Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
 				Status:             metav1.ConditionTrue,
 				Reason:             "ReferencedByWorkloads",
 				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),

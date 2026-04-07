@@ -20,7 +20,7 @@
 //	kubeClient := kubernetes.NewClient(ctrlClient, scheme)
 //
 //	// Access secrets operations via the Secrets field
-//	value, err := kubeClient.Secrets.GetValue(ctx, "default", secretKeySelector)
+//	value, err := kubeClient.Secrets.GetValue(ctx, "default", "secret-name", "secret-key")
 //
 //	// Upsert a secret with owner reference
 //	result, err := kubeClient.Secrets.UpsertWithOwnerReference(ctx, secret, ownerObject)

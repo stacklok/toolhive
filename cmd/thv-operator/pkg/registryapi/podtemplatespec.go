@@ -347,7 +347,7 @@ func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
 // Parameters:
 //   - containerName: The name of the container to add the mount to
 //   - secretRef: The secret key selector referencing the password secret
-func WithGitAuthMount(containerName string, secretRef corev1.SecretKeySelector) PodTemplateSpecOption {
+func WithGitAuthMount(containerName string, secretRef mcpv1alpha1.SecretKeyRef) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
 		// Both Name and Key are validated as required by buildGitAuthConfig()
 		if secretRef.Name == "" || secretRef.Key == "" {

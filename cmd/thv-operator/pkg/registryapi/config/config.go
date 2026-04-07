@@ -546,7 +546,7 @@ func buildGitAuthConfig(auth *mcpv1alpha1.GitAuthConfig) (*GitAuthConfig, error)
 
 // buildGitPasswordFilePath constructs the file path where a git password secret will be mounted.
 // The secretRef must have both Name and Key set (validated by buildGitAuthConfig).
-func buildGitPasswordFilePath(secretRef *corev1.SecretKeySelector) string {
+func buildGitPasswordFilePath(secretRef *mcpv1alpha1.SecretKeyRef) string {
 	if secretRef == nil {
 		return ""
 	}
@@ -761,7 +761,7 @@ func buildOAuthProviderConfig(
 }
 
 // buildSecretFilePath constructs the file path where a secret will be mounted
-func buildSecretFilePath(secretRef *corev1.SecretKeySelector) string {
+func buildSecretFilePath(secretRef *mcpv1alpha1.SecretKeyRef) string {
 	if secretRef == nil {
 		return ""
 	}

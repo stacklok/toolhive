@@ -107,11 +107,9 @@ func (rb *RegistryBuilder) WithGitAuth(username, secretName, secretKey string) *
 	}
 	registryConfig.Git.Auth = &mcpv1alpha1.GitAuthConfig{
 		Username: username,
-		PasswordSecretRef: corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: secretName,
-			},
-			Key: secretKey,
+		PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+			Name: secretName,
+			Key:  secretKey,
 		},
 	}
 	return rb

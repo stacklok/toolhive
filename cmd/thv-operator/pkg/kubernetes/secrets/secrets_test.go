@@ -140,14 +140,7 @@ func TestGetValue(t *testing.T) {
 			Build()
 
 		client := NewClient(fakeClient, scheme)
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "test-secret",
-			},
-			Key: "password",
-		}
-
-		value, err := client.GetValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", "test-secret", "password")
 
 		require.NoError(t, err)
 		assert.Equal(t, "super-secret-password", value)
@@ -163,14 +156,7 @@ func TestGetValue(t *testing.T) {
 			Build()
 
 		client := NewClient(fakeClient, scheme)
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "non-existent-secret",
-			},
-			Key: "password",
-		}
-
-		value, err := client.GetValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", "non-existent-secret", "password")
 
 		require.Error(t, err)
 		assert.Empty(t, value)
@@ -198,14 +184,7 @@ func TestGetValue(t *testing.T) {
 			Build()
 
 		client := NewClient(fakeClient, scheme)
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "test-secret",
-			},
-			Key: "non-existent-key",
-		}
-
-		value, err := client.GetValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", "test-secret", "non-existent-key")
 
 		require.Error(t, err)
 		assert.Empty(t, value)
@@ -243,14 +222,7 @@ func TestGetValue(t *testing.T) {
 			Build()
 
 		client := NewClient(fakeClient, scheme)
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "test-secret",
-			},
-			Key: "password",
-		}
-
-		value, err := client.GetValue(ctx, "namespace2", secretRef)
+		value, err := client.GetValue(ctx, "namespace2", "test-secret", "password")
 
 		require.NoError(t, err)
 		assert.Equal(t, "password2", value)
@@ -277,14 +249,7 @@ func TestGetValue(t *testing.T) {
 			Build()
 
 		client := NewClient(fakeClient, scheme)
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "test-secret",
-			},
-			Key: "empty-key",
-		}
-
-		value, err := client.GetValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", "test-secret", "empty-key")
 
 		require.NoError(t, err)
 		assert.Empty(t, value)

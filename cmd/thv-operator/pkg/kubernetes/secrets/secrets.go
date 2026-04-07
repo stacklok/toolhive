@@ -45,17 +45,16 @@ func (c *Client) Get(ctx context.Context, name, namespace string) (*corev1.Secre
 }
 
 // GetValue retrieves a specific key's value from a Kubernetes Secret.
-// Uses a SecretKeySelector to identify the secret name and key.
 // Returns the value as a string, or an error if the secret or key is not found.
-func (c *Client) GetValue(ctx context.Context, namespace string, secretRef corev1.SecretKeySelector) (string, error) {
-	secret, err := c.Get(ctx, secretRef.Name, namespace)
+func (c *Client) GetValue(ctx context.Context, namespace, name, key string) (string, error) {
+	secret, err := c.Get(ctx, name, namespace)
 	if err != nil {
 		return "", err
 	}
 
-	value, exists := secret.Data[secretRef.Key]
+	value, exists := secret.Data[key]
 	if !exists {
-		return "", fmt.Errorf("key %s not found in secret %s", secretRef.Key, secretRef.Name)
+		return "", fmt.Errorf("key %s not found in secret %s", key, name)
 	}
 
 	return string(value), nil

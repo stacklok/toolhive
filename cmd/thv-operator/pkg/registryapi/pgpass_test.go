@@ -256,13 +256,13 @@ func baseMCPRegistry(t *testing.T, opts ...func(*mcpv1alpha1.MCPRegistry)) *mcpv
 				Database:      "test_db",
 				User:          "app_user",
 				MigrationUser: "migration_user",
-				DBAppUserPasswordSecretRef: corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "app-secret"},
-					Key:                  "password",
+				DBAppUserPasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+					Name: "app-secret",
+					Key:  "password",
 				},
-				DBMigrationUserPasswordSecretRef: corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "migration-secret"},
-					Key:                  "password",
+				DBMigrationUserPasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+					Name: "migration-secret",
+					Key:  "password",
 				},
 			},
 			Registries: []mcpv1alpha1.MCPRegistryConfig{

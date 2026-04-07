@@ -178,7 +178,7 @@ type GitAuthConfig struct {
 	//     key: token
 	//
 	// +kubebuilder:validation:Required
-	PasswordSecretRef corev1.SecretKeySelector `json:"passwordSecretRef"`
+	PasswordSecretRef SecretKeyRef `json:"passwordSecretRef"`
 }
 
 // APISource defines API source configuration for ToolHive Registry APIs
@@ -344,14 +344,14 @@ type MCPRegistryDatabaseConfig struct {
 	// that is mounted to the registry API container.
 	//
 	// +kubebuilder:validation:Required
-	DBAppUserPasswordSecretRef corev1.SecretKeySelector `json:"dbAppUserPasswordSecretRef"`
+	DBAppUserPasswordSecretRef SecretKeyRef `json:"dbAppUserPasswordSecretRef"`
 
 	// DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.
 	// The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file
 	// that is mounted to the registry API container.
 	//
 	// +kubebuilder:validation:Required
-	DBMigrationUserPasswordSecretRef corev1.SecretKeySelector `json:"dbMigrationUserPasswordSecretRef"`
+	DBMigrationUserPasswordSecretRef SecretKeyRef `json:"dbMigrationUserPasswordSecretRef"`
 }
 
 // MCPRegistryAuthMode represents the authentication mode for the registry API server
@@ -441,7 +441,7 @@ type MCPRegistryOAuthProviderConfig struct {
 	// ClientSecretRef is a reference to a Secret containing the client secret
 	// The secret should have a key "clientSecret" containing the secret value
 	// +optional
-	ClientSecretRef *corev1.SecretKeySelector `json:"clientSecretRef,omitempty"`
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
 	// CACertRef is a reference to a ConfigMap containing the CA certificate bundle
 	// for verifying the provider's TLS certificate.
@@ -458,7 +458,7 @@ type MCPRegistryOAuthProviderConfig struct {
 	// to OIDC/JWKS endpoints. Useful when the OIDC discovery or JWKS endpoint requires authentication.
 	// Example: ServiceAccount token for Kubernetes API server
 	// +optional
-	AuthTokenRef *corev1.SecretKeySelector `json:"authTokenRef,omitempty"`
+	AuthTokenRef *SecretKeyRef `json:"authTokenRef,omitempty"`
 
 	// AuthTokenFile is the path to a file containing a bearer token for authenticating to OIDC/JWKS endpoints.
 	// Useful when the OIDC discovery or JWKS endpoint requires authentication.

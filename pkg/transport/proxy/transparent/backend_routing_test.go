@@ -5,9 +5,11 @@ package transparent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -288,4 +290,113 @@ func TestRoundTripStoresBackendURLOnInitialize(t *testing.T) {
 	backendURL, ok := sess.GetMetadataValue(sessionMetadataBackendURL)
 	require.True(t, ok, "session should have backend_url metadata")
 	assert.Equal(t, backend.URL, backendURL)
+}
+
+// TestWithPodHeadlessServiceStoresPodURL verifies that when WithPodHeadlessService is configured,
+// an initialize response causes the session's backend_url to be a pod-specific headless DNS URL
+// (e.g. http://myserver-N.mcp-myserver-headless.default.svc.cluster.local:<port>) rather than
+// the ClusterIP targetURI.
+func TestWithPodHeadlessServiceStoresPodURL(t *testing.T) {
+	t.Parallel()
+
+	sessionID := uuid.New().String()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Mcp-Session-Id", sessionID)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	const (
+		statefulSetName = "myserver"
+		serviceName     = "mcp-myserver-headless"
+		namespace       = "default"
+		replicas        = int32(3)
+	)
+
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, backend.URL,
+		nil, nil, nil,
+		false, false, "sse",
+		nil, nil, "", false,
+		nil,
+		WithPodHeadlessService(statefulSetName, serviceName, namespace, replicas),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		_ = proxy.Stop(stopCtx)
+	})
+	require.NoError(t, proxy.Start(ctx))
+	addr := proxy.listener.Addr().String()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+addr+"/mcp",
+		strings.NewReader(`{"method":"initialize"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	sess, ok := proxy.sessionManager.Get(normalizeSessionID(sessionID))
+	require.True(t, ok, "session should have been created by RoundTrip")
+	backendURL, ok := sess.GetMetadataValue(sessionMetadataBackendURL)
+	require.True(t, ok, "session should have backend_url metadata")
+
+	// The URL must use headless DNS, not the ClusterIP backend.URL.
+	assert.NotEqual(t, backend.URL, backendURL, "backend_url should be pod-specific, not ClusterIP")
+	assert.Contains(t, backendURL, ".mcp-myserver-headless.default.svc.cluster.local",
+		"backend_url should contain the headless service DNS suffix")
+	assert.Contains(t, backendURL, "myserver-",
+		"backend_url should contain the StatefulSet pod name prefix")
+
+	// Ordinal must be in range [0, replicas).
+	parsedURL, err := url.Parse(backendURL)
+	require.NoError(t, err)
+	host := parsedURL.Hostname()
+	// host is e.g. "myserver-2.mcp-myserver-headless.default.svc.cluster.local"
+	var ordinal int
+	n, err := fmt.Sscanf(host, "myserver-%d.", &ordinal)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	assert.GreaterOrEqual(t, ordinal, 0)
+	assert.Less(t, ordinal, int(replicas))
+}
+
+// TestWithPodHeadlessServiceNoopWhenReplicasOne verifies that WithPodHeadlessService is a no-op
+// when replicas <= 1, preserving the existing single-replica behavior.
+func TestWithPodHeadlessServiceNoopWhenReplicasOne(t *testing.T) {
+	t.Parallel()
+
+	sessionID := uuid.New().String()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Mcp-Session-Id", sessionID)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	proxy, addr := startProxy(t, backend.URL)
+	// Apply the option after creation to simulate replicas=1 (no-op)
+	WithPodHeadlessService("myserver", "mcp-myserver-headless", "default", 1)(proxy)
+
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+addr+"/mcp",
+		strings.NewReader(`{"method":"initialize"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	sess, ok := proxy.sessionManager.Get(normalizeSessionID(sessionID))
+	require.True(t, ok, "session should have been created by RoundTrip")
+	backendURL, ok := sess.GetMetadataValue(sessionMetadataBackendURL)
+	require.True(t, ok, "session should have backend_url metadata")
+	// With replicas=1, headlessService is nil — should fall back to static targetURI
+	assert.Equal(t, backend.URL, backendURL, "replicas=1 should use static targetURI, not headless DNS")
 }

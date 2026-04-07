@@ -8,11 +8,13 @@ package transparent
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -33,6 +35,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// podHeadlessService holds the Kubernetes headless service information used to route
+// new sessions to a specific StatefulSet pod via headless DNS in multi-replica deployments.
+type podHeadlessService struct {
+	statefulSetName string // e.g. "myserver"  (StatefulSet name == MCPServer name)
+	serviceName     string // e.g. "mcp-myserver-headless"
+	namespace       string // e.g. "default"
+	replicas        int32  // number of replicas, for random pod selection
+}
 
 // TransparentProxy implements the Proxy interface as a transparent HTTP proxy
 // that forwards requests to a destination.
@@ -128,6 +139,12 @@ type TransparentProxy struct {
 
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
 	shutdownTimeout time.Duration
+
+	// headlessService holds Kubernetes headless service info for pod-specific routing.
+	// When set (backendReplicas > 1), new sessions are pinned to a randomly chosen pod
+	// via its headless DNS name so routing survives proxy-runner restarts.
+	// When nil (single-replica or non-Kubernetes), the static targetURI is used.
+	headlessService *podHeadlessService
 }
 
 const (
@@ -219,6 +236,25 @@ func withShutdownTimeout(timeout time.Duration) Option {
 	return func(p *TransparentProxy) {
 		if timeout > 0 {
 			p.shutdownTimeout = timeout
+		}
+	}
+}
+
+// WithPodHeadlessService configures pod-specific routing for multi-replica StatefulSet deployments.
+// When set, each new MCP session is pinned to a randomly selected pod via its headless DNS name
+// (e.g. myserver-0.mcp-myserver-headless.default.svc.cluster.local) so that session routing
+// survives proxy-runner restarts without being sent to the wrong pod.
+// The option is a no-op when replicas <= 1 or when any required field is empty.
+func WithPodHeadlessService(statefulSetName, serviceName, namespace string, replicas int32) Option {
+	return func(p *TransparentProxy) {
+		if statefulSetName == "" || serviceName == "" || namespace == "" || replicas <= 1 {
+			return
+		}
+		p.headlessService = &podHeadlessService{
+			statefulSetName: statefulSetName,
+			serviceName:     serviceName,
+			namespace:       namespace,
+			replicas:        replicas,
 		}
 	}
 }
@@ -365,6 +401,32 @@ type tracingTransport struct {
 	p    *TransparentProxy
 }
 
+// pickPodBackendURL selects a random StatefulSet pod and returns its headless DNS URL.
+// The URL has the form http://<statefulset>-<ordinal>.<headless-svc>.<ns>.svc.cluster.local:<port>.
+// Falls back to p.targetURI on any parse error so routing always succeeds.
+func (p *TransparentProxy) pickPodBackendURL() string {
+	parsed, err := url.Parse(p.targetURI)
+	if err != nil || parsed.Host == "" {
+		return p.targetURI
+	}
+	_, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		// targetURI host has no explicit port — use scheme default and fall back
+		return p.targetURI
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(p.headlessService.replicas)))
+	if err != nil {
+		return p.targetURI
+	}
+	podHost := fmt.Sprintf("%s-%d.%s.%s.svc.cluster.local",
+		p.headlessService.statefulSetName,
+		n.Int64(),
+		p.headlessService.serviceName,
+		p.headlessService.namespace,
+	)
+	return fmt.Sprintf("%s://%s:%s", parsed.Scheme, podHost, port)
+}
+
 func (p *TransparentProxy) setServerInitialized() {
 	if p.isServerInitialized.CompareAndSwap(false, true) {
 		//nolint:gosec // G706: logging target URI from config
@@ -480,14 +542,16 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			internalID := normalizeSessionID(ct)
 			if _, ok := t.p.sessionManager.Get(internalID); !ok {
 				sess := session.NewProxySession(internalID)
-				// Store targetURI as the default backend_url for this session.
-				// In single-replica deployments targetURI is already the pod address,
-				// so no override is needed. In multi-replica deployments the
-				// vMCP/operator layer is responsible for setting backend_url to the
-				// actual pod DNS name (e.g. http://mcp-server-0.mcp-server.default.svc:8080)
-				// before the request reaches this proxy; the Rewrite closure then reads
-				// that value and routes follow-up requests to the correct pod.
-				sess.SetMetadata(sessionMetadataBackendURL, t.p.targetURI)
+				// Store backend_url for this session so follow-up requests are routed
+				// to the same pod that handled initialize.
+				// - Single-replica / no headless config: use the static ClusterIP targetURI.
+				// - Multi-replica with headless config: pick a random pod via headless DNS
+				//   so sessions survive proxy-runner restarts without hitting the wrong pod.
+				backendURL := t.p.targetURI
+				if t.p.headlessService != nil {
+					backendURL = t.p.pickPodBackendURL()
+				}
+				sess.SetMetadata(sessionMetadataBackendURL, backendURL)
 				if err := t.p.sessionManager.AddSession(sess); err != nil {
 					//nolint:gosec // G706: session ID from HTTP response header
 					slog.Error("failed to create session from header",

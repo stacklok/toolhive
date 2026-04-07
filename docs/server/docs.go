@@ -1047,6 +1047,28 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_runner.HeadlessServiceConfig": {
+                "description": "HeadlessService holds the information needed to construct pod-specific headless DNS URLs\nfor session-affinity routing in multi-replica StatefulSet deployments.\nPopulated by the operator when backendReplicas \u003e 1; nil for single-replica deployments.\n+optional",
+                "properties": {
+                    "namespace": {
+                        "description": "Namespace is the Kubernetes namespace of the StatefulSet.",
+                        "type": "string"
+                    },
+                    "replicas": {
+                        "description": "Replicas is the StatefulSet replica count, used to select a random pod ordinal.",
+                        "type": "integer"
+                    },
+                    "service_name": {
+                        "description": "ServiceName is the name of the headless Kubernetes service (e.g. \"mcp-myserver-headless\").",
+                        "type": "string"
+                    },
+                    "statefulset_name": {
+                        "description": "StatefulSetName is the name of the backend StatefulSet (equals the MCPServer name).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
                 "properties": {
                     "allow_docker_gateway": {
@@ -1272,6 +1294,9 @@ const docTemplate = `{
                     "backend_replicas": {
                         "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
                         "type": "integer"
+                    },
+                    "headless_service": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.HeadlessServiceConfig"
                     },
                     "session_redis": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig"

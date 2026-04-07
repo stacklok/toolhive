@@ -74,6 +74,13 @@ type HTTPTransport struct {
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
+	// headless service config for pod-specific routing in multi-replica deployments
+	headlessStatefulSetName string
+	headlessServiceName     string
+	headlessNamespace       string
+	headlessReplicas        int32
+
+
 	// sessionStorage overrides the default in-memory session store when set.
 	// Used for Redis-backed session sharing across replicas.
 	sessionStorage session.Storage
@@ -239,6 +246,44 @@ func (t *HTTPTransport) setTargetURI(targetURI string) {
 	t.targetURI = targetURI
 }
 
+// setPodHeadlessService configures pod-specific routing for multi-replica StatefulSet
+// deployments. This is an unexported method used by the option pattern.
+func (t *HTTPTransport) setPodHeadlessService(statefulSetName, serviceName, namespace string, replicas int32) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	t.headlessStatefulSetName = statefulSetName
+	t.headlessServiceName = serviceName
+	t.headlessNamespace = namespace
+	t.headlessReplicas = replicas
+}
+
+// resolveTargetURI determines the proxy target URI, base path, and raw query from the
+// transport configuration. For remote MCP servers it parses the remote URL; for local
+// containers it returns the pre-configured targetURI.
+func (t *HTTPTransport) resolveTargetURI() (targetURI, remoteBasePath, remoteRawQuery string, err error) {
+	if t.remoteURL != "" {
+		remoteURL, err := url.Parse(t.remoteURL)
+		if err != nil {
+			return "", "", "", fmt.Errorf("failed to parse remote URL: %w", err)
+		}
+		targetURI = (&url.URL{Scheme: remoteURL.Scheme, Host: remoteURL.Host}).String()
+		remoteBasePath = remoteURL.Path
+		remoteRawQuery = remoteURL.RawQuery
+		slog.Debug("setting up transparent proxy to forward to remote URL",
+			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath, "raw_query", remoteRawQuery)
+		return targetURI, remoteBasePath, remoteRawQuery, nil
+	}
+	if t.containerName == "" {
+		return "", "", "", transporterrors.ErrContainerNameNotSet
+	}
+	if t.targetURI == "" {
+		return "", "", "", fmt.Errorf("target URI not set for HTTP transport")
+	}
+	slog.Debug("setting up transparent proxy to forward to target",
+		"port", t.proxyPort, "target", t.targetURI)
+	return t.targetURI, "", "", nil
+}
+
 // Start initializes the transport and begins processing messages.
 // The transport is responsible for starting the container.
 //
@@ -251,52 +296,15 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("container deployer not set")
 	}
 
-	// Determine target URI
-	var targetURI string
-
 	// remoteBasePath holds the path component from the remote URL (e.g., "/v2" from
 	// "https://mcp.asana.com/v2/mcp"). This must be prepended to incoming request
 	// paths so they reach the correct endpoint on the remote server.
-	var remoteBasePath string
-
 	// remoteRawQuery holds the raw query string from the remote URL (e.g.,
 	// "toolsets=core,alerting" from "https://mcp.example.com/mcp?toolsets=core,alerting").
 	// This must be forwarded on every outbound request or it is silently dropped.
-	var remoteRawQuery string
-
-	if t.remoteURL != "" {
-		// For remote MCP servers, construct target URI from remote URL
-		remoteURL, err := url.Parse(t.remoteURL)
-		if err != nil {
-			return fmt.Errorf("failed to parse remote URL: %w", err)
-		}
-		targetURI = (&url.URL{
-			Scheme: remoteURL.Scheme,
-			Host:   remoteURL.Host,
-		}).String()
-
-		// Extract the path prefix that needs to be prepended to incoming requests.
-		// The target URI only has scheme+host, so without this the remote path is lost.
-		remoteBasePath = remoteURL.Path
-
-		remoteRawQuery = remoteURL.RawQuery
-
-		//nolint:gosec // G706: logging proxy port and remote URL from config
-		slog.Debug("setting up transparent proxy to forward to remote URL",
-			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath, "raw_query", remoteRawQuery)
-	} else {
-		if t.containerName == "" {
-			return transporterrors.ErrContainerNameNotSet
-		}
-
-		// For local containers, use the configured target URI
-		if t.targetURI == "" {
-			return fmt.Errorf("target URI not set for HTTP transport")
-		}
-		targetURI = t.targetURI
-		//nolint:gosec // G706: logging proxy port and target URI from config
-		slog.Debug("setting up transparent proxy to forward to target",
-			"port", t.proxyPort, "target", targetURI)
+	targetURI, remoteBasePath, remoteRawQuery, err := t.resolveTargetURI()
+	if err != nil {
+		return err
 	}
 
 	// Create middlewares slice
@@ -328,6 +336,20 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	proxyOptions = append(proxyOptions, transparent.WithRemoteRawQuery(remoteRawQuery))
 	if t.sessionStorage != nil {
 		proxyOptions = append(proxyOptions, transparent.WithSessionStorage(t.sessionStorage))
+	}
+
+	// Inject Redis-backed session storage for cross-replica session sharing.
+	if t.sessionStorage != nil {
+		proxyOptions = append(proxyOptions, transparent.WithSessionStorage(t.sessionStorage))
+	}
+
+	// Enable pod-specific routing for multi-replica StatefulSet backends.
+	// When configured, each new session is pinned to a specific pod via headless DNS
+	// so that session routing survives proxy-runner restarts.
+	if t.headlessReplicas > 1 {
+		proxyOptions = append(proxyOptions, transparent.WithPodHeadlessService(
+			t.headlessStatefulSetName, t.headlessServiceName, t.headlessNamespace, t.headlessReplicas,
+		))
 	}
 
 	// Create the transparent proxy

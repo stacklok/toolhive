@@ -447,7 +447,7 @@ func buildStatefulSetSpec(
 	spec := appsv1apply.StatefulSetSpec().
 		WithSelector(metav1apply.LabelSelector().
 			WithMatchLabels(map[string]string{"app": containerName})).
-		WithServiceName(containerName).
+		WithServiceName(fmt.Sprintf("mcp-%s-headless", containerName)).
 		WithTemplate(podTemplateSpec)
 	if options != nil && options.ScalingConfig != nil && options.ScalingConfig.BackendReplicas != nil {
 		spec = spec.WithReplicas(*options.ScalingConfig.BackendReplicas)

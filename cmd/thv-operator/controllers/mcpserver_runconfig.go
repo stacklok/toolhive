@@ -288,8 +288,8 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	return runConfig, nil
 }
 
-// populateScalingConfig sets BackendReplicas and SessionRedis on the RunConfig from the MCPServer spec.
-// Fields are only set when present in the spec; nil means "not configured" and is left as-is.
+// populateScalingConfig sets BackendReplicas, SessionRedis, and HeadlessService on the RunConfig
+// from the MCPServer spec. Fields are only set when present in the spec; nil means "not configured".
 func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1alpha1.MCPServer) {
 	hasBackendReplicas := m.Spec.BackendReplicas != nil
 	hasRedis := m.Spec.SessionStorage != nil && m.Spec.SessionStorage.Provider == mcpv1alpha1.SessionStorageProviderRedis
@@ -305,6 +305,19 @@ func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1alpha1.MCPServer
 	if hasBackendReplicas {
 		val := *m.Spec.BackendReplicas
 		runConfig.ScalingConfig.BackendReplicas = &val
+
+		// Populate headless service config when there are multiple backend replicas.
+		// This enables the proxy runner to route each session to a specific pod via
+		// headless DNS (e.g. myserver-0.mcp-myserver-headless.default.svc.cluster.local)
+		// so sessions survive proxy-runner restarts without hitting the wrong backend pod.
+		if val > 1 {
+			runConfig.ScalingConfig.HeadlessService = &runner.HeadlessServiceConfig{
+				StatefulSetName: m.Name,
+				ServiceName:     fmt.Sprintf("mcp-%s-headless", m.Name),
+				Namespace:       m.Namespace,
+				Replicas:        val,
+			}
+		}
 	}
 
 	if hasRedis {

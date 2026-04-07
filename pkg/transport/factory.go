@@ -41,6 +41,23 @@ func WithTargetURI(targetURI string) Option {
 	}
 }
 
+// WithPodHeadlessService returns an option that configures pod-specific routing for
+// multi-replica StatefulSet deployments. When applied, the transport pins each new MCP
+// session to a randomly chosen StatefulSet pod via its headless DNS name, so sessions
+// survive proxy-runner restarts without being forwarded to the wrong pod.
+// The option is a no-op when replicas <= 1 or any required field is empty.
+func WithPodHeadlessService(statefulSetName, serviceName, namespace string, replicas int32) Option {
+	return func(t types.Transport) error {
+		type headlessSetter interface {
+			setPodHeadlessService(statefulSetName, serviceName, namespace string, replicas int32)
+		}
+		if setter, ok := t.(headlessSetter); ok {
+			setter.setPodHeadlessService(statefulSetName, serviceName, namespace, replicas)
+		}
+		return nil
+	}
+}
+
 // Create creates a transport based on the provided configuration
 func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, error) {
 	var tr types.Transport

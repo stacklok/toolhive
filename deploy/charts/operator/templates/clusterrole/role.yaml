@@ -5,6 +5,7 @@ metadata:
   name: {{ include "operator.fullname" . }}-manager-role
   labels:
     {{- include "operator.labels" . | nindent 4 }}
+    {{- include "toolhive.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - ""

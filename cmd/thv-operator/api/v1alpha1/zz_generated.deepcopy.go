@@ -1716,6 +1716,11 @@ func (in *MCPRemoteProxySpec) DeepCopyInto(out *MCPRemoteProxySpec) {
 		*out = new(ExternalAuthConfigRef)
 		**out = **in
 	}
+	if in.AuthServerRef != nil {
+		in, out := &in.AuthServerRef, &out.AuthServerRef
+		*out = new(corev1.TypedLocalObjectReference)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.HeaderForward != nil {
 		in, out := &in.HeaderForward, &out.HeaderForward
 		*out = new(HeaderForwardConfig)
@@ -2029,6 +2034,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 		in, out := &in.ExternalAuthConfigRef, &out.ExternalAuthConfigRef
 		*out = new(ExternalAuthConfigRef)
 		**out = **in
+	}
+	if in.AuthServerRef != nil {
+		in, out := &in.AuthServerRef, &out.AuthServerRef
+		*out = new(corev1.TypedLocalObjectReference)
+		(*in).DeepCopyInto(*out)
 	}
 	if in.TelemetryConfigRef != nil {
 		in, out := &in.TelemetryConfigRef, &out.TelemetryConfigRef

@@ -672,3 +672,139 @@ func buildUserInfoRunConfig(
 
 	return config
 }
+
+// ValidateAndAddAuthServerRefOptions performs conflict validation between authServerRef
+// and externalAuthConfigRef, then resolves authServerRef if present.
+// Returns error if both fields point to an embedded auth server configuration.
+func ValidateAndAddAuthServerRefOptions(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	mcpServerName string,
+	authServerRef *corev1.TypedLocalObjectReference,
+	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	oidcConfig *oidc.OIDCConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	// Conflict validation: both authServerRef and externalAuthConfigRef pointing to
+	// embedded auth server is an error (use one or the other, not both)
+	if authServerRef != nil && externalAuthConfigRef != nil {
+		extConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
+		if err == nil && extConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+			return fmt.Errorf(
+				"conflict: both authServerRef and externalAuthConfigRef reference an embedded auth server; " +
+					"use authServerRef for the embedded auth server and externalAuthConfigRef for outgoing auth only",
+			)
+		}
+	}
+
+	// Add auth server ref configuration if specified
+	return AddAuthServerRefOptions(ctx, c, namespace, mcpServerName, authServerRef, oidcConfig, options)
+}
+
+// AddAuthServerRefOptions resolves an authServerRef (TypedLocalObjectReference),
+// validates the kind and type, and appends the corresponding RunConfigBuilderOption.
+// Returns nil if authServerRef is nil (no-op).
+// Returns error if the kind is not MCPExternalAuthConfig, the type is not embeddedAuthServer,
+// or if fetching or building the config fails.
+func AddAuthServerRefOptions(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	mcpServerName string,
+	authServerRef *corev1.TypedLocalObjectReference,
+	oidcConfig *oidc.OIDCConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if authServerRef == nil {
+		return nil
+	}
+
+	// Validate the Kind
+	if authServerRef.Kind != "MCPExternalAuthConfig" {
+		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", authServerRef.Kind)
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, authServerRef.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get MCPExternalAuthConfig for authServerRef: %w", err)
+	}
+
+	// Validate the type is embeddedAuthServer
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		return fmt.Errorf(
+			"authServerRef must reference a MCPExternalAuthConfig with type %q, got %q",
+			mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer, externalAuthConfig.Spec.Type,
+		)
+	}
+
+	authServerConfig := externalAuthConfig.Spec.EmbeddedAuthServer
+	if authServerConfig == nil {
+		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
+	}
+
+	// Validate OIDC config is provided with ResourceURL (required for embedded auth server)
+	if oidcConfig == nil {
+		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
+	}
+	if oidcConfig.ResourceURL == "" {
+		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	}
+
+	// Build the embedded auth server config for runner
+	embeddedConfig, err := BuildAuthServerRunConfig(
+		namespace, mcpServerName, authServerConfig,
+		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to build embedded auth server config: %w", err)
+	}
+
+	// Add the configuration option
+	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
+
+	return nil
+}
+
+// GenerateAuthServerConfigFromRef generates volumes, volume mounts, and environment variables
+// for the embedded auth server when referenced via authServerRef (TypedLocalObjectReference).
+// Returns empty slices if authServerRef is nil or the referenced config is not embeddedAuthServer.
+func GenerateAuthServerConfigFromRef(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	authServerRef *corev1.TypedLocalObjectReference,
+) ([]corev1.Volume, []corev1.VolumeMount, []corev1.EnvVar, error) {
+	if authServerRef == nil {
+		return nil, nil, nil, nil
+	}
+
+	if authServerRef.Kind != "MCPExternalAuthConfig" {
+		return nil, nil, nil, nil
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, authServerRef.Name)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get MCPExternalAuthConfig for authServerRef: %w", err)
+	}
+
+	// Only process embeddedAuthServer type
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		return nil, nil, nil, nil
+	}
+
+	authServerConfig := externalAuthConfig.Spec.EmbeddedAuthServer
+	if authServerConfig == nil {
+		return nil, nil, nil, fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
+	}
+
+	// Generate volumes and mounts
+	volumes, volumeMounts := GenerateAuthServerVolumes(authServerConfig)
+
+	// Generate environment variables
+	envVars := GenerateAuthServerEnvVars(authServerConfig)
+
+	return volumes, volumeMounts, envVars, nil
+}

@@ -1561,3 +1561,144 @@ func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 	assert.Equal(t, "mymaster", config.Storage.RedisConfig.SentinelConfig.MasterName)
 	assert.Equal(t, authrunner.RedisUsernameEnvVar, config.Storage.RedisConfig.ACLUserConfig.UsernameEnvVar)
 }
+
+func TestAddAuthServerRefOptions(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	validEmbeddedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "auth-server-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer:                       "https://auth.example.com",
+				AuthorizationEndpointBaseURL: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+		},
+	}
+
+	unauthenticatedConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unauth-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+		},
+	}
+
+	validOIDCConfig := &oidc.OIDCConfig{
+		ResourceURL: "https://mcp.example.com",
+		Scopes:      []string{"openid"},
+	}
+
+	tests := []struct {
+		name          string
+		authServerRef *corev1.TypedLocalObjectReference
+		oidcConfig    *oidc.OIDCConfig
+		objects       []runtime.Object
+		wantErr       bool
+		errContains   string
+		wantOptions   int
+	}{
+		{
+			name:          "nil ref returns nil",
+			authServerRef: nil,
+			oidcConfig:    validOIDCConfig,
+			wantErr:       false,
+			wantOptions:   0,
+		},
+		{
+			name: "unsupported kind returns error",
+			authServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "Foo",
+				Name: "some-config",
+			},
+			oidcConfig:  validOIDCConfig,
+			wantErr:     true,
+			errContains: "unsupported authServerRef kind",
+		},
+		{
+			name: "non-existent config returns error",
+			authServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "non-existent",
+			},
+			oidcConfig:  validOIDCConfig,
+			wantErr:     true,
+			errContains: "failed to get MCPExternalAuthConfig",
+		},
+		{
+			name: "wrong type returns error",
+			authServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "unauth-config",
+			},
+			oidcConfig:  validOIDCConfig,
+			objects:     []runtime.Object{unauthenticatedConfig},
+			wantErr:     true,
+			errContains: "must reference a MCPExternalAuthConfig with type",
+		},
+		{
+			name: "valid ref appends option",
+			authServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig:  validOIDCConfig,
+			objects:     []runtime.Object{validEmbeddedAuthConfig},
+			wantErr:     false,
+			wantOptions: 1,
+		},
+		{
+			name: "nil OIDC config returns error for valid ref",
+			authServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig:  nil,
+			objects:     []runtime.Object{validEmbeddedAuthConfig},
+			wantErr:     true,
+			errContains: "OIDC config is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			for _, obj := range tt.objects {
+				builder = builder.WithRuntimeObjects(obj)
+			}
+			fakeClient := builder.Build()
+
+			var options []runner.RunConfigBuilderOption
+			err := AddAuthServerRefOptions(
+				ctx, fakeClient, "default", "test-server",
+				tt.authServerRef, tt.oidcConfig, &options,
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, options, tt.wantOptions)
+			}
+		})
+	}
+}

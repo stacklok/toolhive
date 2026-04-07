@@ -32,7 +32,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
-	// Add embedded auth server volumes and env vars if configured (single call for efficiency)
+	// Add embedded auth server volumes and env vars if configured via externalAuthConfigRef
 	if proxy.Spec.ExternalAuthConfigRef != nil {
 		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
 			ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef,
@@ -40,6 +40,21 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+			return nil
+		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
+	}
+
+	// Add embedded auth server volumes and env vars if configured via authServerRef
+	if proxy.Spec.AuthServerRef != nil {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigFromRef(
+			ctx, r.Client, proxy.Namespace, proxy.Spec.AuthServerRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate auth server configuration from authServerRef")
 			return nil
 		}
 		volumes = append(volumes, authServerVolumes...)

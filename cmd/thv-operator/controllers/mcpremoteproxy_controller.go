@@ -138,6 +138,16 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 		return err
 	}
 
+	// Handle authServerRef config hash tracking
+	if err := r.handleAuthServerRef(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to handle authServerRef")
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after authServerRef error")
+		}
+		return err
+	}
+
 	// Handle MCPOIDCConfig
 	if err := r.handleOIDCConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPOIDCConfig")
@@ -706,6 +716,49 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		proxy.Status.ExternalAuthConfigHash = externalAuthConfig.Status.ConfigHash
 		if err := r.Status().Update(ctx, proxy); err != nil {
 			return fmt.Errorf("failed to update MCPExternalAuthConfig hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
+// It updates the MCPRemoteProxy status when the auth server configuration changes.
+func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	ctxLogger := log.FromContext(ctx)
+	if proxy.Spec.AuthServerRef == nil {
+		// No authServerRef, clear any stored hash
+		if proxy.Status.AuthServerConfigHash != "" {
+			proxy.Status.AuthServerConfigHash = ""
+			if err := r.Status().Update(ctx, proxy); err != nil {
+				return fmt.Errorf("failed to clear authServerRef hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Only MCPExternalAuthConfig kind is supported
+	if proxy.Spec.AuthServerRef.Kind != "MCPExternalAuthConfig" {
+		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", proxy.Spec.AuthServerRef.Kind)
+	}
+
+	// Fetch the referenced MCPExternalAuthConfig
+	authConfig, err := ctrlutil.GetExternalAuthConfigByName(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthServerRef.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get authServerRef MCPExternalAuthConfig %s: %w", proxy.Spec.AuthServerRef.Name, err)
+	}
+
+	// Check if the config hash has changed
+	if proxy.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {
+		ctxLogger.Info("authServerRef config has changed, updating MCPRemoteProxy",
+			"proxy", proxy.Name,
+			"authServerRef", authConfig.Name,
+			"oldHash", proxy.Status.AuthServerConfigHash,
+			"newHash", authConfig.Status.ConfigHash)
+
+		proxy.Status.AuthServerConfigHash = authConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, proxy); err != nil {
+			return fmt.Errorf("failed to update authServerRef hash in status: %w", err)
 		}
 	}
 
@@ -1289,8 +1342,10 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// Find MCPRemoteProxies that reference this MCPExternalAuthConfig
 			var requests []reconcile.Request
 			for _, proxy := range proxyList.Items {
-				if proxy.Spec.ExternalAuthConfigRef != nil &&
-					proxy.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+				if (proxy.Spec.ExternalAuthConfigRef != nil &&
+					proxy.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name) ||
+					(proxy.Spec.AuthServerRef != nil &&
+						proxy.Spec.AuthServerRef.Name == externalAuthConfig.Name) {
 					requests = append(requests, reconcile.Request{
 						NamespacedName: types.NamespacedName{
 							Name:      proxy.Name,

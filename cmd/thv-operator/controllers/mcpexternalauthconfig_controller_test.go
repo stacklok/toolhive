@@ -870,3 +870,89 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
 		"ReferencingWorkloads should be empty after server deletion")
 }
+
+func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "auth-server-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer:                       "https://auth.example.com",
+				AuthorizationEndpointBaseURL: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+		},
+	}
+
+	// Server referencing via authServerRef
+	serverViaAuthServerRef := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-via-authserverref",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			AuthServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+		},
+	}
+
+	// Server referencing via externalAuthConfigRef
+	serverViaExtAuth := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-via-extauth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "auth-server-config",
+			},
+		},
+	}
+
+	// Server not referencing this config at all
+	serverNoRef := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-no-ref",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(externalAuthConfig, serverViaAuthServerRef, serverViaExtAuth, serverNoRef).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	ctx := t.Context()
+	refs, err := r.findReferencingWorkloads(ctx, externalAuthConfig)
+	require.NoError(t, err)
+
+	assert.Len(t, refs, 2, "Should find 2 referencing workloads (one via authServerRef, one via externalAuthConfigRef)")
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-via-authserverref"})
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-via-extauth"})
+	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-no-ref"})
+}

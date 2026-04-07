@@ -269,6 +269,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Check if authServerRef is referenced and handle config hash tracking
+	if err := r.handleAuthServerRef(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle authServerRef")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after authServerRef error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Check if MCPOIDCConfig is referenced and handle it
 	if err := r.handleOIDCConfig(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPOIDCConfig")
@@ -1219,7 +1230,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
-	// Add embedded auth server volumes and env vars if configured
+	// Add embedded auth server volumes and env vars if configured via externalAuthConfigRef
 	if m.Spec.ExternalAuthConfigRef != nil {
 		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
 			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
@@ -1227,6 +1238,21 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+			return nil
+		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
+	}
+
+	// Add embedded auth server volumes and env vars if configured via authServerRef
+	if m.Spec.AuthServerRef != nil {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigFromRef(
+			ctx, r.Client, m.Namespace, m.Spec.AuthServerRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate auth server configuration from authServerRef")
 			return nil
 		}
 		volumes = append(volumes, authServerVolumes...)
@@ -2050,6 +2076,49 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	return nil
 }
 
+// handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
+// It updates the MCPServer status when the auth server configuration changes.
+func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+	if m.Spec.AuthServerRef == nil {
+		// No authServerRef, clear any stored hash
+		if m.Status.AuthServerConfigHash != "" {
+			m.Status.AuthServerConfigHash = ""
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear authServerRef hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Only MCPExternalAuthConfig kind is supported
+	if m.Spec.AuthServerRef.Kind != "MCPExternalAuthConfig" {
+		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", m.Spec.AuthServerRef.Kind)
+	}
+
+	// Fetch the referenced MCPExternalAuthConfig
+	authConfig, err := ctrlutil.GetExternalAuthConfigByName(ctx, r.Client, m.Namespace, m.Spec.AuthServerRef.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get authServerRef MCPExternalAuthConfig %s: %w", m.Spec.AuthServerRef.Name, err)
+	}
+
+	// Check if the config hash has changed
+	if m.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {
+		ctxLogger.Info("authServerRef config has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"authServerRef", authConfig.Name,
+			"oldHash", m.Status.AuthServerConfigHash,
+			"newHash", authConfig.Status.ConfigHash)
+
+		m.Status.AuthServerConfigHash = authConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update authServerRef hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
 // It updates the MCPServer status when the OIDC configuration changes and sets
 // the OIDCConfigRefValidated condition.
@@ -2306,8 +2375,10 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// Find MCPServers that reference this MCPExternalAuthConfig
 			var requests []reconcile.Request
 			for _, server := range mcpServerList.Items {
-				if server.Spec.ExternalAuthConfigRef != nil &&
-					server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+				if (server.Spec.ExternalAuthConfigRef != nil &&
+					server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name) ||
+					(server.Spec.AuthServerRef != nil &&
+						server.Spec.AuthServerRef.Name == externalAuthConfig.Name) {
 					requests = append(requests, reconcile.Request{
 						NamespacedName: types.NamespacedName{
 							Name:      server.Name,

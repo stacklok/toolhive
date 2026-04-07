@@ -237,29 +237,40 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 }
 
 // findReferencingMCPServers finds all MCPServers that reference the given MCPExternalAuthConfig
+// via either externalAuthConfigRef or authServerRef.
 func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) ([]mcpv1alpha1.MCPServer, error) {
 	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
-			if server.Spec.ExternalAuthConfigRef != nil {
+			if server.Spec.ExternalAuthConfigRef != nil &&
+				server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
 				return &server.Spec.ExternalAuthConfigRef.Name
+			}
+			if server.Spec.AuthServerRef != nil &&
+				server.Spec.AuthServerRef.Name == externalAuthConfig.Name {
+				return &server.Spec.AuthServerRef.Name
 			}
 			return nil
 		})
 }
 
 // findReferencingWorkloads returns the workload resources (MCPServer)
-// that reference this MCPExternalAuthConfig via their ExternalAuthConfigRef field.
+// that reference this MCPExternalAuthConfig via their ExternalAuthConfigRef or AuthServerRef field.
 func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) ([]mcpv1alpha1.WorkloadReference, error) {
 	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
-			if server.Spec.ExternalAuthConfigRef != nil {
+			if server.Spec.ExternalAuthConfigRef != nil &&
+				server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
 				return &server.Spec.ExternalAuthConfigRef.Name
+			}
+			if server.Spec.AuthServerRef != nil &&
+				server.Spec.AuthServerRef.Name == externalAuthConfig.Name {
+				return &server.Spec.AuthServerRef.Name
 			}
 			return nil
 		})
@@ -291,6 +302,18 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 				}
 				seen[nn] = struct{}{}
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
+			}
+
+			// Enqueue the MCPExternalAuthConfig referenced via authServerRef (if any)
+			if server.Spec.AuthServerRef != nil {
+				nn := types.NamespacedName{
+					Name:      server.Spec.AuthServerRef.Name,
+					Namespace: server.Namespace,
+				}
+				if _, already := seen[nn]; !already {
+					seen[nn] = struct{}{}
+					requests = append(requests, reconcile.Request{NamespacedName: nn})
+				}
 			}
 
 			// Also enqueue any MCPExternalAuthConfig that still lists this server in

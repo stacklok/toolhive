@@ -30,6 +30,10 @@ const (
 
 	// externalAuthConfigRequeueDelay is the delay before requeuing after adding a finalizer
 	externalAuthConfigRequeueDelay = 500 * time.Millisecond
+
+	// authServerRefKindMCPExternalAuthConfig is the Kind value on a TypedLocalObjectReference
+	// that identifies the ref as pointing to an MCPExternalAuthConfig resource.
+	authServerRefKindMCPExternalAuthConfig = "MCPExternalAuthConfig"
 )
 
 // MCPExternalAuthConfigReconciler reconciles a MCPExternalAuthConfig object
@@ -258,7 +262,7 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 
 	byAuthServer, err := ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
-			if server.Spec.AuthServerRef != nil {
+			if server.Spec.AuthServerRef != nil && server.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
 				return &server.Spec.AuthServerRef.Name
 			}
 			return nil
@@ -282,7 +286,55 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	return result, nil
 }
 
-// findReferencingWorkloads returns the workload resources (MCPServer)
+// findReferencingMCPRemoteProxies finds all MCPRemoteProxies that reference the given MCPExternalAuthConfig
+// via either externalAuthConfigRef or authServerRef.
+// It queries separately for each ref field and merges with deduplication, so a proxy
+// that has externalAuthConfigRef pointing to config "A" and authServerRef pointing to
+// config "B" will be found when reconciling either config.
+func (r *MCPExternalAuthConfigReconciler) findReferencingMCPRemoteProxies(
+	ctx context.Context,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) ([]mcpv1alpha1.MCPRemoteProxy, error) {
+	byExtAuth, err := ctrlutil.FindReferencingMCPRemoteProxies(
+		ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+		func(proxy *mcpv1alpha1.MCPRemoteProxy) *string {
+			if proxy.Spec.ExternalAuthConfigRef != nil {
+				return &proxy.Spec.ExternalAuthConfigRef.Name
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	byAuthServer, err := ctrlutil.FindReferencingMCPRemoteProxies(
+		ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+		func(proxy *mcpv1alpha1.MCPRemoteProxy) *string {
+			if proxy.Spec.AuthServerRef != nil && proxy.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
+				return &proxy.Spec.AuthServerRef.Name
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge and deduplicate
+	seen := make(map[string]struct{}, len(byExtAuth))
+	result := make([]mcpv1alpha1.MCPRemoteProxy, 0, len(byExtAuth)+len(byAuthServer))
+	for _, p := range byExtAuth {
+		seen[p.Name] = struct{}{}
+		result = append(result, p)
+	}
+	for _, p := range byAuthServer {
+		if _, ok := seen[p.Name]; !ok {
+			result = append(result, p)
+		}
+	}
+	return result, nil
+}
+
+// findReferencingWorkloads returns the workload resources (MCPServer and MCPRemoteProxy)
 // that reference this MCPExternalAuthConfig via their ExternalAuthConfigRef or AuthServerRef field.
 // It queries separately for each ref field and merges the results, so both fields are always checked.
 func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
@@ -297,79 +349,151 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 	for _, server := range servers {
 		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
 	}
+
+	proxies, err := r.findReferencingMCPRemoteProxies(ctx, externalAuthConfig)
+	if err != nil {
+		return nil, err
+	}
+	for _, proxy := range proxies {
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
+	}
+
 	ctrlutil.SortWorkloadRefs(refs)
 	return refs, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
+// Watches MCPServer and MCPRemoteProxy changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPExternalAuthConfigs.
-	// This handler enqueues both the currently-referenced MCPExternalAuthConfig AND any
-	// MCPExternalAuthConfig that still lists this server in ReferencingWorkloads (covers the
-	// case where a server removes its externalAuthConfigRef — the previously-referenced
-	// config needs to reconcile and clean up the stale entry).
-	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1alpha1.MCPServer)
-			if !ok {
-				return nil
-			}
-
-			seen := make(map[types.NamespacedName]struct{})
-			var requests []reconcile.Request
-
-			// Enqueue the currently-referenced MCPExternalAuthConfig (if any)
-			if server.Spec.ExternalAuthConfigRef != nil {
-				nn := types.NamespacedName{
-					Name:      server.Spec.ExternalAuthConfigRef.Name,
-					Namespace: server.Namespace,
-				}
-				seen[nn] = struct{}{}
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-			}
-
-			// Enqueue the MCPExternalAuthConfig referenced via authServerRef (if any)
-			if server.Spec.AuthServerRef != nil {
-				nn := types.NamespacedName{
-					Name:      server.Spec.AuthServerRef.Name,
-					Namespace: server.Namespace,
-				}
-				if _, already := seen[nn]; !already {
-					seen[nn] = struct{}{}
-					requests = append(requests, reconcile.Request{NamespacedName: nn})
-				}
-			}
-
-			// Also enqueue any MCPExternalAuthConfig that still lists this server in
-			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-			extAuthConfigList := &mcpv1alpha1.MCPExternalAuthConfigList{}
-			if err := r.List(ctx, extAuthConfigList, client.InNamespace(server.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list MCPExternalAuthConfigs for MCPServer watch")
-				return requests
-			}
-			for _, cfg := range extAuthConfigList.Items {
-				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-				if _, already := seen[nn]; already {
-					continue
-				}
-				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
-						requests = append(requests, reconcile.Request{NamespacedName: nn})
-						break
-					}
-				}
-			}
-
-			return requests
-		},
-	)
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPExternalAuthConfig{}).
-		// Watch for MCPServers and reconcile the referenced MCPExternalAuthConfig when they change
-		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
+		Watches(
+			&mcpv1alpha1.MCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToExternalAuthConfig),
+		).
+		Watches(
+			&mcpv1alpha1.MCPRemoteProxy{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToExternalAuthConfig),
+		).
 		Complete(r)
+}
+
+// mapMCPServerToExternalAuthConfig maps MCPServer changes to MCPExternalAuthConfig reconciliation requests.
+// Enqueues both the currently-referenced config(s) and any config that still lists this
+// MCPServer in ReferencingWorkloads (handles ref-removal / deletion).
+func (r *MCPExternalAuthConfigReconciler) mapMCPServerToExternalAuthConfig(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	server, ok := obj.(*mcpv1alpha1.MCPServer)
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+
+	// Enqueue the currently-referenced MCPExternalAuthConfig (if any)
+	if server.Spec.ExternalAuthConfigRef != nil {
+		nn := types.NamespacedName{
+			Name:      server.Spec.ExternalAuthConfigRef.Name,
+			Namespace: server.Namespace,
+		}
+		seen[nn] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: nn})
+	}
+
+	// Enqueue the MCPExternalAuthConfig referenced via authServerRef (if any)
+	if server.Spec.AuthServerRef != nil && server.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
+		nn := types.NamespacedName{
+			Name:      server.Spec.AuthServerRef.Name,
+			Namespace: server.Namespace,
+		}
+		if _, already := seen[nn]; !already {
+			seen[nn] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: nn})
+		}
+	}
+
+	// Also enqueue any MCPExternalAuthConfig that still lists this server in
+	// ReferencingWorkloads — handles ref-removal and server-deletion cases.
+	extAuthConfigList := &mcpv1alpha1.MCPExternalAuthConfigList{}
+	if err := r.List(ctx, extAuthConfigList, client.InNamespace(server.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPExternalAuthConfigs for MCPServer watch")
+		return requests
+	}
+	for _, cfg := range extAuthConfigList.Items {
+		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+		if _, already := seen[nn]; already {
+			continue
+		}
+		for _, ref := range cfg.Status.ReferencingWorkloads {
+			if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
+				break
+			}
+		}
+	}
+
+	return requests
+}
+
+// mapMCPRemoteProxyToExternalAuthConfig maps MCPRemoteProxy changes to MCPExternalAuthConfig reconciliation requests.
+// Enqueues both the currently-referenced config(s) and any config that still lists this
+// MCPRemoteProxy in ReferencingWorkloads (handles ref-removal / deletion).
+func (r *MCPExternalAuthConfigReconciler) mapMCPRemoteProxyToExternalAuthConfig(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	proxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+
+	// Enqueue the currently-referenced MCPExternalAuthConfig via externalAuthConfigRef (if any)
+	if proxy.Spec.ExternalAuthConfigRef != nil {
+		nn := types.NamespacedName{
+			Name:      proxy.Spec.ExternalAuthConfigRef.Name,
+			Namespace: proxy.Namespace,
+		}
+		seen[nn] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: nn})
+	}
+
+	// Enqueue the MCPExternalAuthConfig referenced via authServerRef (if any)
+	if proxy.Spec.AuthServerRef != nil && proxy.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
+		nn := types.NamespacedName{
+			Name:      proxy.Spec.AuthServerRef.Name,
+			Namespace: proxy.Namespace,
+		}
+		if _, already := seen[nn]; !already {
+			seen[nn] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: nn})
+		}
+	}
+
+	// Also enqueue any MCPExternalAuthConfig that still lists this proxy in
+	// ReferencingWorkloads — handles ref-removal and proxy-deletion cases.
+	extAuthConfigList := &mcpv1alpha1.MCPExternalAuthConfigList{}
+	if err := r.List(ctx, extAuthConfigList, client.InNamespace(proxy.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPExternalAuthConfigs for MCPRemoteProxy watch")
+		return requests
+	}
+	for _, cfg := range extAuthConfigList.Items {
+		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+		if _, already := seen[nn]; already {
+			continue
+		}
+		for _, ref := range cfg.Status.ReferencingWorkloads {
+			if ref.Kind == mcpv1alpha1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
+				break
+			}
+		}
+	}
+
+	return requests
 }
 
 // updateReferencingWorkloads finds referencing workloads and updates the status if the list changed

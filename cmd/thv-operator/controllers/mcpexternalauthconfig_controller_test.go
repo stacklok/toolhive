@@ -1120,3 +1120,104 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(
 	assert.Len(t, servers, 1, "Server should appear only once even when both refs point to the same config")
 	assert.Equal(t, "server-both-same", servers[0].Name)
 }
+
+func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	config := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "auth-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer:                       "https://auth.example.com",
+				AuthorizationEndpointBaseURL: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+		},
+	}
+
+	// MCPRemoteProxy referencing via externalAuthConfigRef
+	proxyViaExtAuth := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy-via-extauth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote.example.com",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "auth-config",
+			},
+		},
+	}
+
+	// MCPRemoteProxy referencing via authServerRef
+	proxyViaAuthServerRef := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy-via-authserverref",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote.example.com",
+			AuthServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-config",
+			},
+		},
+	}
+
+	// MCPRemoteProxy not referencing this config
+	proxyNoRef := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy-no-ref",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote.example.com",
+		},
+	}
+
+	// MCPServer also referencing the same config
+	server := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-ref",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "auth-config",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(config, proxyViaExtAuth, proxyViaAuthServerRef, proxyNoRef, server).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	ctx := t.Context()
+	refs, err := r.findReferencingWorkloads(ctx, config)
+	require.NoError(t, err)
+
+	assert.Len(t, refs, 3, "Should find 3 referencing workloads (1 MCPServer + 2 MCPRemoteProxies)")
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-ref"})
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-via-extauth"})
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-via-authserverref"})
+	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-no-ref"})
+}

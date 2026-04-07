@@ -523,7 +523,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 	}
 }
 
-func TestGenerateAuthServerConfig(t *testing.T) {
+func TestGenerateAuthServerConfigByName(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -532,7 +532,7 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		externalAuthRef *mcpv1alpha1.ExternalAuthConfigRef
+		configName      string
 		externalAuthCfg *mcpv1alpha1.MCPExternalAuthConfig
 		wantVolumes     bool
 		wantMounts      bool
@@ -541,18 +541,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 		errContains     string
 	}{
 		{
-			name:            "nil external auth ref returns empty slices",
-			externalAuthRef: nil,
-			wantVolumes:     false,
-			wantMounts:      false,
-			wantEnvVars:     false,
-			wantErr:         false,
-		},
-		{
-			name: "non-embeddedAuthServer type returns empty slices",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "token-exchange-config",
-			},
+			name:       "non-embeddedAuthServer type returns empty slices",
+			configName: "token-exchange-config",
 			externalAuthCfg: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "token-exchange-config",
@@ -572,10 +562,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name: "embeddedAuthServer type with valid config",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "embedded-auth-config",
-			},
+			name:       "embeddedAuthServer type with valid config",
+			configName: "embedded-auth-config",
 			externalAuthCfg: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "embedded-auth-config",
@@ -615,10 +603,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name: "embeddedAuthServer type with nil embedded config",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "bad-auth-config",
-			},
+			name:       "embeddedAuthServer type with nil embedded config",
+			configName: "bad-auth-config",
 			externalAuthCfg: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "bad-auth-config",
@@ -636,10 +622,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 			errContains: "embedded auth server configuration is nil",
 		},
 		{
-			name: "non-existent external auth config",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "non-existent",
-			},
+			name:            "non-existent external auth config",
+			configName:      "non-existent",
 			externalAuthCfg: nil, // No config to create
 			wantVolumes:     false,
 			wantMounts:      false,
@@ -664,8 +648,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 				Build()
 
 			ctx := context.Background()
-			volumes, mounts, envVars, err := GenerateAuthServerConfig(
-				ctx, fakeClient, "default", tt.externalAuthRef,
+			volumes, mounts, envVars, err := GenerateAuthServerConfigByName(
+				ctx, fakeClient, "default", tt.configName,
 			)
 
 			if tt.wantErr {
@@ -1572,34 +1556,38 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	validEmbeddedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "auth-server-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				Issuer:                       "https://auth.example.com",
-				AuthorizationEndpointBaseURL: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "signing-key", Key: "private.pem"},
-				},
-				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "hmac-secret", Key: "hmac"},
+	newValidEmbeddedAuthConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "auth-server-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Issuer:                       "https://auth.example.com",
+					AuthorizationEndpointBaseURL: "https://auth.example.com",
+					SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "signing-key", Key: "private.pem"},
+					},
+					HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "hmac-secret", Key: "hmac"},
+					},
 				},
 			},
-		},
+		}
 	}
 
-	unauthenticatedConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "unauth-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
-		},
+	newUnauthenticatedConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unauth-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+			},
+		}
 	}
 
 	validOIDCConfig := &oidc.OIDCConfig{
@@ -1611,7 +1599,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 		name          string
 		authServerRef *corev1.TypedLocalObjectReference
 		oidcConfig    *oidc.OIDCConfig
-		objects       []runtime.Object
+		objects       func() []runtime.Object
 		wantErr       bool
 		errContains   string
 		wantOptions   int
@@ -1650,7 +1638,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 				Name: "unauth-config",
 			},
 			oidcConfig:  validOIDCConfig,
-			objects:     []runtime.Object{unauthenticatedConfig},
+			objects:     func() []runtime.Object { return []runtime.Object{newUnauthenticatedConfig()} },
 			wantErr:     true,
 			errContains: "must reference a MCPExternalAuthConfig with type",
 		},
@@ -1661,7 +1649,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 				Name: "auth-server-config",
 			},
 			oidcConfig:  validOIDCConfig,
-			objects:     []runtime.Object{validEmbeddedAuthConfig},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
 			wantErr:     false,
 			wantOptions: 1,
 		},
@@ -1672,7 +1660,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 				Name: "auth-server-config",
 			},
 			oidcConfig:  nil,
-			objects:     []runtime.Object{validEmbeddedAuthConfig},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
 			wantErr:     true,
 			errContains: "OIDC config is required",
 		},
@@ -1684,8 +1672,8 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 			ctx := t.Context()
 
 			builder := fake.NewClientBuilder().WithScheme(scheme)
-			for _, obj := range tt.objects {
-				builder = builder.WithRuntimeObjects(obj)
+			if tt.objects != nil {
+				builder = builder.WithRuntimeObjects(tt.objects()...)
 			}
 			fakeClient := builder.Build()
 
@@ -1713,37 +1701,41 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	embeddedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "embedded-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				Issuer:                       "https://auth.example.com",
-				AuthorizationEndpointBaseURL: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "signing-key", Key: "private.pem"},
-				},
-				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "hmac-secret", Key: "hmac"},
+	newEmbeddedAuthConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "embedded-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Issuer:                       "https://auth.example.com",
+					AuthorizationEndpointBaseURL: "https://auth.example.com",
+					SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "signing-key", Key: "private.pem"},
+					},
+					HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "hmac-secret", Key: "hmac"},
+					},
 				},
 			},
-		},
+		}
 	}
 
-	awsStsConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "aws-sts-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeAWSSts,
-			AWSSts: &mcpv1alpha1.AWSStsConfig{
-				Region: "us-east-1",
+	newAWSStsConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "aws-sts-config",
+				Namespace: "default",
 			},
-		},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeAWSSts,
+				AWSSts: &mcpv1alpha1.AWSStsConfig{
+					Region: "us-east-1",
+				},
+			},
+		}
 	}
 
 	validOIDC := &oidc.OIDCConfig{
@@ -1756,7 +1748,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 		authServerRef         *corev1.TypedLocalObjectReference
 		externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
 		oidcConfig            *oidc.OIDCConfig
-		objects               []runtime.Object
+		objects               func() []runtime.Object
 		wantErr               bool
 		errContains           string
 		wantOptions           int
@@ -1777,7 +1769,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 			},
 			externalAuthConfigRef: nil,
 			oidcConfig:            validOIDC,
-			objects:               []runtime.Object{embeddedAuthConfig},
+			objects:               func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig()} },
 			wantErr:               false,
 			wantOptions:           1,
 		},
@@ -1791,7 +1783,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 				Name: "embedded-config",
 			},
 			oidcConfig:  validOIDC,
-			objects:     []runtime.Object{embeddedAuthConfig},
+			objects:     func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig()} },
 			wantErr:     true,
 			errContains: "conflict: both authServerRef and externalAuthConfigRef",
 		},
@@ -1805,7 +1797,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 				Name: "aws-sts-config",
 			},
 			oidcConfig:  validOIDC,
-			objects:     []runtime.Object{embeddedAuthConfig, awsStsConfig},
+			objects:     func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig(), newAWSStsConfig()} },
 			wantErr:     false,
 			wantOptions: 1,
 		},
@@ -1819,7 +1811,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 				Name: "will-error",
 			},
 			oidcConfig:  validOIDC,
-			objects:     []runtime.Object{embeddedAuthConfig},
+			objects:     func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig()} },
 			wantErr:     true,
 			errContains: "failed to fetch externalAuthConfigRef for conflict validation",
 		},
@@ -1831,8 +1823,8 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 			ctx := t.Context()
 
 			builder := fake.NewClientBuilder().WithScheme(scheme)
-			for _, obj := range tt.objects {
-				builder = builder.WithRuntimeObjects(obj)
+			if tt.objects != nil {
+				builder = builder.WithRuntimeObjects(tt.objects()...)
 			}
 
 			// For the "non-NotFound fetch error" test case, inject a Get interceptor
@@ -1863,168 +1855,6 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				assert.Len(t, options, tt.wantOptions)
-			}
-		})
-	}
-}
-
-func TestGenerateAuthServerConfigFromRef(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	embeddedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "embedded-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				Issuer: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "signing-key", Key: "private.pem"},
-				},
-				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "hmac-secret", Key: "hmac"},
-				},
-				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
-					{
-						Name: "okta",
-						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
-						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
-							IssuerURL: "https://okta.example.com",
-							ClientID:  "client-id",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-								Name: "oidc-secret",
-								Key:  "client-secret",
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	unauthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "unauth-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
-		},
-	}
-
-	nilEmbeddedConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "nil-embedded-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type:               mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: nil,
-		},
-	}
-
-	tests := []struct {
-		name          string
-		authServerRef *corev1.TypedLocalObjectReference
-		objects       []runtime.Object
-		wantVolumes   bool
-		wantMounts    bool
-		wantEnvVars   bool
-		wantErr       bool
-		errContains   string
-	}{
-		{
-			name:          "nil ref returns empty slices",
-			authServerRef: nil,
-			wantErr:       false,
-		},
-		{
-			name: "unsupported kind returns error",
-			authServerRef: &corev1.TypedLocalObjectReference{
-				Kind: "Secret",
-				Name: "some-secret",
-			},
-			wantErr:     true,
-			errContains: "unsupported authServerRef kind",
-		},
-		{
-			name: "non-embeddedAuthServer type returns empty slices",
-			authServerRef: &corev1.TypedLocalObjectReference{
-				Kind: "MCPExternalAuthConfig",
-				Name: "unauth-config",
-			},
-			objects: []runtime.Object{unauthConfig},
-			wantErr: false,
-		},
-		{
-			name: "nil EmbeddedAuthServer config returns error",
-			authServerRef: &corev1.TypedLocalObjectReference{
-				Kind: "MCPExternalAuthConfig",
-				Name: "nil-embedded-config",
-			},
-			objects:     []runtime.Object{nilEmbeddedConfig},
-			wantErr:     true,
-			errContains: "embedded auth server configuration is nil",
-		},
-		{
-			name: "happy path returns volumes mounts and env vars",
-			authServerRef: &corev1.TypedLocalObjectReference{
-				Kind: "MCPExternalAuthConfig",
-				Name: "embedded-config",
-			},
-			objects:     []runtime.Object{embeddedAuthConfig},
-			wantVolumes: true,
-			wantMounts:  true,
-			wantEnvVars: true,
-			wantErr:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctx := t.Context()
-
-			builder := fake.NewClientBuilder().WithScheme(scheme)
-			for _, obj := range tt.objects {
-				builder = builder.WithRuntimeObjects(obj)
-			}
-			fakeClient := builder.Build()
-
-			volumes, mounts, envVars, err := GenerateAuthServerConfigFromRef(
-				ctx, fakeClient, "default", tt.authServerRef,
-			)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-
-			if tt.wantVolumes {
-				assert.NotEmpty(t, volumes)
-			} else {
-				assert.Empty(t, volumes)
-			}
-			if tt.wantMounts {
-				assert.NotEmpty(t, mounts)
-			} else {
-				assert.Empty(t, mounts)
-			}
-			if tt.wantEnvVars {
-				assert.NotEmpty(t, envVars)
-			} else {
-				assert.Empty(t, envVars)
 			}
 		})
 	}

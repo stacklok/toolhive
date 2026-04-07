@@ -90,25 +90,32 @@ func buildUpstreamSecretBindings(
 	return bindings
 }
 
-// GenerateAuthServerConfig generates volumes, volume mounts, and environment variables
-// for the embedded auth server if the external auth config is of type embeddedAuthServer.
-//
-// This is a convenience function that combines GenerateAuthServerVolumes and GenerateAuthServerEnvVars,
-// with the added logic to fetch and check the MCPExternalAuthConfig type.
-//
-// Returns empty slices if externalAuthConfigRef is nil or if the auth type is not embeddedAuthServer.
-func GenerateAuthServerConfig(
+// EmbeddedAuthServerConfigName returns the config name that should be used for
+// embedded auth server volume/env generation, or empty string if neither ref applies.
+// AuthServerRef takes precedence; externalAuthConfigRef is used as a fallback.
+func EmbeddedAuthServerConfigName(
+	extAuthRef *mcpv1alpha1.ExternalAuthConfigRef,
+	authServerRef *corev1.TypedLocalObjectReference,
+) string {
+	if authServerRef != nil {
+		return authServerRef.Name
+	}
+	if extAuthRef != nil {
+		return extAuthRef.Name
+	}
+	return ""
+}
+
+// GenerateAuthServerConfigByName fetches an MCPExternalAuthConfig by name and, if its type
+// is embeddedAuthServer, returns the corresponding volumes, volume mounts, and env vars.
+// Returns empty slices if the config type is not embeddedAuthServer.
+func GenerateAuthServerConfigByName(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	configName string,
 ) ([]corev1.Volume, []corev1.VolumeMount, []corev1.EnvVar, error) {
-	if externalAuthConfigRef == nil {
-		return nil, nil, nil, nil
-	}
-
-	// Fetch the MCPExternalAuthConfig
-	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
 	}
@@ -123,10 +130,7 @@ func GenerateAuthServerConfig(
 		return nil, nil, nil, fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
 	}
 
-	// Generate volumes and mounts
 	volumes, volumeMounts := GenerateAuthServerVolumes(authServerConfig)
-
-	// Generate environment variables
 	envVars := GenerateAuthServerEnvVars(authServerConfig)
 
 	return volumes, volumeMounts, envVars, nil
@@ -771,48 +775,4 @@ func AddAuthServerRefOptions(
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
 
 	return nil
-}
-
-// GenerateAuthServerConfigFromRef generates volumes, volume mounts, and environment variables
-// for the embedded auth server when referenced via authServerRef (TypedLocalObjectReference).
-// Returns empty slices if authServerRef is nil or the referenced config is not embeddedAuthServer.
-func GenerateAuthServerConfigFromRef(
-	ctx context.Context,
-	c client.Client,
-	namespace string,
-	authServerRef *corev1.TypedLocalObjectReference,
-) ([]corev1.Volume, []corev1.VolumeMount, []corev1.EnvVar, error) {
-	if authServerRef == nil {
-		return nil, nil, nil, nil
-	}
-
-	if authServerRef.Kind != "MCPExternalAuthConfig" {
-		return nil, nil, nil, fmt.Errorf(
-			"unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", authServerRef.Kind,
-		)
-	}
-
-	// Fetch the MCPExternalAuthConfig
-	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, authServerRef.Name)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get MCPExternalAuthConfig for authServerRef: %w", err)
-	}
-
-	// Only process embeddedAuthServer type
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
-		return nil, nil, nil, nil
-	}
-
-	authServerConfig := externalAuthConfig.Spec.EmbeddedAuthServer
-	if authServerConfig == nil {
-		return nil, nil, nil, fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
-	}
-
-	// Generate volumes and mounts
-	volumes, volumeMounts := GenerateAuthServerVolumes(authServerConfig)
-
-	// Generate environment variables
-	envVars := GenerateAuthServerEnvVars(authServerConfig)
-
-	return volumes, volumeMounts, envVars, nil
 }

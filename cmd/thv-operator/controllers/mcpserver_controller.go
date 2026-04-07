@@ -1230,32 +1230,14 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
-	// Add embedded auth server volumes and env vars if configured via externalAuthConfigRef
-	if m.Spec.ExternalAuthConfigRef != nil {
-		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
-			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
+	// externalAuthConfigRef is used as a fallback (legacy path).
+	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+			ctx, r.Client, m.Namespace, configName,
 		)
 		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
-			return nil
-		}
-		volumes = append(volumes, authServerVolumes...)
-		volumeMounts = append(volumeMounts, authServerMounts...)
-		env = append(env, authServerEnvVars...)
-	}
-
-	// Add embedded auth server volumes and env vars if configured via authServerRef.
-	// NOTE: If both externalAuthConfigRef and authServerRef point to embeddedAuthServer,
-	// ValidateAndAddAuthServerRefOptions catches this conflict during reconcile-time
-	// runconfig generation. The deployment builder does not duplicate the check.
-	if m.Spec.AuthServerRef != nil {
-		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigFromRef(
-			ctx, r.Client, m.Namespace, m.Spec.AuthServerRef,
-		)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate auth server configuration from authServerRef")
+			log.FromContext(ctx).Error(err, "Failed to generate auth server configuration")
 			return nil
 		}
 		volumes = append(volumes, authServerVolumes...)

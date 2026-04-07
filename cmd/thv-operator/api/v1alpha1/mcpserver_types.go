@@ -884,6 +884,7 @@ type OpenTelemetryTracingConfig struct {
 
 	// SamplingRate is the trace sampling rate (0.0-1.0)
 	// +kubebuilder:default="0.05"
+	// +kubebuilder:validation:Pattern=`^(0(\.\d+)?|1(\.0+)?)$`
 	// +optional
 	SamplingRate string `json:"samplingRate,omitempty"`
 }

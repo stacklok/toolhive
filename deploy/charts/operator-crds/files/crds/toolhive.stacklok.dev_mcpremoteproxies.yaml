@@ -656,6 +656,7 @@ spec:
                           samplingRate:
                             default: "0.05"
                             description: SamplingRate is the trace sampling rate (0.0-1.0)
+                            pattern: ^(0(\.\d+)?|1(\.0+)?)$
                             type: string
                         type: object
                       useLegacyAttributes:

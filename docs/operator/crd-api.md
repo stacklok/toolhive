@@ -787,7 +787,7 @@ Phase 2: Will add support for upstream MCP Registry API with pagination
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistryConfig](#apiv1alpha1mcpregistryconfig)
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1275,7 +1275,7 @@ GitSource defines Git repository source configuration
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistryConfig](#apiv1alpha1mcpregistryconfig)
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1472,6 +1472,23 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.KubernetesSource
+
+
+
+KubernetesSource defines a source that discovers MCP servers from running Kubernetes resources.
+Per-entry claims can be set on CRDs via the toolhive.stacklok.dev/authz-claims JSON annotation.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `namespaces` _string array_ | Namespaces is a list of Kubernetes namespaces to watch for MCP servers.<br />If empty, watches the operator's configured namespace. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPExternalAuthConfig
@@ -1819,7 +1836,9 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `mode` _[api.v1alpha1.MCPRegistryAuthMode](#apiv1alpha1mcpregistryauthmode)_ | Mode specifies the authentication mode (anonymous or oauth)<br />Defaults to "anonymous" if not specified.<br />Use "oauth" to enable OAuth/OIDC authentication. | anonymous | Enum: [anonymous oauth] <br />Optional: \{\} <br /> |
+| `publicPaths` _string array_ | PublicPaths defines additional paths that bypass authentication.<br />These extend the default public paths (health, docs, swagger, well-known).<br />Example: ["/custom/public", "/metrics"] |  | Optional: \{\} <br /> |
 | `oauth` _[api.v1alpha1.MCPRegistryOAuthConfig](#apiv1alpha1mcpregistryoauthconfig)_ | OAuth defines OAuth/OIDC specific authentication settings<br />Only used when Mode is "oauth" |  | Optional: \{\} <br /> |
+| `authz` _[api.v1alpha1.MCPRegistryAuthzConfig](#apiv1alpha1mcpregistryauthzconfig)_ | Authz defines authorization configuration for role-based access control. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryAuthMode
@@ -1839,27 +1858,20 @@ _Appears in:_
 | `oauth` | MCPRegistryAuthModeOAuth enables OAuth/OIDC authentication<br /> |
 
 
-#### api.v1alpha1.MCPRegistryConfig
+#### api.v1alpha1.MCPRegistryAuthzConfig
 
 
 
-MCPRegistryConfig defines the configuration for a registry data source
+MCPRegistryAuthzConfig defines authorization configuration for role-based access control
 
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
+- [api.v1alpha1.MCPRegistryAuthConfig](#apiv1alpha1mcpregistryauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name is a unique identifier for this registry configuration within the MCPRegistry |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
-| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git, API, and PVCRef |  | Optional: \{\} <br /> |
-| `git` _[api.v1alpha1.GitSource](#apiv1alpha1gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef, API, and PVCRef |  | Optional: \{\} <br /> |
-| `api` _[api.v1alpha1.APISource](#apiv1alpha1apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef, Git, and PVCRef |  | Optional: \{\} <br /> |
-| `pvcRef` _[api.v1alpha1.PVCSource](#apiv1alpha1pvcsource)_ | PVCRef defines the PersistentVolumeClaim source configuration<br />Mutually exclusive with ConfigMapRef, Git, and API |  | Optional: \{\} <br /> |
-| `syncPolicy` _[api.v1alpha1.SyncPolicy](#apiv1alpha1syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  | Optional: \{\} <br /> |
-| `filter` _[api.v1alpha1.RegistryFilter](#apiv1alpha1registryfilter)_ | Filter defines include/exclude patterns for registry content |  | Optional: \{\} <br /> |
+| `roles` _[api.v1alpha1.MCPRegistryRolesConfig](#apiv1alpha1mcpregistryrolesconfig)_ | Roles defines the role-based authorization rules.<br />Each role is a list of claim matchers (JSON objects with string or []string values). |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryDatabaseConfig
@@ -1976,6 +1988,53 @@ _Appears in:_
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
+#### api.v1alpha1.MCPRegistryRolesConfig
+
+
+
+MCPRegistryRolesConfig defines role-based authorization rules.
+Each role is a list of claim matchers — a request matching any entry in the list is granted the role.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistryAuthzConfig](#apiv1alpha1mcpregistryauthzconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `superAdmin` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | SuperAdmin grants full administrative access to the registry. |  | Optional: \{\} <br /> |
+| `manageSources` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | ManageSources grants permission to create, update, and delete sources. |  | Optional: \{\} <br /> |
+| `manageRegistries` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | ManageRegistries grants permission to create, update, and delete registries. |  | Optional: \{\} <br /> |
+| `manageEntries` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | ManageEntries grants permission to create, update, and delete registry entries. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPRegistrySourceConfig
+
+
+
+MCPRegistrySourceConfig defines a data source configuration for the registry.
+Exactly one source type must be specified (ConfigMapRef, Git, API, PVCRef, Managed, or Kubernetes).
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is a unique identifier for this source within the MCPRegistry |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
+| `claims` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io)_ | Claims are key-value pairs attached to this source for authorization purposes.<br />All entries from this source inherit these claims. Values must be string or []string. |  | Type: object <br />Optional: \{\} <br /> |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `git` _[api.v1alpha1.GitSource](#apiv1alpha1gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `api` _[api.v1alpha1.APISource](#apiv1alpha1apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef, Git, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `pvcRef` _[api.v1alpha1.PVCSource](#apiv1alpha1pvcsource)_ | PVCRef defines the PersistentVolumeClaim source configuration<br />Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `managed` _[api.v1alpha1.ManagedSource](#apiv1alpha1managedsource)_ | Managed defines a managed source that is directly manipulated via the registry API.<br />Managed sources do not sync from external sources.<br />At most one managed source is allowed per MCPRegistry.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Kubernetes |  | Optional: \{\} <br /> |
+| `kubernetes` _[api.v1alpha1.KubernetesSource](#apiv1alpha1kubernetessource)_ | Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Managed |  | Optional: \{\} <br /> |
+| `syncPolicy` _[api.v1alpha1.SyncPolicy](#apiv1alpha1syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this source.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting.<br />Not applicable for Managed and Kubernetes sources (will be ignored). |  | Optional: \{\} <br /> |
+| `filter` _[api.v1alpha1.RegistryFilter](#apiv1alpha1registryfilter)_ | Filter defines include/exclude patterns for registry content.<br />Not applicable for Managed and Kubernetes sources (will be ignored). |  | Optional: \{\} <br /> |
+
+
 #### api.v1alpha1.MCPRegistrySpec
 
 
@@ -1990,7 +2049,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry |  | Optional: \{\} <br /> |
-| `registries` _[api.v1alpha1.MCPRegistryConfig](#apiv1alpha1mcpregistryconfig) array_ | Registries defines the configuration for the registry data sources |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `sources` _[api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig) array_ | Sources defines the data source configurations for the registry.<br />Each source defines where registry data comes from (Git, API, ConfigMap, PVC, Managed, or Kubernetes). |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `registries` _[api.v1alpha1.MCPRegistryViewConfig](#apiv1alpha1mcpregistryviewconfig) array_ | Registries defines lightweight registry views that aggregate one or more sources.<br />Each registry references sources by name and can optionally gate access via claims. |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `databaseConfig` _[api.v1alpha1.MCPRegistryDatabaseConfig](#apiv1alpha1mcpregistrydatabaseconfig)_ | DatabaseConfig defines the PostgreSQL database configuration for the registry API server.<br />If not specified, defaults will be used:<br />  - Host: "postgres"<br />  - Port: 5432<br />  - User: "db_app"<br />  - MigrationUser: "db_migrator"<br />  - Database: "registry"<br />  - SSLMode: "prefer"<br />  - MaxOpenConns: 10<br />  - MaxIdleConns: 2<br />  - ConnMaxLifetime: "30m" |  | Optional: \{\} <br /> |
@@ -2019,6 +2079,24 @@ _Appears in:_
 | `storageRef` _[api.v1alpha1.StorageReference](#apiv1alpha1storagereference)_ | StorageRef is a reference to the internal storage location |  | Optional: \{\} <br /> |
 | `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPRegistryViewConfig
+
+
+
+MCPRegistryViewConfig defines a lightweight registry view that aggregates one or more sources.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is a unique identifier for this registry view |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `sources` _string array_ | Sources is an ordered list of source names that feed this registry.<br />Each name must reference a source defined in spec.sources. |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `claims` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io)_ | Claims are key-value pairs that gate access to this registry view.<br />Only requests with matching claims can access this registry. Values must be string or []string. |  | Type: object <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRemoteProxy
@@ -2488,6 +2566,20 @@ _Appears in:_
 | `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
+#### api.v1alpha1.ManagedSource
+
+
+
+ManagedSource defines a managed source that is directly manipulated via the registry API.
+Managed sources do not sync from external sources.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
+
+
+
 #### api.v1alpha1.ModelCacheConfig
 
 
@@ -2712,7 +2804,7 @@ PVCSource defines PersistentVolumeClaim source configuration
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistryConfig](#apiv1alpha1mcpregistryconfig)
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2899,7 +2991,7 @@ RegistryFilter defines include/exclude patterns for registry content
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistryConfig](#apiv1alpha1mcpregistryconfig)
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -3158,7 +3250,7 @@ regardless of this policy setting.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistryConfig](#apiv1alpha1mcpregistryconfig)
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

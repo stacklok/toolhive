@@ -30,16 +30,7 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 	otelCfg := appConfig.OTEL
 	hasRegisteredProcessors := HasRegisteredSpanProcessors()
 
-	// If an OTLP endpoint is configured but both tracing and metrics are
-	// disabled, warn and clear the endpoint so the server can start normally
-	// instead of crashing with a fatal validation error.
-	tracingOff := otelCfg.TracingEnabled == nil || !*otelCfg.TracingEnabled
-	metricsOff := otelCfg.MetricsEnabled == nil || !*otelCfg.MetricsEnabled
-	if otelCfg.Endpoint != "" && tracingOff && metricsOff {
-		slog.Warn("OTLP endpoint is configured but tracing and metrics are both disabled; ignoring endpoint",
-			"endpoint", otelCfg.Endpoint)
-		otelCfg.Endpoint = ""
-	}
+	handleUnusedEndpoint(&otelCfg)
 
 	if otelCfg.Endpoint == "" && !otelCfg.EnablePrometheusMetricsPath && !hasRegisteredProcessors {
 		return nil, false, nil
@@ -85,4 +76,20 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 		"metrics", telemetryCfg.MetricsEnabled)
 
 	return p, true, nil
+}
+
+// handleUnusedEndpoint clears the OTLP endpoint when both tracing and metrics
+// are disabled, so the server can start normally instead of crashing with a
+// fatal validation error.
+func handleUnusedEndpoint(otelCfg *config.OpenTelemetryConfig) {
+	if otelCfg.Endpoint == "" {
+		return
+	}
+	tracingOff := otelCfg.TracingEnabled == nil || !*otelCfg.TracingEnabled
+	metricsOff := otelCfg.MetricsEnabled == nil || !*otelCfg.MetricsEnabled
+	if tracingOff && metricsOff {
+		slog.Warn("OTLP endpoint is configured but tracing and metrics are both disabled; ignoring endpoint",
+			"endpoint", otelCfg.Endpoint)
+		otelCfg.Endpoint = ""
+	}
 }

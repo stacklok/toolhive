@@ -230,6 +230,9 @@ spec:
                           type: object
                         minItems: 1
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       realm:
                         description: |-
                           Realm is the protection space identifier for WWW-Authenticate header (RFC 7235)
@@ -247,6 +250,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                     type: object
                 type: object
               databaseConfig:
@@ -465,11 +469,13 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             include:
                               description: Include is a list of glob patterns to include
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                           type: object
                         tags:
                           description: Tags defines tag-based filtering
@@ -479,11 +485,13 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             include:
                               description: Include is a list of tags to include
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                           type: object
                       type: object
                     format:
@@ -651,6 +659,9 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             required:
             - registries
             type: object

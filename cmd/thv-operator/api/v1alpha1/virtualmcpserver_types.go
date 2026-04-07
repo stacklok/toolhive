@@ -214,6 +214,8 @@ type VirtualMCPServerStatus struct {
 	URL string `json:"url,omitempty"`
 
 	// DiscoveredBackends lists discovered backend configurations from the MCPGroup
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
 

@@ -72,6 +72,7 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: set
               toolsOverride:
                 additionalProperties:
                   description: |-
@@ -215,6 +216,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

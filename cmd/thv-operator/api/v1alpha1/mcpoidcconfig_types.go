@@ -183,6 +183,8 @@ type MCPOIDCConfigStatus struct {
 
 	// ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
 	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
@@ -232,6 +234,7 @@ type MCPOIDCConfigReference struct {
 
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
 	// If empty, defaults to ["openid"].
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 }

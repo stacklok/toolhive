@@ -188,14 +188,19 @@ type MCPServerSpec struct {
 	McpPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
+	// +listType=atomic
 	// +optional
 	Args []string `json:"args,omitempty"`
 
 	// Env are environment variables to set in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Volumes are volumes to mount in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Volumes []Volume `json:"volumes,omitempty"`
 
@@ -204,6 +209,8 @@ type MCPServerSpec struct {
 	Resources ResourceRequirements `json:"resources,omitempty"`
 
 	// Secrets are references to secrets to mount in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 
@@ -347,11 +354,14 @@ type ProxyDeploymentOverrides struct {
 	// Env are environment variables to set in the proxy container (thv run process)
 	// These affect the toolhive proxy itself, not the MCP server it manages
 	// Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 
 	// ImagePullSecrets allows specifying image pull secrets for the proxy runner
 	// These are applied to both the Deployment and the ServiceAccount
+	// +listType=atomic
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
@@ -523,10 +533,12 @@ type PermissionProfileRef struct {
 // PermissionProfileSpec defines the permissions for an MCP server
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
+	// +listType=atomic
 	// +optional
 	Read []string `json:"read,omitempty"`
 
 	// Write is a list of paths that the MCP server can write to
+	// +listType=atomic
 	// +optional
 	Write []string `json:"write,omitempty"`
 
@@ -555,10 +567,12 @@ type OutboundNetworkPermissions struct {
 	InsecureAllowAll bool `json:"insecureAllowAll,omitempty"`
 
 	// AllowHost is a list of hosts to allow connections to
+	// +listType=set
 	// +optional
 	AllowHost []string `json:"allowHost,omitempty"`
 
 	// AllowPort is a list of ports to allow connections to
+	// +listType=set
 	// +optional
 	AllowPort []int32 `json:"allowPort,omitempty"`
 }
@@ -720,6 +734,7 @@ type InlineOIDCConfig struct {
 
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
 	// If empty, defaults to ["openid"]
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 }
@@ -780,6 +795,7 @@ type InlineAuthzConfig struct {
 	// Policies is a list of Cedar policy strings
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
 	Policies []string `json:"policies"`
 
 	// EntitiesJSON is a JSON string representing Cedar entities
@@ -826,6 +842,7 @@ type OpenTelemetryConfig struct {
 
 	// Headers contains authentication headers for the OTLP endpoint
 	// Specified as key=value pairs
+	// +listType=atomic
 	// +optional
 	Headers []string `json:"headers,omitempty"`
 

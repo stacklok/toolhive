@@ -68,10 +68,13 @@ type EmbeddingServerSpec struct {
 	Port int32 `json:"port,omitempty"`
 
 	// Args are additional arguments to pass to the embedding inference server
+	// +listType=atomic
 	// +optional
 	Args []string `json:"args,omitempty"`
 
 	// Env are environment variables to set in the container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 

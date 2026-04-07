@@ -56,6 +56,8 @@ type MCPTelemetryOTelConfig struct {
 	// SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.
 	// Use this for credential headers (e.g., API keys, bearer tokens) instead of
 	// embedding secrets in the headers field.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	SensitiveHeaders []SensitiveHeader `json:"sensitiveHeaders,omitempty"`
 
@@ -112,6 +114,8 @@ type MCPTelemetryConfigStatus struct {
 	ConfigHash string `json:"configHash,omitempty"`
 
 	// ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }

@@ -16,6 +16,8 @@ type HeaderForwardConfig struct {
 	AddPlaintextHeaders map[string]string `json:"addPlaintextHeaders,omitempty"`
 
 	// AddHeadersFromSecret references Kubernetes Secrets for sensitive header values.
+	// +listType=map
+	// +listMapKey=headerName
 	// +optional
 	AddHeadersFromSecret []HeaderFromSecret `json:"addHeadersFromSecret,omitempty"`
 }

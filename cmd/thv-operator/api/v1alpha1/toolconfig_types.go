@@ -27,6 +27,7 @@ type MCPToolConfigSpec struct {
 	// ToolsFilter is a list of tool names to filter (allow list).
 	// Only tools in this list will be exposed by the MCP server.
 	// If empty, all tools are exposed.
+	// +listType=set
 	// +optional
 	ToolsFilter []string `json:"toolsFilter,omitempty"`
 
@@ -98,6 +99,8 @@ type MCPToolConfigStatus struct {
 
 	// ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.
 	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }

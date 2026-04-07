@@ -2246,6 +2246,7 @@ _Appears in:_
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `backendReplicas` _integer_ | BackendReplicas is the desired number of MCP server backend pod replicas.<br />This controls the backend Deployment (the MCP server container itself),<br />independent of the proxy runner controlled by Replicas.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `sessionStorage` _[api.v1alpha1.SessionStorageConfig](#apiv1alpha1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
+| `rateLimiting` _[api.v1alpha1.RateLimitConfig](#apiv1alpha1ratelimitconfig)_ | RateLimiting defines rate limiting configuration for the MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPServerStatus
@@ -2774,6 +2775,42 @@ _Appears in:_
 | `podTemplateMetadataOverrides` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ |  |  |  |
 | `env` _[api.v1alpha1.EnvVar](#apiv1alpha1envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  | Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the proxy runner<br />These are applied to both the Deployment and the ServiceAccount |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.RateLimitBucket
+
+
+
+RateLimitBucket defines a token bucket configuration.
+
+
+
+_Appears in:_
+- [api.v1alpha1.RateLimitConfig](#apiv1alpha1ratelimitconfig)
+- [api.v1alpha1.ToolRateLimitConfig](#apiv1alpha1toolratelimitconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxTokens` _integer_ | MaxTokens is the maximum number of tokens (bucket capacity).<br />This is also the burst size: the maximum number of requests that can be served<br />instantaneously before the bucket is depleted. |  | Minimum: 1 <br />Required: \{\} <br /> |
+| `refillPeriod` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.<br />The effective refill rate is maxTokens / refillPeriod tokens per second.<br />Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s"). |  | Required: \{\} <br /> |
+
+
+#### api.v1alpha1.RateLimitConfig
+
+
+
+RateLimitConfig defines rate limiting configuration for an MCP server.
+At least one of shared or tools must be configured.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared defines a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
+| `tools` _[api.v1alpha1.ToolRateLimitConfig](#apiv1alpha1toolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.RedisACLUserConfig
@@ -3308,6 +3345,23 @@ _Appears in:_
 | `name` _string_ | Name is the redefined name of the tool |  | Optional: \{\} <br /> |
 | `description` _string_ | Description is the redefined description of the tool |  | Optional: \{\} <br /> |
 | `annotations` _[api.v1alpha1.ToolAnnotationsOverride](#apiv1alpha1toolannotationsoverride)_ | Annotations overrides specific tool annotation fields.<br />Only specified fields are overridden; others pass through from the backend. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.ToolRateLimitConfig
+
+
+
+ToolRateLimitConfig defines rate limits for a specific tool.
+
+
+
+_Appears in:_
+- [api.v1alpha1.RateLimitConfig](#apiv1alpha1ratelimitconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared defines a token bucket shared across all users for this specific tool. |  | Required: \{\} <br /> |
 
 
 #### api.v1alpha1.UpstreamInjectSpec

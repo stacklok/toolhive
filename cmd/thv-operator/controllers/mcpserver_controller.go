@@ -2117,11 +2117,11 @@ func (r *MCPServerReconciler) fetchAndValidateOIDCConfig(
 		return nil, fmt.Errorf("MCPOIDCConfig %s not found", m.Spec.OIDCConfigRef.Name)
 	}
 
-	readyCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
-	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
-		msg := fmt.Sprintf("MCPOIDCConfig %s is not ready", m.Spec.OIDCConfigRef.Name)
-		if readyCondition != nil {
-			msg = fmt.Sprintf("MCPOIDCConfig %s is not ready: %s", m.Spec.OIDCConfigRef.Name, readyCondition.Message)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
+	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
+		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", m.Spec.OIDCConfigRef.Name)
+		if validCondition != nil {
+			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", m.Spec.OIDCConfigRef.Name, validCondition.Message)
 		}
 		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
 			mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid, msg)

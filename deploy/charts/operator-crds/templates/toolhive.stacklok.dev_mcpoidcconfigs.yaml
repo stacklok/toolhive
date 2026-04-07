@@ -25,8 +25,8 @@ spec:
     - jsonPath: .spec.type
       name: Source
       type: string
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Valid
       type: string
     - jsonPath: .status.referencingWorkloads
       name: References

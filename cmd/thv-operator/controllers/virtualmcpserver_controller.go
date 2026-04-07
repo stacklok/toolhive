@@ -2802,7 +2802,7 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	}
 
 	// Check that the MCPOIDCConfig is valid
-	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
 	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
 		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", ref.Name)
 		if validCondition != nil {

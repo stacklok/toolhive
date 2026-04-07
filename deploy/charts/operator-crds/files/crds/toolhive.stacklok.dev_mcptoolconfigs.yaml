@@ -21,7 +21,7 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
-      name: Ready
+      name: Valid
       type: string
     - jsonPath: .status.referencingWorkloads
       name: References

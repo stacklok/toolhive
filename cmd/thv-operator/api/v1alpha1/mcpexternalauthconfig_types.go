@@ -728,7 +728,7 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 // +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

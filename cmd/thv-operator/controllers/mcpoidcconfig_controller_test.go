@@ -237,7 +237,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	var foundFalse bool
 	for _, cond := range invalidConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady {
+		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			foundFalse = true
 		}
@@ -264,8 +264,8 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	var foundTrue bool
 	for _, cond := range recoveredConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady {
-			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Ready condition should recover to True")
+		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
+			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Valid condition should recover to True")
 			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigValid, cond.Reason)
 			foundTrue = true
 		}
@@ -468,9 +468,9 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 
 	var foundCondition bool
 	for _, cond := range updatedConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady {
+		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
 			foundCondition = true
-			assert.Equal(t, metav1.ConditionFalse, cond.Status, "Ready condition should be False")
+			assert.Equal(t, metav1.ConditionFalse, cond.Status, "Valid condition should be False")
 			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigInvalid, cond.Reason)
 			break
 		}

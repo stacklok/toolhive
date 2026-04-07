@@ -20,8 +20,8 @@ const (
 
 // Condition type and reasons for MCPOIDCConfig status (RFC-0023)
 const (
-	// ConditionTypeOIDCConfigReady indicates whether the MCPOIDCConfig is ready for use
-	ConditionTypeOIDCConfigReady = "Ready"
+	// ConditionTypeOIDCConfigValid indicates whether the MCPOIDCConfig configuration is valid
+	ConditionTypeOIDCConfigValid = "Valid"
 
 	// ConditionReasonOIDCConfigValid indicates spec validation passed
 	ConditionReasonOIDCConfigValid = "ConfigValid"
@@ -191,7 +191,7 @@ type MCPOIDCConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].status`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 // +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

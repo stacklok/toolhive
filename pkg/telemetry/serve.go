@@ -78,9 +78,9 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 	return p, true, nil
 }
 
-// handleUnusedEndpoint clears the OTLP endpoint when both tracing and metrics
-// are disabled, so the server can start normally instead of crashing with a
-// fatal validation error.
+// handleUnusedEndpoint enables tracing by default when an OTLP endpoint is
+// configured but both tracing and metrics are disabled, so the server can start
+// normally instead of crashing with a fatal validation error.
 func handleUnusedEndpoint(otelCfg *config.OpenTelemetryConfig) {
 	if otelCfg.Endpoint == "" {
 		return
@@ -88,8 +88,9 @@ func handleUnusedEndpoint(otelCfg *config.OpenTelemetryConfig) {
 	tracingOff := otelCfg.TracingEnabled == nil || !*otelCfg.TracingEnabled
 	metricsOff := otelCfg.MetricsEnabled == nil || !*otelCfg.MetricsEnabled
 	if tracingOff && metricsOff {
-		slog.Warn("OTLP endpoint is configured but tracing and metrics are both disabled; ignoring endpoint",
+		slog.Warn("OTLP endpoint is configured but tracing and metrics are both disabled; enabling tracing by default",
 			"endpoint", otelCfg.Endpoint)
-		otelCfg.Endpoint = ""
+		enabled := true
+		otelCfg.TracingEnabled = &enabled
 	}
 }

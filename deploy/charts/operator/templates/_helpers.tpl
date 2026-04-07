@@ -67,5 +67,4 @@ Common labels for the toolhive resources
 */}}
 {{- define "toolhive.labels" -}}
 app: toolhive
-app.kubernetes.io/name: toolhive
 {{- end }}

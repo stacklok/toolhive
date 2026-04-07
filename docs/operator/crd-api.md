@@ -2663,7 +2663,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether OTLP tracing is sent | false | Optional: \{\} <br /> |
-| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) | 0.05 | Optional: \{\} <br /> |
+| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) | 0.05 | Pattern: `^(0(\.\d+)?\|1(\.0+)?)$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.OutboundNetworkPermissions

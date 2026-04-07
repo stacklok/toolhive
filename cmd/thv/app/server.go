@@ -34,6 +34,11 @@ var (
 	sentryTracesSampleRate float64
 )
 
+// ApplyServerExtensions, if set, is called with the ServerBuilder just before
+// the server is created. Enterprise builds use this hook to inject middleware
+// and mount additional routes without modifying this file.
+var ApplyServerExtensions func(*s.ServerBuilder)
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the ToolHive API server",
@@ -169,6 +174,10 @@ var serveCmd = &cobra.Command{
 			WithNonce(nonce).
 			WithOIDCConfig(oidcConfig).
 			WithOtelEnabled(otelEnabled)
+
+		if ApplyServerExtensions != nil {
+			ApplyServerExtensions(builder)
+		}
 
 		server, err := s.NewServer(ctx, builder)
 		if err != nil {

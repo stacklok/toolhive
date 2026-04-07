@@ -112,7 +112,7 @@ operator:
   # -- Go memory limits and garbage collection percentage for the operator container
   gc:
     # -- Go memory limits for the operator container
-    gomeglimit: 300MiB
+    gomemlimit: 300MiB
     # -- Go garbage collection percentage for the operator container
     gogc: 75  # 75% heap growth before GC (as Go default)
 

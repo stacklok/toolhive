@@ -34,8 +34,8 @@ var (
 	sentryTracesSampleRate float64
 )
 
-// ApplyServerExtensions, if set, is called with the ServerBuilder just before
-// the server is created. Enterprise builds use this hook to inject middleware
+// ApplyServerExtensions is an optional hook called with the ServerBuilder just
+// before the server is created. Enterprise builds use this to inject middleware
 // and mount additional routes without modifying this file.
 var ApplyServerExtensions func(*s.ServerBuilder)
 

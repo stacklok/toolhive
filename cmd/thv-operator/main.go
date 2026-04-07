@@ -75,13 +75,16 @@ func main() {
 	// Bridge to slog for consistency with the rest of the ToolHive codebase.
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
+	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
+
 	options := ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		WebhookServer:          webhook.NewServer(webhook.Options{Port: 9443}),
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "toolhive-operator-leader-election",
+		Scheme:                  scheme,
+		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
+		WebhookServer:           webhook.NewServer(webhook.Options{Port: 9443}),
+		HealthProbeBindAddress:  probeAddr,
+		LeaderElection:          enableLeaderElection,
+		LeaderElectionID:        "toolhive-operator-leader-election",
+		LeaderElectionNamespace: podNamespace,
 		Cache: cache.Options{
 			// if nil, defaults to all namespaces
 			DefaultNamespaces: getDefaultNamespaces(),
@@ -107,8 +110,6 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
-
-	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
 	// Set up telemetry service - only runs when elected as leader
 	telemetryService := telemetry.NewService(mgr.GetClient(), podNamespace)
 	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{

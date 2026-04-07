@@ -242,6 +242,12 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
+	// Create real temp directories so volume mount source path validation passes
+	hostDir := t.TempDir()
+	hostDir1 := t.TempDir()
+	hostDir2 := t.TempDir()
+	hostDir3 := t.TempDir()
+
 	testCases := []struct {
 		name                string
 		builderOptions      []RunConfigBuilderOption
@@ -261,7 +267,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Volumes without permission profile but with profile name",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{hostDir + ":/container"}),
 				WithPermissionProfileNameOrPath(permissions.ProfileNone),
 			},
 			expectError:         false,
@@ -271,7 +277,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-only volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container:ro"}),
+				WithVolumes([]string{hostDir + ":/container:ro"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -281,7 +287,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		{
 			name: "Read-write volume with existing profile",
 			builderOptions: []RunConfigBuilderOption{
-				WithVolumes([]string{"/host:/container"}),
+				WithVolumes([]string{hostDir + ":/container"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
@@ -292,9 +298,9 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			name: "Multiple volumes with existing profile",
 			builderOptions: []RunConfigBuilderOption{
 				WithVolumes([]string{
-					"/host1:/container1:ro",
-					"/host2:/container2",
-					"/host3:/container3:ro",
+					hostDir1 + ":/container1:ro",
+					hostDir2 + ":/container2",
+					hostDir3 + ":/container3:ro",
 				}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
@@ -306,6 +312,14 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			name: "Invalid volume format",
 			builderOptions: []RunConfigBuilderOption{
 				WithVolumes([]string{"invalid:format:with:too:many:colons"}),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
+			},
+			expectError: true,
+		},
+		{
+			name: "Non-existent source path",
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{"/nonexistent/path:/container"}),
 				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError: true,
@@ -697,6 +711,32 @@ func TestNewOperatorRunConfigBuilder(t *testing.T) {
 	assert.NotNil(t, config, "Builder config should be initialized")
 	assert.NotNil(t, config.EnvVars, "EnvVars should be initialized")
 	assert.NotNil(t, config.ContainerLabels, "ContainerLabels should be initialized")
+}
+
+// TestOperatorContextSkipsVolumeValidation verifies that operator context does not
+// validate volume source paths on the host filesystem, since paths reference
+// Kubernetes node paths rather than the operator pod's filesystem.
+func TestOperatorContextSkipsVolumeValidation(t *testing.T) {
+	t.Parallel()
+
+	mockValidator := &mockEnvVarValidator{}
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
+			Name:  "test-image",
+			Tools: []string{"tool1"},
+		},
+	}
+
+	config, err := NewOperatorRunConfigBuilder(
+		context.Background(),
+		imageMetadata,
+		nil,
+		mockValidator,
+		WithVolumes([]string{"/nonexistent/node/path:/container"}),
+		WithPermissionProfile(permissions.BuiltinNoneProfile()),
+	)
+	require.NoError(t, err, "Operator context should not validate source paths")
+	assert.NotNil(t, config)
 }
 
 // TestWithEnvVars tests the WithEnvVars method

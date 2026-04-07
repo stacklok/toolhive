@@ -31,7 +31,7 @@ type MCPGroupStatus struct {
 
 	// ServerCount is the number of MCPServers
 	// +optional
-	ServerCount int `json:"serverCount"`
+	ServerCount int32 `json:"serverCount"`
 
 	// RemoteProxies lists MCPRemoteProxy names in this group
 	// +optional
@@ -39,7 +39,7 @@ type MCPGroupStatus struct {
 
 	// RemoteProxyCount is the number of MCPRemoteProxies
 	// +optional
-	RemoteProxyCount int `json:"remoteProxyCount,omitempty"`
+	RemoteProxyCount int32 `json:"remoteProxyCount,omitempty"`
 
 	// Conditions represent observations
 	// +listType=map

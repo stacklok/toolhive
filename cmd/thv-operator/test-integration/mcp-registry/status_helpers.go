@@ -78,8 +78,8 @@ func (h *StatusTestHelper) WaitForConditionReason(registryName, conditionType, e
 }
 
 // WaitForServerCount waits for the registry to report a specific server count
-func (h *StatusTestHelper) WaitForServerCount(registryName string, expectedCount int, timeout time.Duration) {
-	gomega.Eventually(func() int {
+func (h *StatusTestHelper) WaitForServerCount(registryName string, expectedCount int32, timeout time.Duration) {
+	gomega.Eventually(func() int32 {
 		status, err := h.registryHelper.GetRegistryStatus(registryName)
 		if err != nil {
 			return -1

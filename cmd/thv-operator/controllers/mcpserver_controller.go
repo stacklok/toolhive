@@ -680,10 +680,11 @@ func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServe
 // This reduces code duplication in the image validation logic
 func setImageValidationCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:    mcpv1alpha1.ConditionImageValidated,
-		Status:  status,
-		Reason:  reason,
-		Message: message,
+		Type:               mcpv1alpha1.ConditionImageValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
 	})
 }
 

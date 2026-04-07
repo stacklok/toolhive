@@ -10,12 +10,12 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-toolhive-stacklok-com-v1alpha1-mcpexternalauthconfig
+      path: /validate-toolhive-stacklok-dev-v1alpha1-mcpexternalauthconfig
   failurePolicy: Fail
   name: vmcpexternalauthconfig.kb.io
   rules:
   - apiGroups:
-    - toolhive.stacklok.com
+    - toolhive.stacklok.dev
     apiVersions:
     - v1alpha1
     operations:

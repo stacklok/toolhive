@@ -14,7 +14,7 @@ import (
 	reflect "reflect"
 
 	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	mcpregistrystatus "github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
+	registryapi "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/api/apps/v1"
 )
@@ -57,6 +57,20 @@ func (mr *MockManagerMockRecorder) CheckAPIReadiness(ctx, deployment any) *gomoc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckAPIReadiness", reflect.TypeOf((*MockManager)(nil).CheckAPIReadiness), ctx, deployment)
 }
 
+// GetReadyReplicas mocks base method.
+func (m *MockManager) GetReadyReplicas(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) int32 {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetReadyReplicas", ctx, mcpRegistry)
+	ret0, _ := ret[0].(int32)
+	return ret0
+}
+
+// GetReadyReplicas indicates an expected call of GetReadyReplicas.
+func (mr *MockManagerMockRecorder) GetReadyReplicas(ctx, mcpRegistry any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetReadyReplicas", reflect.TypeOf((*MockManager)(nil).GetReadyReplicas), ctx, mcpRegistry)
+}
+
 // IsAPIReady mocks base method.
 func (m *MockManager) IsAPIReady(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) bool {
 	m.ctrl.T.Helper()
@@ -72,10 +86,10 @@ func (mr *MockManagerMockRecorder) IsAPIReady(ctx, mcpRegistry any) *gomock.Call
 }
 
 // ReconcileAPIService mocks base method.
-func (m *MockManager) ReconcileAPIService(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) *mcpregistrystatus.Error {
+func (m *MockManager) ReconcileAPIService(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) *registryapi.Error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReconcileAPIService", ctx, mcpRegistry)
-	ret0, _ := ret[0].(*mcpregistrystatus.Error)
+	ret0, _ := ret[0].(*registryapi.Error)
 	return ret0
 }
 

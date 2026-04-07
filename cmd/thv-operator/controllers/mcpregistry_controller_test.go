@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	registryapimocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/mocks"
 )
 
@@ -195,7 +195,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionRegistryPodTemplateValid)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
 				require.NotNil(t, cond, "PodTemplateValid condition must be set")
 				assert.Equal(t, metav1.ConditionFalse, cond.Status)
 				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseFailed, updated.Status.Phase)
@@ -219,7 +219,9 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
+				// Called in updateRegistryStatus and in the requeue check.
 				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
+				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(1))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -228,7 +230,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionRegistryPodTemplateValid)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
 				require.NotNil(t, cond, "PodTemplateValid condition must be set")
 				assert.Equal(t, metav1.ConditionTrue, cond.Status)
 			},
@@ -246,15 +248,15 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(
-					&mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+					&registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 				)
-				// err != nil in Reconcile → IsAPIReady is never called.
+				// reconcileErr != nil → IsAPIReady and GetReadyReplicas are never called.
 			},
 			expResult: ctrl.Result{},
-			expErr:    &mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+			expErr:    &registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 		},
 		{
-			// applyStatusUpdates writes APIPhaseDeploying; deriveOverallStatus sets PhasePending.
+			// updateRegistryStatus sets Phase=Pending when API is not ready.
 			// Reconcile also schedules a requeue because IsAPIReady returns false.
 			name: "api_reconcile_success_api_not_ready",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
@@ -268,8 +270,9 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called twice: once in the success branch, once in the requeue check.
+				// Called in updateRegistryStatus and in the requeue check.
 				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(false).Times(2)
+				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(0))
 			},
 			expResult: ctrl.Result{RequeueAfter: 30 * time.Second},
 			expErr:    nil,
@@ -278,13 +281,12 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, mcpv1alpha1.APIPhaseDeploying, updated.Status.APIStatus.Phase)
 				assert.Equal(t, mcpv1alpha1.MCPRegistryPhasePending, updated.Status.Phase)
+				assert.Equal(t, int32(0), updated.Status.ReadyReplicas)
 			},
 		},
 		{
-			// applyStatusUpdates writes APIPhaseReady; deriveOverallStatus sets PhaseReady.
+			// updateRegistryStatus sets Phase=Running when API is ready.
 			// No requeue because IsAPIReady returns true.
 			name: "api_reconcile_success_api_ready",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
@@ -298,8 +300,9 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called twice: once in the success branch, once in the requeue check.
+				// Called in updateRegistryStatus and in the requeue check.
 				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
+				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(1))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -308,15 +311,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, mcpv1alpha1.APIPhaseReady, updated.Status.APIStatus.Phase)
-				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseReady, updated.Status.Phase)
+				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseRunning, updated.Status.Phase)
+				assert.Equal(t, int32(1), updated.Status.ReadyReplicas)
 			},
 		},
 		{
-			// When ReconcileAPIService fails, applyStatusUpdates should still persist
-			// APIStatus.Phase=Error and set the APIReady condition to False.
-			name: "api_reconcile_error_updates_api_error_status",
+			// When ReconcileAPIService fails, updateRegistryStatus sets Phase=Failed
+			// and the Ready condition to False with the structured error reason.
+			name: "api_reconcile_error_updates_failed_status",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
 				t.Helper()
 				mcpRegistry := newMCPRegistryWithFinalizer(registryName, registryNamespace)
@@ -328,27 +330,28 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(
-					&mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+					&registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 				)
-				// err != nil → IsAPIReady is never called.
+				// reconcileErr != nil → IsAPIReady and GetReadyReplicas are never called.
 			},
 			expResult: ctrl.Result{},
-			expErr:    &mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+			expErr:    &registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 			assertRegistry: func(t *testing.T, fakeClient client.Client) {
 				t.Helper()
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, mcpv1alpha1.APIPhaseError, updated.Status.APIStatus.Phase)
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionAPIReady)
-				require.NotNil(t, cond, "APIReady condition must be set")
+				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseFailed, updated.Status.Phase)
+				assert.Equal(t, "deploy failed", updated.Status.Message)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionTypeReady)
+				require.NotNil(t, cond, "Ready condition must be set")
 				assert.Equal(t, metav1.ConditionFalse, cond.Status)
+				assert.Equal(t, "DeployFailed", cond.Reason)
 			},
 		},
 		{
-			// When the API is ready, the endpoint in APIStatus should follow the in-cluster
-			// URL format and the APIReady condition should be True.
+			// When the API is ready, the URL should follow the in-cluster format
+			// and the Ready condition should be True.
 			name: "api_reconcile_success_api_ready_checks_endpoint_and_condition",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
 				t.Helper()
@@ -361,8 +364,9 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called twice: once in the success branch, once in the requeue check.
+				// Called in updateRegistryStatus and in the requeue check.
 				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
+				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(2))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -371,10 +375,10 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, "http://test-registry-api.default:8080", updated.Status.APIStatus.Endpoint)
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionAPIReady)
-				require.NotNil(t, cond, "APIReady condition must be set")
+				assert.Equal(t, "http://test-registry-api.default:8080", updated.Status.URL)
+				assert.Equal(t, int32(2), updated.Status.ReadyReplicas)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionTypeReady)
+				require.NotNil(t, cond, "Ready condition must be set")
 				assert.Equal(t, metav1.ConditionTrue, cond.Status)
 			},
 		},

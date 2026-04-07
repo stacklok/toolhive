@@ -29,40 +29,17 @@ When building operators, the decision of when to use a `podTemplateSpec` and whe
 
 ### Status Management Design
 
-**Decision**: Use batched status updates via StatusCollector pattern instead of individual field updates.
+**Decision**: Use standard Kubernetes workload status pattern matching MCPServer — flat `Phase` + `Ready` condition + `ReadyReplicas` + `URL`.
 
 **Rationale**:
-- Prevents race conditions between multiple status updates
-- Reduces API server load with fewer update calls
-- Ensures consistent status across reconciliation cycles
-- Handles resource version conflicts gracefully
+- Consistency with MCPServer and standard Kubernetes workload patterns
+- Enables `kubectl wait --for=condition=Ready` and standard monitoring
+- The operator only needs to track deployment readiness, not internal registry server state
+- Tracking internal sync/API states would require the operator to call the registry server, which with auth enabled is not feasible
 
-**Implementation**: StatusCollector interface collects all changes and applies them atomically.
+**Implementation**: Controller sets `Phase`, `Message`, `URL`, `ReadyReplicas`, and a `Ready` condition directly based on the API deployment's readiness. The latest resource version is refetched before status updates to avoid conflicts.
 
-### Sync Operation Design
-
-**Decision**: Separate sync decision logic from sync execution with clear interfaces.
-
-**Rationale**:
-- Testability: Mock sync decisions independently from execution
-- Flexibility: Different sync strategies without changing core logic
-- Maintainability: Clear separation of concerns
-
-**Key Patterns**:
-- Idempotent operations for safe retry
-- Manual vs automatic sync distinction
-- Data preservation on failures
-
-### Storage Architecture
-
-**Decision**: Abstract storage via StorageManager interface with ConfigMap as default implementation.
-
-**Rationale**:
-- Future flexibility: Easy addition of new storage backends (OCI, databases)
-- Testability: Mock storage for unit tests
-- Consistency: Single interface for all storage operations
-
-**Current Implementation**: ConfigMap-based with owner references for automatic cleanup.
+**History**: The original design used a `StatusCollector` pattern (`mcpregistrystatus` package) that batched status changes from multiple independent sources — an `APIStatusCollector` for deployment state and originally a sync collector — then applied them atomically via a single `Status().Update()`. A `StatusDeriver` computed the overall phase from sub-phases (`SyncPhase` + `APIPhase` → `MCPRegistryPhase`). This was removed because with sync operations moved to the registry server itself, only one status source remained (deployment readiness), making the batching/derivation indirection unnecessary. The new approach produces the same number of API server calls with less abstraction.
 
 ### Registry API Service Pattern
 
@@ -78,26 +55,20 @@ When building operators, the decision of when to use a `podTemplateSpec` and whe
 
 ### Error Handling Strategy
 
-**Decision**: Structured error types with progressive retry backoff.
+**Decision**: Structured error types (`registryapi.Error`) with condition metadata.
 
 **Rationale**:
 - Different error types need different handling strategies
-- Progressive backoff prevents thundering herd problems
-- Structured errors enable better observability
+- Structured errors carry `ConditionReason` for setting Kubernetes conditions with specific failure reasons (e.g., `ConfigMapFailed`, `DeploymentFailed`)
+- Enables better observability via condition reasons
 
-**Implementation**: 5m initial retry, exponential backoff with cap, manual sync bypass.
+**Implementation**: `registryapi.Error` carries `ConditionType`, `ConditionReason`, and `Message`. The controller uses `errors.As` to extract structured fields when available, falling back to generic `NotReady` reason for unstructured errors.
 
 ### Performance Design Decisions
 
 #### Resource Optimization
-- **Status Updates**: Batched to reduce API calls (implemented)
-- **Source Fetching**: Planned caching to avoid repeated downloads
+- **Status Updates**: Single refetch-then-update per reconciliation cycle
 - **API Deployment**: Lazy creation only when needed (implemented)
-
-#### Memory Management
-- **Git Operations**: Shallow clones to minimize disk usage (implemented)
-- **Large Registries**: Stream processing planned for future
-- **Status Objects**: Efficient field-level updates (implemented)
 
 ### Security Architecture
 

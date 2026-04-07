@@ -1,11 +1,8 @@
-{{- if .Values.crds.install.registry }}
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    {{- if .Values.crds.keep }}
-    helm.sh/resource-policy: keep
-    {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
   name: mcpregistries.toolhive.stacklok.dev
 spec:
@@ -24,20 +21,17 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
-      name: Phase
+      name: Status
       type: string
-    - jsonPath: .status.syncStatus.phase
-      name: Sync
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
       type: string
-    - jsonPath: .status.apiStatus.phase
-      name: API
-      type: string
-    - jsonPath: .status.syncStatus.serverCount
-      name: Servers
+    - jsonPath: .status.readyReplicas
+      name: Replicas
       type: integer
-    - jsonPath: .status.syncStatus.lastSyncTime
-      name: Last Sync
-      type: date
+    - jsonPath: .status.url
+      name: URL
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -677,40 +671,6 @@ spec:
           status:
             description: MCPRegistryStatus defines the observed state of MCPRegistry
             properties:
-              apiStatus:
-                description: APIStatus provides detailed information about the API
-                  service
-                properties:
-                  endpoint:
-                    description: Endpoint is the URL where the API is accessible
-                    type: string
-                  message:
-                    description: Message provides additional information about the
-                      API status
-                    type: string
-                  phase:
-                    allOf:
-                    - enum:
-                      - NotStarted
-                      - Deploying
-                      - Ready
-                      - Unhealthy
-                      - Error
-                    - enum:
-                      - NotStarted
-                      - Deploying
-                      - Ready
-                      - Unhealthy
-                      - Error
-                    description: Phase represents the current API service phase
-                    type: string
-                  readySince:
-                    description: ReadySince is the timestamp when the API became ready
-                    format: date-time
-                    type: string
-                required:
-                - phase
-                type: object
               conditions:
                 description: Conditions represent the latest available observations
                   of the MCPRegistry's state
@@ -772,15 +732,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              lastAppliedFilterHash:
-                description: LastAppliedFilterHash is the hash of the last applied
-                  filter
-                type: string
-              lastManualSyncTrigger:
-                description: |-
-                  LastManualSyncTrigger tracks the last processed manual sync annotation value
-                  Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
-                type: string
               message:
                 description: Message provides additional information about the current
                   phase
@@ -791,91 +742,20 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: |-
-                  Phase represents the current overall phase of the MCPRegistry
-                  Derived from sync and API status
+                description: Phase represents the current overall phase of the MCPRegistry
                 enum:
                 - Pending
-                - Ready
+                - Running
                 - Failed
-                - Syncing
                 - Terminating
                 type: string
-              storageRef:
-                description: StorageRef is a reference to the internal storage location
-                properties:
-                  configMapRef:
-                    description: |-
-                      ConfigMapRef is a reference to a ConfigMap storage
-                      Only used when Type is "configmap"
-                    properties:
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  type:
-                    description: Type is the storage type (configmap)
-                    enum:
-                    - configmap
-                    type: string
-                required:
-                - type
-                type: object
-              syncStatus:
-                description: SyncStatus provides detailed information about data synchronization
-                properties:
-                  attemptCount:
-                    description: AttemptCount is the number of sync attempts since
-                      last success
-                    format: int32
-                    minimum: 0
-                    type: integer
-                  lastAttempt:
-                    description: LastAttempt is the timestamp of the last sync attempt
-                    format: date-time
-                    type: string
-                  lastSyncHash:
-                    description: |-
-                      LastSyncHash is the hash of the last successfully synced data
-                      Used to detect changes in source data
-                    type: string
-                  lastSyncTime:
-                    description: LastSyncTime is the timestamp of the last successful
-                      sync
-                    format: date-time
-                    type: string
-                  message:
-                    description: Message provides additional information about the
-                      sync status
-                    type: string
-                  phase:
-                    allOf:
-                    - enum:
-                      - Syncing
-                      - Complete
-                      - Failed
-                    - enum:
-                      - Syncing
-                      - Complete
-                      - Failed
-                    description: Phase represents the current synchronization phase
-                    type: string
-                  serverCount:
-                    description: ServerCount is the total number of servers in the
-                      registry
-                    format: int32
-                    minimum: 0
-                    type: integer
-                required:
-                - phase
-                type: object
+              readyReplicas:
+                description: ReadyReplicas is the number of ready registry API replicas
+                format: int32
+                type: integer
+              url:
+                description: URL is the URL where the registry API can be accessed
+                type: string
             type: object
         type: object
         x-kubernetes-validations:
@@ -885,4 +765,3 @@ spec:
     storage: true
     subresources:
       status: {}
-{{- end }}

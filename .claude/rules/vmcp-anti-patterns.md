@@ -79,3 +79,11 @@ Adding caches, connection pools, or other performance optimizations without evid
 **Detect**: Caches introduced without profiling data or load estimates showing the uncached path is too slow; connection pools or object pools where the allocation cost hasn't been measured; complexity added to avoid overhead (e.g., TLS handshakes, serialization) at request rates where the overhead is negligible.
 
 **Instead**: Start with the straightforward implementation. Measure under realistic load. Add optimization only when measurements show it's needed, and document the evidence in the commit or PR description.
+
+## 10. Mutable Domain Objects with Mutex Protection
+
+Adding a mutex to a domain object and mutating it in place when state changes. This grows in complexity with every new mutation and makes objects harder to reason about under concurrency.
+
+**Detect**: Mutex fields on domain structs; mutation methods on types that were previously read-only; in-place writes guarded by an object-level lock.
+
+**Instead**: Prefer immutable objects. When state changes, replace the object rather than mutating it — rebuild from the source of truth and let readers always work with a consistent snapshot.

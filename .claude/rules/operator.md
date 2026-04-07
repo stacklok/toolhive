@@ -26,6 +26,12 @@ Applies to Kubernetes operator code and CRD definitions.
 
 See `cmd/thv-operator/DESIGN.md` for detailed decision guidelines.
 
+## CRD Type Conventions
+
+- Use `metav1.Duration` for duration fields in CRD types, not `string` or
+  integer seconds. It serializes as Go duration strings (`"1m0s"`, `"30s"`),
+  has built-in OpenAPI schema support, and is the standard Kubernetes convention.
+
 ## Development Workflow
 
 - Always run `task operator-generate` after modifying CRD types

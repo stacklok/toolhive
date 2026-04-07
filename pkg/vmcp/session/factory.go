@@ -516,7 +516,6 @@ func (f *defaultMultiSessionFactory) makeSession(
 }
 
 // RestoreSession implements MultiSessionFactory.
-<<<<<<< HEAD
 // It reconnects to the backends whose IDs are listed in storedMetadata, rebuilds
 // the routing table, and reapplies the hijack-prevention decorator from the stored
 // token hash and salt — without recomputing them from a (unavailable) token.

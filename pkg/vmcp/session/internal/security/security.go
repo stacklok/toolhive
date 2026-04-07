@@ -202,7 +202,7 @@ func (d hijackPreventionDecorator) GetPrompt(
 // reconstructing a MultiSession after a pod restart or cross-pod failover where the
 // original bearer token is no longer available but the stored hash and salt are.
 //
-// If storedHash is empty the session is treated as anonymous (allowAnonymous=true).
+// If tokenHash is empty the session is treated as anonymous (allowAnonymous=true).
 // The hmacSecret must be the same server-managed secret used at creation time.
 func RestoreHijackPrevention(
 	session sessiontypes.MultiSession,

@@ -811,11 +811,11 @@ func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
 		return nil, fmt.Errorf("MCPOIDCConfig %s not found", proxy.Spec.OIDCConfigRef.Name)
 	}
 
-	readyCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
-	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
-		msg := fmt.Sprintf("MCPOIDCConfig %s is not ready", proxy.Spec.OIDCConfigRef.Name)
-		if readyCondition != nil {
-			msg = fmt.Sprintf("MCPOIDCConfig %s is not ready: %s", proxy.Spec.OIDCConfigRef.Name, readyCondition.Message)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
+	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
+		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", proxy.Spec.OIDCConfigRef.Name)
+		if validCondition != nil {
+			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", proxy.Spec.OIDCConfigRef.Name, validCondition.Message)
 		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
@@ -961,37 +961,41 @@ func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Contex
 		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseReady
 		proxy.Status.Message = "Remote proxy is running"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  mcpv1alpha1.ConditionReasonDeploymentReady,
-			Message: "Deployment is ready and running",
+			Type:               mcpv1alpha1.ConditionTypeReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             mcpv1alpha1.ConditionReasonDeploymentReady,
+			Message:            "Deployment is ready and running",
+			ObservedGeneration: proxy.Generation,
 		})
 	} else if pending > 0 {
 		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhasePending
 		proxy.Status.Message = "Remote proxy is starting"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonDeploymentNotReady,
-			Message: "Deployment is not yet ready",
+			Type:               mcpv1alpha1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Message:            "Deployment is not yet ready",
+			ObservedGeneration: proxy.Generation,
 		})
 	} else if failed > 0 {
 		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
 		proxy.Status.Message = "Remote proxy failed to start"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonDeploymentNotReady,
-			Message: "Deployment failed",
+			Type:               mcpv1alpha1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Message:            "Deployment failed",
+			ObservedGeneration: proxy.Generation,
 		})
 	} else {
 		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhasePending
 		proxy.Status.Message = "No pods found for remote proxy"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonDeploymentNotReady,
-			Message: "No pods found",
+			Type:               mcpv1alpha1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Message:            "No pods found",
+			ObservedGeneration: proxy.Generation,
 		})
 	}
 

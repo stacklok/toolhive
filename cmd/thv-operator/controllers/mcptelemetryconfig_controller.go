@@ -82,7 +82,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := telemetryConfig.Validate(); err != nil {
 		logger.Error(err, "MCPTelemetryConfig spec validation failed")
 		meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               mcpv1alpha1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
 			Reason:             "ValidationFailed",
 			Message:            err.Error(),
@@ -96,7 +96,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Validation succeeded - set Valid=True condition
 	conditionChanged := meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
-		Type:               "Valid",
+		Type:               mcpv1alpha1.ConditionTypeValid,
 		Status:             metav1.ConditionTrue,
 		Reason:             "ValidationSucceeded",
 		Message:            "Spec validation passed",
@@ -228,7 +228,7 @@ func (r *MCPTelemetryConfigReconciler) handleDeletion(
 		msg := fmt.Sprintf("cannot delete: still referenced by MCPServer(s): %v", names)
 		logger.Info(msg, "telemetryConfig", telemetryConfig.Name)
 		meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
-			Type:               "DeletionBlocked",
+			Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
 			Status:             metav1.ConditionTrue,
 			Reason:             "ReferencedByWorkloads",
 			Message:            msg,

@@ -10,7 +10,7 @@ import (
 // Condition types for MCPToolConfig
 const (
 	// ConditionToolConfigValid indicates whether the MCPToolConfig spec is valid.
-	ConditionToolConfigValid = "Valid"
+	ConditionToolConfigValid = ConditionTypeValid
 )
 
 const (
@@ -27,6 +27,7 @@ type MCPToolConfigSpec struct {
 	// ToolsFilter is a list of tool names to filter (allow list).
 	// Only tools in this list will be exposed by the MCP server.
 	// If empty, all tools are exposed.
+	// +listType=set
 	// +optional
 	ToolsFilter []string `json:"toolsFilter,omitempty"`
 
@@ -98,6 +99,8 @@ type MCPToolConfigStatus struct {
 
 	// ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.
 	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
@@ -105,7 +108,7 @@ type MCPToolConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=tc;toolconfig,categories=toolhive
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 // +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

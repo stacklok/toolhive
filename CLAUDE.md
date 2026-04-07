@@ -62,6 +62,8 @@ Detailed rules are in `.claude/rules/` (loaded automatically when matching files
 - **Operator/CRDs**: `.claude/rules/operator.md`
 - **PR creation**: `.claude/rules/pr-creation.md`
 
+**Plan review**: Before presenting an implementation plan, review all applicable `.claude/rules/` files for the languages and components involved. Plans must conform to existing conventions.
+
 ## Commit Guidelines
 
 - Imperative mood, capitalize subject, no trailing period

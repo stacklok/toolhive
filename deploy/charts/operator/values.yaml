@@ -40,7 +40,7 @@ operator:
   proxyHost: 0.0.0.0
 
   # -- Environment variables to set in the operator container
-  env: {}
+  env: []
 
   # -- List of ports to expose from the operator container
   ports:
@@ -112,7 +112,7 @@ operator:
   # -- Go memory limits and garbage collection percentage for the operator container
   gc:
     # -- Go memory limits for the operator container
-    gomeglimit: 150MiB
+    gomemlimit: 110MiB
     # -- Go garbage collection percentage for the operator container
     gogc: 75  # 75% heap growth before GC (as Go default)
 

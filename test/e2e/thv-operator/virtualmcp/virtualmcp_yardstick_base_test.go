@@ -367,7 +367,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		It("should have two discovered backends initially", func() {
 			status, err := GetVirtualMCPServerStatus(ctx, k8sClient, vmcpServerName, testNamespace)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(status.BackendCount).To(Equal(2), "Should have 2 initial backends")
+			Expect(status.BackendCount).To(Equal(int32(2)), "Should have 2 initial backends")
 			Expect(status.DiscoveredBackends).To(HaveLen(2), "Should have 2 discovered backends")
 
 			backendNames := make([]string, len(status.DiscoveredBackends))

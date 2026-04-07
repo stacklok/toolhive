@@ -241,7 +241,7 @@ func (r *VirtualMCPServerReconciler) validateSpec(
 	if err := vmcp.Validate(); err != nil {
 		ctxLogger.Error(err, "VirtualMCPServer spec validation failed")
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		statusManager.SetCondition("Valid", "ValidationFailed", err.Error(), metav1.ConditionFalse)
+		statusManager.SetCondition(mcpv1alpha1.ConditionTypeValid, "ValidationFailed", err.Error(), metav1.ConditionFalse)
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after validation error")
 		}
@@ -250,7 +250,7 @@ func (r *VirtualMCPServerReconciler) validateSpec(
 
 	// Validation succeeded - set Valid=True condition
 	statusManager.SetObservedGeneration(vmcp.Generation)
-	statusManager.SetCondition("Valid", "ValidationSucceeded", "Spec validation passed", metav1.ConditionTrue)
+	statusManager.SetCondition(mcpv1alpha1.ConditionTypeValid, "ValidationSucceeded", "Spec validation passed", metav1.ConditionTrue)
 
 	return nil
 }
@@ -2802,7 +2802,7 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	}
 
 	// Check that the MCPOIDCConfig is valid
-	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
 	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
 		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", ref.Name)
 		if validCondition != nil {

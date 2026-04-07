@@ -109,7 +109,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -299,7 +299,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				}
 				originalCfgHash = updated.Status.ConfigHash
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -553,7 +553,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}

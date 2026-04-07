@@ -84,7 +84,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
 		// Update status with validation error
 		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               mcpv1alpha1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
 			Reason:             "ValidationFailed",
 			Message:            err.Error(),
@@ -98,7 +98,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Validation succeeded - set Valid=True condition
 	conditionChanged := meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-		Type:               "Valid",
+		Type:               mcpv1alpha1.ConditionTypeValid,
 		Status:             metav1.ConditionTrue,
 		Reason:             "ValidationSucceeded",
 		Message:            "Spec validation passed",
@@ -209,7 +209,7 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 				"referencingWorkloads", referencingWorkloads)
 
 			meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-				Type:               "DeletionBlocked",
+				Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
 				Status:             metav1.ConditionTrue,
 				Reason:             "ReferencedByWorkloads",
 				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),

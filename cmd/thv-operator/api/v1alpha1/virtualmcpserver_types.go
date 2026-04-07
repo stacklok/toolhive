@@ -214,13 +214,15 @@ type VirtualMCPServerStatus struct {
 	URL string `json:"url,omitempty"`
 
 	// DiscoveredBackends lists discovered backend configurations from the MCPGroup
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
 
 	// BackendCount is the number of healthy/ready backends
 	// (excludes unavailable, degraded, and unknown backends)
 	// +optional
-	BackendCount int `json:"backendCount,omitempty"`
+	BackendCount int32 `json:"backendCount,omitempty"`
 
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.
 	// Only populated when IncomingAuth.OIDCConfigRef is set.

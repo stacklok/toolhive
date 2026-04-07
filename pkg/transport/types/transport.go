@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // MiddlewareFunction is a function that wraps an http.Handler with additional functionality.
@@ -270,6 +271,11 @@ type Config struct {
 	//	  "/.well-known/oauth-authorization-server": authServerHandler,
 	//	}
 	PrefixHandlers map[string]http.Handler
+
+	// SessionStorage overrides the default in-memory session store when set.
+	// Used for Redis-backed session sharing across replicas.
+	// When nil, transports use their default in-memory LocalStorage.
+	SessionStorage session.Storage
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

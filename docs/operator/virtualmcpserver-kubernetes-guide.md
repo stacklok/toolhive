@@ -209,8 +209,13 @@ spec:
     groupRef: my-services
 
   # Configure authentication (adjust from CLI if using OIDC)
+  # For OIDC, use oidcConfigRef with a shared MCPOIDCConfig resource:
+  #   type: oidc
+  #   oidcConfigRef:
+  #     name: my-oidc-config
+  #     audience: my-vmcp
   incomingAuth:
-    type: anonymous  # Or configure OIDC
+    type: anonymous  # Or configure OIDC (see above)
     authzConfig:
       type: inline
       inline:
@@ -329,10 +334,13 @@ thv run github \
 
 **Kubernetes**:
 
-Export and adjust URLs for cluster context. See example configurations:
+The preferred approach is to create a shared `MCPOIDCConfig` resource and reference it via `oidcConfigRef`. This lets you define OIDC provider settings once and reuse them across multiple servers.
 
-- [mcpserver_with_inline_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_inline_oidc.yaml)
-- [mcpserver_with_kubernetes_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_kubernetes_oidc.yaml)
+See example configurations:
+
+- [mcpserver_with_oidcconfig_ref.yaml](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) — Shared MCPOIDCConfig (preferred)
+- [mcpserver_with_inline_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_inline_oidc.yaml) — Inline OIDC (deprecated)
+- [mcpserver_with_kubernetes_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_kubernetes_oidc.yaml) — Kubernetes SA OIDC (deprecated inline variant)
 
 #### Scenario 3: Grouped Servers (CLI) → VirtualMCPServer (K8s)
 

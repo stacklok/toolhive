@@ -598,7 +598,7 @@ func (m *Monitor) BuildStatus() *vmcp.Status {
 		Message:            message,
 		Conditions:         conditions,
 		DiscoveredBackends: discoveredBackends,
-		BackendCount:       summary.Healthy, // Only count healthy backends
+		BackendCount:       int32(summary.Healthy), //nolint:gosec // healthy count is bounded by backend list size
 		Timestamp:          time.Now(),
 	}
 }

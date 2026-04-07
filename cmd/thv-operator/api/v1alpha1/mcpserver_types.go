@@ -154,6 +154,7 @@ const SessionStorageProviderRedis = "redis"
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
 // +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
@@ -188,14 +189,19 @@ type MCPServerSpec struct {
 	McpPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
+	// +listType=atomic
 	// +optional
 	Args []string `json:"args,omitempty"`
 
 	// Env are environment variables to set in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Volumes are volumes to mount in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Volumes []Volume `json:"volumes,omitempty"`
 
@@ -204,6 +210,8 @@ type MCPServerSpec struct {
 	Resources ResourceRequirements `json:"resources,omitempty"`
 
 	// Secrets are references to secrets to mount in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 
@@ -324,6 +332,11 @@ type MCPServerSpec struct {
 	// When nil, no session storage is configured.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
+
+	// RateLimiting defines rate limiting configuration for the MCP server.
+	// Requires Redis session storage to be configured for distributed rate limiting.
+	// +optional
+	RateLimiting *RateLimitConfig `json:"rateLimiting,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -347,11 +360,14 @@ type ProxyDeploymentOverrides struct {
 	// Env are environment variables to set in the proxy container (thv run process)
 	// These affect the toolhive proxy itself, not the MCP server it manages
 	// Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// ImagePullSecrets allows specifying image pull secrets for the proxy runner
 	// These are applied to both the Deployment and the ServiceAccount
+	// +listType=atomic
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
@@ -471,6 +487,54 @@ type SessionStorageConfig struct {
 	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
 }
 
+// RateLimitConfig defines rate limiting configuration for an MCP server.
+// At least one of shared or tools must be configured.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared or tools must be configured"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type RateLimitConfig struct {
+	// Shared defines a token bucket shared across all users for the entire server.
+	// +optional
+	Shared *RateLimitBucket `json:"shared,omitempty"`
+
+	// Tools defines per-tool rate limit overrides.
+	// Each entry applies additional rate limits to calls targeting a specific tool name.
+	// A request must pass both the server-level limit and the per-tool limit.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Tools []ToolRateLimitConfig `json:"tools,omitempty"`
+}
+
+// RateLimitBucket defines a token bucket configuration.
+type RateLimitBucket struct {
+	// MaxTokens is the maximum number of tokens (bucket capacity).
+	// This is also the burst size: the maximum number of requests that can be served
+	// instantaneously before the bucket is depleted.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	MaxTokens int32 `json:"maxTokens"`
+
+	// RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+	// The effective refill rate is maxTokens / refillPeriod tokens per second.
+	// Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+	// +kubebuilder:validation:Required
+	RefillPeriod metav1.Duration `json:"refillPeriod"`
+}
+
+// ToolRateLimitConfig defines rate limits for a specific tool.
+type ToolRateLimitConfig struct {
+	// Name is the MCP tool name this limit applies to.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Shared defines a token bucket shared across all users for this specific tool.
+	// +kubebuilder:validation:Required
+	Shared *RateLimitBucket `json:"shared"`
+}
+
 // Permission profile types
 const (
 	// PermissionProfileTypeBuiltin is the type for built-in permission profiles
@@ -523,10 +587,12 @@ type PermissionProfileRef struct {
 // PermissionProfileSpec defines the permissions for an MCP server
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
+	// +listType=atomic
 	// +optional
 	Read []string `json:"read,omitempty"`
 
 	// Write is a list of paths that the MCP server can write to
+	// +listType=atomic
 	// +optional
 	Write []string `json:"write,omitempty"`
 
@@ -555,10 +621,12 @@ type OutboundNetworkPermissions struct {
 	InsecureAllowAll bool `json:"insecureAllowAll,omitempty"`
 
 	// AllowHost is a list of hosts to allow connections to
+	// +listType=set
 	// +optional
 	AllowHost []string `json:"allowHost,omitempty"`
 
 	// AllowPort is a list of ports to allow connections to
+	// +listType=set
 	// +optional
 	AllowPort []int32 `json:"allowPort,omitempty"`
 }
@@ -720,6 +788,7 @@ type InlineOIDCConfig struct {
 
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
 	// If empty, defaults to ["openid"]
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 }
@@ -780,6 +849,7 @@ type InlineAuthzConfig struct {
 	// Policies is a list of Cedar policy strings
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
 	Policies []string `json:"policies"`
 
 	// EntitiesJSON is a JSON string representing Cedar entities
@@ -826,6 +896,7 @@ type OpenTelemetryConfig struct {
 
 	// Headers contains authentication headers for the OTLP endpoint
 	// Specified as key=value pairs
+	// +listType=atomic
 	// +optional
 	Headers []string `json:"headers,omitempty"`
 
@@ -867,6 +938,7 @@ type OpenTelemetryTracingConfig struct {
 
 	// SamplingRate is the trace sampling rate (0.0-1.0)
 	// +kubebuilder:default="0.05"
+	// +kubebuilder:validation:Pattern=`^(0(\.\d+)?|1(\.0+)?)$`
 	// +optional
 	SamplingRate string `json:"samplingRate,omitempty"`
 }

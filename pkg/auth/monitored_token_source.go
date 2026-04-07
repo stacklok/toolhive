@@ -120,6 +120,86 @@ type StatusUpdater interface {
 	SetWorkloadStatus(ctx context.Context, workloadName string, status runtime.WorkloadStatus, reason string) error
 }
 
+// transientRefresher deduplicates concurrent token fetches during transient
+// network failures and retries with exponential backoff. It is owned by
+// MonitoredTokenSource and can be tested in isolation.
+type transientRefresher struct {
+	group    singleflight.Group
+	source   oauth2.TokenSource
+	workload string
+
+	// newBackOff is a factory for the backoff used during retries.
+	// Nil in production; overridable in tests for fast execution.
+	newBackOff func() backoff.BackOff
+
+	// beforeEntry and afterEntry are nil in production. Tests set them to
+	// synchronise goroutines so that the singleflight group is fully formed
+	// before the leader's retry returns.
+	beforeEntry func()
+	afterEntry  func()
+}
+
+// Refresh deduplicates concurrent callers via singleflight and retries the
+// underlying token source with exponential backoff until the context is
+// cancelled or a non-transient error is returned.
+func (r *transientRefresher) Refresh(ctx context.Context, origErr error) (*oauth2.Token, error) {
+	if r.beforeEntry != nil {
+		r.beforeEntry()
+	}
+	v, err, _ := r.group.Do("token-refresh", func() (interface{}, error) {
+		if r.afterEntry != nil {
+			r.afterEntry()
+		}
+		return r.retry(ctx, origErr)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*oauth2.Token), nil
+}
+
+func (r *transientRefresher) retry(ctx context.Context, origErr error) (*oauth2.Token, error) {
+	slog.Warn("token refresh failed due to transient network error, retrying with backoff",
+		"workload", r.workload,
+		"error", origErr,
+	)
+
+	b := r.getBackOff()
+
+	return backoff.Retry(ctx, func() (*oauth2.Token, error) {
+		t, tokenErr := r.source.Token()
+		if tokenErr == nil {
+			return t, nil
+		}
+		if !isTransientNetworkError(tokenErr) {
+			return nil, backoff.Permanent(tokenErr)
+		}
+		return nil, tokenErr
+	},
+		backoff.WithBackOff(b),
+		backoff.WithNotify(func(retryErr error, d time.Duration) {
+			slog.Warn("token refresh retry failed",
+				"workload", r.workload,
+				"retry_in", d,
+				"error", retryErr,
+			)
+		}),
+		backoff.WithMaxTries(resolveTokenRefreshMaxTries()),
+		backoff.WithMaxElapsedTime(resolveTokenRefreshMaxElapsedTime()),
+	)
+}
+
+func (r *transientRefresher) getBackOff() backoff.BackOff {
+	if r.newBackOff != nil {
+		return r.newBackOff()
+	}
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = resolveTokenRefreshInitialRetryInterval()
+	eb.MaxInterval = resolveTokenRefreshMaxRetryInterval()
+	eb.Reset()
+	return eb
+}
+
 // MonitoredTokenSource is a wrapper around an oauth2.TokenSource that monitors authentication
 // failures and automatically marks workloads as unauthenticated when tokens expire or fail.
 // It provides both per-request token retrieval and background monitoring.
@@ -135,13 +215,7 @@ type MonitoredTokenSource struct {
 	monitoringCtx  context.Context
 	stopMonitoring chan struct{}
 	stopOnce       sync.Once
-	// newRetryBackOff is a factory for the backoff used during transient-error retries.
-	// It is nil by default (production path) and overridable in tests for fast execution.
-	newRetryBackOff func() backoff.BackOff
-
-	// refreshGroup deduplicates concurrent Token() calls so that only one
-	// retry loop runs at a time during transient network failures.
-	refreshGroup singleflight.Group
+	refresher      *transientRefresher
 
 	// stopped is closed when monitorLoop exits, regardless of the reason.
 	stopped chan struct{}
@@ -164,6 +238,7 @@ func NewMonitoredTokenSource(
 		monitoringCtx:  ctx,
 		stopMonitoring: make(chan struct{}),
 		stopped:        make(chan struct{}),
+		refresher:      &transientRefresher{source: tokenSource, workload: workloadName},
 	}
 }
 
@@ -193,55 +268,13 @@ func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 
 	// Transient network error — funnel all concurrent callers through a
 	// single retry loop so we don't hammer the token endpoint.
-	v, err, _ := mts.refreshGroup.Do("token-refresh", func() (interface{}, error) {
-		return mts.retryTransientRefresh(err)
-	})
+	tok, err = mts.refresher.Refresh(mts.monitoringCtx, err)
 	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			mts.markAsUnauthenticated(fmt.Sprintf("Token refresh failed after retries: %v", err))
+		}
 		return nil, err
 	}
-	return v.(*oauth2.Token), nil
-}
-
-// retryTransientRefresh retries the token refresh with exponential backoff
-// for transient network errors. It is called at most once at a time via singleflight.
-func (mts *MonitoredTokenSource) retryTransientRefresh(origErr error) (*oauth2.Token, error) {
-	slog.Warn("token refresh failed due to transient network error, retrying with backoff",
-		"workload", mts.workloadName,
-		"error", origErr,
-	)
-
-	b := mts.getRetryBackOff()
-
-	tok, retryErr := backoff.Retry(mts.monitoringCtx, func() (*oauth2.Token, error) {
-		t, tokenErr := mts.tokenSource.Token()
-		if tokenErr == nil {
-			return t, nil
-		}
-		if !isTransientNetworkError(tokenErr) {
-			return nil, backoff.Permanent(tokenErr)
-		}
-		return nil, tokenErr
-	},
-		backoff.WithBackOff(b),
-		backoff.WithNotify(func(retryErr error, d time.Duration) {
-			slog.Warn("token refresh retry failed",
-				"workload", mts.workloadName,
-				"retry_in", d,
-				"error", retryErr,
-			)
-		}),
-		backoff.WithMaxTries(resolveTokenRefreshMaxTries()),
-		backoff.WithMaxElapsedTime(resolveTokenRefreshMaxElapsedTime()),
-	)
-
-	if retryErr != nil {
-		if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
-			return nil, retryErr
-		}
-		mts.markAsUnauthenticated(fmt.Sprintf("Token refresh failed after retries: %v", retryErr))
-		return nil, retryErr
-	}
-
 	return tok, nil
 }
 
@@ -287,21 +320,6 @@ func (mts *MonitoredTokenSource) stopTimer() {
 func (mts *MonitoredTokenSource) resetTimer(d time.Duration) {
 	mts.stopTimer()
 	mts.timer.Reset(d)
-}
-
-// getRetryBackOff returns the backoff to use for transient-error retries.
-// Uses mts.newRetryBackOff if set (e.g. in tests); otherwise returns a default
-// exponential backoff. The caller (retryTransientRefresh) applies WithMaxTries
-// and WithMaxElapsedTime to bound the overall retry loop.
-func (mts *MonitoredTokenSource) getRetryBackOff() backoff.BackOff {
-	if mts.newRetryBackOff != nil {
-		return mts.newRetryBackOff()
-	}
-	eb := backoff.NewExponentialBackOff()
-	eb.InitialInterval = resolveTokenRefreshInitialRetryInterval()
-	eb.MaxInterval = resolveTokenRefreshMaxRetryInterval()
-	eb.Reset()
-	return eb
 }
 
 // onTick calls Token() to refresh the token and returns the next check delay.

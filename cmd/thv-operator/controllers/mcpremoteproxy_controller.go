@@ -811,11 +811,11 @@ func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
 		return nil, fmt.Errorf("MCPOIDCConfig %s not found", proxy.Spec.OIDCConfigRef.Name)
 	}
 
-	readyCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigReady)
-	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
-		msg := fmt.Sprintf("MCPOIDCConfig %s is not ready", proxy.Spec.OIDCConfigRef.Name)
-		if readyCondition != nil {
-			msg = fmt.Sprintf("MCPOIDCConfig %s is not ready: %s", proxy.Spec.OIDCConfigRef.Name, readyCondition.Message)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
+	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
+		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", proxy.Spec.OIDCConfigRef.Name)
+		if validCondition != nil {
+			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", proxy.Spec.OIDCConfigRef.Name, validCondition.Message)
 		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,

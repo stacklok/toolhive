@@ -601,7 +601,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 					Spec: mcpv1alpha1.EmbeddingServerSpec{
 						Model:           "sentence-transformers/all-MiniLM-L6-v2",
 						Image:           "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ImagePullPolicy: "Always",
+						ImagePullPolicy: corev1.PullAlways,
 					},
 				},
 			},
@@ -631,7 +631,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 					Spec: mcpv1alpha1.EmbeddingServerSpec{
 						Model:           "sentence-transformers/all-MiniLM-L6-v2",
 						Image:           "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ImagePullPolicy: "Never",
+						ImagePullPolicy: corev1.PullNever,
 					},
 				},
 			},

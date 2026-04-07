@@ -309,6 +309,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	var setupResult *runtime.SetupResult
 
 	if r.Config.RemoteURL == "" {
+		// Check policy gate before creating the server
+		if err := activePolicyGate().CheckCreateServer(ctx, r.Config); err != nil {
+			return fmt.Errorf("server creation blocked by policy: %w", err)
+		}
+
 		// For local workloads, deploy the container using runtime.Setup first
 		var scalingConfig *rt.ScalingConfig
 		if r.Config.ScalingConfig != nil {

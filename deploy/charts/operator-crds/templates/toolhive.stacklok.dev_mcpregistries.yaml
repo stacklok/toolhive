@@ -386,6 +386,24 @@ spec:
                     - key
                     type: object
                     x-kubernetes-map-type: atomic
+                  dynamicAuth:
+                    description: |-
+                      DynamicAuth defines dynamic database authentication configuration.
+                      When set, the registry server authenticates to the database using
+                      short-lived credentials instead of static passwords.
+                    properties:
+                      awsRdsIam:
+                        description: AWSRDSIAM enables AWS RDS IAM authentication
+                          for database connections.
+                        properties:
+                          region:
+                            description: |-
+                              Region is the AWS region for RDS IAM authentication.
+                              Use "detect" to automatically detect the region from instance metadata.
+                            minLength: 1
+                            type: string
+                        type: object
+                    type: object
                   host:
                     default: postgres
                     description: Host is the database server hostname
@@ -396,6 +414,14 @@ spec:
                       in the pool
                     format: int32
                     minimum: 0
+                    type: integer
+                  maxMetaSize:
+                    description: |-
+                      MaxMetaSize is the maximum allowed size in bytes for publisher-provided
+                      metadata extensions (_meta). Must be greater than zero.
+                      Defaults to 262144 (256KB) if not specified.
+                    format: int32
+                    minimum: 1
                     type: integer
                   maxOpenConns:
                     default: 10
@@ -786,6 +812,61 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              telemetryConfig:
+                description: |-
+                  TelemetryConfig defines OpenTelemetry configuration for the registry API server.
+                  When enabled, the server exports traces and metrics via OTLP.
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether telemetry is enabled globally.
+                      When false, no telemetry providers are initialized.
+                    type: boolean
+                  endpoint:
+                    description: |-
+                      Endpoint is the OTLP collector endpoint (host:port).
+                      Defaults to "localhost:4318" if not specified.
+                    type: string
+                  insecure:
+                    default: false
+                    description: |-
+                      Insecure allows HTTP connections instead of HTTPS to the OTLP endpoint.
+                      Should only be true for development/testing environments.
+                    type: boolean
+                  metrics:
+                    description: Metrics defines metrics-specific configuration.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether metrics collection is
+                          enabled.
+                        type: boolean
+                    type: object
+                  serviceName:
+                    description: |-
+                      ServiceName is the name of the service for telemetry identification.
+                      Defaults to "thv-registry-api" if not specified.
+                    type: string
+                  serviceVersion:
+                    description: ServiceVersion is the version of the service for
+                      telemetry identification.
+                    type: string
+                  tracing:
+                    description: Tracing defines tracing-specific configuration.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether tracing is enabled.
+                        type: boolean
+                      sampling:
+                        description: |-
+                          Sampling controls the trace sampling rate (0.0 to 1.0, exclusive of 0.0).
+                          1.0 means sample all traces, 0.5 means sample 50%.
+                          Defaults to 0.05 (5%) if not specified.
+                        type: string
+                    type: object
+                type: object
             required:
             - registries
             - sources

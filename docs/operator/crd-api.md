@@ -1822,6 +1822,22 @@ _Appears in:_
 | `status` _[api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)_ |  |  |  |
 
 
+#### api.v1alpha1.MCPRegistryAWSRDSIAMConfig
+
+
+
+MCPRegistryAWSRDSIAMConfig defines AWS RDS IAM authentication configuration.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistryDynamicAuthConfig](#apiv1alpha1mcpregistrydynamicauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `region` _string_ | Region is the AWS region for RDS IAM authentication.<br />Use "detect" to automatically detect the region from instance metadata. |  | MinLength: 1 <br />Optional: \{\} <br /> |
+
+
 #### api.v1alpha1.MCPRegistryAuthConfig
 
 
@@ -1897,8 +1913,26 @@ _Appears in:_
 | `maxOpenConns` _integer_ | MaxOpenConns is the maximum number of open connections to the database | 10 | Minimum: 1 <br />Optional: \{\} <br /> |
 | `maxIdleConns` _integer_ | MaxIdleConns is the maximum number of idle connections in the pool | 2 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `connMaxLifetime` _string_ | ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)<br />Examples: "30m", "1h", "24h" | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
+| `maxMetaSize` _integer_ | MaxMetaSize is the maximum allowed size in bytes for publisher-provided<br />metadata extensions (_meta). Must be greater than zero.<br />Defaults to 262144 (256KB) if not specified. |  | Minimum: 1 <br />Optional: \{\} <br /> |
+| `dynamicAuth` _[api.v1alpha1.MCPRegistryDynamicAuthConfig](#apiv1alpha1mcpregistrydynamicauthconfig)_ | DynamicAuth defines dynamic database authentication configuration.<br />When set, the registry server authenticates to the database using<br />short-lived credentials instead of static passwords. |  | Optional: \{\} <br /> |
 | `dbAppUserPasswordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.<br />The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file<br />that is mounted to the registry API container. |  | Required: \{\} <br /> |
 | `dbMigrationUserPasswordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.<br />The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file<br />that is mounted to the registry API container. |  | Required: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPRegistryDynamicAuthConfig
+
+
+
+MCPRegistryDynamicAuthConfig defines dynamic database authentication configuration.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistryDatabaseConfig](#apiv1alpha1mcpregistrydatabaseconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `awsRdsIam` _[api.v1alpha1.MCPRegistryAWSRDSIAMConfig](#apiv1alpha1mcpregistryawsrdsiamconfig)_ | AWSRDSIAM enables AWS RDS IAM authentication for database connections. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryList
@@ -1919,6 +1953,22 @@ MCPRegistryList contains a list of MCPRegistry
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `items` _[api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPRegistryMetricsConfig
+
+
+
+MCPRegistryMetricsConfig defines metrics-specific configuration.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistryTelemetryConfig](#apiv1alpha1mcpregistrytelemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether metrics collection is enabled. | false | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryOAuthConfig
@@ -2055,6 +2105,7 @@ _Appears in:_
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `databaseConfig` _[api.v1alpha1.MCPRegistryDatabaseConfig](#apiv1alpha1mcpregistrydatabaseconfig)_ | DatabaseConfig defines the PostgreSQL database configuration for the registry API server.<br />If not specified, defaults will be used:<br />  - Host: "postgres"<br />  - Port: 5432<br />  - User: "db_app"<br />  - MigrationUser: "db_migrator"<br />  - Database: "registry"<br />  - SSLMode: "prefer"<br />  - MaxOpenConns: 10<br />  - MaxIdleConns: 2<br />  - ConnMaxLifetime: "30m" |  | Optional: \{\} <br /> |
 | `authConfig` _[api.v1alpha1.MCPRegistryAuthConfig](#apiv1alpha1mcpregistryauthconfig)_ | AuthConfig defines the authentication configuration for the registry API server.<br />If not specified, defaults to anonymous authentication. |  | Optional: \{\} <br /> |
+| `telemetryConfig` _[api.v1alpha1.MCPRegistryTelemetryConfig](#apiv1alpha1mcpregistrytelemetryconfig)_ | TelemetryConfig defines OpenTelemetry configuration for the registry API server.<br />When enabled, the server exports traces and metrics via OTLP. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryStatus
@@ -2079,6 +2130,45 @@ _Appears in:_
 | `storageRef` _[api.v1alpha1.StorageReference](#apiv1alpha1storagereference)_ | StorageRef is a reference to the internal storage location |  | Optional: \{\} <br /> |
 | `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPRegistryTelemetryConfig
+
+
+
+MCPRegistryTelemetryConfig defines OpenTelemetry configuration for the registry API server.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether telemetry is enabled globally.<br />When false, no telemetry providers are initialized. | false | Optional: \{\} <br /> |
+| `serviceName` _string_ | ServiceName is the name of the service for telemetry identification.<br />Defaults to "thv-registry-api" if not specified. |  | Optional: \{\} <br /> |
+| `serviceVersion` _string_ | ServiceVersion is the version of the service for telemetry identification. |  | Optional: \{\} <br /> |
+| `endpoint` _string_ | Endpoint is the OTLP collector endpoint (host:port).<br />Defaults to "localhost:4318" if not specified. |  | Optional: \{\} <br /> |
+| `insecure` _boolean_ | Insecure allows HTTP connections instead of HTTPS to the OTLP endpoint.<br />Should only be true for development/testing environments. | false | Optional: \{\} <br /> |
+| `tracing` _[api.v1alpha1.MCPRegistryTracingConfig](#apiv1alpha1mcpregistrytracingconfig)_ | Tracing defines tracing-specific configuration. |  | Optional: \{\} <br /> |
+| `metrics` _[api.v1alpha1.MCPRegistryMetricsConfig](#apiv1alpha1mcpregistrymetricsconfig)_ | Metrics defines metrics-specific configuration. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPRegistryTracingConfig
+
+
+
+MCPRegistryTracingConfig defines tracing-specific configuration.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistryTelemetryConfig](#apiv1alpha1mcpregistrytelemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether tracing is enabled. | false | Optional: \{\} <br /> |
+| `sampling` _string_ | Sampling controls the trace sampling rate (0.0 to 1.0, exclusive of 0.0).<br />1.0 means sample all traces, 0.5 means sample 50%.<br />Defaults to 0.05 (5%) if not specified. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryViewConfig

@@ -78,6 +78,11 @@ type MCPRegistrySpec struct {
 	// If not specified, defaults to anonymous authentication.
 	// +optional
 	AuthConfig *MCPRegistryAuthConfig `json:"authConfig,omitempty"`
+
+	// TelemetryConfig defines OpenTelemetry configuration for the registry API server.
+	// When enabled, the server exports traces and metrics via OTLP.
+	// +optional
+	TelemetryConfig *MCPRegistryTelemetryConfig `json:"telemetryConfig,omitempty"`
 }
 
 // MCPRegistrySourceConfig defines a data source configuration for the registry.
@@ -415,6 +420,19 @@ type MCPRegistryDatabaseConfig struct {
 	// +optional
 	ConnMaxLifetime string `json:"connMaxLifetime,omitempty"`
 
+	// MaxMetaSize is the maximum allowed size in bytes for publisher-provided
+	// metadata extensions (_meta). Must be greater than zero.
+	// Defaults to 262144 (256KB) if not specified.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxMetaSize *int32 `json:"maxMetaSize,omitempty"`
+
+	// DynamicAuth defines dynamic database authentication configuration.
+	// When set, the registry server authenticates to the database using
+	// short-lived credentials instead of static passwords.
+	// +optional
+	DynamicAuth *MCPRegistryDynamicAuthConfig `json:"dynamicAuth,omitempty"`
+
 	// DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.
 	// The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file
 	// that is mounted to the registry API container.
@@ -428,6 +446,22 @@ type MCPRegistryDatabaseConfig struct {
 	//
 	// +kubebuilder:validation:Required
 	DBMigrationUserPasswordSecretRef corev1.SecretKeySelector `json:"dbMigrationUserPasswordSecretRef"`
+}
+
+// MCPRegistryDynamicAuthConfig defines dynamic database authentication configuration.
+type MCPRegistryDynamicAuthConfig struct {
+	// AWSRDSIAM enables AWS RDS IAM authentication for database connections.
+	// +optional
+	AWSRDSIAM *MCPRegistryAWSRDSIAMConfig `json:"awsRdsIam,omitempty"`
+}
+
+// MCPRegistryAWSRDSIAMConfig defines AWS RDS IAM authentication configuration.
+type MCPRegistryAWSRDSIAMConfig struct {
+	// Region is the AWS region for RDS IAM authentication.
+	// Use "detect" to automatically detect the region from instance metadata.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Region string `json:"region,omitempty"`
 }
 
 // MCPRegistryAuthMode represents the authentication mode for the registry API server
@@ -601,6 +635,65 @@ type MCPRegistryOAuthProviderConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	AllowPrivateIP bool `json:"allowPrivateIP,omitempty"`
+}
+
+// MCPRegistryTelemetryConfig defines OpenTelemetry configuration for the registry API server.
+type MCPRegistryTelemetryConfig struct {
+	// Enabled controls whether telemetry is enabled globally.
+	// When false, no telemetry providers are initialized.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ServiceName is the name of the service for telemetry identification.
+	// Defaults to "thv-registry-api" if not specified.
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+
+	// ServiceVersion is the version of the service for telemetry identification.
+	// +optional
+	ServiceVersion string `json:"serviceVersion,omitempty"`
+
+	// Endpoint is the OTLP collector endpoint (host:port).
+	// Defaults to "localhost:4318" if not specified.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Insecure allows HTTP connections instead of HTTPS to the OTLP endpoint.
+	// Should only be true for development/testing environments.
+	// +kubebuilder:default=false
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+
+	// Tracing defines tracing-specific configuration.
+	// +optional
+	Tracing *MCPRegistryTracingConfig `json:"tracing,omitempty"`
+
+	// Metrics defines metrics-specific configuration.
+	// +optional
+	Metrics *MCPRegistryMetricsConfig `json:"metrics,omitempty"`
+}
+
+// MCPRegistryTracingConfig defines tracing-specific configuration.
+type MCPRegistryTracingConfig struct {
+	// Enabled controls whether tracing is enabled.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Sampling controls the trace sampling rate (0.0 to 1.0, exclusive of 0.0).
+	// 1.0 means sample all traces, 0.5 means sample 50%.
+	// Defaults to 0.05 (5%) if not specified.
+	// +optional
+	Sampling *string `json:"sampling,omitempty"`
+}
+
+// MCPRegistryMetricsConfig defines metrics-specific configuration.
+type MCPRegistryMetricsConfig struct {
+	// Enabled controls whether metrics collection is enabled.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // MCPRegistryStatus defines the observed state of MCPRegistry

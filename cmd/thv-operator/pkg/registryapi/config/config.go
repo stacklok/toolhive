@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
@@ -71,6 +72,7 @@ type Config struct {
 	Registries []RegistryConfig `yaml:"registries,omitempty"`
 	Database   *DatabaseConfig  `yaml:"database,omitempty"`
 	Auth       *AuthConfig      `yaml:"auth,omitempty"`
+	Telemetry  *TelemetryConfig `yaml:"telemetry,omitempty"`
 }
 
 // DatabaseConfig defines PostgreSQL database configuration
@@ -105,6 +107,22 @@ type DatabaseConfig struct {
 
 	// ConnMaxLifetime is the maximum amount of time a connection may be reused
 	ConnMaxLifetime string `yaml:"connMaxLifetime"`
+
+	// MaxMetaSize is the maximum allowed size in bytes for publisher-provided metadata extensions
+	MaxMetaSize *int32 `yaml:"maxMetaSize,omitempty"`
+
+	// DynamicAuth defines dynamic database authentication configuration
+	DynamicAuth *DynamicAuthConfig `yaml:"dynamicAuth,omitempty"`
+}
+
+// DynamicAuthConfig defines dynamic database authentication configuration
+type DynamicAuthConfig struct {
+	AWSRDSIAM *DynamicAuthAWSRDSIAM `yaml:"awsRdsIam,omitempty"`
+}
+
+// DynamicAuthAWSRDSIAM defines AWS RDS IAM authentication configuration
+type DynamicAuthAWSRDSIAM struct {
+	Region string `yaml:"region,omitempty"`
 }
 
 // SourceConfig defines a single data source configuration (v2 format)
@@ -131,6 +149,28 @@ type RegistryConfig struct {
 // ManagedConfig defines configuration for managed sources.
 // Managed sources are directly manipulated via API and do not sync from external sources.
 type ManagedConfig struct{}
+
+// TelemetryConfig defines OpenTelemetry configuration
+type TelemetryConfig struct {
+	Enabled        bool           `yaml:"enabled"`
+	ServiceName    string         `yaml:"serviceName,omitempty"`
+	ServiceVersion string         `yaml:"serviceVersion,omitempty"`
+	Endpoint       string         `yaml:"endpoint,omitempty"`
+	Insecure       bool           `yaml:"insecure,omitempty"`
+	Tracing        *TracingConfig `yaml:"tracing,omitempty"`
+	Metrics        *MetricsConfig `yaml:"metrics,omitempty"`
+}
+
+// TracingConfig defines tracing-specific configuration
+type TracingConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	Sampling *float64 `yaml:"sampling,omitempty"`
+}
+
+// MetricsConfig defines metrics-specific configuration
+type MetricsConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
 
 // AuthMode represents the authentication mode
 type AuthMode string
@@ -414,6 +454,9 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to build authentication configuration: %w", err)
 	}
 	config.Auth = authConfig
+
+	// Build telemetry configuration from CRD spec
+	config.Telemetry = buildTelemetryConfig(mcpRegistry.Spec.TelemetryConfig)
 
 	return &config, nil
 }
@@ -786,6 +829,16 @@ func buildDatabaseConfig(dbConfig *mcpv1alpha1.MCPRegistryDatabaseConfig) *Datab
 	if dbConfig.ConnMaxLifetime != "" {
 		config.ConnMaxLifetime = dbConfig.ConnMaxLifetime
 	}
+	if dbConfig.MaxMetaSize != nil {
+		config.MaxMetaSize = dbConfig.MaxMetaSize
+	}
+	if dbConfig.DynamicAuth != nil && dbConfig.DynamicAuth.AWSRDSIAM != nil {
+		config.DynamicAuth = &DynamicAuthConfig{
+			AWSRDSIAM: &DynamicAuthAWSRDSIAM{
+				Region: dbConfig.DynamicAuth.AWSRDSIAM.Region,
+			},
+		}
+	}
 
 	return config
 }
@@ -1011,6 +1064,42 @@ func buildSecretFilePath(secretRef *corev1.SecretKeySelector) string {
 }
 
 // buildCACertFilePath constructs the file path where a CA cert configmap will be mounted
+// buildTelemetryConfig creates a TelemetryConfig from the CRD spec.
+// Returns nil if the spec is nil (telemetry disabled).
+func buildTelemetryConfig(telConfig *mcpv1alpha1.MCPRegistryTelemetryConfig) *TelemetryConfig {
+	if telConfig == nil {
+		return nil
+	}
+
+	config := &TelemetryConfig{
+		Enabled:        telConfig.Enabled,
+		ServiceName:    telConfig.ServiceName,
+		ServiceVersion: telConfig.ServiceVersion,
+		Endpoint:       telConfig.Endpoint,
+		Insecure:       telConfig.Insecure,
+	}
+
+	if telConfig.Tracing != nil {
+		tracingConfig := &TracingConfig{
+			Enabled: telConfig.Tracing.Enabled,
+		}
+		if telConfig.Tracing.Sampling != nil {
+			if val, err := strconv.ParseFloat(*telConfig.Tracing.Sampling, 64); err == nil {
+				tracingConfig.Sampling = &val
+			}
+		}
+		config.Tracing = tracingConfig
+	}
+
+	if telConfig.Metrics != nil {
+		config.Metrics = &MetricsConfig{
+			Enabled: telConfig.Metrics.Enabled,
+		}
+	}
+
+	return config
+}
+
 func buildCACertFilePath(configMapRef *corev1.ConfigMapKeySelector) string {
 	if configMapRef == nil {
 		return ""

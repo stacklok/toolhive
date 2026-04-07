@@ -13,6 +13,9 @@ spec:
     kind: MCPRegistry
     listKind: MCPRegistryList
     plural: mcpregistries
+    shortNames:
+    - mcpreg
+    - registry
     singular: mcpregistry
   scope: Namespaced
   versions:

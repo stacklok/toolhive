@@ -222,7 +222,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "sse",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode set to streamable-http (should be ignored and set to "sse")
 					ProxyMode: streamableHTTPProxyMode,
 				},
@@ -249,7 +249,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "sse",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode not specified
 				},
 			},
@@ -272,7 +272,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode set to sse (should be ignored and set to "streamable-http")
 					ProxyMode: sseProxyMode,
 				},
@@ -296,7 +296,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode not specified
 				},
 			},
@@ -319,7 +319,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     "comprehensive:latest",
 					Transport: "streamable-http",
 					ProxyPort: 9090,
-					McpPort:   8080,
+					MCPPort:   8080,
 					ProxyMode: "streamable-http",
 					Args:      []string{"--comprehensive", "--test"},
 					Env: []mcpv1alpha1.EnvVar{
@@ -609,7 +609,7 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 			Image:     "deterministic-test:v1.2.3",
 			Transport: "sse",
 			ProxyPort: 9090,
-			McpPort:   8080,
+			MCPPort:   8080,
 			Args:      []string{"--arg1", "--arg2", "--complex-flag=value"},
 			Env: []mcpv1alpha1.EnvVar{
 				{Name: "VAR_C", Value: "value_c"},
@@ -1416,7 +1416,7 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			modifyServer: func(server *mcpv1alpha1.MCPServer) {
 				server.Spec.Transport = "sse"
 				server.Spec.ProxyPort = 9090
-				server.Spec.McpPort = 8080
+				server.Spec.MCPPort = 8080
 			},
 			expectedChanges: map[string]interface{}{
 				"Transport":  transporttypes.TransportTypeSSE,

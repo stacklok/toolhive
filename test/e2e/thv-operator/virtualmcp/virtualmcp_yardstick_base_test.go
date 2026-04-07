@@ -50,7 +50,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -68,7 +68,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},

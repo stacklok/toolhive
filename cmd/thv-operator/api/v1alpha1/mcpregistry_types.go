@@ -121,9 +121,15 @@ type MCPRegistrySourceConfig struct {
 	API *APISource `json:"api,omitempty"`
 
 	// PVCRef defines the PersistentVolumeClaim source configuration
-	// Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes
+	// Mutually exclusive with ConfigMapRef, Git, API, URL, Managed, and Kubernetes
 	// +optional
 	PVCRef *PVCSource `json:"pvcRef,omitempty"`
+
+	// URL defines a URL-hosted file source configuration.
+	// The registry server fetches the registry data from the specified HTTP/HTTPS URL.
+	// Mutually exclusive with ConfigMapRef, Git, API, PVCRef, Managed, and Kubernetes
+	// +optional
+	URL *URLSource `json:"url,omitempty"`
 
 	// Managed defines a managed source that is directly manipulated via the registry API.
 	// Managed sources do not sync from external sources.
@@ -171,6 +177,23 @@ type MCPRegistryViewConfig struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	Claims *apiextensionsv1.JSON `json:"claims,omitempty"`
+}
+
+// URLSource defines a URL-hosted file source configuration.
+// The registry server fetches registry data from the specified HTTP/HTTPS URL.
+type URLSource struct {
+	// Endpoint is the HTTP/HTTPS URL to fetch the registry file from.
+	// HTTPS is required unless the host is localhost.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^https?://.*"
+	Endpoint string `json:"endpoint"`
+
+	// Timeout is the timeout for HTTP requests (Go duration format).
+	// Defaults to "30s" if not specified.
+	// +kubebuilder:validation:Pattern=^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+	// +optional
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // ManagedSource defines a managed source that is directly manipulated via the registry API.

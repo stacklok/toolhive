@@ -746,7 +746,7 @@ spec:
                     pvcRef:
                       description: |-
                         PVCRef defines the PersistentVolumeClaim source configuration
-                        Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes
+                        Mutually exclusive with ConfigMapRef, Git, API, URL, Managed, and Kubernetes
                       properties:
                         claimName:
                           description: ClaimName is the name of the PersistentVolumeClaim
@@ -800,6 +800,28 @@ spec:
                           type: string
                       required:
                       - interval
+                      type: object
+                    url:
+                      description: |-
+                        URL defines a URL-hosted file source configuration.
+                        The registry server fetches the registry data from the specified HTTP/HTTPS URL.
+                        Mutually exclusive with ConfigMapRef, Git, API, PVCRef, Managed, and Kubernetes
+                      properties:
+                        endpoint:
+                          description: |-
+                            Endpoint is the HTTP/HTTPS URL to fetch the registry file from.
+                            HTTPS is required unless the host is localhost.
+                          minLength: 1
+                          pattern: ^https?://.*
+                          type: string
+                        timeout:
+                          description: |-
+                            Timeout is the timeout for HTTP requests (Go duration format).
+                            Defaults to "30s" if not specified.
+                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                          type: string
+                      required:
+                      - endpoint
                       type: object
                   required:
                   - name

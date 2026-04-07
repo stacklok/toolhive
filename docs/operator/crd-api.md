@@ -2078,7 +2078,8 @@ _Appears in:_
 | `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
 | `git` _[api.v1alpha1.GitSource](#apiv1alpha1gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
 | `api` _[api.v1alpha1.APISource](#apiv1alpha1apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef, Git, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `pvcRef` _[api.v1alpha1.PVCSource](#apiv1alpha1pvcsource)_ | PVCRef defines the PersistentVolumeClaim source configuration<br />Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `pvcRef` _[api.v1alpha1.PVCSource](#apiv1alpha1pvcsource)_ | PVCRef defines the PersistentVolumeClaim source configuration<br />Mutually exclusive with ConfigMapRef, Git, API, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `url` _[api.v1alpha1.URLSource](#apiv1alpha1urlsource)_ | URL defines a URL-hosted file source configuration.<br />The registry server fetches the registry data from the specified HTTP/HTTPS URL.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
 | `managed` _[api.v1alpha1.ManagedSource](#apiv1alpha1managedsource)_ | Managed defines a managed source that is directly manipulated via the registry API.<br />Managed sources do not sync from external sources.<br />At most one managed source is allowed per MCPRegistry.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Kubernetes |  | Optional: \{\} <br /> |
 | `kubernetes` _[api.v1alpha1.KubernetesSource](#apiv1alpha1kubernetessource)_ | Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Managed |  | Optional: \{\} <br /> |
 | `syncPolicy` _[api.v1alpha1.SyncPolicy](#apiv1alpha1syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this source.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting.<br />Not applicable for Managed and Kubernetes sources (will be ignored). |  | Optional: \{\} <br /> |
@@ -3544,6 +3545,24 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared defines a token bucket shared across all users for this specific tool. |  | Required: \{\} <br /> |
+
+
+#### api.v1alpha1.URLSource
+
+
+
+URLSource defines a URL-hosted file source configuration.
+The registry server fetches registry data from the specified HTTP/HTTPS URL.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpoint` _string_ | Endpoint is the HTTP/HTTPS URL to fetch the registry file from.<br />HTTPS is required unless the host is localhost. |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
+| `timeout` _string_ | Timeout is the timeout for HTTP requests (Go duration format).<br />Defaults to "30s" if not specified. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.UpstreamInjectSpec

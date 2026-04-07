@@ -555,6 +555,13 @@ func buildSourceConfig(sourceSpec *mcpv1alpha1.MCPRegistrySourceConfig) (*Source
 		}
 		sourceConfig.File = buildFilePathWithCustomName(sourceSpec.Name, pvcPath)
 	}
+	if sourceSpec.URL != nil {
+		sourceCount++
+		sourceConfig.File = &FileConfig{
+			URL:     sourceSpec.URL.Endpoint,
+			Timeout: sourceSpec.URL.Timeout,
+		}
+	}
 	if sourceSpec.Managed != nil {
 		sourceCount++
 		sourceConfig.Managed = &ManagedConfig{}
@@ -567,10 +574,12 @@ func buildSourceConfig(sourceSpec *mcpv1alpha1.MCPRegistrySourceConfig) (*Source
 	}
 
 	if sourceCount == 0 {
-		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, API, PVCRef, Managed, or Kubernetes) must be specified")
+		return nil, fmt.Errorf(
+			"exactly one source type must be specified")
 	}
 	if sourceCount > 1 {
-		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, API, PVCRef, Managed, or Kubernetes) can be specified")
+		return nil, fmt.Errorf(
+			"only one source type can be specified")
 	}
 
 	// Build sync policy (not applicable for managed/kubernetes sources)

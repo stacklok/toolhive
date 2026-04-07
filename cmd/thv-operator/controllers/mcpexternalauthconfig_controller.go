@@ -244,12 +244,10 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 ) ([]mcpv1alpha1.MCPServer, error) {
 	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
-			if server.Spec.ExternalAuthConfigRef != nil &&
-				server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+			if server.Spec.ExternalAuthConfigRef != nil {
 				return &server.Spec.ExternalAuthConfigRef.Name
 			}
-			if server.Spec.AuthServerRef != nil &&
-				server.Spec.AuthServerRef.Name == externalAuthConfig.Name {
+			if server.Spec.AuthServerRef != nil {
 				return &server.Spec.AuthServerRef.Name
 			}
 			return nil
@@ -264,12 +262,10 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 ) ([]mcpv1alpha1.WorkloadReference, error) {
 	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
-			if server.Spec.ExternalAuthConfigRef != nil &&
-				server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+			if server.Spec.ExternalAuthConfigRef != nil {
 				return &server.Spec.ExternalAuthConfigRef.Name
 			}
-			if server.Spec.AuthServerRef != nil &&
-				server.Spec.AuthServerRef.Name == externalAuthConfig.Name {
+			if server.Spec.AuthServerRef != nil {
 				return &server.Spec.AuthServerRef.Name
 			}
 			return nil

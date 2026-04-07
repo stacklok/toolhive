@@ -47,7 +47,10 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		env = append(env, authServerEnvVars...)
 	}
 
-	// Add embedded auth server volumes and env vars if configured via authServerRef
+	// Add embedded auth server volumes and env vars if configured via authServerRef.
+	// NOTE: If both externalAuthConfigRef and authServerRef point to embeddedAuthServer,
+	// ValidateAndAddAuthServerRefOptions catches this conflict during reconcile-time
+	// runconfig generation. The deployment builder does not duplicate the check.
 	if proxy.Spec.AuthServerRef != nil {
 		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigFromRef(
 			ctx, r.Client, proxy.Namespace, proxy.Spec.AuthServerRef,

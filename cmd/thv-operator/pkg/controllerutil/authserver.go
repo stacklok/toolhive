@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -690,7 +691,12 @@ func ValidateAndAddAuthServerRefOptions(
 	// embedded auth server is an error (use one or the other, not both)
 	if authServerRef != nil && externalAuthConfigRef != nil {
 		extConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
-		if err == nil && extConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to fetch externalAuthConfigRef for conflict validation: %w", err)
+			}
+			// Not found - skip conflict check, will be caught by AddExternalAuthConfigOptions
+		} else if extConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
 			return fmt.Errorf(
 				"conflict: both authServerRef and externalAuthConfigRef reference an embedded auth server; " +
 					"use authServerRef for the embedded auth server and externalAuthConfigRef for outgoing auth only",
@@ -781,7 +787,9 @@ func GenerateAuthServerConfigFromRef(
 	}
 
 	if authServerRef.Kind != "MCPExternalAuthConfig" {
-		return nil, nil, nil, nil
+		return nil, nil, nil, fmt.Errorf(
+			"unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", authServerRef.Kind,
+		)
 	}
 
 	// Fetch the MCPExternalAuthConfig

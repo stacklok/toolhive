@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package controllers contains the reconciliation logic for the EmbeddingServer custom resource.

@@ -28,7 +28,7 @@ import (
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
@@ -912,7 +912,7 @@ func TestIdentityPropagatingRoundTripper_HealthCheck_PropagatesMarker(t *testing
 	require.NoError(t, err)
 
 	require.NotNil(t, base.capturedReq)
-	assert.True(t, health.IsHealthCheck(base.capturedReq.Context()),
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
 		"health check marker should be propagated even when original request context lacks it")
 }
 
@@ -929,7 +929,7 @@ func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing
 	require.NoError(t, err)
 
 	require.NotNil(t, base.capturedReq)
-	assert.False(t, health.IsHealthCheck(base.capturedReq.Context()),
+	assert.False(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
 		"health check marker should not be injected for non-health-check transports")
 }
 
@@ -950,14 +950,14 @@ func TestIdentityPropagatingRoundTripper_HealthCheckWithIdentity_PropagatesBoth(
 	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
 	require.True(t, ok)
 	assert.Equal(t, "svc-account", got.Subject)
-	assert.True(t, health.IsHealthCheck(base.capturedReq.Context()))
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()))
 }
 
-// TestIdentityPropagatingRoundTripper_HealthCheckClose_NoAuthError verifies that when a
-// transient BackendClient is created for a health check (no identity, health check ctx),
-// the transport propagates the health check marker to ALL requests including the DELETE
-// that mcp-go emits on Close(). Auth strategies skip auth for health check requests,
-// so this prevents "no identity found in context" errors in the vMCP logs.
+// TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContextUnchanged verifies
+// that when the transport is in health-check mode, RoundTrip injects the health-check marker
+// into the downstream request's context without mutating the original request context. This
+// covers requests (e.g. the DELETE mcp-go emits on Close()) whose context does not already
+// carry the marker.
 func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContextUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -972,10 +972,10 @@ func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContext
 	require.NoError(t, err)
 
 	// Original request context must NOT be modified.
-	assert.False(t, health.IsHealthCheck(originalCtx),
+	assert.False(t, healthcontext.IsHealthCheck(originalCtx),
 		"original request context must not be mutated")
 	// But downstream context MUST have the marker.
 	require.NotNil(t, base.capturedReq)
-	assert.True(t, health.IsHealthCheck(base.capturedReq.Context()),
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
 		"downstream request must carry health check marker")
 }

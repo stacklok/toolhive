@@ -29,7 +29,7 @@ import (
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 const (
@@ -139,7 +139,7 @@ func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 		ctx = auth.WithIdentity(ctx, i.identity)
 	}
 	if i.isHealthCheck {
-		ctx = health.WithHealthCheckMarker(ctx)
+		ctx = healthcontext.WithHealthCheckMarker(ctx)
 	}
 	if i.identity != nil || i.isHealthCheck {
 		req = req.Clone(ctx)
@@ -249,7 +249,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	baseTransport = &identityPropagatingRoundTripper{
 		base:          baseTransport,
 		identity:      identity,
-		isHealthCheck: health.IsHealthCheck(ctx),
+		isHealthCheck: healthcontext.IsHealthCheck(ctx),
 	}
 
 	// Inject W3C Trace Context headers (traceparent/tracestate) into outgoing requests.

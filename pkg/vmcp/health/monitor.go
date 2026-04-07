@@ -14,16 +14,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
-
-// healthCheckContextKey is a marker for health check requests.
-type healthCheckContextKey struct{}
 
 // WithHealthCheckMarker marks a context as a health check request.
 // Authentication layers can use IsHealthCheck to identify and skip authentication
 // for health check requests.
 func WithHealthCheckMarker(ctx context.Context) context.Context {
-	return context.WithValue(ctx, healthCheckContextKey{}, true)
+	return healthcontext.WithHealthCheckMarker(ctx)
 }
 
 // IsHealthCheck returns true if the context is marked as a health check.
@@ -31,11 +29,7 @@ func WithHealthCheckMarker(ctx context.Context) context.Context {
 // since health checks verify backend availability and should not require user credentials.
 // Returns false for nil contexts.
 func IsHealthCheck(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	val, ok := ctx.Value(healthCheckContextKey{}).(bool)
-	return ok && val
+	return healthcontext.IsHealthCheck(ctx)
 }
 
 // StatusProvider provides read-only access to backend health status.

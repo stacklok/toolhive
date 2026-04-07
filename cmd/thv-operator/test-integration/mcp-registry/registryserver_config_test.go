@@ -165,16 +165,16 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			testHelpers.verifyConfigMapContent(configYAML, registry.Name, expectedConfigContent)
 
 			// Default kubernetes registry should be present
-			Expect(configYAML).To(ContainSubstring(fmt.Sprintf("name: %s", config.DefaultRegistryName)))
+			Expect(configYAML).To(ContainSubstring(fmt.Sprintf("name: %s", config.DefaultSourceName)))
 			Expect(configYAML).To(ContainSubstring("kubernetes: {}"))
 
 			// Verify the appropriate source type field is present (file, git, or api)
 			// This is determined by which source is configured in the registry
-			if registry.Spec.Registries[0].ConfigMapRef != nil {
+			if registry.Spec.Sources[0].ConfigMapRef != nil {
 				Expect(configYAML).To(ContainSubstring("file:"), "ConfigMap source should have file field")
-			} else if registry.Spec.Registries[0].Git != nil {
+			} else if registry.Spec.Sources[0].Git != nil {
 				Expect(configYAML).To(ContainSubstring("git:"), "Git source should have git field")
-			} else if registry.Spec.Registries[0].API != nil {
+			} else if registry.Spec.Sources[0].API != nil {
 				Expect(configYAML).To(ContainSubstring("api:"), "API source should have api field")
 			}
 
@@ -331,7 +331,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "alpha",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -370,6 +370,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 							SyncPolicy: &mcpv1alpha1.SyncPolicy{
 								Interval: "20m",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"alpha", "beta", "gamma"},
 						},
 					},
 				},
@@ -580,7 +586,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "private-repo-1",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -622,6 +628,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 							SyncPolicy: &mcpv1alpha1.SyncPolicy{
 								Interval: "1h",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"private-repo-1", "private-repo-2"},
 						},
 					},
 				},
@@ -686,7 +698,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "default",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -699,6 +711,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 							SyncPolicy: &mcpv1alpha1.SyncPolicy{
 								Interval: "1h",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"default"},
 						},
 					},
 					PodTemplateSpec: &runtime.RawExtension{
@@ -744,7 +762,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "default",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -757,6 +775,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 							SyncPolicy: &mcpv1alpha1.SyncPolicy{
 								Interval: "1h",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"default"},
 						},
 					},
 					PodTemplateSpec: &runtime.RawExtension{
@@ -809,7 +833,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "default",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -822,6 +846,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 							SyncPolicy: &mcpv1alpha1.SyncPolicy{
 								Interval: "1h",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"default"},
 						},
 					},
 					PodTemplateSpec: &runtime.RawExtension{
@@ -953,11 +983,11 @@ func (*serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.Depl
 // verifySourceDataVolume verifies the source data ConfigMap volume for ConfigMap sources
 func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
 	// With multiple source support, we need to check each ConfigMap source
-	for _, registryConfig := range registry.Spec.Registries {
-		if registryConfig.ConfigMapRef != nil {
-			expectedSourceConfigMapName := registryConfig.ConfigMapRef.Name
-			expectedVolumeName := fmt.Sprintf("registry-data-source-%s", registryConfig.Name)
-			expectedMountPath := filepath.Join(config.RegistryJSONFilePath, registryConfig.Name)
+	for _, sourceConfig := range registry.Spec.Sources {
+		if sourceConfig.ConfigMapRef != nil {
+			expectedSourceConfigMapName := sourceConfig.ConfigMapRef.Name
+			expectedVolumeName := fmt.Sprintf("registry-data-source-%s", sourceConfig.Name)
+			expectedMountPath := filepath.Join(config.RegistryJSONFilePath, sourceConfig.Name)
 
 			// Check volume
 			sourceDataVolumeFound := false
@@ -966,14 +996,14 @@ func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deploy
 					Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(expectedSourceConfigMapName))
 					// Check that it mounts the correct key as registry.json
 					Expect(volume.ConfigMap.Items).To(HaveLen(1))
-					Expect(volume.ConfigMap.Items[0].Key).To(Equal(registryConfig.ConfigMapRef.Key))
+					Expect(volume.ConfigMap.Items[0].Key).To(Equal(sourceConfig.ConfigMapRef.Key))
 					Expect(volume.ConfigMap.Items[0].Path).To(Equal("registry.json"))
 					sourceDataVolumeFound = true
 					break
 				}
 			}
 			Expect(sourceDataVolumeFound).To(BeTrue(),
-				fmt.Sprintf("Deployment should have a volume for ConfigMap source %s", registryConfig.Name))
+				fmt.Sprintf("Deployment should have a volume for ConfigMap source %s", sourceConfig.Name))
 
 			// Check mount
 			sourceDataMountFound := false
@@ -986,7 +1016,7 @@ func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deploy
 				}
 			}
 			Expect(sourceDataMountFound).To(BeTrue(),
-				fmt.Sprintf("Deployment should have a volume mount for ConfigMap source %s", registryConfig.Name))
+				fmt.Sprintf("Deployment should have a volume mount for ConfigMap source %s", sourceConfig.Name))
 		}
 	}
 }

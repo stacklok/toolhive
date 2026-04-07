@@ -5,7 +5,7 @@ metadata:
   namespace: default
 spec:
   displayName: "Filtered ToolHive Registry via API"
-  registries:
+  sources:
     - name: default
       format: toolhive
       api:
@@ -24,3 +24,7 @@ spec:
           include: ["official"]
           # Exclude experimental servers
           exclude: ["experimental"]
+  registries:
+    - name: default
+      sources:
+        - default

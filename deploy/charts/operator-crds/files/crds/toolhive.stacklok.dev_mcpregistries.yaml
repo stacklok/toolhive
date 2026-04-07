@@ -68,6 +68,45 @@ spec:
                   AuthConfig defines the authentication configuration for the registry API server.
                   If not specified, defaults to anonymous authentication.
                 properties:
+                  authz:
+                    description: Authz defines authorization configuration for role-based
+                      access control.
+                    properties:
+                      roles:
+                        description: |-
+                          Roles defines the role-based authorization rules.
+                          Each role is a list of claim matchers (JSON objects with string or []string values).
+                        properties:
+                          manageEntries:
+                            description: ManageEntries grants permission to create,
+                              update, and delete registry entries.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          manageRegistries:
+                            description: ManageRegistries grants permission to create,
+                              update, and delete registries.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          manageSources:
+                            description: ManageSources grants permission to create,
+                              update, and delete sources.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          superAdmin:
+                            description: SuperAdmin grants full administrative access
+                              to the registry.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                    type: object
                   mode:
                     default: anonymous
                     description: |-
@@ -255,6 +294,15 @@ spec:
                         type: array
                         x-kubernetes-list-type: atomic
                     type: object
+                  publicPaths:
+                    description: |-
+                      PublicPaths defines additional paths that bypass authentication.
+                      These extend the default public paths (health, docs, swagger, well-known).
+                      Example: ["/custom/public", "/metrics"]
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                 type: object
               databaseConfig:
                 description: |-
@@ -412,16 +460,54 @@ spec:
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               registries:
-                description: Registries defines the configuration for the registry
-                  data sources
+                description: |-
+                  Registries defines lightweight registry views that aggregate one or more sources.
+                  Each registry references sources by name and can optionally gate access via claims.
                 items:
-                  description: MCPRegistryConfig defines the configuration for a registry
-                    data source
+                  description: MCPRegistryViewConfig defines a lightweight registry
+                    view that aggregates one or more sources.
+                  properties:
+                    claims:
+                      description: |-
+                        Claims are key-value pairs that gate access to this registry view.
+                        Only requests with matching claims can access this registry. Values must be string or []string.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    name:
+                      description: Name is a unique identifier for this registry view
+                      minLength: 1
+                      type: string
+                    sources:
+                      description: |-
+                        Sources is an ordered list of source names that feed this registry.
+                        Each name must reference a source defined in spec.sources.
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: atomic
+                  required:
+                  - name
+                  - sources
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              sources:
+                description: |-
+                  Sources defines the data source configurations for the registry.
+                  Each source defines where registry data comes from (Git, API, ConfigMap, PVC, Managed, or Kubernetes).
+                items:
+                  description: |-
+                    MCPRegistrySourceConfig defines a data source configuration for the registry.
+                    Exactly one source type must be specified (ConfigMapRef, Git, API, PVCRef, Managed, or Kubernetes).
                   properties:
                     api:
                       description: |-
                         API defines the API source configuration
-                        Mutually exclusive with ConfigMapRef, Git, and PVCRef
+                        Mutually exclusive with ConfigMapRef, Git, PVCRef, Managed, and Kubernetes
                       properties:
                         endpoint:
                           description: |-
@@ -438,10 +524,16 @@ spec:
                       required:
                       - endpoint
                       type: object
+                    claims:
+                      description: |-
+                        Claims are key-value pairs attached to this source for authorization purposes.
+                        All entries from this source inherit these claims. Values must be string or []string.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     configMapRef:
                       description: |-
                         ConfigMapRef defines the ConfigMap source configuration
-                        Mutually exclusive with Git, API, and PVCRef
+                        Mutually exclusive with Git, API, PVCRef, Managed, and Kubernetes
                       properties:
                         key:
                           description: The key to select.
@@ -464,8 +556,9 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     filter:
-                      description: Filter defines include/exclude patterns for registry
-                        content
+                      description: |-
+                        Filter defines include/exclude patterns for registry content.
+                        Not applicable for Managed and Kubernetes sources (will be ignored).
                       properties:
                         names:
                           description: NameFilters defines name-based filtering
@@ -510,7 +603,7 @@ spec:
                     git:
                       description: |-
                         Git defines the Git repository source configuration
-                        Mutually exclusive with ConfigMapRef, API, and PVCRef
+                        Mutually exclusive with ConfigMapRef, API, PVCRef, Managed, and Kubernetes
                       properties:
                         auth:
                           description: |-
@@ -598,15 +691,36 @@ spec:
                       required:
                       - repository
                       type: object
+                    kubernetes:
+                      description: |-
+                        Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.
+                        Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Managed
+                      properties:
+                        namespaces:
+                          description: |-
+                            Namespaces is a list of Kubernetes namespaces to watch for MCP servers.
+                            If empty, watches the operator's configured namespace.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      type: object
+                    managed:
+                      description: |-
+                        Managed defines a managed source that is directly manipulated via the registry API.
+                        Managed sources do not sync from external sources.
+                        At most one managed source is allowed per MCPRegistry.
+                        Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Kubernetes
+                      type: object
                     name:
-                      description: Name is a unique identifier for this registry configuration
-                        within the MCPRegistry
+                      description: Name is a unique identifier for this source within
+                        the MCPRegistry
                       minLength: 1
                       type: string
                     pvcRef:
                       description: |-
                         PVCRef defines the PersistentVolumeClaim source configuration
-                        Mutually exclusive with ConfigMapRef, Git, and API
+                        Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes
                       properties:
                         claimName:
                           description: ClaimName is the name of the PersistentVolumeClaim
@@ -646,10 +760,11 @@ spec:
                       type: object
                     syncPolicy:
                       description: |-
-                        SyncPolicy defines the automatic synchronization behavior for this registry.
+                        SyncPolicy defines the automatic synchronization behavior for this source.
                         If specified, enables automatic synchronization at the given interval.
                         Manual synchronization is always supported via annotation-based triggers
                         regardless of this setting.
+                        Not applicable for Managed and Kubernetes sources (will be ignored).
                       properties:
                         interval:
                           description: |-
@@ -670,6 +785,7 @@ spec:
                 x-kubernetes-list-type: map
             required:
             - registries
+            - sources
             type: object
           status:
             description: MCPRegistryStatus defines the observed state of MCPRegistry
@@ -876,6 +992,8 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
+        - message: at least one source must be specified
+          rule: size(self.spec.sources) > 0
         - message: at least one registry must be specified
           rule: size(self.spec.registries) > 0
     served: true

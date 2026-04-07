@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -24,12 +25,21 @@ type MCPRegistrySpec struct {
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
 
-	// Registries defines the configuration for the registry data sources
+	// Sources defines the data source configurations for the registry.
+	// Each source defines where registry data comes from (Git, API, ConfigMap, PVC, Managed, or Kubernetes).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +listType=map
 	// +listMapKey=name
-	Registries []MCPRegistryConfig `json:"registries"`
+	Sources []MCPRegistrySourceConfig `json:"sources"`
+
+	// Registries defines lightweight registry views that aggregate one or more sources.
+	// Each registry references sources by name and can optionally gate access via claims.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
+	Registries []MCPRegistryViewConfig `json:"registries"`
 
 	// EnforceServers indicates whether MCPServers in this namespace must have their images
 	// present in at least one registry in the namespace. When any registry in the namespace
@@ -70,9 +80,10 @@ type MCPRegistrySpec struct {
 	AuthConfig *MCPRegistryAuthConfig `json:"authConfig,omitempty"`
 }
 
-// MCPRegistryConfig defines the configuration for a registry data source
-type MCPRegistryConfig struct {
-	// Name is a unique identifier for this registry configuration within the MCPRegistry
+// MCPRegistrySourceConfig defines a data source configuration for the registry.
+// Exactly one source type must be specified (ConfigMapRef, Git, API, PVCRef, Managed, or Kubernetes).
+type MCPRegistrySourceConfig struct {
+	// Name is a unique identifier for this source within the MCPRegistry
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
@@ -82,36 +93,95 @@ type MCPRegistryConfig struct {
 	// +kubebuilder:default=toolhive
 	Format string `json:"format,omitempty"`
 
+	// Claims are key-value pairs attached to this source for authorization purposes.
+	// All entries from this source inherit these claims. Values must be string or []string.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Claims *apiextensionsv1.JSON `json:"claims,omitempty"`
+
 	// ConfigMapRef defines the ConfigMap source configuration
-	// Mutually exclusive with Git, API, and PVCRef
+	// Mutually exclusive with Git, API, PVCRef, Managed, and Kubernetes
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 
 	// Git defines the Git repository source configuration
-	// Mutually exclusive with ConfigMapRef, API, and PVCRef
+	// Mutually exclusive with ConfigMapRef, API, PVCRef, Managed, and Kubernetes
 	// +optional
 	Git *GitSource `json:"git,omitempty"`
 
 	// API defines the API source configuration
-	// Mutually exclusive with ConfigMapRef, Git, and PVCRef
+	// Mutually exclusive with ConfigMapRef, Git, PVCRef, Managed, and Kubernetes
 	// +optional
 	API *APISource `json:"api,omitempty"`
 
 	// PVCRef defines the PersistentVolumeClaim source configuration
-	// Mutually exclusive with ConfigMapRef, Git, and API
+	// Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes
 	// +optional
 	PVCRef *PVCSource `json:"pvcRef,omitempty"`
 
-	// SyncPolicy defines the automatic synchronization behavior for this registry.
+	// Managed defines a managed source that is directly manipulated via the registry API.
+	// Managed sources do not sync from external sources.
+	// At most one managed source is allowed per MCPRegistry.
+	// Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Kubernetes
+	// +optional
+	Managed *ManagedSource `json:"managed,omitempty"`
+
+	// Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.
+	// Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Managed
+	// +optional
+	Kubernetes *KubernetesSource `json:"kubernetes,omitempty"`
+
+	// SyncPolicy defines the automatic synchronization behavior for this source.
 	// If specified, enables automatic synchronization at the given interval.
 	// Manual synchronization is always supported via annotation-based triggers
 	// regardless of this setting.
+	// Not applicable for Managed and Kubernetes sources (will be ignored).
 	// +optional
 	SyncPolicy *SyncPolicy `json:"syncPolicy,omitempty"`
 
-	// Filter defines include/exclude patterns for registry content
+	// Filter defines include/exclude patterns for registry content.
+	// Not applicable for Managed and Kubernetes sources (will be ignored).
 	// +optional
 	Filter *RegistryFilter `json:"filter,omitempty"`
+}
+
+// MCPRegistryViewConfig defines a lightweight registry view that aggregates one or more sources.
+type MCPRegistryViewConfig struct {
+	// Name is a unique identifier for this registry view
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Sources is an ordered list of source names that feed this registry.
+	// Each name must reference a source defined in spec.sources.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Sources []string `json:"sources"`
+
+	// Claims are key-value pairs that gate access to this registry view.
+	// Only requests with matching claims can access this registry. Values must be string or []string.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Claims *apiextensionsv1.JSON `json:"claims,omitempty"`
+}
+
+// ManagedSource defines a managed source that is directly manipulated via the registry API.
+// Managed sources do not sync from external sources.
+type ManagedSource struct {
+	// Empty — presence indicates this is a managed (internal) source for publishing
+}
+
+// KubernetesSource defines a source that discovers MCP servers from running Kubernetes resources.
+// Per-entry claims can be set on CRDs via the toolhive.stacklok.dev/authz-claims JSON annotation.
+type KubernetesSource struct {
+	// Namespaces is a list of Kubernetes namespaces to watch for MCP servers.
+	// If empty, watches the operator's configured namespace.
+	// +listType=atomic
+	// +optional
+	Namespaces []string `json:"namespaces,omitempty"`
 }
 
 // GitSource defines Git repository source configuration
@@ -381,10 +451,53 @@ type MCPRegistryAuthConfig struct {
 	// +optional
 	Mode MCPRegistryAuthMode `json:"mode,omitempty"`
 
+	// PublicPaths defines additional paths that bypass authentication.
+	// These extend the default public paths (health, docs, swagger, well-known).
+	// Example: ["/custom/public", "/metrics"]
+	// +listType=atomic
+	// +optional
+	PublicPaths []string `json:"publicPaths,omitempty"`
+
 	// OAuth defines OAuth/OIDC specific authentication settings
 	// Only used when Mode is "oauth"
 	// +optional
 	OAuth *MCPRegistryOAuthConfig `json:"oauth,omitempty"`
+
+	// Authz defines authorization configuration for role-based access control.
+	// +optional
+	Authz *MCPRegistryAuthzConfig `json:"authz,omitempty"`
+}
+
+// MCPRegistryAuthzConfig defines authorization configuration for role-based access control
+type MCPRegistryAuthzConfig struct {
+	// Roles defines the role-based authorization rules.
+	// Each role is a list of claim matchers (JSON objects with string or []string values).
+	// +optional
+	Roles MCPRegistryRolesConfig `json:"roles,omitempty"`
+}
+
+// MCPRegistryRolesConfig defines role-based authorization rules.
+// Each role is a list of claim matchers — a request matching any entry in the list is granted the role.
+type MCPRegistryRolesConfig struct {
+	// SuperAdmin grants full administrative access to the registry.
+	// +optional
+	// +listType=atomic
+	SuperAdmin []apiextensionsv1.JSON `json:"superAdmin,omitempty"`
+
+	// ManageSources grants permission to create, update, and delete sources.
+	// +optional
+	// +listType=atomic
+	ManageSources []apiextensionsv1.JSON `json:"manageSources,omitempty"`
+
+	// ManageRegistries grants permission to create, update, and delete registries.
+	// +optional
+	// +listType=atomic
+	ManageRegistries []apiextensionsv1.JSON `json:"manageRegistries,omitempty"`
+
+	// ManageEntries grants permission to create, update, and delete registry entries.
+	// +optional
+	// +listType=atomic
+	ManageEntries []apiextensionsv1.JSON `json:"manageEntries,omitempty"`
 }
 
 // MCPRegistryOAuthConfig defines OAuth/OIDC specific authentication settings
@@ -692,6 +805,7 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
+//+kubebuilder:validation:XValidation:rule="size(self.spec.sources) > 0",message="at least one source must be specified"
 //+kubebuilder:validation:XValidation:rule="size(self.spec.registries) > 0",message="at least one registry must be specified"
 
 // MCPRegistry is the Schema for the mcpregistries API

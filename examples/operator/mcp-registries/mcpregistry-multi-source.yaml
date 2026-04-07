@@ -71,8 +71,8 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Multi-Source Registry (ConfigMap + Shared PVC)"
-  registries:
-    # Registry 1: ConfigMap source (static production tools)
+  sources:
+    # Source 1: ConfigMap source (static production tools)
     - name: production-tools
       format: toolhive
       configMapRef:
@@ -86,7 +86,7 @@ spec:
             - "production"
             - "database"
 
-    # Registry 2: PVC source (monitoring tools) - from shared PVC
+    # Source 2: PVC source (monitoring tools) - from shared PVC
     - name: monitoring
       format: toolhive
       pvcRef:
@@ -100,7 +100,7 @@ spec:
             - "monitoring"
             - "observability"
 
-    # Registry 3: PVC source (AI/ML tools) - from SAME shared PVC
+    # Source 3: PVC source (AI/ML tools) - from SAME shared PVC
     - name: ai-ml
       format: toolhive
       pvcRef:
@@ -117,6 +117,12 @@ spec:
           include:
             - "ai"
             - "machine-learning"
+  registries:
+    - name: default
+      sources:
+        - production-tools
+        - monitoring
+        - ai-ml
 ---
 # Job to populate the shared PVC with multiple registry directories
 # This creates /monitoring and /ai-ml subdirectories with their respective data

@@ -149,7 +149,7 @@ var _ = Describe("MCPRegistry PVC Source", Label("k8s", "registry", "pvc"), func
 			}
 			Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
 
-			By("Creating MCPRegistry with two registries from the same PVC")
+			By("Creating MCPRegistry with two sources from the same PVC")
 			registry := &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-shared-pvc-registry",
@@ -159,7 +159,7 @@ var _ = Describe("MCPRegistry PVC Source", Label("k8s", "registry", "pvc"), func
 					},
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "production",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -181,6 +181,12 @@ var _ = Describe("MCPRegistry PVC Source", Label("k8s", "registry", "pvc"), func
 							SyncPolicy: &mcpv1alpha1.SyncPolicy{
 								Interval: "30m",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"production", "development"},
 						},
 					},
 				},

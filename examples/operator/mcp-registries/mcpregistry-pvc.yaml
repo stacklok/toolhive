@@ -46,8 +46,8 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Multi-Registry from Single PVC"
-  registries:
-    # Production registry - reads from prod-data/ subdirectory in PVC
+  sources:
+    # Production source - reads from prod-data/ subdirectory in PVC
     - name: production
       format: toolhive
       pvcRef:
@@ -61,7 +61,7 @@ spec:
             - "production"
             - "stable"
 
-    # Development registry - reads from dev-data/ subdirectory in PVC
+    # Development source - reads from dev-data/ subdirectory in PVC
     - name: development
       format: toolhive
       pvcRef:
@@ -74,6 +74,11 @@ spec:
           include:
             - "development"
             - "testing"
+  registries:
+    - name: default
+      sources:
+        - production
+        - development
 ---
 # Example Job to populate the shared PVC with multiple registry directories
 # This job creates the directory structure and writes registry data for both registries

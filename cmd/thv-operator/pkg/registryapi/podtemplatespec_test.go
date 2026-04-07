@@ -242,7 +242,7 @@ func TestRegistryMountOptions(t *testing.T) {
 		{
 			name: "WithRegistrySourceMounts adds mounts for registries with ConfigMapRef",
 			options: func() []PodTemplateSpecOption {
-				registries := []mcpv1alpha1.MCPRegistryConfig{
+				sources := []mcpv1alpha1.MCPRegistrySourceConfig{
 					{
 						Name: "reg1",
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
@@ -264,7 +264,7 @@ func TestRegistryMountOptions(t *testing.T) {
 				}
 				return []PodTemplateSpecOption{
 					WithContainer(corev1.Container{Name: "registry-api"}),
-					WithRegistrySourceMounts("registry-api", registries),
+					WithRegistrySourceMounts("registry-api", sources),
 				}
 			},
 			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
@@ -281,7 +281,7 @@ func TestRegistryMountOptions(t *testing.T) {
 		{
 			name: "WithRegistrySourceMounts skips registries without ConfigMapRef",
 			options: func() []PodTemplateSpecOption {
-				registries := []mcpv1alpha1.MCPRegistryConfig{
+				sources := []mcpv1alpha1.MCPRegistrySourceConfig{
 					{
 						Name:         "reg1",
 						ConfigMapRef: nil,
@@ -289,7 +289,7 @@ func TestRegistryMountOptions(t *testing.T) {
 				}
 				return []PodTemplateSpecOption{
 					WithContainer(corev1.Container{Name: "registry-api"}),
-					WithRegistrySourceMounts("registry-api", registries),
+					WithRegistrySourceMounts("registry-api", sources),
 				}
 			},
 			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
@@ -318,7 +318,7 @@ func TestRegistryMountOptions(t *testing.T) {
 
 		options := []PodTemplateSpecOption{
 			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistryConfig{
+			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistrySourceConfig{
 				{
 					Name:   "pvc-source",
 					Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -354,7 +354,7 @@ func TestRegistryMountOptions(t *testing.T) {
 
 		options := []PodTemplateSpecOption{
 			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistryConfig{
+			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistrySourceConfig{
 				{
 					Name:   "production",
 					Format: mcpv1alpha1.RegistryFormatToolHive,

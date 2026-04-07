@@ -204,7 +204,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Database Servers Only"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -224,6 +224,10 @@ spec:
             - "database"     # Only database servers
           exclude:
             - "deprecated"   # Exclude deprecated servers
+  registries:
+    - name: default
+      sources:
+        - default
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -232,7 +236,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Production & Monitoring Tools"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -253,6 +257,10 @@ spec:
           exclude:
             - "experimental"   # No experimental features
             - "testing"        # No testing tools
+  registries:
+    - name: default
+      sources:
+        - default
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -261,7 +269,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Development & Testing Tools"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -280,3 +288,7 @@ spec:
           exclude:
             - "production"    # No production servers
             - "deprecated"    # No deprecated tools
+  registries:
+    - name: default
+      sources:
+        - default

@@ -956,3 +956,167 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-via-extauth"})
 	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-no-ref"})
 }
+
+func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSameServer(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	// A server has externalAuthConfigRef pointing to "token-exchange-config"
+	// AND authServerRef pointing to "embedded-auth-config".
+	// Both configs should discover this server during reconciliation.
+
+	tokenExchangeConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "token-exchange-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "test-client",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "test-secret",
+					Key:  "client-secret",
+				},
+				Audience: "backend-service",
+			},
+		},
+	}
+
+	embeddedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "embedded-auth-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer:                       "https://auth.example.com",
+				AuthorizationEndpointBaseURL: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+		},
+	}
+
+	// Server with both refs pointing to different configs
+	serverWithBothRefs := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-with-both-refs",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "token-exchange-config",
+			},
+			AuthServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "embedded-auth-config",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tokenExchangeConfig, embeddedAuthConfig, serverWithBothRefs).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	ctx := t.Context()
+
+	// Reconciling the token-exchange-config should find the server via externalAuthConfigRef
+	refsForTokenExchange, err := r.findReferencingWorkloads(ctx, tokenExchangeConfig)
+	require.NoError(t, err)
+	assert.Len(t, refsForTokenExchange, 1, "token-exchange-config should find server via externalAuthConfigRef")
+	assert.Contains(t, refsForTokenExchange, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-with-both-refs"})
+
+	// Reconciling the embedded-auth-config should find the server via authServerRef
+	refsForEmbedded, err := r.findReferencingWorkloads(ctx, embeddedAuthConfig)
+	require.NoError(t, err)
+	assert.Len(t, refsForEmbedded, 1, "embedded-auth-config should find server via authServerRef")
+	assert.Contains(t, refsForEmbedded, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-with-both-refs"})
+
+	// Also verify findReferencingMCPServers returns the server for both configs
+	serversForTokenExchange, err := r.findReferencingMCPServers(ctx, tokenExchangeConfig)
+	require.NoError(t, err)
+	assert.Len(t, serversForTokenExchange, 1)
+	assert.Equal(t, "server-with-both-refs", serversForTokenExchange[0].Name)
+
+	serversForEmbedded, err := r.findReferencingMCPServers(ctx, embeddedAuthConfig)
+	require.NoError(t, err)
+	assert.Len(t, serversForEmbedded, 1)
+	assert.Equal(t, "server-with-both-refs", serversForEmbedded[0].Name)
+}
+
+func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	// A server has both externalAuthConfigRef and authServerRef pointing to the SAME config.
+	// The server should appear only once in the results.
+	config := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shared-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "test-client",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "test-secret",
+					Key:  "client-secret",
+				},
+				Audience: "backend-service",
+			},
+		},
+	}
+
+	server := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-both-same",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "shared-config",
+			},
+			AuthServerRef: &corev1.TypedLocalObjectReference{
+				Kind: "MCPExternalAuthConfig",
+				Name: "shared-config",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(config, server).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	ctx := t.Context()
+	servers, err := r.findReferencingMCPServers(ctx, config)
+	require.NoError(t, err)
+	assert.Len(t, servers, 1, "Server should appear only once even when both refs point to the same config")
+	assert.Equal(t, "server-both-same", servers[0].Name)
+}

@@ -238,38 +238,67 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 
 // findReferencingMCPServers finds all MCPServers that reference the given MCPExternalAuthConfig
 // via either externalAuthConfigRef or authServerRef.
+// It queries separately for each ref field and merges with deduplication, so a server
+// that has externalAuthConfigRef pointing to config "A" and authServerRef pointing to
+// config "B" will be found when reconciling either config.
 func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) ([]mcpv1alpha1.MCPServer, error) {
-	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+	byExtAuth, err := ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
 			if server.Spec.ExternalAuthConfigRef != nil {
 				return &server.Spec.ExternalAuthConfigRef.Name
 			}
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	byAuthServer, err := ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
 			if server.Spec.AuthServerRef != nil {
 				return &server.Spec.AuthServerRef.Name
 			}
 			return nil
 		})
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge and deduplicate
+	seen := make(map[string]struct{}, len(byExtAuth))
+	result := make([]mcpv1alpha1.MCPServer, 0, len(byExtAuth)+len(byAuthServer))
+	for _, s := range byExtAuth {
+		seen[s.Name] = struct{}{}
+		result = append(result, s)
+	}
+	for _, s := range byAuthServer {
+		if _, ok := seen[s.Name]; !ok {
+			result = append(result, s)
+		}
+	}
+	return result, nil
 }
 
 // findReferencingWorkloads returns the workload resources (MCPServer)
 // that reference this MCPExternalAuthConfig via their ExternalAuthConfigRef or AuthServerRef field.
+// It queries separately for each ref field and merges the results, so both fields are always checked.
 func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) ([]mcpv1alpha1.WorkloadReference, error) {
-	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(server *mcpv1alpha1.MCPServer) *string {
-			if server.Spec.ExternalAuthConfigRef != nil {
-				return &server.Spec.ExternalAuthConfigRef.Name
-			}
-			if server.Spec.AuthServerRef != nil {
-				return &server.Spec.AuthServerRef.Name
-			}
-			return nil
-		})
+	servers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(servers))
+	for _, server := range servers {
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
+	}
+	ctrlutil.SortWorkloadRefs(refs)
+	return refs, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

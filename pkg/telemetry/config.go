@@ -69,6 +69,13 @@ type Config struct {
 	// +optional
 	Insecure bool `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 
+	// CACertFile is the file path to a PEM-encoded CA certificate bundle
+	// used to verify the OTLP endpoint's TLS certificate.
+	// The custom CA is appended to the system certificate pool.
+	// Ignored when Insecure is true.
+	// +optional
+	CACertFile string `json:"caCertFile,omitempty" yaml:"caCertFile,omitempty"`
+
 	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
 	// The metrics are served on the main transport port at /metrics.
 	// This is separate from OTLP metrics which are sent to the Endpoint.
@@ -117,10 +124,10 @@ func (c Config) String() string {
 	}
 
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
-		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
+		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, CACertFile: %q, "+
 		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, UseLegacyAttributes: %t}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
-		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
+		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure, c.CACertFile,
 		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes, c.UseLegacyAttributes)
 }
 
@@ -263,6 +270,7 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 		providers.WithSamplingRate(config.GetSamplingRateFloat()),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
 		providers.WithCustomAttributes(config.CustomAttributes),
+		providers.WithCACertFile(config.CACertFile),
 	}
 
 	// Merge globally registered processors (self-registered by integrations such

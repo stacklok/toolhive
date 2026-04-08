@@ -1123,6 +1123,12 @@ components:
           type: string
         runtime_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig'
+        runtime_name:
+          description: |-
+            RuntimeName is the registered name of the container runtime that owns this
+            workload (e.g., "docker", "kubernetes"). Used during reconciliation to avoid
+            corrupting status files of workloads managed by a different runtime.
+          type: string
         scaling_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig'
         schema_version:

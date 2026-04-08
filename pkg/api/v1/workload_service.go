@@ -71,6 +71,9 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 		return nil, err
 	}
 
+	// Record which runtime owns this workload for cross-runtime reconciliation.
+	runConfig.RuntimeName = s.containerRuntime.Name()
+
 	// Save the workload state
 	if err := runConfig.SaveState(ctx); err != nil {
 		slog.Error("failed to save workload config", "error", err)

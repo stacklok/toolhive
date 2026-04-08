@@ -74,6 +74,93 @@ type fileStatusManager struct {
 	runConfigStore state.Store
 }
 
+// isOwnedByActiveRuntime checks whether the named workload was created by the
+// currently active runtime. It loads the runtime_name field from the persisted
+// RunConfig and compares it against f.runtime.Name(). Legacy workloads that
+// predate the runtime_name field (empty string) are conservatively treated as
+// owned by the active runtime so that existing validation behaviour is preserved.
+func (f *fileStatusManager) isOwnedByActiveRuntime(ctx context.Context, workloadName string) bool {
+	reader, err := f.runConfigStore.GetReader(ctx, workloadName)
+	if err != nil {
+		// RunConfig missing or unreadable -- assume ours so we don't silently
+		// skip validation for workloads we should be checking.
+		return true
+	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			slog.Warn("failed to close reader", "error", err)
+		}
+	}()
+
+	var config struct {
+		RuntimeName string `json:"runtime_name"`
+	}
+	if err := json.NewDecoder(reader).Decode(&config); err != nil {
+		return true // can't determine ownership -- assume ours
+	}
+
+	// Empty means legacy workload; treat as owned by active runtime.
+	if config.RuntimeName == "" {
+		return true
+	}
+	return config.RuntimeName == f.runtime.Name()
+}
+
+// migrateRuntimeName stamps a legacy workload (RuntimeName == "") with the
+// active runtime's name. This is called only after the runtime has confirmed the
+// workload is healthy, so we know with certainty it belongs to the active
+// runtime. Save failures are non-fatal — the migration will be retried on the
+// next reconciliation cycle.
+func (f *fileStatusManager) migrateRuntimeName(ctx context.Context, workloadName string) {
+	reader, err := f.runConfigStore.GetReader(ctx, workloadName)
+	if err != nil {
+		slog.Debug("skipping runtime name migration: cannot read config", "workload", workloadName, "error", err)
+		return
+	}
+
+	var raw map[string]json.RawMessage
+	decodeErr := json.NewDecoder(reader).Decode(&raw)
+	// Always close the reader before acting on the decode result.
+	if closeErr := reader.Close(); closeErr != nil {
+		slog.Warn("failed to close reader for runtime name migration", "workload", workloadName, "error", closeErr)
+	}
+	if decodeErr != nil {
+		return
+	}
+
+	// Check if runtime_name is already set
+	if rn, ok := raw["runtime_name"]; ok {
+		var name string
+		if err := json.Unmarshal(rn, &name); err == nil && name != "" {
+			return // Already migrated
+		}
+	}
+
+	// Stamp with the active runtime name
+	runtimeBytes, err := json.Marshal(f.runtime.Name())
+	if err != nil {
+		return
+	}
+	raw["runtime_name"] = runtimeBytes
+
+	writer, err := f.runConfigStore.GetWriter(ctx, workloadName)
+	if err != nil {
+		slog.Warn("failed to open writer for runtime name migration", "workload", workloadName, "error", err)
+		return
+	}
+	defer func() {
+		if err := writer.Close(); err != nil {
+			slog.Warn("failed to close writer for runtime name migration", "workload", workloadName, "error", err)
+		}
+	}()
+
+	encoder := json.NewEncoder(writer)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(raw); err != nil {
+		slog.Warn("failed to write migrated RunConfig", "workload", workloadName, "error", err)
+	}
+}
+
 // isRemoteWorkload checks if a workload is remote by attempting to load its run configuration
 // and checking if it has a RemoteURL field set.
 // TODO: This is a temporary solution to check if a workload is remote
@@ -910,6 +997,12 @@ func (f *fileStatusManager) validateRunningWorkload(
 		return result, nil
 	}
 
+	// Skip validation for workloads owned by a different runtime to avoid
+	// corrupting their status files (see #4432).
+	if !f.isOwnedByActiveRuntime(ctx, workloadName) {
+		return result, nil
+	}
+
 	// Get raw container info from runtime (before label filtering)
 	containerInfo, err := f.runtime.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
@@ -926,7 +1019,12 @@ func (f *fileStatusManager) validateRunningWorkload(
 		return unhealthyWorkload, nil
 	}
 
-	// Runtime and proxy confirm workload is healthy - merge runtime data with file status
+	// Runtime and proxy confirm workload is healthy — opportunistically migrate
+	// legacy workloads that predate the runtime_name field so they are stamped
+	// with the owning runtime for future reconciliation cycles.
+	f.migrateRuntimeName(ctx, workloadName)
+
+	// Merge runtime data with file status
 	return f.mergeHealthyWorkloadData(containerInfo, result)
 }
 
@@ -957,10 +1055,16 @@ func (f *fileStatusManager) handleRuntimeMismatch(
 func (f *fileStatusManager) handleRuntimeMissing(
 	ctx context.Context, workloadName string, fileWorkload core.Workload,
 ) (core.Workload, error) {
-	// Check if this is a remote workload using the Remote field
+	// Remote workloads don't exist in the container runtime, so it's normal
+	// for them to be missing. This also means they bypass the runtime-ownership
+	// check below — remote workloads have no owning runtime.
 	if fileWorkload.Remote {
-		// Remote workloads don't exist in the container runtime, so it's normal for them to be missing
-		// Don't mark them as unhealthy
+		return fileWorkload, nil
+	}
+
+	// Skip reconciliation for workloads owned by a different runtime to avoid
+	// corrupting their status files (see #4432).
+	if !f.isOwnedByActiveRuntime(ctx, workloadName) {
 		return fileWorkload, nil
 	}
 

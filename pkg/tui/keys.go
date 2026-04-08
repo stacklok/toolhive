@@ -23,8 +23,8 @@ type keyMap struct {
 	Registry    key.Binding
 	ScrollLeft  key.Binding
 	ScrollRight key.Binding
-	Space    key.Binding // toggle JSON node collapse
-	CopyNode key.Binding // copy response JSON to clipboard (c)
+	Space       key.Binding // toggle JSON node collapse
+	CopyNode    key.Binding // copy response JSON to clipboard (c)
 	CopyCurl    key.Binding // copy curl command to clipboard (y)
 	SearchNext  key.Binding // n — next search match in logs
 	SearchPrev  key.Binding // N — previous search match in logs

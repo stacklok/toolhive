@@ -23,7 +23,7 @@ func (m Model) registryBoxDims() (boxW, innerW, visibleRows int) {
 
 // renderRegistryOverlay renders the registry browser overlay.
 // It delegates to the run form or detail view as appropriate.
-func (m Model) renderRegistryOverlay(_ string) string {
+func (m Model) renderRegistryOverlay() string {
 	if m.runForm.open {
 		return m.renderRunFormOverlay()
 	}
@@ -339,7 +339,7 @@ func (m Model) renderRunFormOverlay() string {
 		focused := i == m.runForm.idx
 		lines := renderFormFieldFromStruct(f, focused, innerW)
 		for _, l := range lines {
-			sb.WriteString("  " + l + "\n")
+			sb.WriteString(l + "\n")
 		}
 		sb.WriteString("\n")
 	}

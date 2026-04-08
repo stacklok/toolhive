@@ -14,11 +14,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	vmcpauthfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
-	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 )
 
 // inspSpinFrames holds the spinner animation frames for the inspector loading state.
@@ -95,6 +92,12 @@ func buildRequiredSet(schema map[string]any) map[string]bool {
 	return reqSet
 }
 
+// shellEscapeSingleQuote escapes single quotes for safe inclusion inside
+// a single-quoted shell string: ' → '"'"' (end quote, escaped quote, reopen).
+func shellEscapeSingleQuote(s string) string {
+	return strings.ReplaceAll(s, "'", `'"'"'`)
+}
+
 // buildCurlStr constructs a curl command string for the given tool call.
 func buildCurlStr(sel *core.Workload, toolName string, args map[string]any) string {
 	if sel == nil {
@@ -121,7 +124,7 @@ func buildCurlStr(sel *core.Workload, toolName string, args map[string]any) stri
 	}
 
 	return fmt.Sprintf("curl -X POST \\\n  '%s' \\\n  -H 'Content-Type: application/json' \\\n  -d '%s'",
-		url, string(payloadJSON))
+		shellEscapeSingleQuote(url), shellEscapeSingleQuote(string(payloadJSON)))
 }
 
 // startInspCallTool returns a tea.Cmd that calls a tool asynchronously.
@@ -135,28 +138,11 @@ func startInspCallTool(ctx context.Context, sel *core.Workload, toolName string,
 	}
 }
 
-// callTool invokes a tool on the backend MCP server using the same pattern as fetchTools.
+// callTool invokes a tool on the backend MCP server.
 func callTool(ctx context.Context, workload *core.Workload, toolName string, args map[string]any) (*vmcp.ToolCallResult, error) {
-	registry, err := vmcpauthfactory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
+	mcpClient, target, err := newBackendClientAndTarget(ctx, workload)
 	if err != nil {
 		return nil, err
-	}
-
-	mcpClient, err := vmcpclient.NewHTTPBackendClient(registry)
-	if err != nil {
-		return nil, err
-	}
-
-	transportType := workload.ProxyMode
-	if transportType == "" {
-		transportType = string(workload.TransportType)
-	}
-
-	target := &vmcp.BackendTarget{
-		WorkloadID:    workload.Name,
-		WorkloadName:  workload.Name,
-		BaseURL:       workload.URL,
-		TransportType: transportType,
 	}
 
 	return mcpClient.CallTool(ctx, target, toolName, args, nil)

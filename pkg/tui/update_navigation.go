@@ -255,14 +255,31 @@ func (m *Model) hScrollRight() {
 	const step = 8
 	switch m.panel {
 	case panelLogs:
-		m.logHScrollOff += step
-		m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width, m.logHScrollOff))
+		maxOff := maxLineLen(m.logLines)
+		if m.logHScrollOff+step <= maxOff {
+			m.logHScrollOff += step
+			m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width, m.logHScrollOff))
+		}
 	case panelProxyLogs:
-		m.proxyLogHScrollOff += step
-		m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width, m.proxyLogHScrollOff))
+		maxOff := maxLineLen(m.proxyLogLines)
+		if m.proxyLogHScrollOff+step <= maxOff {
+			m.proxyLogHScrollOff += step
+			m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width, m.proxyLogHScrollOff))
+		}
 	case panelInfo, panelTools, panelInspector:
 		// h-scroll not applicable to these panels
 	}
+}
+
+// maxLineLen returns the length (in runes) of the longest line in the slice.
+func maxLineLen(lines []string) int {
+	m := 0
+	for _, l := range lines {
+		if n := len([]rune(l)); n > m {
+			m = n
+		}
+	}
+	return m
 }
 
 // onSelectionChanged resets panel state and starts any needed background fetches.

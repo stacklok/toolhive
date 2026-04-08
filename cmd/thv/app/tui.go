@@ -22,17 +22,28 @@ var tuiCmd = &cobra.Command{
 	Short: "Open the interactive TUI dashboard",
 	Long: `Launch the interactive terminal dashboard for managing MCP servers.
 
-The dashboard shows a real-time list of servers with live log streaming.
+The dashboard shows a real-time list of servers with live log streaming,
+tool inspection, and registry browsing — all from a single terminal window.
 
 Key bindings:
-  ↑/↓       navigate servers
-  tab       switch between Logs and Info panels
-  s         stop selected server
-  r         restart selected server
-  /         filter server list
-  f         toggle log follow mode
-  ?         show help overlay
-  q         quit`,
+  ↑/↓/j/k   navigate servers or tools
+  tab        cycle panels: Logs → Info → Tools → Proxy Logs → Inspector
+  s          stop selected server
+  r          restart selected server
+  d d        delete selected server (press d twice)
+  /          filter server list, or search logs (on Logs/Proxy Logs panel)
+  n/N        next/previous search match
+  f          toggle log follow mode
+  ←/→        horizontal scroll in log panels
+  R          open registry browser
+  enter      open tool in inspector (from Tools panel)
+  space      toggle JSON node collapse (in inspector response)
+  c          copy response JSON to clipboard
+  y          copy curl command to clipboard
+  u          copy server URL to clipboard
+  i          show tool description (in inspector)
+  ?          show full help overlay
+  q/ctrl+c   quit`,
 	RunE: tuiCmdFunc,
 }
 

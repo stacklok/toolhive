@@ -12,6 +12,7 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/permissions"
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -152,6 +153,13 @@ type RunConfig struct {
 	// DEPRECATED: Middleware configuration.
 	// TelemetryConfig contains the OpenTelemetry configuration
 	TelemetryConfig *telemetry.Config `json:"telemetry_config,omitempty" yaml:"telemetry_config,omitempty"`
+
+	// RateLimitConfig contains the CRD rate limiting configuration.
+	// When set, rate limiting middleware is added to the proxy middleware chain.
+	RateLimitConfig *v1alpha1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
+
+	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
+	RateLimitNamespace string `json:"rate_limit_namespace,omitempty" yaml:"rate_limit_namespace,omitempty"`
 
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"

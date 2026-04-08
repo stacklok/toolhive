@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -495,6 +496,15 @@ func WithTelemetryConfigFromFlags(
 func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.TelemetryConfig = config
+		return nil
+	}
+}
+
+// WithRateLimitConfig sets the rate limiting configuration.
+func WithRateLimitConfig(namespace string, config *v1alpha1.RateLimitConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RateLimitConfig = config
+		b.config.RateLimitNamespace = namespace
 		return nil
 	}
 }

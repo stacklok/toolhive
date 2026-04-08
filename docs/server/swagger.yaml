@@ -31,6 +31,53 @@ components:
           description: Version is the schema version of the registry
           type: string
       type: object
+    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket:
+      description: |-
+        Shared defines a token bucket shared across all users for this specific tool.
+        +kubebuilder:validation:Required
+      properties:
+        maxTokens:
+          description: |-
+            MaxTokens is the maximum number of tokens (bucket capacity).
+            This is also the burst size: the maximum number of requests that can be served
+            instantaneously before the bucket is depleted.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:Minimum=1
+          type: integer
+        refillPeriod:
+          $ref: '#/components/schemas/v1.Duration'
+      type: object
+    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig:
+      description: |-
+        RateLimitConfig contains the CRD rate limiting configuration.
+        When set, rate limiting middleware is added to the proxy middleware chain.
+      properties:
+        shared:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+        tools:
+          description: |-
+            Tools defines per-tool rate limit overrides.
+            Each entry applies additional rate limits to calls targeting a specific tool name.
+            A request must pass both the server-level limit and the per-tool limit.
+            +listType=map
+            +listMapKey=name
+            +optional
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig'
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig:
+      properties:
+        name:
+          description: |-
+            Name is the MCP tool name this limit applies to.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:MinLength=1
+          type: string
+        shared:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+      type: object
     github_com_stacklok_toolhive_pkg_audit.Config:
       description: |-
         DEPRECATED: Middleware configuration.
@@ -1106,6 +1153,12 @@ components:
             type: string
           type: array
           uniqueItems: false
+        rate_limit_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig'
+        rate_limit_namespace:
+          description: RateLimitNamespace is the Kubernetes namespace for Redis key
+            derivation.
+          type: string
         registry_api_url:
           description: |-
             RegistryAPIURL is the registry API URL that served this server's metadata.
@@ -2781,6 +2834,13 @@ components:
         predicate: {}
         predicate_type:
           type: string
+      type: object
+    v1.Duration:
+      description: |-
+        RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+        The effective refill rate is maxTokens / refillPeriod tokens per second.
+        Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+        +kubebuilder:validation:Required
       type: object
 externalDocs:
   description: ""

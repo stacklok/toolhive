@@ -22,7 +22,7 @@ import (
 type Limiter interface {
 	// Allow checks whether a request is permitted.
 	// toolName is the MCP tool being called (empty for non-tool requests).
-	// userID is the authenticated user (reserved for #4550, currently no-op).
+	// userID is the authenticated user (empty for unauthenticated requests).
 	Allow(ctx context.Context, toolName, userID string) (*Decision, error)
 }
 
@@ -54,6 +54,15 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1alpha1.Rate
 		l.serverBucket = b
 	}
 
+	if crd.PerUser != nil {
+		spec, err := newBucketSpec(namespace, name, crd.PerUser)
+		if err != nil {
+			return nil, fmt.Errorf("perUser bucket: %w", err)
+		}
+		l.hasPerUserServer = true
+		l.perUserServer = spec
+	}
+
 	for _, t := range crd.Tools {
 		if t.Shared != nil {
 			b, err := newBucket(namespace, name, "shared:tool:"+t.Name, t.Shared)
@@ -65,24 +74,44 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1alpha1.Rate
 			}
 			l.toolBuckets[t.Name] = b
 		}
+		if t.PerUser != nil {
+			spec, err := newBucketSpec(namespace, name, t.PerUser)
+			if err != nil {
+				return nil, fmt.Errorf("tool %q perUser bucket: %w", t.Name, err)
+			}
+			if l.perUserTools == nil {
+				l.perUserTools = make(map[string]bucketSpec)
+			}
+			l.perUserTools[t.Name] = spec
+		}
 	}
 
 	return l, nil
 }
 
+// bucketSpec holds deferred bucket parameters for per-user buckets that are
+// created on the fly in Allow() because the userID is not known at construction time.
+type bucketSpec struct {
+	namespace    string
+	serverName   string
+	maxTokens    int32
+	refillPeriod time.Duration
+}
+
 // limiter is the concrete implementation of Limiter.
 type limiter struct {
-	client       redis.Cmdable
-	serverBucket *bucket.TokenBucket            // nil when no global server limit
-	toolBuckets  map[string]*bucket.TokenBucket // tool name -> bucket
+	client         redis.Cmdable
+	serverBucket   *bucket.TokenBucket            // nil when no shared server limit
+	toolBuckets    map[string]*bucket.TokenBucket  // tool name -> shared bucket
+	hasPerUserServer bool
+	perUserServer  bucketSpec                     // valid when hasPerUserServer is true
+	perUserTools   map[string]bucketSpec           // tool name -> per-user bucket spec; nil when none
 }
 
 // Allow atomically checks all applicable rate limit buckets for the request.
 // Tokens are only consumed if ALL buckets have sufficient capacity, preventing
-// a rejected per-tool call from draining the server-level budget.
-func (l *limiter) Allow(ctx context.Context, toolName, _ string) (*Decision, error) {
-	// TODO(#4550): per-user rate limiting — currently ignored.
-
+// a rejected per-tool or per-user call from draining other budgets.
+func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision, error) {
 	// Collect applicable buckets in priority order.
 	var buckets []*bucket.TokenBucket
 	if l.serverBucket != nil {
@@ -91,6 +120,28 @@ func (l *limiter) Allow(ctx context.Context, toolName, _ string) (*Decision, err
 	if toolName != "" && l.toolBuckets != nil {
 		if tb, ok := l.toolBuckets[toolName]; ok {
 			buckets = append(buckets, tb)
+		}
+	}
+
+	// Per-user buckets are created on the fly because userID is request-scoped.
+	// bucket.New only allocates a struct (no I/O), so this is cheap.
+	if userID != "" {
+		if l.hasPerUserServer {
+			s := l.perUserServer
+			buckets = append(buckets, bucket.New(
+				s.namespace, s.serverName,
+				"user:"+userID,
+				s.maxTokens, s.refillPeriod,
+			))
+		}
+		if toolName != "" && l.perUserTools != nil {
+			if s, ok := l.perUserTools[toolName]; ok {
+				buckets = append(buckets, bucket.New(
+					s.namespace, s.serverName,
+					"user:"+userID+":tool:"+toolName,
+					s.maxTokens, s.refillPeriod,
+				))
+			}
 		}
 	}
 
@@ -129,4 +180,22 @@ func newBucket(namespace, serverName, suffix string, b *v1alpha1.RateLimitBucket
 		return nil, fmt.Errorf("refillPeriod must be positive, got %s", d)
 	}
 	return bucket.New(namespace, serverName, suffix, b.MaxTokens, d), nil
+}
+
+// newBucketSpec validates a CRD bucket spec and creates a deferred bucketSpec
+// for per-user buckets that are materialized at Allow() time.
+func newBucketSpec(namespace, serverName string, b *v1alpha1.RateLimitBucket) (bucketSpec, error) {
+	if b.MaxTokens < 1 {
+		return bucketSpec{}, fmt.Errorf("maxTokens must be >= 1, got %d", b.MaxTokens)
+	}
+	d := b.RefillPeriod.Duration
+	if d <= 0 {
+		return bucketSpec{}, fmt.Errorf("refillPeriod must be positive, got %s", d)
+	}
+	return bucketSpec{
+		namespace:    namespace,
+		serverName:   serverName,
+		maxTokens:    b.MaxTokens,
+		refillPeriod: d,
+	}, nil
 }

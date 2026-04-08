@@ -205,7 +205,7 @@ Create a ConfigMap or init container to provision the ACL file. The ACL user nee
 
 ```
 # /data/users.acl
-user toolhive-auth on ><your-secure-password> ~thv:auth:* &* +GET +SET +DEL +EXISTS +EXPIRE +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +PING
+user toolhive-auth on ><your-secure-password> ~thv:auth:* &* +GET +SET +SETNX +DEL +EXISTS +EXPIRE +PEXPIRE +PTTL +MGET +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +EVALSHA +PING
 ```
 
 This ACL entry:
@@ -217,7 +217,7 @@ This ACL entry:
 
 > **Development / quick-start only:** You can replace the explicit command list with `+@all` to allow all commands, but this is not recommended for production environments.
 
-> **Security note:** The auth server uses `GET`, `SET`, `DEL`, `EXISTS`, `EXPIRE`, `SADD`, `SREM`, `SMEMBERS`, `EVAL`, `MULTI`, `EXEC`, and `PING`. Restrict the ACL to this set to follow the principle of least privilege.
+> **Security note:** The auth server uses `GET`, `SET`, `SETNX`, `DEL`, `EXISTS`, `EXPIRE`, `PEXPIRE`, `PTTL`, `MGET`, `SADD`, `SREM`, `SMEMBERS`, `EVAL`, `EVALSHA`, `MULTI`, `EXEC`, and `PING`. Restrict the ACL to this set to follow the principle of least privilege.
 
 ### Step 4: Create the ToolHive Auth Config
 

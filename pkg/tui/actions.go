@@ -87,7 +87,10 @@ func runFromRegistry(ctx context.Context, item regtypes.ServerMetadata, workload
 			}
 		}
 
-		// Secrets.
+		// Secrets are passed as --secret flags, which means they are visible in
+		// process listings (e.g. ps). This is an intentional tradeoff to keep the
+		// TUI decoupled from runtime internals — the subprocess handles secret
+		// resolution the same way a manual `thv run` invocation would.
 		for k, v := range secrets {
 			args = append(args, "--secret", k+"="+v)
 		}

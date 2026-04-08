@@ -66,6 +66,9 @@ func splitLines(s string) []string {
 
 // diffLines returns lines in next that are not in prev (suffix-based).
 // This detects new lines appended since the last poll.
+// NOTE: If the same log line appears multiple times, the match may land on
+// the wrong occurrence — causing duplicated or missed lines. This is an
+// inherent limitation of content-based diffing without sequence numbers.
 func diffLines(prev, next []string) []string {
 	if len(next) == 0 {
 		return nil

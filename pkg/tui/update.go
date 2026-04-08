@@ -58,6 +58,10 @@ type runConfigLoadedMsg struct {
 
 const refreshInterval = 5 * time.Second
 
+// maxLogLines caps the in-memory log buffer to prevent unbounded growth during
+// long-running sessions. When exceeded, the oldest lines are dropped.
+const maxLogLines = 10_000
+
 // Init starts background ticks for workload refresh.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
@@ -225,6 +229,7 @@ func (m *Model) handleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		if msg.err != nil {
 			notifCmd = m.showNotif("✗ "+msg.server+": "+msg.err.Error(), false)
 		} else {
+			m.pendingSelect = msg.name
 			notifCmd = m.showNotif("✓ "+msg.name+" started", true)
 		}
 		return tea.Batch(m.refreshWorkloads(), notifCmd), false
@@ -253,14 +258,27 @@ func (m *Model) handleMsg(msg tea.Msg) (tea.Cmd, bool) {
 func (m *Model) handleWorkloadsRefresh(msg workloadsRefreshMsg) (tea.Cmd, bool) {
 	core.SortWorkloadsByName(msg.workloads)
 	m.workloads = msg.workloads
-	if m.selectedIdx >= len(m.filteredWorkloads()) && m.selectedIdx > 0 {
-		m.selectedIdx = len(m.filteredWorkloads()) - 1
+	filtered := m.filteredWorkloads()
+	if m.pendingSelect != "" {
+		for i, w := range filtered {
+			if w.Name == m.pendingSelect {
+				m.selectedIdx = i
+				m.pendingSelect = ""
+				return nil, false
+			}
+		}
+	}
+	if m.selectedIdx >= len(filtered) && m.selectedIdx > 0 {
+		m.selectedIdx = len(filtered) - 1
 	}
 	return nil, false
 }
 
 func (m *Model) handleLogLine(msg logLineMsg) (tea.Cmd, bool) {
 	m.logLines = append(m.logLines, formatLogLine(string(msg)))
+	if len(m.logLines) > maxLogLines {
+		m.logLines = m.logLines[len(m.logLines)-maxLogLines:]
+	}
 	m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width, m.logHScrollOff))
 	if m.logFollow {
 		m.logView.GotoBottom()
@@ -273,6 +291,9 @@ func (m *Model) handleLogLine(msg logLineMsg) (tea.Cmd, bool) {
 
 func (m *Model) handleProxyLogLine(msg proxyLogLineMsg) (tea.Cmd, bool) {
 	m.proxyLogLines = append(m.proxyLogLines, formatLogLine(string(msg)))
+	if len(m.proxyLogLines) > maxLogLines {
+		m.proxyLogLines = m.proxyLogLines[len(m.proxyLogLines)-maxLogLines:]
+	}
 	m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width, m.proxyLogHScrollOff))
 	m.proxyLogView.GotoBottom()
 	if m.proxyLogCh != nil {

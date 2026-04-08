@@ -19,16 +19,18 @@ import (
 // from the TUI would interfere with the real client connection.
 var errStdioToolsNotAvailable = errors.New("tool listing not available for STDIO servers")
 
-// fetchTools connects to the running MCP server and returns its tool list.
-func fetchTools(ctx context.Context, workload *core.Workload) ([]vmcp.Tool, error) {
+// newBackendClientAndTarget creates an authenticated MCP backend client and a
+// BackendTarget for the given workload. This is the common setup shared by
+// fetchTools and callTool.
+func newBackendClientAndTarget(ctx context.Context, workload *core.Workload) (vmcp.BackendClient, *vmcp.BackendTarget, error) {
 	registry, err := vmcpauthfactory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	mcpClient, err := vmcpclient.NewHTTPBackendClient(registry)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// For stdio workloads the proxy exposes an HTTP transport (sse or streamable-http).
@@ -43,6 +45,16 @@ func fetchTools(ctx context.Context, workload *core.Workload) ([]vmcp.Tool, erro
 		WorkloadName:  workload.Name,
 		BaseURL:       workload.URL,
 		TransportType: transportType,
+	}
+
+	return mcpClient, target, nil
+}
+
+// fetchTools connects to the running MCP server and returns its tool list.
+func fetchTools(ctx context.Context, workload *core.Workload) ([]vmcp.Tool, error) {
+	mcpClient, target, err := newBackendClientAndTarget(ctx, workload)
+	if err != nil {
+		return nil, err
 	}
 
 	caps, err := mcpClient.ListCapabilities(ctx, target)

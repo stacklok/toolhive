@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -111,6 +112,70 @@ func TestInspFieldValues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.expected, inspFieldValues(tc.fields))
+		})
+	}
+}
+
+func TestShellEscapeSingleQuote(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"no quotes", "hello", "hello"},
+		{"single quote", "it's", `it'"'"'s`},
+		{"multiple quotes", "a'b'c", `a'"'"'b'"'"'c`},
+		{"empty string", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.expected, shellEscapeSingleQuote(tc.input))
+		})
+	}
+}
+
+func TestBuildCurlStr(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		workload *core.Workload
+		toolName string
+		args     map[string]any
+		check    func(t *testing.T, result string)
+	}{
+		{
+			name:     "nil workload returns empty",
+			workload: nil,
+			check:    func(t *testing.T, result string) { assert.Empty(t, result) },
+		},
+		{
+			name:     "single quote in arg value is escaped",
+			workload: &core.Workload{Name: "test", URL: "http://localhost:8080/sse", Port: 8080},
+			toolName: "echo",
+			args:     map[string]any{"msg": "it's dangerous"},
+			check: func(t *testing.T, result string) {
+				assert.NotContains(t, result, "'it's", "unescaped single quote in payload")
+				assert.Contains(t, result, "curl -X POST")
+			},
+		},
+		{
+			name:     "single quote in URL is escaped",
+			workload: &core.Workload{Name: "test", URL: "http://localhost:8080/path'inject", Port: 8080},
+			toolName: "echo",
+			args:     map[string]any{},
+			check: func(t *testing.T, result string) {
+				assert.NotContains(t, result, "'http://localhost:8080/path'inject'",
+					"unescaped single quote in URL")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := buildCurlStr(tc.workload, tc.toolName, tc.args)
+			tc.check(t, result)
 		})
 	}
 }

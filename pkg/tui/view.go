@@ -92,7 +92,7 @@ func (m Model) View() string {
 		return m.renderHelpOverlay(full)
 	}
 	if m.registry.open {
-		return m.renderRegistryOverlay(full)
+		return m.renderRegistryOverlay()
 	}
 	return full
 }

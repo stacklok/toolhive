@@ -161,6 +161,9 @@ type Model struct {
 	notifMsg string
 	notifOK  bool
 
+	// After a run-from-registry completes, select the new workload by name.
+	pendingSelect string
+
 	// UI flags
 	showHelp      bool
 	confirmDelete bool // waiting for second 'd' to confirm deletion

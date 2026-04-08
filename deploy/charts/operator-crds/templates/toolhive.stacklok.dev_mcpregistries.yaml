@@ -1,8 +1,11 @@
----
+{{- if .Values.crds.install.registry }}
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
   name: mcpregistries.toolhive.stacklok.dev
 spec:
@@ -765,3 +768,4 @@ spec:
     storage: true
     subresources:
       status: {}
+{{- end }}

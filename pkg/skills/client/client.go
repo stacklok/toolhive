@@ -233,6 +233,15 @@ func (c *Client) Push(ctx context.Context, opts skills.PushOptions) error {
 	return c.doJSONRequest(ctx, http.MethodPost, "/push", nil, body, nil)
 }
 
+// ListBuilds returns all locally-built OCI skill artifacts in the local store.
+func (c *Client) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
+	var resp listBuildsResponse
+	if err := c.doJSONRequest(ctx, http.MethodGet, "/builds", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Builds, nil
+}
+
 // --- internal helpers ---
 
 func (c *Client) buildURL(path string, query url.Values) string {

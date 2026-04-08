@@ -101,6 +101,21 @@ func (mr *MockSkillServiceMockRecorder) List(ctx, opts any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockSkillService)(nil).List), ctx, opts)
 }
 
+// ListBuilds mocks base method.
+func (m *MockSkillService) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListBuilds", ctx)
+	ret0, _ := ret[0].([]skills.LocalBuild)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListBuilds indicates an expected call of ListBuilds.
+func (mr *MockSkillServiceMockRecorder) ListBuilds(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListBuilds", reflect.TypeOf((*MockSkillService)(nil).ListBuilds), ctx)
+}
+
 // Push mocks base method.
 func (m *MockSkillService) Push(ctx context.Context, opts skills.PushOptions) error {
 	m.ctrl.T.Helper()

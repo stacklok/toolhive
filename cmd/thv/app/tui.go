@@ -57,6 +57,13 @@ func tuiCmdFunc(cmd *cobra.Command, _ []string) error {
 	slog.SetDefault(slog.New(ui.NewTUILogHandler(tuiLogCh, slog.LevelWarn)))
 	defer slog.SetDefault(origLogger)
 
+	// Ensure the terminal background colour set by the TUI's OSC 11 sequence is
+	// always reset, even if the program exits via a panic rather than a clean
+	// quit. On a normal quit, View() emits the reset; this defer covers other
+	// exit paths. "\x1b]111;\x07" is the OSC 111 sequence that restores the
+	// terminal's default background colour.
+	defer fmt.Fprint(os.Stdout, "\x1b]111;\x07")
+
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)

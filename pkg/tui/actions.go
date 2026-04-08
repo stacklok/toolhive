@@ -87,12 +87,13 @@ func runFromRegistry(ctx context.Context, item regtypes.ServerMetadata, workload
 			}
 		}
 
-		// Secrets are passed as --secret flags, which means they are visible in
-		// process listings (e.g. ps). This is an intentional tradeoff to keep the
-		// TUI decoupled from runtime internals — the subprocess handles secret
-		// resolution the same way a manual `thv run` invocation would.
+		// Secret env vars are passed as --env NAME=VALUE because the user entered
+		// actual values into the form. The --secret flag is for named secrets
+		// stored in the secrets manager (format: NAME,target=TARGET), which is a
+		// different flow. Using --env avoids both the wrong format and the risk of
+		// leaking values via process args with an incorrect flag.
 		for k, v := range secrets {
-			args = append(args, "--secret", k+"="+v)
+			args = append(args, "--env", k+"="+v)
 		}
 
 		// Env vars.

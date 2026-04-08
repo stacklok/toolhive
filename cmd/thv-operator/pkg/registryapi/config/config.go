@@ -5,11 +5,14 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -63,14 +66,13 @@ const (
 	RegistryServerConfigFileName = "config.yaml"
 )
 
-// Config represents the root configuration structure
+// Config represents the root configuration structure (v2 format)
 type Config struct {
-	// RegistryName is the name/identifier for this registry instance
-	// Defaults to "default" if not specified
-	RegistryName string           `yaml:"registryName,omitempty"`
-	Registries   []RegistryConfig `yaml:"registries"`
-	Database     *DatabaseConfig  `yaml:"database,omitempty"`
-	Auth         *AuthConfig      `yaml:"auth,omitempty"`
+	Sources    []SourceConfig   `yaml:"sources"`
+	Registries []RegistryConfig `yaml:"registries,omitempty"`
+	Database   *DatabaseConfig  `yaml:"database,omitempty"`
+	Auth       *AuthConfig      `yaml:"auth,omitempty"`
+	Telemetry  *TelemetryConfig `yaml:"telemetry,omitempty"`
 }
 
 // DatabaseConfig defines PostgreSQL database configuration
@@ -105,19 +107,69 @@ type DatabaseConfig struct {
 
 	// ConnMaxLifetime is the maximum amount of time a connection may be reused
 	ConnMaxLifetime string `yaml:"connMaxLifetime"`
+
+	// MaxMetaSize is the maximum allowed size in bytes for publisher-provided metadata extensions
+	MaxMetaSize *int32 `yaml:"maxMetaSize,omitempty"`
+
+	// DynamicAuth defines dynamic database authentication configuration
+	DynamicAuth *DynamicAuthConfig `yaml:"dynamicAuth,omitempty"`
 }
 
-// RegistryConfig defines the configuration for a registry data source
-type RegistryConfig struct {
-	// Name is a unique identifier for this registry configuration
+// DynamicAuthConfig defines dynamic database authentication configuration
+type DynamicAuthConfig struct {
+	AWSRDSIAM *DynamicAuthAWSRDSIAM `yaml:"awsRdsIam,omitempty"`
+}
+
+// DynamicAuthAWSRDSIAM defines AWS RDS IAM authentication configuration
+type DynamicAuthAWSRDSIAM struct {
+	Region string `yaml:"region,omitempty"`
+}
+
+// SourceConfig defines a single data source configuration (v2 format)
+type SourceConfig struct {
 	Name       string            `yaml:"name"`
-	Format     string            `yaml:"format"`
+	Format     string            `yaml:"format,omitempty"`
+	Claims     map[string]any    `yaml:"claims,omitempty"`
 	Git        *GitConfig        `yaml:"git,omitempty"`
 	API        *APIConfig        `yaml:"api,omitempty"`
 	File       *FileConfig       `yaml:"file,omitempty"`
+	Managed    *ManagedConfig    `yaml:"managed,omitempty"`
 	Kubernetes *KubernetesConfig `yaml:"kubernetes,omitempty"`
 	SyncPolicy *SyncPolicyConfig `yaml:"syncPolicy,omitempty"`
 	Filter     *FilterConfig     `yaml:"filter,omitempty"`
+}
+
+// RegistryConfig defines a lightweight registry view that aggregates sources (v2 format)
+type RegistryConfig struct {
+	Name    string         `yaml:"name"`
+	Sources []string       `yaml:"sources"`
+	Claims  map[string]any `yaml:"claims,omitempty"`
+}
+
+// ManagedConfig defines configuration for managed sources.
+// Managed sources are directly manipulated via API and do not sync from external sources.
+type ManagedConfig struct{}
+
+// TelemetryConfig defines OpenTelemetry configuration
+type TelemetryConfig struct {
+	Enabled        bool           `yaml:"enabled"`
+	ServiceName    string         `yaml:"serviceName,omitempty"`
+	ServiceVersion string         `yaml:"serviceVersion,omitempty"`
+	Endpoint       string         `yaml:"endpoint,omitempty"`
+	Insecure       bool           `yaml:"insecure,omitempty"`
+	Tracing        *TracingConfig `yaml:"tracing,omitempty"`
+	Metrics        *MetricsConfig `yaml:"metrics,omitempty"`
+}
+
+// TracingConfig defines tracing-specific configuration
+type TracingConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	Sampling *float64 `yaml:"sampling,omitempty"`
+}
+
+// MetricsConfig defines metrics-specific configuration
+type MetricsConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // AuthMode represents the authentication mode
@@ -138,9 +190,28 @@ type AuthConfig struct {
 	// Use "anonymous" to explicitly disable authentication for development.
 	Mode AuthMode `yaml:"mode,omitempty"`
 
+	// PublicPaths defines additional paths that bypass authentication
+	PublicPaths []string `yaml:"publicPaths,omitempty"`
+
 	// OAuth defines OAuth/OIDC specific authentication settings
 	// Only used when Mode is "oauth"
 	OAuth *OAuthConfig `yaml:"oauth,omitempty"`
+
+	// Authz defines authorization configuration for role-based access control
+	Authz *AuthzConfig `yaml:"authz,omitempty"`
+}
+
+// AuthzConfig defines authorization configuration for role-based access control
+type AuthzConfig struct {
+	Roles RolesConfig `yaml:"roles,omitempty"`
+}
+
+// RolesConfig defines role-based authorization rules
+type RolesConfig struct {
+	SuperAdmin       []map[string]any `yaml:"superAdmin,omitempty"`
+	ManageSources    []map[string]any `yaml:"manageSources,omitempty"`
+	ManageRegistries []map[string]any `yaml:"manageRegistries,omitempty"`
+	ManageEntries    []map[string]any `yaml:"manageEntries,omitempty"`
 }
 
 // OAuthConfig defines OAuth/OIDC specific authentication settings
@@ -209,10 +280,12 @@ type OAuthProviderConfig struct {
 	AllowPrivateIP bool `yaml:"allowPrivateIP,omitempty"`
 }
 
-// KubernetesConfig defines a Kubernetes-based registry source where data is discovered
-// from MCPServer resources in the cluster. This is the default type for the built-in "default" registry.
+// KubernetesConfig defines a Kubernetes-based source where data is discovered
+// from MCPServer resources in the cluster.
 type KubernetesConfig struct {
-	// Empty struct - presence indicates this is a Kubernetes registry
+	// Namespaces is a list of Kubernetes namespaces to watch for MCP servers.
+	// If empty, watches the operator's configured namespace.
+	Namespaces []string `yaml:"namespaces,omitempty"`
 }
 
 // GitConfig defines Git source settings
@@ -256,11 +329,20 @@ type APIConfig struct {
 	Endpoint string `yaml:"endpoint"`
 }
 
-// FileConfig defines local file source configuration
+// FileConfig defines file source configuration
 type FileConfig struct {
 	// Path is the path to the registry.json file on the local filesystem
 	// Can be absolute or relative to the working directory
-	Path string `yaml:"path"`
+	Path string `yaml:"path,omitempty"`
+
+	// URL is the HTTP/HTTPS URL to fetch the registry file from
+	URL string `yaml:"url,omitempty"`
+
+	// Data is the inline registry data as a JSON string
+	Data string `yaml:"data,omitempty"`
+
+	// Timeout is the timeout for HTTP requests when using URL
+	Timeout string `yaml:"timeout,omitempty"`
 }
 
 // SyncPolicyConfig defines synchronization settings
@@ -295,7 +377,7 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-registry-server-config", c.RegistryName),
+			Name:      fmt.Sprintf("%s-registry-server-config", mcpRegistry.Name),
 			Namespace: mcpRegistry.Namespace,
 			Annotations: map[string]string{
 				checksum.ContentChecksumAnnotation: ctrlutil.CalculateConfigHash(yamlData),
@@ -308,9 +390,6 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 	return configMap, nil
 }
 
-// DefaultRegistryName is the name of the default managed registry
-const DefaultRegistryName = "default"
-
 func (cm *configManager) BuildConfig() (*Config, error) {
 	config := Config{}
 
@@ -320,34 +399,51 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 		return nil, fmt.Errorf("registry name is required")
 	}
 
-	config.RegistryName = mcpRegistry.Name
+	if len(mcpRegistry.Spec.Sources) == 0 {
+		return nil, fmt.Errorf("at least one source must be specified")
+	}
 
 	if len(mcpRegistry.Spec.Registries) == 0 {
 		return nil, fmt.Errorf("at least one registry must be specified")
 	}
 
+	// Validate source names are unique
+	if err := validateSourceNames(mcpRegistry.Spec.Sources); err != nil {
+		return nil, fmt.Errorf("invalid source configuration: %w", err)
+	}
+
 	// Validate registry names are unique
-	if err := validateRegistryNames(mcpRegistry.Spec.Registries); err != nil {
+	if err := validateRegistryViewNames(mcpRegistry.Spec.Registries); err != nil {
 		return nil, fmt.Errorf("invalid registry configuration: %w", err)
 	}
 
-	// Build registry configs from user-specified registries
-	userRegistries := make([]RegistryConfig, 0, len(mcpRegistry.Spec.Registries))
-	for _, registrySpec := range mcpRegistry.Spec.Registries {
-		registryConfig, err := buildRegistryConfig(&registrySpec)
+	// Build source configs
+	sources := make([]SourceConfig, 0, len(mcpRegistry.Spec.Sources))
+	for _, sourceSpec := range mcpRegistry.Spec.Sources {
+		sourceConfig, err := buildSourceConfig(&sourceSpec)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build registry configuration for %q: %w", registrySpec.Name, err)
+			return nil, fmt.Errorf("failed to build source configuration for %q: %w", sourceSpec.Name, err)
 		}
-		userRegistries = append(userRegistries, *registryConfig)
+		sources = append(sources, *sourceConfig)
+	}
+	config.Sources = sources
+
+	// Build source name set for validation
+	sourceNames := make(map[string]bool, len(config.Sources))
+	for _, s := range config.Sources {
+		sourceNames[s.Name] = true
 	}
 
-	// Prepend the default kubernetes registry as the first entry
-	defaultRegistry := RegistryConfig{
-		Name:       DefaultRegistryName,
-		Format:     mcpv1alpha1.RegistryFormatUpstream,
-		Kubernetes: &KubernetesConfig{},
+	// Build registry view configs
+	registries := make([]RegistryConfig, 0, len(mcpRegistry.Spec.Registries))
+	for _, regSpec := range mcpRegistry.Spec.Registries {
+		regConfig, err := buildRegistryViewConfig(&regSpec, sourceNames)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build registry configuration for %q: %w", regSpec.Name, err)
+		}
+		registries = append(registries, *regConfig)
 	}
-	config.Registries = append([]RegistryConfig{defaultRegistry}, userRegistries...)
+	config.Registries = registries
 
 	// Build database configuration from CRD spec or use defaults
 	config.Database = buildDatabaseConfig(mcpRegistry.Spec.DatabaseConfig)
@@ -359,123 +455,261 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 	}
 	config.Auth = authConfig
 
+	// Build telemetry configuration from CRD spec
+	telemetryConfig, err := buildTelemetryConfig(mcpRegistry.Spec.TelemetryConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build telemetry configuration: %w", err)
+	}
+	config.Telemetry = telemetryConfig
+
 	return &config, nil
 }
 
-// validateRegistryNames ensures all registry names are unique
-func validateRegistryNames(registries []mcpv1alpha1.MCPRegistryConfig) error {
+// validateSourceNames ensures all source names are unique
+func validateSourceNames(sources []mcpv1alpha1.MCPRegistrySourceConfig) error {
 	seen := make(map[string]bool)
-	for _, registry := range registries {
-		if registry.Name == "" {
-			return fmt.Errorf("registry name is required")
+	for _, source := range sources {
+		if source.Name == "" {
+			return fmt.Errorf("source name is required")
 		}
-		if seen[registry.Name] {
-			return fmt.Errorf("duplicate registry name: %q", registry.Name)
+		if seen[source.Name] {
+			return fmt.Errorf("duplicate source name: %q", source.Name)
 		}
-		seen[registry.Name] = true
+		seen[source.Name] = true
 	}
 	return nil
 }
 
-func buildFilePath(registryName string) *FileConfig {
-	return buildFilePathWithCustomName(registryName, RegistryJSONFileName)
+// validateRegistryViewNames ensures all registry view names are unique
+func validateRegistryViewNames(registries []mcpv1alpha1.MCPRegistryViewConfig) error {
+	seen := make(map[string]bool)
+	for _, reg := range registries {
+		if reg.Name == "" {
+			return fmt.Errorf("registry name is required")
+		}
+		if seen[reg.Name] {
+			return fmt.Errorf("duplicate registry name: %q", reg.Name)
+		}
+		seen[reg.Name] = true
+	}
+	return nil
 }
 
-func buildFilePathWithCustomName(registryName string, filename string) *FileConfig {
+func buildFilePath(sourceName string) *FileConfig {
 	return &FileConfig{
-		Path: filepath.Join(RegistryJSONFilePath, registryName, filename),
+		Path: filepath.Join(RegistryJSONFilePath, sourceName, RegistryJSONFileName),
 	}
 }
 
 //nolint:gocyclo // Complexity is acceptable for handling multiple source types
-func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*RegistryConfig, error) {
-	if registrySpec.Name == "" {
-		return nil, fmt.Errorf("registry name is required")
+func buildSourceConfig(sourceSpec *mcpv1alpha1.MCPRegistrySourceConfig) (*SourceConfig, error) {
+	if sourceSpec.Name == "" {
+		return nil, fmt.Errorf("source name is required")
 	}
 
-	registryConfig := RegistryConfig{
-		Name:   registrySpec.Name,
-		Format: registrySpec.Format,
+	sourceConfig := SourceConfig{
+		Name:   sourceSpec.Name,
+		Format: sourceSpec.Format,
 	}
 
-	if registrySpec.Format == "" {
-		registryConfig.Format = mcpv1alpha1.RegistryFormatToolHive
+	if sourceSpec.Format == "" {
+		sourceConfig.Format = mcpv1alpha1.RegistryFormatToolHive
+	}
+
+	// Deserialize claims if present
+	if sourceSpec.Claims != nil {
+		claims, err := deserializeClaims(sourceSpec.Claims)
+		if err != nil {
+			return nil, fmt.Errorf("invalid claims: %w", err)
+		}
+		sourceConfig.Claims = claims
 	}
 
 	// Determine source type and build appropriate config
 	sourceCount := 0
-	if registrySpec.ConfigMapRef != nil {
+	if sourceSpec.ConfigMapRef != nil {
 		sourceCount++
-		// we use the file source config for configmap sources
-		// because the configmap will be mounted as a file in the registry server container.
-		// this stops the registry server worrying about configmap sources when all it has to do
-		// is read the file on startup
-		registryConfig.File = buildFilePath(registrySpec.Name)
+		sourceConfig.File = buildFilePath(sourceSpec.Name)
 	}
-	if registrySpec.Git != nil {
+	if sourceSpec.Git != nil {
 		sourceCount++
-		gitConfig, err := buildGitSourceConfig(registrySpec.Git)
+		gitConfig, err := buildGitSourceConfig(sourceSpec.Git)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build Git source configuration: %w", err)
 		}
-		registryConfig.Git = gitConfig
+		sourceConfig.Git = gitConfig
 	}
-	if registrySpec.API != nil {
+	if sourceSpec.API != nil {
 		sourceCount++
-		apiConfig, err := buildAPISourceConfig(registrySpec.API)
+		apiConfig, err := buildAPISourceConfig(sourceSpec.API)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build API source configuration: %w", err)
 		}
-		registryConfig.API = apiConfig
+		sourceConfig.API = apiConfig
 	}
-	if registrySpec.PVCRef != nil {
+	if sourceSpec.URL != nil {
 		sourceCount++
-		// PVC sources are mounted at /config/registry/{registryName}/
-		// File path: /config/registry/{registryName}/{pvcRef.path}
-		// Multiple registries can share the same PVC by mounting it at different paths
-		pvcPath := RegistryJSONFileName
-		if registrySpec.PVCRef.Path != "" {
-			pvcPath = registrySpec.PVCRef.Path
+		sourceConfig.File = &FileConfig{
+			URL:     sourceSpec.URL.Endpoint,
+			Timeout: sourceSpec.URL.Timeout,
 		}
-		registryConfig.File = buildFilePathWithCustomName(registrySpec.Name, pvcPath)
+	}
+	if sourceSpec.Managed != nil {
+		sourceCount++
+		sourceConfig.Managed = &ManagedConfig{}
+	}
+	if sourceSpec.Kubernetes != nil {
+		sourceCount++
+		sourceConfig.Kubernetes = &KubernetesConfig{
+			Namespaces: sourceSpec.Kubernetes.Namespaces,
+		}
 	}
 
 	if sourceCount == 0 {
-		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, API, or PVCRef) must be specified")
+		return nil, fmt.Errorf(
+			"exactly one source type must be specified")
 	}
 	if sourceCount > 1 {
-		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, API, or PVCRef) can be specified")
+		return nil, fmt.Errorf(
+			"only one source type can be specified")
 	}
 
-	// Build sync policy
-	if registrySpec.SyncPolicy != nil {
-		if registrySpec.SyncPolicy.Interval == "" {
+	// Build sync policy (not applicable for managed/kubernetes sources)
+	if sourceSpec.SyncPolicy != nil && sourceSpec.Managed == nil && sourceSpec.Kubernetes == nil {
+		if sourceSpec.SyncPolicy.Interval == "" {
 			return nil, fmt.Errorf("sync policy interval is required")
 		}
-		registryConfig.SyncPolicy = &SyncPolicyConfig{
-			Interval: registrySpec.SyncPolicy.Interval,
+		sourceConfig.SyncPolicy = &SyncPolicyConfig{
+			Interval: sourceSpec.SyncPolicy.Interval,
 		}
 	}
 
-	// Build filter
-	if registrySpec.Filter != nil {
+	// Build filter (not applicable for managed/kubernetes sources)
+	if sourceSpec.Filter != nil && sourceSpec.Managed == nil && sourceSpec.Kubernetes == nil {
 		filterConfig := &FilterConfig{}
-		if registrySpec.Filter.NameFilters != nil {
+		if sourceSpec.Filter.NameFilters != nil {
 			filterConfig.Names = &NameFilterConfig{
-				Include: registrySpec.Filter.NameFilters.Include,
-				Exclude: registrySpec.Filter.NameFilters.Exclude,
+				Include: sourceSpec.Filter.NameFilters.Include,
+				Exclude: sourceSpec.Filter.NameFilters.Exclude,
 			}
 		}
-		if registrySpec.Filter.Tags != nil {
+		if sourceSpec.Filter.Tags != nil {
 			filterConfig.Tags = &TagFilterConfig{
-				Include: registrySpec.Filter.Tags.Include,
-				Exclude: registrySpec.Filter.Tags.Exclude,
+				Include: sourceSpec.Filter.Tags.Include,
+				Exclude: sourceSpec.Filter.Tags.Exclude,
 			}
 		}
-		registryConfig.Filter = filterConfig
+		sourceConfig.Filter = filterConfig
 	}
 
-	return &registryConfig, nil
+	return &sourceConfig, nil
+}
+
+// buildRegistryViewConfig builds a RegistryConfig from a CRD MCPRegistryViewConfig
+func buildRegistryViewConfig(
+	regSpec *mcpv1alpha1.MCPRegistryViewConfig,
+	validSourceNames map[string]bool,
+) (*RegistryConfig, error) {
+	if regSpec.Name == "" {
+		return nil, fmt.Errorf("registry name is required")
+	}
+
+	if len(regSpec.Sources) == 0 {
+		return nil, fmt.Errorf("at least one source reference is required")
+	}
+
+	// Validate all source references exist
+	for _, srcName := range regSpec.Sources {
+		if !validSourceNames[srcName] {
+			return nil, fmt.Errorf("registry %q references unknown source %q", regSpec.Name, srcName)
+		}
+	}
+
+	regConfig := &RegistryConfig{
+		Name:    regSpec.Name,
+		Sources: regSpec.Sources,
+	}
+
+	// Deserialize claims if present
+	if regSpec.Claims != nil {
+		claims, err := deserializeClaims(regSpec.Claims)
+		if err != nil {
+			return nil, fmt.Errorf("invalid claims: %w", err)
+		}
+		regConfig.Claims = claims
+	}
+
+	return regConfig, nil
+}
+
+// deserializeClaims converts apiextensionsv1.JSON to map[string]any and validates
+// that all values are string or []string.
+func deserializeClaims(raw *apiextensionsv1.JSON) (map[string]any, error) {
+	if raw == nil || raw.Raw == nil {
+		return nil, nil
+	}
+
+	var claims map[string]any
+	if err := json.Unmarshal(raw.Raw, &claims); err != nil {
+		return nil, fmt.Errorf("claims must be a JSON object: %w", err)
+	}
+
+	// Validate that values are string or []string
+	for key, val := range claims {
+		switch v := val.(type) {
+		case string:
+			// OK
+		case []any:
+			// Convert to []string and validate
+			strs := make([]string, 0, len(v))
+			for _, item := range v {
+				s, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("claim %q: array values must be strings, got %T", key, item)
+				}
+				strs = append(strs, s)
+			}
+			claims[key] = strs
+		default:
+			return nil, fmt.Errorf("claim %q: value must be string or []string, got %T", key, val)
+		}
+	}
+
+	return claims, nil
+}
+
+// deserializeRoleEntry converts apiextensionsv1.JSON to map[string]any for a role entry.
+// Values are validated to be string or []string, matching the claims validation contract.
+func deserializeRoleEntry(raw apiextensionsv1.JSON) (map[string]any, error) {
+	if raw.Raw == nil {
+		return nil, nil
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(raw.Raw, &entry); err != nil {
+		return nil, fmt.Errorf("role entry must be a JSON object: %w", err)
+	}
+
+	for key, val := range entry {
+		switch v := val.(type) {
+		case string:
+			// OK
+		case []any:
+			strs := make([]string, 0, len(v))
+			for _, item := range v {
+				s, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("role entry %q: array values must be strings, got %T", key, item)
+				}
+				strs = append(strs, s)
+			}
+			entry[key] = strs
+		default:
+			return nil, fmt.Errorf("role entry %q: value must be string or []string, got %T", key, val)
+		}
+	}
+
+	return entry, nil
 }
 
 func buildGitSourceConfig(git *mcpv1alpha1.GitSource) (*GitConfig, error) {
@@ -616,6 +850,16 @@ func buildDatabaseConfig(dbConfig *mcpv1alpha1.MCPRegistryDatabaseConfig) *Datab
 	if dbConfig.ConnMaxLifetime != "" {
 		config.ConnMaxLifetime = dbConfig.ConnMaxLifetime
 	}
+	if dbConfig.MaxMetaSize != nil {
+		config.MaxMetaSize = dbConfig.MaxMetaSize
+	}
+	if dbConfig.DynamicAuth != nil && dbConfig.DynamicAuth.AWSRDSIAM != nil {
+		config.DynamicAuth = &DynamicAuthConfig{
+			AWSRDSIAM: &DynamicAuthAWSRDSIAM{
+				Region: dbConfig.DynamicAuth.AWSRDSIAM.Region,
+			},
+		}
+	}
 
 	return config
 }
@@ -647,6 +891,11 @@ func buildAuthConfig(
 		config.Mode = AuthModeAnonymous
 	}
 
+	// Map public paths
+	if len(authConfig.PublicPaths) > 0 {
+		config.PublicPaths = authConfig.PublicPaths
+	}
+
 	// Build OAuth config if mode is oauth and OAuth config is provided
 	if config.Mode == AuthModeOAuth && authConfig.OAuth != nil {
 		oauthConfig, err := buildOAuthConfig(authConfig.OAuth)
@@ -656,7 +905,70 @@ func buildAuthConfig(
 		config.OAuth = oauthConfig
 	}
 
+	// Build authz config if provided
+	if authConfig.Authz != nil {
+		authzConfig, err := buildAuthzConfig(authConfig.Authz)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build authorization configuration: %w", err)
+		}
+		config.Authz = authzConfig
+	}
+
 	return config, nil
+}
+
+// buildAuthzConfig creates an AuthzConfig from the CRD spec.
+func buildAuthzConfig(authzConfig *mcpv1alpha1.MCPRegistryAuthzConfig) (*AuthzConfig, error) {
+	if authzConfig == nil {
+		return nil, nil
+	}
+
+	config := &AuthzConfig{}
+
+	roles := &authzConfig.Roles
+
+	var err error
+	config.Roles.SuperAdmin, err = deserializeRoleEntries(roles.SuperAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("invalid superAdmin roles: %w", err)
+	}
+
+	config.Roles.ManageSources, err = deserializeRoleEntries(roles.ManageSources)
+	if err != nil {
+		return nil, fmt.Errorf("invalid manageSources roles: %w", err)
+	}
+
+	config.Roles.ManageRegistries, err = deserializeRoleEntries(roles.ManageRegistries)
+	if err != nil {
+		return nil, fmt.Errorf("invalid manageRegistries roles: %w", err)
+	}
+
+	config.Roles.ManageEntries, err = deserializeRoleEntries(roles.ManageEntries)
+	if err != nil {
+		return nil, fmt.Errorf("invalid manageEntries roles: %w", err)
+	}
+
+	return config, nil
+}
+
+// deserializeRoleEntries converts a slice of apiextensionsv1.JSON to []map[string]any
+func deserializeRoleEntries(entries []apiextensionsv1.JSON) ([]map[string]any, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	result := make([]map[string]any, 0, len(entries))
+	for i, entry := range entries {
+		m, err := deserializeRoleEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("entry %d: %w", i, err)
+		}
+		if m != nil {
+			result = append(result, m)
+		}
+	}
+
+	return result, nil
 }
 
 // buildOAuthConfig creates an OAuthConfig from the CRD spec.
@@ -770,6 +1082,44 @@ func buildSecretFilePath(secretRef *corev1.SecretKeySelector) string {
 		key = "clientSecret"
 	}
 	return fmt.Sprintf("/secrets/%s/%s", secretRef.Name, key)
+}
+
+// buildTelemetryConfig creates a TelemetryConfig from the CRD spec.
+// Returns nil if the spec is nil (telemetry disabled).
+func buildTelemetryConfig(telConfig *mcpv1alpha1.MCPRegistryTelemetryConfig) (*TelemetryConfig, error) {
+	if telConfig == nil {
+		return nil, nil
+	}
+
+	config := &TelemetryConfig{
+		Enabled:        telConfig.Enabled,
+		ServiceName:    telConfig.ServiceName,
+		ServiceVersion: telConfig.ServiceVersion,
+		Endpoint:       telConfig.Endpoint,
+		Insecure:       telConfig.Insecure,
+	}
+
+	if telConfig.Tracing != nil {
+		tracingConfig := &TracingConfig{
+			Enabled: telConfig.Tracing.Enabled,
+		}
+		if telConfig.Tracing.Sampling != nil {
+			val, err := strconv.ParseFloat(*telConfig.Tracing.Sampling, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tracing sampling value %q: %w", *telConfig.Tracing.Sampling, err)
+			}
+			tracingConfig.Sampling = &val
+		}
+		config.Tracing = tracingConfig
+	}
+
+	if telConfig.Metrics != nil {
+		config.Metrics = &MetricsConfig{
+			Enabled: telConfig.Metrics.Enabled,
+		}
+	}
+
+	return config, nil
 }
 
 // buildCACertFilePath constructs the file path where a CA cert configmap will be mounted

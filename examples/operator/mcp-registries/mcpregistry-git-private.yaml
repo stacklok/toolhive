@@ -33,7 +33,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Private Git Registry"
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
@@ -54,3 +54,7 @@ spec:
             key: password
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - default

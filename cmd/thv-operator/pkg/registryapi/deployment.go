@@ -195,7 +195,7 @@ func (*manager) buildRegistryAPIDeployment(
 		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
 		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
 		WithRegistryServerConfigMount(registryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
-		WithRegistrySourceMounts(registryAPIContainerName, mcpRegistry.Spec.Registries),
+		WithRegistrySourceMounts(registryAPIContainerName, mcpRegistry.Spec.Sources),
 		WithRegistryStorageMount(registryAPIContainerName),
 	}
 
@@ -205,10 +205,10 @@ func (*manager) buildRegistryAPIDeployment(
 		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretName))
 	}
 
-	// Add git auth mounts for registries that have authentication configured
-	for _, registry := range mcpRegistry.Spec.Registries {
-		if registry.Git != nil && registry.Git.Auth != nil {
-			opts = append(opts, WithGitAuthMount(registryAPIContainerName, registry.Git.Auth.PasswordSecretRef))
+	// Add git auth mounts for sources that have authentication configured
+	for _, source := range mcpRegistry.Spec.Sources {
+		if source.Git != nil && source.Git.Auth != nil {
+			opts = append(opts, WithGitAuthMount(registryAPIContainerName, source.Git.Auth.PasswordSecretRef))
 		}
 	}
 

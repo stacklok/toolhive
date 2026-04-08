@@ -187,10 +187,10 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseRunning, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Verify they operate independently
-			Expect(registry1.Spec.Registries[0].SyncPolicy.Interval).To(Equal("1h"))
-			Expect(registry2.Spec.Registries[0].SyncPolicy.Interval).To(Equal("30m"))
-			Expect(registry1.Spec.Registries[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
-			Expect(registry2.Spec.Registries[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
+			Expect(registry1.Spec.Sources[0].SyncPolicy.Interval).To(Equal("1h"))
+			Expect(registry2.Spec.Sources[0].SyncPolicy.Interval).To(Equal("30m"))
+			Expect(registry1.Spec.Sources[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
+			Expect(registry2.Spec.Sources[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
 		})
 
 		It("should allow multiple registries with same ConfigMap source", func() {
@@ -243,7 +243,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "default",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -253,6 +253,12 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 								},
 								Key: "registry.json",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"default"},
 						},
 					},
 				},

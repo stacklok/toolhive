@@ -220,7 +220,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Example MCP Server Registry"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -242,3 +242,7 @@ spec:
           exclude:
             - "deprecated" # Exclude deprecated servers
             - "legacy"     # Exclude legacy servers
+  registries:
+    - name: default
+      sources:
+        - default

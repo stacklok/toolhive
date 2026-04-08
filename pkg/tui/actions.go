@@ -98,11 +98,19 @@ func runFromRegistry(
 		// different flow. Using --env avoids both the wrong format and the risk of
 		// leaking values via process args with an incorrect flag.
 		for k, v := range secrets {
+			if strings.ContainsRune(k, '=') {
+				return runFormResultMsg{name: workloadName, server: serverName,
+					err: fmt.Errorf("invalid secret name %q: must not contain '='", k)}
+			}
 			args = append(args, "--env", k+"="+v)
 		}
 
 		// Env vars.
 		for k, v := range envs {
+			if strings.ContainsRune(k, '=') {
+				return runFormResultMsg{name: workloadName, server: serverName,
+					err: fmt.Errorf("invalid env var name %q: must not contain '='", k)}
+			}
 			args = append(args, "--env", k+"="+v)
 		}
 

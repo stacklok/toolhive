@@ -29,6 +29,9 @@ func New(ctx context.Context, manager workloads.Manager, logCh <-chan string) (M
 	pvp := viewport.New(80, 20)
 	pvp.SetContent("")
 
+	tvp := viewport.New(80, 20)
+	tvp.SetContent("")
+
 	ivp := viewport.New(60, 20)
 	ivp.SetContent("")
 
@@ -43,6 +46,7 @@ func New(ctx context.Context, manager workloads.Manager, logCh <-chan string) (M
 		logView:      vp,
 		logFollow:    true,
 		proxyLogView: pvp,
+		toolsView:    tvp,
 		insp: inspectorState{
 			respView: ivp,
 			logView:  lvp,

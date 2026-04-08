@@ -328,9 +328,15 @@ func (m *Model) handleRunConfigLoaded(msg runConfigLoadedMsg) {
 	}
 }
 
+// maxTUILogLines caps the inspector slog buffer to prevent unbounded growth.
+const maxTUILogLines = 500
+
 // handleTUILog appends a captured slog message to the inspector log view.
 func (m *Model) handleTUILog(msg tuiLogMsg) tea.Cmd {
 	m.insp.logLines = append(m.insp.logLines, string(msg))
+	if len(m.insp.logLines) > maxTUILogLines {
+		m.insp.logLines = m.insp.logLines[len(m.insp.logLines)-maxTUILogLines:]
+	}
 	content := strings.Join(m.insp.logLines, "\n")
 	m.insp.logView.SetContent(content)
 	m.insp.logView.GotoBottom()

@@ -2924,7 +2924,7 @@ _Appears in:_
 
 
 RateLimitConfig defines rate limiting configuration for an MCP server.
-At least one of shared or tools must be configured.
+At least one of shared, perUser, or tools must be configured.
 
 
 
@@ -2934,6 +2934,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared defines a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
+| `perUser` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | PerUser defines a token bucket applied independently to each authenticated user<br />at the server level. Requires authentication to be enabled. |  | Optional: \{\} <br /> |
 | `tools` _[api.v1alpha1.ToolRateLimitConfig](#apiv1alpha1toolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
 
 
@@ -3418,6 +3419,7 @@ _Appears in:_
 
 
 ToolRateLimitConfig defines rate limits for a specific tool.
+At least one of shared or perUser must be configured.
 
 
 
@@ -3427,7 +3429,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared defines a token bucket shared across all users for this specific tool. |  | Required: \{\} <br /> |
+| `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared defines a token bucket shared across all users for this specific tool. |  | Optional: \{\} <br /> |
+| `perUser` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | PerUser defines a token bucket applied independently to each authenticated user<br />for this specific tool. Requires authentication to be enabled. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.URLSource

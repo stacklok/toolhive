@@ -585,14 +585,18 @@ metadata:
   name: production-registry
 spec:
   displayName: "Production MCP Servers"
-  registries:
-    - name: default
+  sources:
+    - name: prod-source
       format: toolhive
       configMapRef:
         name: prod-registry-data
         key: registry.json
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - prod-source
   enforceServers: true
 ```
 
@@ -604,14 +608,18 @@ metadata:
   name: dev-registry
 spec:
   displayName: "Development MCP Servers"
-  registries:
-    - name: default
+  sources:
+    - name: dev-source
       format: toolhive
       git:
         repository: "https://github.com/org/dev-mcp-registry"
         branch: "develop"
         path: "registry.json"
   # No sync policy = manual sync only
+  registries:
+    - name: default
+      sources:
+        - dev-source
 ```
 
 ### Private Git Repository Registry
@@ -632,8 +640,8 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Private Organization Registry"
-  registries:
-    - name: default
+  sources:
+    - name: private-source
       format: toolhive
       git:
         repository: "https://github.com/myorg/private-mcp-servers"
@@ -646,11 +654,15 @@ spec:
             key: token
       syncPolicy:
         interval: "30m"
+  registries:
+    - name: default
+      sources:
+        - private-source
 ```
 
-### Multiple Registries
+### Multiple Sources
 
-You can configure multiple registry sources in a single MCPRegistry:
+You can configure multiple data sources in a single MCPRegistry and aggregate them into registry views:
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -659,7 +671,7 @@ metadata:
   name: multi-source-registry
 spec:
   displayName: "Multi-Source Registry"
-  registries:
+  sources:
     - name: production
       format: toolhive
       git:
@@ -681,9 +693,14 @@ spec:
         tags:
           include:
             - "development"
+  registries:
+    - name: default
+      sources:
+        - production
+        - development
 ```
 
-Each registry configuration must have a unique `name` within the MCPRegistry.
+Each source must have a unique `name` within the MCPRegistry. Registry views reference sources by name.
 
 ## See Also
 

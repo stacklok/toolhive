@@ -104,6 +104,7 @@ rules:
   - mcpoidcconfigs
   - mcpregistries
   - mcpremoteproxies
+  - mcpserverentries
   - mcpservers
   - mcptoolconfigs
   - virtualmcpservers
@@ -137,6 +138,7 @@ rules:
   - mcpoidcconfigs/status
   - mcpregistries/status
   - mcpremoteproxies/status
+  - mcpserverentries/status
   - mcpservers/status
   - mcptelemetryconfigs/status
   - mcptoolconfigs/status

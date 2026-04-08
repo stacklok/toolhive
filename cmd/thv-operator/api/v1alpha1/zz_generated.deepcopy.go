@@ -2649,6 +2649,11 @@ func (in *RateLimitConfig) DeepCopyInto(out *RateLimitConfig) {
 		*out = new(RateLimitBucket)
 		**out = **in
 	}
+	if in.PerUser != nil {
+		in, out := &in.PerUser, &out.PerUser
+		*out = new(RateLimitBucket)
+		**out = **in
+	}
 	if in.Tools != nil {
 		in, out := &in.Tools, &out.Tools
 		*out = make([]ToolRateLimitConfig, len(*in))
@@ -3185,6 +3190,11 @@ func (in *ToolRateLimitConfig) DeepCopyInto(out *ToolRateLimitConfig) {
 	*out = *in
 	if in.Shared != nil {
 		in, out := &in.Shared, &out.Shared
+		*out = new(RateLimitBucket)
+		**out = **in
+	}
+	if in.PerUser != nil {
+		in, out := &in.PerUser, &out.PerUser
 		*out = new(RateLimitBucket)
 		**out = **in
 	}

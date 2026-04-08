@@ -505,6 +505,29 @@ spec:
                   RateLimiting defines rate limiting configuration for the MCP server.
                   Requires Redis session storage to be configured for distributed rate limiting.
                 properties:
+                  perUser:
+                    description: |-
+                      PerUser defines a token bucket applied independently to each authenticated user
+                      at the server level. Requires authentication to be enabled.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
                   shared:
                     description: Shared defines a token bucket shared across all users
                       for the entire server.
@@ -533,14 +556,38 @@ spec:
                       Each entry applies additional rate limits to calls targeting a specific tool name.
                       A request must pass both the server-level limit and the per-tool limit.
                     items:
-                      description: ToolRateLimitConfig defines rate limits for a specific
-                        tool.
+                      description: |-
+                        ToolRateLimitConfig defines rate limits for a specific tool.
+                        At least one of shared or perUser must be configured.
                       properties:
                         name:
                           description: Name is the MCP tool name this limit applies
                             to.
                           minLength: 1
                           type: string
+                        perUser:
+                          description: |-
+                            PerUser defines a token bucket applied independently to each authenticated user
+                            for this specific tool. Requires authentication to be enabled.
+                          properties:
+                            maxTokens:
+                              description: |-
+                                MaxTokens is the maximum number of tokens (bucket capacity).
+                                This is also the burst size: the maximum number of requests that can be served
+                                instantaneously before the bucket is depleted.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                            refillPeriod:
+                              description: |-
+                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                              type: string
+                          required:
+                          - maxTokens
+                          - refillPeriod
+                          type: object
                         shared:
                           description: Shared defines a token bucket shared across
                             all users for this specific tool.
@@ -565,17 +612,19 @@ spec:
                           type: object
                       required:
                       - name
-                      - shared
                       type: object
+                      x-kubernetes-validations:
+                      - message: at least one of shared or perUser must be configured
+                        rule: has(self.shared) || has(self.perUser)
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 type: object
                 x-kubernetes-validations:
-                - message: at least one of shared or tools must be configured
-                  rule: has(self.shared) || (has(self.tools) && size(self.tools) >
-                    0)
+                - message: at least one of shared, perUser, or tools must be configured
+                  rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                    && size(self.tools) > 0)
               replicas:
                 description: |-
                   Replicas is the desired number of proxy runner (thv run) pod replicas.
@@ -968,6 +1017,15 @@ spec:
             - message: rateLimiting requires sessionStorage with provider 'redis'
               rule: '!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider
                 == ''redis'')'
+            - message: rateLimiting.perUser requires authentication (oidcConfig, oidcConfigRef,
+                or externalAuthConfigRef)
+              rule: '!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) ||
+                has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)'
+            - message: per-tool perUser rate limiting requires authentication (oidcConfig,
+                oidcConfigRef, or externalAuthConfigRef)
+              rule: '!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t,
+                !has(t.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef)
+                || has(self.externalAuthConfigRef)'
           status:
             description: MCPServerStatus defines the observed state of MCPServer
             properties:

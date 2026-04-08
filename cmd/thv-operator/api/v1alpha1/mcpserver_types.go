@@ -147,6 +147,18 @@ const (
 	ConditionReasonSessionStorageNotApplicable = "SessionStorageWarningNotApplicable"
 )
 
+// ConditionRateLimitConfigValid indicates whether the rate limit configuration is valid.
+const ConditionRateLimitConfigValid = "RateLimitConfigValid"
+
+const (
+	// ConditionReasonRateLimitConfigValid indicates the rate limit configuration is valid.
+	ConditionReasonRateLimitConfigValid = "RateLimitConfigValid"
+	// ConditionReasonRateLimitPerUserRequiresAuth indicates perUser rate limiting requires authentication.
+	ConditionReasonRateLimitPerUserRequiresAuth = "PerUserRequiresAuth"
+	// ConditionReasonRateLimitNotApplicable indicates rate limiting is not configured.
+	ConditionReasonRateLimitNotApplicable = "RateLimitNotApplicable"
+)
+
 // SessionStorageProviderRedis is the provider name for Redis-backed session storage.
 const SessionStorageProviderRedis = "redis"
 
@@ -155,6 +167,8 @@ const SessionStorageProviderRedis = "redis"
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
 // +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
+// +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
@@ -488,15 +502,20 @@ type SessionStorageConfig struct {
 }
 
 // RateLimitConfig defines rate limiting configuration for an MCP server.
-// At least one of shared or tools must be configured.
+// At least one of shared, perUser, or tools must be configured.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.shared) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared or tools must be configured"
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared, perUser, or tools must be configured"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type RateLimitConfig struct {
 	// Shared defines a token bucket shared across all users for the entire server.
 	// +optional
 	Shared *RateLimitBucket `json:"shared,omitempty"`
+
+	// PerUser defines a token bucket applied independently to each authenticated user
+	// at the server level. Requires authentication to be enabled.
+	// +optional
+	PerUser *RateLimitBucket `json:"perUser,omitempty"`
 
 	// Tools defines per-tool rate limit overrides.
 	// Each entry applies additional rate limits to calls targeting a specific tool name.
@@ -524,6 +543,11 @@ type RateLimitBucket struct {
 }
 
 // ToolRateLimitConfig defines rate limits for a specific tool.
+// At least one of shared or perUser must be configured.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser)",message="at least one of shared or perUser must be configured"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type ToolRateLimitConfig struct {
 	// Name is the MCP tool name this limit applies to.
 	// +kubebuilder:validation:Required
@@ -531,8 +555,13 @@ type ToolRateLimitConfig struct {
 	Name string `json:"name"`
 
 	// Shared defines a token bucket shared across all users for this specific tool.
-	// +kubebuilder:validation:Required
-	Shared *RateLimitBucket `json:"shared"`
+	// +optional
+	Shared *RateLimitBucket `json:"shared,omitempty"`
+
+	// PerUser defines a token bucket applied independently to each authenticated user
+	// for this specific tool. Requires authentication to be enabled.
+	// +optional
+	PerUser *RateLimitBucket `json:"perUser,omitempty"`
 }
 
 // Permission profile types

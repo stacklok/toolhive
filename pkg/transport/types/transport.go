@@ -276,6 +276,26 @@ type Config struct {
 	// Used for Redis-backed session sharing across replicas.
 	// When nil, transports use their default in-memory LocalStorage.
 	SessionStorage session.Storage
+
+	// HeadlessService configures pod-specific routing for Kubernetes StatefulSet deployments.
+	// When set, each new MCP session is pinned to a specific pod via headless DNS
+	// (e.g. myserver-0.mcp-myserver-headless.ns.svc.cluster.local) so session routing
+	// survives proxy-runner restarts. Nil for non-Kubernetes deployments.
+	HeadlessService *HeadlessServiceConfig
+}
+
+// HeadlessServiceConfig holds Kubernetes headless service information used to construct
+// pod-specific DNS URLs (e.g. myserver-0.mcp-myserver-headless.default.svc.cluster.local)
+// for session-affinity routing in StatefulSet deployments.
+type HeadlessServiceConfig struct {
+	// StatefulSetName is the name of the backend StatefulSet (equals the MCPServer name).
+	StatefulSetName string `json:"statefulset_name,omitempty" yaml:"statefulset_name,omitempty"`
+	// ServiceName is the name of the headless Kubernetes service (e.g. "mcp-myserver-headless").
+	ServiceName string `json:"service_name,omitempty" yaml:"service_name,omitempty"`
+	// Namespace is the Kubernetes namespace of the StatefulSet.
+	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	// Replicas is the StatefulSet replica count, used to select a random pod ordinal.
+	Replicas int32 `json:"replicas,omitempty" yaml:"replicas,omitempty"`
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

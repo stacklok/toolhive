@@ -74,12 +74,8 @@ type HTTPTransport struct {
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
-	// headless service config for pod-specific routing in multi-replica deployments
-	headlessStatefulSetName string
-	headlessServiceName     string
-	headlessNamespace       string
-	headlessReplicas        int32
-
+	// headlessService configures pod-specific routing for Kubernetes StatefulSet deployments.
+	headlessService *types.HeadlessServiceConfig
 
 	// sessionStorage overrides the default in-memory session store when set.
 	// Used for Redis-backed session sharing across replicas.
@@ -246,17 +242,6 @@ func (t *HTTPTransport) setTargetURI(targetURI string) {
 	t.targetURI = targetURI
 }
 
-// setPodHeadlessService configures pod-specific routing for multi-replica StatefulSet
-// deployments. This is an unexported method used by the option pattern.
-func (t *HTTPTransport) setPodHeadlessService(statefulSetName, serviceName, namespace string, replicas int32) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-	t.headlessStatefulSetName = statefulSetName
-	t.headlessServiceName = serviceName
-	t.headlessNamespace = namespace
-	t.headlessReplicas = replicas
-}
-
 // resolveTargetURI determines the proxy target URI, base path, and raw query from the
 // transport configuration. For remote MCP servers it parses the remote URL; for local
 // containers it returns the pre-configured targetURI.
@@ -343,12 +328,13 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		proxyOptions = append(proxyOptions, transparent.WithSessionStorage(t.sessionStorage))
 	}
 
-	// Enable pod-specific routing for multi-replica StatefulSet backends.
+	// Enable pod-specific routing for Kubernetes StatefulSet backends.
 	// When configured, each new session is pinned to a specific pod via headless DNS
 	// so that session routing survives proxy-runner restarts.
-	if t.headlessReplicas > 1 {
+	if t.headlessService != nil {
 		proxyOptions = append(proxyOptions, transparent.WithPodHeadlessService(
-			t.headlessStatefulSetName, t.headlessServiceName, t.headlessNamespace, t.headlessReplicas,
+			t.headlessService.StatefulSetName, t.headlessService.ServiceName,
+			t.headlessService.Namespace, t.headlessService.Replicas,
 		))
 	}
 

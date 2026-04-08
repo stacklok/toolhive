@@ -353,13 +353,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if setupResult.TargetURI != "" {
 			transportOpts = append(transportOpts, transport.WithTargetURI(setupResult.TargetURI))
 		}
-		// Enable pod-specific session routing for multi-replica StatefulSet backends.
-		if r.Config.ScalingConfig != nil && r.Config.ScalingConfig.HeadlessService != nil {
-			hs := r.Config.ScalingConfig.HeadlessService
-			transportOpts = append(transportOpts, transport.WithPodHeadlessService(
-				hs.StatefulSetName, hs.ServiceName, hs.Namespace, hs.Replicas,
-			))
-		}
+	}
+
+	// Enable pod-specific session routing for Kubernetes StatefulSet backends.
+	if r.Config.ScalingConfig != nil && r.Config.ScalingConfig.HeadlessService != nil {
+		transportConfig.HeadlessService = r.Config.ScalingConfig.HeadlessService
 	}
 
 	// When Redis session storage is configured, create a Redis-backed session store
@@ -373,31 +371,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
 			Addr:      redisCfg.Address,
 			Password:  os.Getenv(vmcpconfig.RedisPasswordEnvVar),
-			DB:        int(redisCfg.DB),
-			KeyPrefix: keyPrefix,
-		}, session.DefaultSessionTTL)
-		if err != nil {
-			return fmt.Errorf("failed to create Redis session storage: %w", err)
-		}
-		slog.Info("using Redis session storage",
-			"address", redisCfg.Address,
-			"db", redisCfg.DB,
-			"key_prefix", keyPrefix,
-		)
-		transportConfig.SessionStorage = storage
-	}
-
-	// When Redis session storage is configured, create a Redis-backed session store
-	// so sessions are shared across proxy replicas instead of being pod-local.
-	if r.Config.ScalingConfig != nil && r.Config.ScalingConfig.SessionRedis != nil {
-		redisCfg := r.Config.ScalingConfig.SessionRedis
-		keyPrefix := redisCfg.KeyPrefix
-		if keyPrefix == "" {
-			keyPrefix = "thv:proxy:session:"
-		}
-		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
-			Addr:      redisCfg.Address,
-			Password:  os.Getenv(session.RedisPasswordEnvVar),
 			DB:        int(redisCfg.DB),
 			KeyPrefix: keyPrefix,
 		}, session.DefaultSessionTTL)

@@ -366,9 +366,9 @@ func TestWithPodHeadlessServiceStoresPodURL(t *testing.T) {
 	assert.Less(t, ordinal, int(replicas))
 }
 
-// TestWithPodHeadlessServiceNoopWhenReplicasOne verifies that WithPodHeadlessService is a no-op
-// when replicas <= 1, preserving the existing single-replica behavior.
-func TestWithPodHeadlessServiceNoopWhenReplicasOne(t *testing.T) {
+// TestWithPodHeadlessServiceSingleReplica verifies that WithPodHeadlessService with replicas=1
+// routes to ordinal 0 via headless DNS, not the static ClusterIP targetURI.
+func TestWithPodHeadlessServiceSingleReplica(t *testing.T) {
 	t.Parallel()
 
 	sessionID := uuid.New().String()
@@ -378,11 +378,24 @@ func TestWithPodHeadlessServiceNoopWhenReplicasOne(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	proxy, addr := startProxy(t, backend.URL)
-	// Apply the option after creation to simulate replicas=1 (no-op)
-	WithPodHeadlessService("myserver", "mcp-myserver-headless", "default", 1)(proxy)
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, backend.URL,
+		nil, nil, nil,
+		false, false, "sse",
+		nil, nil, "", false,
+		nil,
+		WithPodHeadlessService("myserver", "mcp-myserver-headless", "default", 1),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		_ = proxy.Stop(stopCtx)
+	})
+	require.NoError(t, proxy.Start(ctx))
+	addr := proxy.listener.Addr().String()
 
-	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
 		strings.NewReader(`{"method":"initialize"}`))
@@ -397,6 +410,9 @@ func TestWithPodHeadlessServiceNoopWhenReplicasOne(t *testing.T) {
 	require.True(t, ok, "session should have been created by RoundTrip")
 	backendURL, ok := sess.GetMetadataValue(sessionMetadataBackendURL)
 	require.True(t, ok, "session should have backend_url metadata")
-	// With replicas=1, headlessService is nil — should fall back to static targetURI
-	assert.Equal(t, backend.URL, backendURL, "replicas=1 should use static targetURI, not headless DNS")
+
+	// With replicas=1, headless DNS is still used — ordinal is always 0.
+	assert.NotEqual(t, backend.URL, backendURL, "backend_url should use headless DNS, not static ClusterIP")
+	assert.Contains(t, backendURL, "myserver-0.mcp-myserver-headless.default.svc.cluster.local",
+		"single-replica should always route to pod ordinal 0 via headless DNS")
 }

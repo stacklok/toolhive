@@ -249,24 +249,10 @@ type ScalingConfig struct {
 	SessionRedis *SessionRedisConfig `json:"session_redis,omitempty" yaml:"session_redis,omitempty"`
 
 	// HeadlessService holds the information needed to construct pod-specific headless DNS URLs
-	// for session-affinity routing in multi-replica StatefulSet deployments.
-	// Populated by the operator when backendReplicas > 1; nil for single-replica deployments.
+	// for session-affinity routing in Kubernetes StatefulSet deployments.
+	// Populated by the operator whenever BackendReplicas is set (including single-replica).
 	// +optional
-	HeadlessService *HeadlessServiceConfig `json:"headless_service,omitempty" yaml:"headless_service,omitempty"`
-}
-
-// HeadlessServiceConfig holds Kubernetes headless service information used to construct
-// pod-specific DNS URLs (e.g. myserver-0.mcp-myserver-headless.default.svc.cluster.local)
-// so that session-affinity routing in multi-replica deployments survives proxy-runner restarts.
-type HeadlessServiceConfig struct {
-	// StatefulSetName is the name of the backend StatefulSet (equals the MCPServer name).
-	StatefulSetName string `json:"statefulset_name,omitempty" yaml:"statefulset_name,omitempty"`
-	// ServiceName is the name of the headless Kubernetes service (e.g. "mcp-myserver-headless").
-	ServiceName string `json:"service_name,omitempty" yaml:"service_name,omitempty"`
-	// Namespace is the Kubernetes namespace of the StatefulSet.
-	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
-	// Replicas is the StatefulSet replica count, used to select a random pod ordinal.
-	Replicas int32 `json:"replicas,omitempty" yaml:"replicas,omitempty"`
+	HeadlessService *types.HeadlessServiceConfig `json:"headless_service,omitempty" yaml:"headless_service,omitempty"`
 }
 
 // SessionRedisConfig contains non-sensitive Redis connection parameters used for distributed

@@ -306,17 +306,16 @@ func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1alpha1.MCPServer
 		val := *m.Spec.BackendReplicas
 		runConfig.ScalingConfig.BackendReplicas = &val
 
-		// Populate headless service config when there are multiple backend replicas.
+		// Always populate headless service config when BackendReplicas is set.
 		// This enables the proxy runner to route each session to a specific pod via
 		// headless DNS (e.g. myserver-0.mcp-myserver-headless.default.svc.cluster.local)
-		// so sessions survive proxy-runner restarts without hitting the wrong backend pod.
-		if val > 1 {
-			runConfig.ScalingConfig.HeadlessService = &runner.HeadlessServiceConfig{
-				StatefulSetName: m.Name,
-				ServiceName:     fmt.Sprintf("mcp-%s-headless", m.Name),
-				Namespace:       m.Namespace,
-				Replicas:        val,
-			}
+		// so sessions survive proxy-runner restarts. For single-replica StatefulSets,
+		// ordinal 0 is always selected deterministically.
+		runConfig.ScalingConfig.HeadlessService = &transporttypes.HeadlessServiceConfig{
+			StatefulSetName: m.Name,
+			ServiceName:     fmt.Sprintf("mcp-%s-headless", m.Name),
+			Namespace:       m.Namespace,
+			Replicas:        val,
 		}
 	}
 

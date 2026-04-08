@@ -141,9 +141,8 @@ type TransparentProxy struct {
 	shutdownTimeout time.Duration
 
 	// headlessService holds Kubernetes headless service info for pod-specific routing.
-	// When set (backendReplicas > 1), new sessions are pinned to a randomly chosen pod
-	// via its headless DNS name so routing survives proxy-runner restarts.
-	// When nil (single-replica or non-Kubernetes), the static targetURI is used.
+	// When set, new sessions are pinned to a specific pod via headless DNS so routing
+	// survives proxy-runner restarts. Nil for non-Kubernetes deployments.
 	headlessService *podHeadlessService
 }
 
@@ -240,14 +239,14 @@ func withShutdownTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithPodHeadlessService configures pod-specific routing for multi-replica StatefulSet deployments.
-// When set, each new MCP session is pinned to a randomly selected pod via its headless DNS name
+// WithPodHeadlessService configures pod-specific routing for Kubernetes StatefulSet deployments.
+// When set, each new MCP session is pinned to a specific pod via its headless DNS name
 // (e.g. myserver-0.mcp-myserver-headless.default.svc.cluster.local) so that session routing
-// survives proxy-runner restarts without being sent to the wrong pod.
-// The option is a no-op when replicas <= 1 or when any required field is empty.
+// survives proxy-runner restarts. For single-replica StatefulSets, ordinal 0 is always selected.
+// The option is a no-op when any required field is empty.
 func WithPodHeadlessService(statefulSetName, serviceName, namespace string, replicas int32) Option {
 	return func(p *TransparentProxy) {
-		if statefulSetName == "" || serviceName == "" || namespace == "" || replicas <= 1 {
+		if statefulSetName == "" || serviceName == "" || namespace == "" {
 			return
 		}
 		p.headlessService = &podHeadlessService{

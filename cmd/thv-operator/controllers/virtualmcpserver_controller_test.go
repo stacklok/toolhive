@@ -86,7 +86,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 						Namespace: "default",
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 						URL:   "http://backend-1.default.svc.cluster.local:8080",
 					},
 				},
@@ -96,7 +96,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 						Namespace: "default",
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 						URL:   "http://backend-2.default.svc.cluster.local:8080",
 					},
 				},
@@ -3016,7 +3016,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Status: mcpv1alpha1.EmbeddingServerStatus{
-					Phase:         mcpv1alpha1.EmbeddingServerPhaseRunning,
+					Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 1,
 				},
 			},
@@ -3086,7 +3086,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Status: mcpv1alpha1.EmbeddingServerStatus{
-					Phase:         mcpv1alpha1.EmbeddingServerPhaseRunning,
+					Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 0,
 				},
 			},

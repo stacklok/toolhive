@@ -825,7 +825,7 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			},
-			expectedPhase: mcpv1alpha1.EmbeddingServerPhaseRunning,
+			expectedPhase: mcpv1alpha1.EmbeddingServerPhaseReady,
 			expectedURL:   "http://test.default.svc.cluster.local:8080",
 		},
 		{

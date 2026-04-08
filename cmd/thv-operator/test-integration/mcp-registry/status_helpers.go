@@ -87,7 +87,7 @@ func (h *StatusTestHelper) WaitForSyncCompletion(registryName string, timeout ti
 
 		// Check if sync is no longer in progress
 		phase := registry.Status.Phase
-		return phase == mcpv1alpha1.MCPRegistryPhaseRunning ||
+		return phase == mcpv1alpha1.MCPRegistryPhaseReady ||
 			phase == mcpv1alpha1.MCPRegistryPhaseFailed
 	}, timeout, time.Second).Should(gomega.BeTrue(),
 		"MCPRegistry %s sync operation should complete", registryName)

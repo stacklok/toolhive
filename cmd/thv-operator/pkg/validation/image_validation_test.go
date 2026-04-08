@@ -186,7 +186,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -206,7 +206,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -237,7 +237,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -268,7 +268,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -301,7 +301,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -356,7 +356,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 				&mcpv1alpha1.MCPRegistry{
@@ -368,7 +368,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -410,7 +410,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 				&mcpv1alpha1.MCPRegistry{
@@ -422,7 +422,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -455,7 +455,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 				&mcpv1alpha1.MCPRegistry{
@@ -467,7 +467,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -588,7 +588,7 @@ func TestCheckImageInRegistry(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 				},
 			},
 			image:         "docker.io/toolhive/test:v1.0.0",
@@ -602,7 +602,7 @@ func TestCheckImageInRegistry(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 				},
 			},
 			configMap: &corev1.ConfigMap{
@@ -625,7 +625,7 @@ func TestCheckImageInRegistry(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 				},
 			},
 			configMap: &corev1.ConfigMap{
@@ -648,7 +648,7 @@ func TestCheckImageInRegistry(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 				},
 			},
 			configMap: &corev1.ConfigMap{
@@ -830,7 +830,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 				&mcpv1alpha1.MCPRegistry{
@@ -842,7 +842,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -878,7 +878,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -903,7 +903,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -941,7 +941,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -968,7 +968,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 				&mcpv1alpha1.MCPRegistry{
@@ -980,7 +980,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},
@@ -1023,7 +1023,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 				&mcpv1alpha1.MCPRegistry{
@@ -1035,7 +1035,7 @@ func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T)
 						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
-						Phase: mcpv1alpha1.MCPRegistryPhaseRunning,
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 					},
 				},
 			},

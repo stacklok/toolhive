@@ -135,8 +135,8 @@ func waitForMCPServerRunning(name, namespace string, timeout, pollInterval time.
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, server); err != nil {
 			return err
 		}
-		if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
-			return fmt.Errorf("MCPServer phase is %s, want Running", server.Status.Phase)
+		if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			return fmt.Errorf("MCPServer phase is %s, want Ready", server.Status.Phase)
 		}
 		return nil
 	}, timeout, pollInterval).Should(gomega.Succeed())

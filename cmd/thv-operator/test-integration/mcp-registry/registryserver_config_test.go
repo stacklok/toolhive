@@ -137,14 +137,14 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			// but verify that sync is complete and API deployment is in progress
 			Expect(registry.Status.Phase).To(BeElementOf(
 				mcpv1alpha1.MCPRegistryPhasePending, // API deployment in progress
-				mcpv1alpha1.MCPRegistryPhaseRunning, // If somehow API becomes ready
+				mcpv1alpha1.MCPRegistryPhaseReady,   // If somehow API becomes ready
 			))
 
 			// Verify ObservedGeneration is set after reconciliation
 			Expect(registry.Status.ObservedGeneration).To(Equal(registry.Generation))
 
 			// Verify phase and URL
-			if registry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseRunning {
+			if registry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseReady {
 				Expect(registry.Status.URL).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", apiResourceName, testNamespace)))
 			}
 

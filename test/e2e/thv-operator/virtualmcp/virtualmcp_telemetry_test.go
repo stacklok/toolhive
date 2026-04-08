@@ -63,7 +63,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 			}, server); err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
 			}
 			return nil

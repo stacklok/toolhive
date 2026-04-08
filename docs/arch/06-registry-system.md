@@ -633,7 +633,7 @@ curl http://localhost:8080/api/v1/registry
 **Status fields:**
 ```yaml
 status:
-  phase: Running
+  phase: Ready
   message: "Registry API is ready and serving requests"
   url: "http://company-registry-api.default.svc.cluster.local:8080"
   readyReplicas: 1
@@ -647,7 +647,7 @@ status:
 
 **Phases:**
 - `Pending` - Initial state, deployment not ready yet
-- `Running` - Registry API is ready and serving requests
+- `Ready` - Registry API is ready and serving requests
 - `Failed` - Deployment or reconciliation failed
 - `Terminating` - Registry being deleted
 

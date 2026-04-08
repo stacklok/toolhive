@@ -150,7 +150,7 @@ MCPServer supports referencing shared configuration CRDs:
 
 Both ref fields are mutually exclusive with their inline counterparts (enforced by CEL validation).
 
-**Status fields** include phase (Running, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`) for change detection on referenced CRDs.
+**Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`) for change detection on referenced CRDs.
 
 For examples, see:
 - [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server

@@ -1024,7 +1024,7 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 		info := func() phaseInfo {
 			if statefulSet.Status.ReadyReplicas > 0 {
 				return phaseInfo{
-					phase:   mcpv1alpha1.EmbeddingServerPhaseRunning,
+					phase:   mcpv1alpha1.EmbeddingServerPhaseReady,
 					message: "Embedding server is running",
 				}
 			}

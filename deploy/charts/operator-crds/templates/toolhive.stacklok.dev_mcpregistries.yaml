@@ -301,12 +301,18 @@ spec:
                     description: |-
                       PublicPaths defines additional paths that bypass authentication.
                       These extend the default public paths (health, docs, swagger, well-known).
+                      Each path must start with "/". Do not add API data paths here.
                       Example: ["/custom/public", "/metrics"]
                     items:
+                      minLength: 1
+                      pattern: ^/
                       type: string
                     type: array
                     x-kubernetes-list-type: atomic
                 type: object
+                x-kubernetes-validations:
+                - message: authz configuration has no effect when auth mode is anonymous
+                  rule: self.mode != 'anonymous' || !has(self.authz)
               databaseConfig:
                 description: |-
                   DatabaseConfig defines the PostgreSQL database configuration for the registry API server.
@@ -788,6 +794,11 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one source type must be specified
+                    rule: '(has(self.configMapRef) ? 1 : 0) + (has(self.git) ? 1 :
+                      0) + (has(self.api) ? 1 : 0) + (has(self.url) ? 1 : 0) + (has(self.managed)
+                      ? 1 : 0) + (has(self.kubernetes) ? 1 : 0) == 1'
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
@@ -1057,10 +1068,11 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
-        - message: at least one source must be specified
-          rule: size(self.spec.sources) > 0
-        - message: at least one registry must be specified
-          rule: size(self.spec.registries) > 0
+        - message: all registry source references must match a defined source name
+          rule: self.spec.registries.all(r, r.sources.all(s, self.spec.sources.exists(src,
+            src.name == s)))
+        - message: at most one managed source is allowed
+          rule: self.spec.sources.filter(s, has(s.managed)).size() <= 1
     served: true
     storage: true
     subresources:

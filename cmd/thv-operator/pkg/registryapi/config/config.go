@@ -456,7 +456,11 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 	config.Auth = authConfig
 
 	// Build telemetry configuration from CRD spec
-	config.Telemetry = buildTelemetryConfig(mcpRegistry.Spec.TelemetryConfig)
+	telemetryConfig, err := buildTelemetryConfig(mcpRegistry.Spec.TelemetryConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build telemetry configuration: %w", err)
+	}
+	config.Telemetry = telemetryConfig
 
 	return &config, nil
 }
@@ -674,7 +678,8 @@ func deserializeClaims(raw *apiextensionsv1.JSON) (map[string]any, error) {
 	return claims, nil
 }
 
-// deserializeRoleEntry converts apiextensionsv1.JSON to map[string]any for a role entry
+// deserializeRoleEntry converts apiextensionsv1.JSON to map[string]any for a role entry.
+// Values are validated to be string or []string, matching the claims validation contract.
 func deserializeRoleEntry(raw apiextensionsv1.JSON) (map[string]any, error) {
 	if raw.Raw == nil {
 		return nil, nil
@@ -683,6 +688,25 @@ func deserializeRoleEntry(raw apiextensionsv1.JSON) (map[string]any, error) {
 	var entry map[string]any
 	if err := json.Unmarshal(raw.Raw, &entry); err != nil {
 		return nil, fmt.Errorf("role entry must be a JSON object: %w", err)
+	}
+
+	for key, val := range entry {
+		switch v := val.(type) {
+		case string:
+			// OK
+		case []any:
+			strs := make([]string, 0, len(v))
+			for _, item := range v {
+				s, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("role entry %q: array values must be strings, got %T", key, item)
+				}
+				strs = append(strs, s)
+			}
+			entry[key] = strs
+		default:
+			return nil, fmt.Errorf("role entry %q: value must be string or []string, got %T", key, val)
+		}
 	}
 
 	return entry, nil
@@ -1060,12 +1084,11 @@ func buildSecretFilePath(secretRef *corev1.SecretKeySelector) string {
 	return fmt.Sprintf("/secrets/%s/%s", secretRef.Name, key)
 }
 
-// buildCACertFilePath constructs the file path where a CA cert configmap will be mounted
 // buildTelemetryConfig creates a TelemetryConfig from the CRD spec.
 // Returns nil if the spec is nil (telemetry disabled).
-func buildTelemetryConfig(telConfig *mcpv1alpha1.MCPRegistryTelemetryConfig) *TelemetryConfig {
+func buildTelemetryConfig(telConfig *mcpv1alpha1.MCPRegistryTelemetryConfig) (*TelemetryConfig, error) {
 	if telConfig == nil {
-		return nil
+		return nil, nil
 	}
 
 	config := &TelemetryConfig{
@@ -1081,9 +1104,11 @@ func buildTelemetryConfig(telConfig *mcpv1alpha1.MCPRegistryTelemetryConfig) *Te
 			Enabled: telConfig.Tracing.Enabled,
 		}
 		if telConfig.Tracing.Sampling != nil {
-			if val, err := strconv.ParseFloat(*telConfig.Tracing.Sampling, 64); err == nil {
-				tracingConfig.Sampling = &val
+			val, err := strconv.ParseFloat(*telConfig.Tracing.Sampling, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tracing sampling value %q: %w", *telConfig.Tracing.Sampling, err)
 			}
+			tracingConfig.Sampling = &val
 		}
 		config.Tracing = tracingConfig
 	}
@@ -1094,9 +1119,10 @@ func buildTelemetryConfig(telConfig *mcpv1alpha1.MCPRegistryTelemetryConfig) *Te
 		}
 	}
 
-	return config
+	return config, nil
 }
 
+// buildCACertFilePath constructs the file path where a CA cert configmap will be mounted
 func buildCACertFilePath(configMapRef *corev1.ConfigMapKeySelector) string {
 	if configMapRef == nil {
 		return ""

@@ -40,11 +40,15 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "My MCP Registry"
-  registries:
-    - name: configmap-registry
+  sources:
+    - name: configmap-source
       configMapRef:
         name: my-registry-data
         key: registry.json
+  registries:
+    - name: default
+      sources:
+        - configmap-source
 ```
 
 Apply with:
@@ -60,7 +64,7 @@ Configure automatic synchronization with interval-based policies per registry:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -68,6 +72,10 @@ spec:
         key: registry.json
       syncPolicy:
         interval: "1h"  # Sync every hour
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 Supported intervals:
@@ -110,12 +118,16 @@ Store registry data in Kubernetes ConfigMaps:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive  # or "upstream"
       configMapRef:
         name: registry-data
         key: registry.json  # required
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 ### Git Source
@@ -124,13 +136,17 @@ Synchronize from Git repositories:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
         repository: "https://github.com/org/mcp-registry"
         branch: "main"
         path: "registry.json"  # optional, defaults to "registry.json"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 Supported repository URL formats:
@@ -162,7 +178,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Private MCP Registry"
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
@@ -176,6 +192,10 @@ spec:
             key: password
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 **Authentication notes:**
@@ -192,11 +212,15 @@ Synchronize from HTTP/HTTPS API endpoints compatible with
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       api:
         endpoint: "https://registry.example.com"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 The API source automatically detects the registry format by probing the endpoint:
@@ -218,25 +242,33 @@ Example configurations:
 **Internal ToolHive Registry API:**
 ```yaml
 spec:
-  registries:
-    - name: default
+  sources:
+    - name: internal-api
       format: toolhive
       api:
         endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
       syncPolicy:
         interval: "30m"
+  registries:
+    - name: default
+      sources:
+        - internal-api
 ```
 
 **External Registry API:**
 ```yaml
 spec:
-  registries:
-    - name: default
+  sources:
+    - name: upstream
       format: toolhive
       api:
         endpoint: "https://registry.modelcontextprotocol.io/"
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - upstream
 ```
 
 **Notes:**
@@ -264,7 +296,7 @@ Each registry configuration can define its own filtering rules:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: production
       format: toolhive
       configMapRef:
@@ -282,9 +314,13 @@ spec:
           exclude:
             - "experimental"
             - "deprecated"
+  registries:
+    - name: default
+      sources:
+        - production
 ```
 
-Filtering is applied per-registry, allowing different filtering rules for different registry sources in the same MCPRegistry.
+Filtering is applied per-source, allowing different filtering rules for different data sources in the same MCPRegistry.
 
 ## Image Validation
 

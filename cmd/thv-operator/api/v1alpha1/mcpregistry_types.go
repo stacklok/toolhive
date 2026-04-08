@@ -87,6 +87,10 @@ type MCPRegistrySpec struct {
 
 // MCPRegistrySourceConfig defines a data source configuration for the registry.
 // Exactly one source type must be specified (ConfigMapRef, Git, API, URL, Managed, or Kubernetes).
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.configMapRef) ? 1 : 0) + (has(self.git) ? 1 : 0) + (has(self.api) ? 1 : 0) + (has(self.url) ? 1 : 0) + (has(self.managed) ? 1 : 0) + (has(self.kubernetes) ? 1 : 0) == 1",message="exactly one source type must be specified"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRegistrySourceConfig struct {
 	// Name is a unique identifier for this source within the MCPRegistry
 	// +kubebuilder:validation:Required
@@ -457,6 +461,10 @@ const (
 )
 
 // MCPRegistryAuthConfig defines authentication configuration for the registry API server.
+//
+// +kubebuilder:validation:XValidation:rule="self.mode != 'anonymous' || !has(self.authz)",message="authz configuration has no effect when auth mode is anonymous"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRegistryAuthConfig struct {
 	// Mode specifies the authentication mode (anonymous or oauth)
 	// Defaults to "anonymous" if not specified.
@@ -468,7 +476,10 @@ type MCPRegistryAuthConfig struct {
 
 	// PublicPaths defines additional paths that bypass authentication.
 	// These extend the default public paths (health, docs, swagger, well-known).
+	// Each path must start with "/". Do not add API data paths here.
 	// Example: ["/custom/public", "/metrics"]
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern="^/"
 	// +listType=atomic
 	// +optional
 	PublicPaths []string `json:"publicPaths,omitempty"`
@@ -879,8 +890,8 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="size(self.spec.sources) > 0",message="at least one source must be specified"
-//+kubebuilder:validation:XValidation:rule="size(self.spec.registries) > 0",message="at least one registry must be specified"
+//+kubebuilder:validation:XValidation:rule="self.spec.registries.all(r, r.sources.all(s, self.spec.sources.exists(src, src.name == s)))",message="all registry source references must match a defined source name"
+//+kubebuilder:validation:XValidation:rule="self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
 
 // MCPRegistry is the Schema for the mcpregistries API
 type MCPRegistry struct {

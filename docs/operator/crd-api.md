@@ -1852,7 +1852,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `mode` _[api.v1alpha1.MCPRegistryAuthMode](#apiv1alpha1mcpregistryauthmode)_ | Mode specifies the authentication mode (anonymous or oauth)<br />Defaults to "anonymous" if not specified.<br />Use "oauth" to enable OAuth/OIDC authentication. | anonymous | Enum: [anonymous oauth] <br />Optional: \{\} <br /> |
-| `publicPaths` _string array_ | PublicPaths defines additional paths that bypass authentication.<br />These extend the default public paths (health, docs, swagger, well-known).<br />Example: ["/custom/public", "/metrics"] |  | Optional: \{\} <br /> |
+| `publicPaths` _string array_ | PublicPaths defines additional paths that bypass authentication.<br />These extend the default public paths (health, docs, swagger, well-known).<br />Each path must start with "/". Do not add API data paths here.<br />Example: ["/custom/public", "/metrics"] |  | items:MinLength: 1 <br />items:Pattern: `^/` <br />Optional: \{\} <br /> |
 | `oauth` _[api.v1alpha1.MCPRegistryOAuthConfig](#apiv1alpha1mcpregistryoauthconfig)_ | OAuth defines OAuth/OIDC specific authentication settings<br />Only used when Mode is "oauth" |  | Optional: \{\} <br /> |
 | `authz` _[api.v1alpha1.MCPRegistryAuthzConfig](#apiv1alpha1mcpregistryauthzconfig)_ | Authz defines authorization configuration for role-based access control. |  | Optional: \{\} <br /> |
 

@@ -82,7 +82,7 @@ var _ = Describe("MCPRegistry PVC Source", Label("k8s", "registry", "pvc"), func
 
 			By("Waiting for registry to initialize")
 			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{
-				mcpv1alpha1.MCPRegistryPhaseReady,
+				mcpv1alpha1.MCPRegistryPhaseRunning,
 				mcpv1alpha1.MCPRegistryPhasePending,
 			}, MediumTimeout)
 
@@ -189,7 +189,7 @@ var _ = Describe("MCPRegistry PVC Source", Label("k8s", "registry", "pvc"), func
 
 			By("Waiting for registry to initialize")
 			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{
-				mcpv1alpha1.MCPRegistryPhaseReady,
+				mcpv1alpha1.MCPRegistryPhaseRunning,
 				mcpv1alpha1.MCPRegistryPhasePending,
 			}, MediumTimeout)
 

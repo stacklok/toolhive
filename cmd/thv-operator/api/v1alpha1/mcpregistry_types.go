@@ -492,12 +492,17 @@ type MCPRegistryOAuthProviderConfig struct {
 
 // MCPRegistryStatus defines the observed state of MCPRegistry
 type MCPRegistryStatus struct {
+	// Conditions represent the latest available observations of the MCPRegistry's state
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
 	// ObservedGeneration reflects the generation most recently observed by the controller
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Phase represents the current overall phase of the MCPRegistry
-	// Derived from sync and API status
 	// +optional
 	Phase MCPRegistryPhase `json:"phase,omitempty"`
 
@@ -505,190 +510,48 @@ type MCPRegistryStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
-	// SyncStatus provides detailed information about data synchronization
+	// URL is the URL where the registry API can be accessed
 	// +optional
-	SyncStatus *SyncStatus `json:"syncStatus,omitempty"`
+	URL string `json:"url,omitempty"`
 
-	// APIStatus provides detailed information about the API service
+	// ReadyReplicas is the number of ready registry API replicas
 	// +optional
-	APIStatus *APIStatus `json:"apiStatus,omitempty"`
-
-	// LastAppliedFilterHash is the hash of the last applied filter
-	// +optional
-	LastAppliedFilterHash string `json:"lastAppliedFilterHash,omitempty"`
-
-	// StorageRef is a reference to the internal storage location
-	// +optional
-	StorageRef *StorageReference `json:"storageRef,omitempty"`
-
-	// LastManualSyncTrigger tracks the last processed manual sync annotation value
-	// Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
-	// +optional
-	LastManualSyncTrigger string `json:"lastManualSyncTrigger,omitempty"`
-
-	// Conditions represent the latest available observations of the MCPRegistry's state
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// SyncStatus provides detailed information about data synchronization
-type SyncStatus struct {
-	// Phase represents the current synchronization phase
-	// +kubebuilder:validation:Enum=Syncing;Complete;Failed
-	Phase SyncPhase `json:"phase"`
-
-	// Message provides additional information about the sync status
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// LastAttempt is the timestamp of the last sync attempt
-	// +optional
-	LastAttempt *metav1.Time `json:"lastAttempt,omitempty"`
-
-	// AttemptCount is the number of sync attempts since last success
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	AttemptCount int32 `json:"attemptCount,omitempty"`
-
-	// LastSyncTime is the timestamp of the last successful sync
-	// +optional
-	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
-
-	// LastSyncHash is the hash of the last successfully synced data
-	// Used to detect changes in source data
-	// +optional
-	LastSyncHash string `json:"lastSyncHash,omitempty"`
-
-	// ServerCount is the total number of servers in the registry
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	ServerCount int32 `json:"serverCount,omitempty"`
-}
-
-// APIStatus provides detailed information about the API service
-type APIStatus struct {
-	// Phase represents the current API service phase
-	// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
-	Phase APIPhase `json:"phase"`
-
-	// Message provides additional information about the API status
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// Endpoint is the URL where the API is accessible
-	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
-
-	// ReadySince is the timestamp when the API became ready
-	// +optional
-	ReadySince *metav1.Time `json:"readySince,omitempty"`
-}
-
-// SyncPhase represents the data synchronization state
-// +kubebuilder:validation:Enum=Syncing;Complete;Failed
-type SyncPhase string
-
-const (
-	// SyncPhaseSyncing means sync is currently in progress
-	SyncPhaseSyncing SyncPhase = "Syncing"
-
-	// SyncPhaseComplete means sync completed successfully
-	SyncPhaseComplete SyncPhase = "Complete"
-
-	// SyncPhaseFailed means sync failed
-	SyncPhaseFailed SyncPhase = "Failed"
-)
-
-// APIPhase represents the API service state
-// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
-type APIPhase string
-
-const (
-	// APIPhaseNotStarted means API deployment has not been created
-	APIPhaseNotStarted APIPhase = "NotStarted"
-
-	// APIPhaseDeploying means API is being deployed
-	APIPhaseDeploying APIPhase = "Deploying"
-
-	// APIPhaseReady means API is ready to serve requests
-	APIPhaseReady APIPhase = "Ready"
-
-	// APIPhaseUnhealthy means API is deployed but not healthy
-	APIPhaseUnhealthy APIPhase = "Unhealthy"
-
-	// APIPhaseError means API deployment failed
-	APIPhaseError APIPhase = "Error"
-)
-
-// StorageReference defines a reference to internal storage
-type StorageReference struct {
-	// Type is the storage type (configmap)
-	// +kubebuilder:validation:Enum=configmap
-	Type string `json:"type"`
-
-	// ConfigMapRef is a reference to a ConfigMap storage
-	// Only used when Type is "configmap"
-	// +optional
-	ConfigMapRef *corev1.LocalObjectReference `json:"configMapRef,omitempty"`
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 }
 
 // MCPRegistryPhase represents the phase of the MCPRegistry
-// +kubebuilder:validation:Enum=Pending;Ready;Failed;Syncing;Terminating
+// +kubebuilder:validation:Enum=Pending;Running;Failed;Terminating
 type MCPRegistryPhase string
 
 const (
 	// MCPRegistryPhasePending means the MCPRegistry is being initialized
 	MCPRegistryPhasePending MCPRegistryPhase = "Pending"
 
-	// MCPRegistryPhaseReady means the MCPRegistry is ready and operational
-	MCPRegistryPhaseReady MCPRegistryPhase = "Ready"
+	// MCPRegistryPhaseRunning means the MCPRegistry is running and operational
+	MCPRegistryPhaseRunning MCPRegistryPhase = "Running"
 
 	// MCPRegistryPhaseFailed means the MCPRegistry has failed
 	MCPRegistryPhaseFailed MCPRegistryPhase = "Failed"
-
-	// MCPRegistryPhaseSyncing means the MCPRegistry is currently syncing data
-	MCPRegistryPhaseSyncing MCPRegistryPhase = "Syncing"
 
 	// MCPRegistryPhaseTerminating means the MCPRegistry is being deleted
 	MCPRegistryPhaseTerminating MCPRegistryPhase = "Terminating"
 )
 
-// Condition types for MCPRegistry
+// Condition reasons for MCPRegistry
 const (
-	// ConditionSourceAvailable indicates whether the source is available and accessible
-	ConditionSourceAvailable = "SourceAvailable"
+	// ConditionReasonRegistryReady indicates the MCPRegistry is ready
+	ConditionReasonRegistryReady = "Ready"
 
-	// ConditionDataValid indicates whether the registry data is valid
-	ConditionDataValid = "DataValid"
-
-	// ConditionSyncSuccessful indicates whether the last sync was successful
-	ConditionSyncSuccessful = "SyncSuccessful"
-
-	// ConditionAPIReady indicates whether the registry API is ready
-	ConditionAPIReady = "APIReady"
-
-	// ConditionRegistryPodTemplateValid indicates whether the PodTemplateSpec is valid
-	ConditionRegistryPodTemplateValid = "PodTemplateValid"
-)
-
-// Condition reasons for MCPRegistry PodTemplateSpec validation
-const (
-	// ConditionReasonRegistryPodTemplateValid indicates PodTemplateSpec validation succeeded
-	ConditionReasonRegistryPodTemplateValid = "ValidPodTemplateSpec"
-
-	// ConditionReasonRegistryPodTemplateInvalid indicates PodTemplateSpec validation failed
-	ConditionReasonRegistryPodTemplateInvalid = "InvalidPodTemplateSpec"
+	// ConditionReasonRegistryNotReady indicates the MCPRegistry is not ready
+	ConditionReasonRegistryNotReady = "NotReady"
 )
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Sync",type="string",JSONPath=".status.syncStatus.phase"
-//+kubebuilder:printcolumn:name="API",type="string",JSONPath=".status.apiStatus.phase"
-//+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.syncStatus.serverCount"
-//+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.syncStatus.lastSyncTime"
+//+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+//+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
+//+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
@@ -720,48 +583,6 @@ func (r *MCPRegistry) GetStorageName() string {
 // GetAPIResourceName returns the base name for registry API resources (deployment, service)
 func (r *MCPRegistry) GetAPIResourceName() string {
 	return fmt.Sprintf("%s-api", r.Name)
-}
-
-// DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status
-func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
-	syncStatus := r.Status.SyncStatus
-	apiStatus := r.Status.APIStatus
-
-	// Default phases if status not set
-	var syncPhase SyncPhase
-	if syncStatus != nil {
-		syncPhase = syncStatus.Phase
-	}
-
-	apiPhase := APIPhaseNotStarted
-	if apiStatus != nil {
-		apiPhase = apiStatus.Phase
-	}
-
-	// If sync failed, overall is Failed
-	if syncPhase == SyncPhaseFailed {
-		return MCPRegistryPhaseFailed
-	}
-
-	// If sync in progress, overall is Syncing
-	if syncPhase == SyncPhaseSyncing {
-		return MCPRegistryPhaseSyncing
-	}
-
-	// If sync is complete (no sync needed), check API status
-	if syncPhase == SyncPhaseComplete {
-		switch apiPhase {
-		case APIPhaseReady:
-			return MCPRegistryPhaseReady
-		case APIPhaseError:
-			return MCPRegistryPhaseFailed
-		case APIPhaseNotStarted, APIPhaseDeploying, APIPhaseUnhealthy:
-			return MCPRegistryPhasePending // API still starting/not healthy
-		}
-	}
-
-	// Default to pending for initial states
-	return MCPRegistryPhasePending
 }
 
 func init() {

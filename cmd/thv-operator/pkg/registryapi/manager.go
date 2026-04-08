@@ -56,7 +56,6 @@ func (m *manager) ReconcileAPIService(
 		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure registry server config config map: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionTypeReady,
 			ConditionReason: "ConfigMapFailed",
 		}
 	}
@@ -68,7 +67,6 @@ func (m *manager) ReconcileAPIService(
 		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure RBAC resources: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionTypeReady,
 			ConditionReason: "RBACFailed",
 		}
 	}
@@ -81,7 +79,6 @@ func (m *manager) ReconcileAPIService(
 			return &Error{
 				Err:             err,
 				Message:         fmt.Sprintf("Failed to ensure pgpass secret: %v", err),
-				ConditionType:   mcpv1alpha1.ConditionTypeReady,
 				ConditionReason: "PGPassSecretFailed",
 			}
 		}
@@ -94,7 +91,6 @@ func (m *manager) ReconcileAPIService(
 		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure deployment: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionTypeReady,
 			ConditionReason: "DeploymentFailed",
 		}
 	}
@@ -106,7 +102,6 @@ func (m *manager) ReconcileAPIService(
 		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure service: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionTypeReady,
 			ConditionReason: "ServiceFailed",
 		}
 	}
@@ -167,6 +162,25 @@ func (m *manager) GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1
 	}
 
 	return deployment.Status.ReadyReplicas
+}
+
+// GetAPIStatus returns the readiness state and ready replica count from a single Deployment fetch.
+func (m *manager) GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, int32) {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	deploymentName := mcpRegistry.GetAPIResourceName()
+	deployment := &appsv1.Deployment{}
+
+	err := m.client.Get(ctx, client.ObjectKey{
+		Name:      deploymentName,
+		Namespace: mcpRegistry.Namespace,
+	}, deployment)
+	if err != nil {
+		ctxLogger.V(1).Info("API deployment not found", "error", err)
+		return false, 0
+	}
+
+	return m.CheckAPIReadiness(ctx, deployment), deployment.Status.ReadyReplicas
 }
 
 // getConfigMapName generates the ConfigMap name for registry storage

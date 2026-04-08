@@ -102,9 +102,18 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		"phase", mcpRegistry.Status.Phase, "url", mcpRegistry.Status.URL)
 
 	// Validate PodTemplateSpec early - before other operations
+	var podTemplateCondition *metav1.Condition
 	if mcpRegistry.HasPodTemplateSpec() {
-		// This ensures we fail fast if the spec is invalid
-		if !r.validateAndUpdatePodTemplateStatus(ctx, mcpRegistry) {
+		valid, cond := r.validatePodTemplate(mcpRegistry)
+		podTemplateCondition = cond
+		if !valid {
+			// Write status immediately for the failure case since we return early
+			mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+			mcpRegistry.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", cond.Message)
+			meta.SetStatusCondition(&mcpRegistry.Status.Conditions, *cond)
+			if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
+			}
 			// Invalid PodTemplateSpec - return without error to avoid infinite retries
 			// The user must fix the spec and the next reconciliation will retry
 			return ctrl.Result{}, nil
@@ -160,7 +169,8 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// 4. Determine and persist status
-	if statusUpdateErr := r.updateRegistryStatus(ctx, mcpRegistry, reconcileErr); statusUpdateErr != nil {
+	isReady, statusUpdateErr := r.updateRegistryStatus(ctx, mcpRegistry, reconcileErr, podTemplateCondition)
+	if statusUpdateErr != nil {
 		ctxLogger.Error(statusUpdateErr, "Failed to update registry status")
 		// Return the status update error only if there was no main reconciliation error
 		if reconcileErr == nil {
@@ -170,7 +180,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// 5. Determine requeue based on phase
 	result := ctrl.Result{}
-	if reconcileErr == nil && !r.registryAPIManager.IsAPIReady(ctx, mcpRegistry) {
+	if reconcileErr == nil && !isReady {
 		ctxLogger.Info("API not ready yet, scheduling requeue to check readiness")
 		result.RequeueAfter = time.Second * 30
 	}
@@ -203,15 +213,18 @@ func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // updateRegistryStatus determines the MCPRegistry phase from the API deployment state
-// and persists it with a single status update.
+// and persists it with a single status update. Returns whether the API is ready and any
+// error from the status update.
 func (r *MCPRegistryReconciler) updateRegistryStatus(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reconcileErr error,
-) error {
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reconcileErr error, podTemplateCond *metav1.Condition,
+) (bool, error) {
 	// Refetch the latest version to avoid conflicts
 	latest := &mcpv1alpha1.MCPRegistry{}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), latest); err != nil {
-		return fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
+		return false, fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
 	}
+
+	var isReady bool
 
 	if reconcileErr != nil {
 		latest.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
@@ -227,8 +240,8 @@ func (r *MCPRegistryReconciler) updateRegistryStatus(
 				mcpv1alpha1.ConditionReasonRegistryNotReady, reconcileErr.Error())
 		}
 	} else {
-		isReady := r.registryAPIManager.IsAPIReady(ctx, mcpRegistry)
-		readyReplicas := r.registryAPIManager.GetReadyReplicas(ctx, mcpRegistry)
+		var readyReplicas int32
+		isReady, readyReplicas = r.registryAPIManager.GetAPIStatus(ctx, mcpRegistry)
 		latest.Status.ReadyReplicas = readyReplicas
 
 		if isReady {
@@ -242,14 +255,21 @@ func (r *MCPRegistryReconciler) updateRegistryStatus(
 		} else {
 			latest.Status.Phase = mcpv1alpha1.MCPRegistryPhasePending
 			latest.Status.Message = "Registry API deployment is not ready yet"
-			latest.Status.ReadyReplicas = readyReplicas
 			setRegistryReadyCondition(latest, metav1.ConditionFalse,
 				mcpv1alpha1.ConditionReasonRegistryNotReady, "Registry API deployment is not ready yet")
 		}
 	}
 
-	latest.Status.ObservedGeneration = mcpRegistry.Generation
-	return r.Status().Update(ctx, latest)
+	// Apply PodTemplate condition if present
+	if podTemplateCond != nil {
+		meta.SetStatusCondition(&latest.Status.Conditions, *podTemplateCond)
+	}
+
+	latest.Status.ObservedGeneration = latest.Generation
+	if err := r.Status().Update(ctx, latest); err != nil {
+		return false, err
+	}
+	return isReady, nil
 }
 
 // setRegistryReadyCondition sets the top-level Ready condition on an MCPRegistry.
@@ -281,52 +301,26 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 	return nil
 }
 
-// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the MCPRegistry status
-// with appropriate conditions. Returns true if validation passes, false otherwise.
-func (r *MCPRegistryReconciler) validateAndUpdatePodTemplateStatus(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-) bool {
-	ctxLogger := log.FromContext(ctx)
-
-	// Validate the PodTemplateSpec by attempting to parse it
+// validatePodTemplate validates the PodTemplateSpec and returns a condition reflecting the result.
+// Returns true if validation passes, and a condition to apply during the next status update.
+func (*MCPRegistryReconciler) validatePodTemplate(
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+) (bool, *metav1.Condition) {
 	err := registryapi.ValidatePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
 	if err != nil {
-		// Set phase and message
-		mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
-		mcpRegistry.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
-
-		// Set condition for invalid PodTemplateSpec
-		meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
+		return false, &metav1.Condition{
 			Type:               mcpv1alpha1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: mcpRegistry.Generation,
 			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
-		})
-
-		// Update status with the condition
-		if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
-			return false
 		}
-
-		ctxLogger.Error(err, "PodTemplateSpec validation failed")
-		return false
 	}
-
-	// Set condition for valid PodTemplateSpec
-	meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
+	return true, &metav1.Condition{
 		Type:               mcpv1alpha1.ConditionPodTemplateValid,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: mcpRegistry.Generation,
 		Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
 		Message:            "PodTemplateSpec is valid",
-	})
-
-	// Update status with the condition
-	if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
-		ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
 	}
-
-	return true
 }

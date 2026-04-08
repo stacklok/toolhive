@@ -57,6 +57,21 @@ func (mr *MockManagerMockRecorder) CheckAPIReadiness(ctx, deployment any) *gomoc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckAPIReadiness", reflect.TypeOf((*MockManager)(nil).CheckAPIReadiness), ctx, deployment)
 }
 
+// GetAPIStatus mocks base method.
+func (m *MockManager) GetAPIStatus(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) (bool, int32) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAPIStatus", ctx, mcpRegistry)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(int32)
+	return ret0, ret1
+}
+
+// GetAPIStatus indicates an expected call of GetAPIStatus.
+func (mr *MockManagerMockRecorder) GetAPIStatus(ctx, mcpRegistry any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAPIStatus", reflect.TypeOf((*MockManager)(nil).GetAPIStatus), ctx, mcpRegistry)
+}
+
 // GetReadyReplicas mocks base method.
 func (m *MockManager) GetReadyReplicas(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) int32 {
 	m.ctrl.T.Helper()

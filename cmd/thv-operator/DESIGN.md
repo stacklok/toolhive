@@ -62,7 +62,7 @@ When building operators, the decision of when to use a `podTemplateSpec` and whe
 - Structured errors carry `ConditionReason` for setting Kubernetes conditions with specific failure reasons (e.g., `ConfigMapFailed`, `DeploymentFailed`)
 - Enables better observability via condition reasons
 
-**Implementation**: `registryapi.Error` carries `ConditionType`, `ConditionReason`, and `Message`. The controller uses `errors.As` to extract structured fields when available, falling back to generic `NotReady` reason for unstructured errors.
+**Implementation**: `registryapi.Error` carries `ConditionReason` and `Message`. The controller uses `errors.As` to extract structured fields when available, falling back to generic `NotReady` reason for unstructured errors.
 
 ### Performance Design Decisions
 

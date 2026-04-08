@@ -219,9 +219,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called in updateRegistryStatus and in the requeue check.
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
-				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(1))
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(true, int32(1))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -270,9 +268,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called in updateRegistryStatus and in the requeue check.
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(false).Times(2)
-				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(0))
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(false, int32(0))
 			},
 			expResult: ctrl.Result{RequeueAfter: 30 * time.Second},
 			expErr:    nil,
@@ -300,9 +296,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called in updateRegistryStatus and in the requeue check.
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
-				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(1))
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(true, int32(1))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -364,9 +358,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called in updateRegistryStatus and in the requeue check.
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
-				mock.EXPECT().GetReadyReplicas(gomock.Any(), gomock.Any()).Return(int32(2))
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(true, int32(2))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,

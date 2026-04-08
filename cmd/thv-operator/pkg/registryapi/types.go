@@ -93,7 +93,6 @@ const (
 type Error struct {
 	Err             error
 	Message         string
-	ConditionType   string
 	ConditionReason string
 }
 
@@ -120,6 +119,9 @@ type Manager interface {
 
 	// GetReadyReplicas returns the number of ready replicas for the registry API deployment
 	GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) int32
+
+	// GetAPIStatus returns the readiness state and ready replica count from a single Deployment fetch
+	GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ready bool, readyReplicas int32)
 }
 
 // GetServiceAccountName returns the service account name for a given MCPRegistry.

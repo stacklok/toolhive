@@ -3828,6 +3828,39 @@ paths:
       summary: List locally-built skill artifacts
       tags:
       - skills
+  /api/v1beta/skills/builds/{tag}:
+    delete:
+      description: Remove a locally-built OCI skill artifact and its blobs from the
+        local store
+      parameters:
+      - description: Artifact tag
+        in: path
+        name: tag
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Delete a locally-built skill artifact
+      tags:
+      - skills
   /api/v1beta/skills/push:
     post:
       description: Push a built skill artifact to a remote registry

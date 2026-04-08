@@ -743,8 +743,6 @@ _Appears in:_
 - [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
 - [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
 - [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
-- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
-- [api.v1alpha1.MCPServerEntryList](#apiv1alpha1mcpserverentrylist)
 - [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
 - [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
 - [api.v1alpha1.MCPTelemetryConfigList](#apiv1alpha1mcptelemetryconfiglist)
@@ -957,7 +955,6 @@ _Appears in:_
 - [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
-- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1220,7 +1217,6 @@ The referenced MCPExternalAuthConfig must be in the same namespace as the MCPSer
 _Appears in:_
 - [api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig)
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -1301,7 +1297,6 @@ HeaderForwardConfig defines header forward configuration for remote servers.
 
 _Appears in:_
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1663,8 +1658,6 @@ _Appears in:_
 | `serverCount` _integer_ | ServerCount is the number of MCPServers |  | Optional: \{\} <br /> |
 | `remoteProxies` _string array_ | RemoteProxies lists MCPRemoteProxy names in this group |  | Optional: \{\} <br /> |
 | `remoteProxyCount` _integer_ | RemoteProxyCount is the number of MCPRemoteProxies |  | Optional: \{\} <br /> |
-| `entries` _string array_ | Entries lists MCPServerEntry names in this group |  | Optional: \{\} <br /> |
-| `entryCount` _integer_ | EntryCount is the number of MCPServerEntries |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  | Optional: \{\} <br /> |
 
 
@@ -2168,110 +2161,6 @@ _Appears in:_
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `spec` _[api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)_ |  |  |  |
 | `status` _[api.v1alpha1.MCPServerStatus](#apiv1alpha1mcpserverstatus)_ |  |  |  |
-
-
-#### api.v1alpha1.MCPServerEntry
-
-
-
-MCPServerEntry is the Schema for the mcpserverentries API.
-It declares a remote MCP server endpoint for vMCP discovery and routing
-without deploying any infrastructure.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPServerEntryList](#apiv1alpha1mcpserverentrylist)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
-| `kind` _string_ | `MCPServerEntry` | | |
-| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
-| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
-| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPServerEntryStatus](#apiv1alpha1mcpserverentrystatus)_ |  |  |  |
-
-
-#### api.v1alpha1.MCPServerEntryList
-
-
-
-MCPServerEntryList contains a list of MCPServerEntry.
-
-
-
-
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
-| `kind` _string_ | `MCPServerEntryList` | | |
-| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
-| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
-| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry) array_ |  |  |  |
-
-
-#### api.v1alpha1.MCPServerEntryPhase
-
-_Underlying type:_ _string_
-
-MCPServerEntryPhase represents the lifecycle phase of an MCPServerEntry.
-
-_Validation:_
-- Enum: [Valid Pending Failed]
-
-_Appears in:_
-- [api.v1alpha1.MCPServerEntryStatus](#apiv1alpha1mcpserverentrystatus)
-
-| Field | Description |
-| --- | --- |
-| `Valid` | MCPServerEntryPhaseValid indicates all validations passed and the entry is usable.<br /> |
-| `Pending` | MCPServerEntryPhasePending indicates the entry is waiting for referenced resources.<br /> |
-| `Failed` | MCPServerEntryPhaseFailed indicates a validation error occurred.<br /> |
-
-
-#### api.v1alpha1.MCPServerEntrySpec
-
-
-
-MCPServerEntrySpec defines the desired state of MCPServerEntry.
-MCPServerEntry is a zero-infrastructure catalog entry that declares a remote MCP
-server endpoint. Unlike MCPRemoteProxy, it creates no pods, services, or deployments.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `remoteURL` _string_ | RemoteURL is the URL of the remote MCP server.<br />HTTPS is enforced by default; set the annotation<br />toolhive.stacklok.dev/allow-insecure: "true" to allow HTTP for development. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
-| `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
-| `groupRef` _string_ | GroupRef is the name of the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
-| `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like API keys or correlation IDs. |  | Optional: \{\} <br /> |
-| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing CA certificates for TLS verification<br />when connecting to the remote MCP server. |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPServerEntryStatus
-
-
-
-MCPServerEntryStatus defines the observed state of MCPServerEntry.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller. |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPServerEntryPhase](#apiv1alpha1mcpserverentryphase)_ | Phase indicates the current lifecycle phase of the MCPServerEntry. | Pending | Enum: [Valid Pending Failed] <br />Optional: \{\} <br /> |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPServerEntry's state. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPServerList

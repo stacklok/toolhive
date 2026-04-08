@@ -96,6 +96,12 @@ type Config struct {
 	// +kubebuilder:default=true
 	// +optional
 	UseLegacyAttributes bool `json:"useLegacyAttributes" yaml:"useLegacyAttributes"`
+
+	// CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.
+	// When set, the OTLP exporters use this CA to verify the collector's TLS certificate
+	// instead of relying solely on the system CA pool.
+	// +optional
+	CACertPath string `json:"caCertPath,omitempty" yaml:"caCertPath,omitempty"`
 }
 
 // Ensure Config implements fmt.Stringer and fmt.GoStringer
@@ -118,10 +124,12 @@ func (c Config) String() string {
 
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
-		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, UseLegacyAttributes: %t}",
+		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, "+
+		"UseLegacyAttributes: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
-		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes, c.UseLegacyAttributes)
+		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes,
+		c.UseLegacyAttributes, c.CACertPath)
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.
@@ -258,6 +266,7 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 		providers.WithOTLPEndpoint(config.Endpoint),
 		providers.WithHeaders(config.Headers),
 		providers.WithInsecure(config.Insecure),
+		providers.WithCACertPath(config.CACertPath),
 		providers.WithTracingEnabled(config.TracingEnabled),
 		providers.WithMetricsEnabled(config.MetricsEnabled),
 		providers.WithSamplingRate(config.GetSamplingRateFloat()),

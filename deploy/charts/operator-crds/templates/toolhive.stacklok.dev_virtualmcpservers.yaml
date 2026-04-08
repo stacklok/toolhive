@@ -1672,6 +1672,12 @@ spec:
                       Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
                       including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
                     properties:
+                      caCertPath:
+                        description: |-
+                          CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.
+                          When set, the OTLP exporters use this CA to verify the collector's TLS certificate
+                          instead of relying solely on the system CA pool.
+                        type: string
                       customAttributes:
                         additionalProperties:
                           type: string

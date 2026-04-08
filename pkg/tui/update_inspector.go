@@ -194,7 +194,8 @@ func (m *Model) handleInspFilterKey(msg tea.KeyMsg) tea.Cmd {
 		return m.inspNavigateDown()
 	case msg.Type == tea.KeyBackspace:
 		if len(m.insp.filterQuery) > 0 {
-			m.insp.filterQuery = m.insp.filterQuery[:len(m.insp.filterQuery)-1]
+			r := []rune(m.insp.filterQuery)
+			m.insp.filterQuery = string(r[:len(r)-1])
 			m.insp.toolIdx = 0
 			m.inspRebuildForm()
 		}

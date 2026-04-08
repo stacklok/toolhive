@@ -38,7 +38,8 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) tea.Cmd {
 		m.filterActive = false
 	case msg.Type == tea.KeyBackspace:
 		if len(m.filterQuery) > 0 {
-			m.filterQuery = m.filterQuery[:len(m.filterQuery)-1]
+			r := []rune(m.filterQuery)
+			m.filterQuery = string(r[:len(r)-1])
 		}
 	default:
 		if msg.Type == tea.KeyRunes {

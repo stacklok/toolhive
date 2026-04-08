@@ -49,7 +49,8 @@ func (m *Model) handleRegistryKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	case msg.Type == tea.KeyBackspace:
 		if len(m.registry.filter) > 0 {
-			m.registry.filter = m.registry.filter[:len(m.registry.filter)-1]
+			r := []rune(m.registry.filter)
+			m.registry.filter = string(r[:len(r)-1])
 			m.registry.idx = 0
 			m.registry.scrollOff = 0
 		}

@@ -171,8 +171,8 @@ func (m Model) renderStatusBar() string {
 	return sepLine + "\n" + contentLine
 }
 
-// renderHelpOverlay renders the help modal over the base layout.
-func (m Model) renderHelpOverlay(_ string) string {
+// renderHelpOverlay renders the help modal centred on the terminal.
+func (m Model) renderHelpOverlay() string {
 	helpContent := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ui.ColorPurple).

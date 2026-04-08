@@ -30,7 +30,7 @@ func (m Model) View() string {
 		// Reset terminal background before handing control back to the shell.
 		return oscResetBg
 	}
-	if m.width == 0 {
+	if m.width == 0 || m.height < 2 {
 		return "Loading…\n"
 	}
 
@@ -89,7 +89,7 @@ func (m Model) View() string {
 	full := oscSetBg + strings.Join(out, "\n")
 
 	if m.showHelp {
-		return m.renderHelpOverlay(full)
+		return m.renderHelpOverlay()
 	}
 	if m.registry.open {
 		return m.renderRegistryOverlay()

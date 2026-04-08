@@ -12,12 +12,14 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	cedar "github.com/cedar-policy/cedar-go"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/syncutil"
 )
 
 // ConfigType is the configuration type identifier for Cedar authorization.
@@ -162,6 +164,9 @@ type Authorizer struct {
 	// groupClaimName is the JWT claim key that contains group membership.
 	// When empty, the well-known defaults are checked ("groups", "roles", etc.).
 	groupClaimName string
+	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
+	// so it emits at most once per 30 seconds instead of once per authorization check.
+	claimKeyLog *syncutil.AtMost
 }
 
 // ConfigOptions represents the Cedar-specific authorization configuration options.
@@ -194,6 +199,7 @@ func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
 		entityFactory:           NewEntityFactory(),
 		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
 		groupClaimName:          options.GroupClaimName,
+		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
 	}
 
 	// Load policies
@@ -408,10 +414,27 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 			return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
 				a.primaryUpstreamProvider, err)
 		}
+		a.logClaimKeys("upstream", parsedClaims)
 		return parsedClaims, nil
 	}
 	// Default path: use claims from the original client request's token.
-	return jwt.MapClaims(identity.Claims), nil
+	claims := jwt.MapClaims(identity.Claims)
+	a.logClaimKeys("token", claims)
+	return claims, nil
+}
+
+// logClaimKeys emits a rate-limited DEBUG log listing the JWT claim keys
+// available for Cedar policy evaluation.
+func (a *Authorizer) logClaimKeys(source string, claims jwt.MapClaims) {
+	a.claimKeyLog.Do(func() {
+		keys := make([]string, 0, len(claims))
+		for k := range claims {
+			keys = append(keys, k)
+		}
+		slog.Debug("Resolved JWT claim keys for Cedar evaluation",
+			"source", source,
+			"keys", keys)
+	})
 }
 
 // parseUpstreamJWTClaims parses JWT claims from an upstream access token without

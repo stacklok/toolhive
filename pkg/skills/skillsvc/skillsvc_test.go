@@ -2858,3 +2858,62 @@ func TestListBuilds(t *testing.T) {
 		assert.Equal(t, "real-skill", artifacts[0].Tag)
 	})
 }
+
+func TestDeleteBuild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil oci store returns 500", func(t *testing.T) {
+		t.Parallel()
+		svc := New(&storage.NoopSkillStore{})
+		err := svc.DeleteBuild(t.Context(), "my-skill")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
+	})
+
+	t.Run("removes tag and blobs", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "my-skill"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		require.NoError(t, svc.DeleteBuild(t.Context(), "my-skill"))
+
+		// Tag should be gone — ListBuilds should return empty.
+		builds, listErr := svc.ListBuilds(t.Context())
+		require.NoError(t, listErr)
+		assert.Empty(t, builds)
+	})
+
+	t.Run("tag does not exist returns 404", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		err = svc.DeleteBuild(t.Context(), "nonexistent")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusNotFound, httperr.Code(err))
+	})
+
+	t.Run("blobs retained when another tag shares the same digest", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		d := buildTestArtifact(t, ociStore, "shared-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "tag-a"))
+		require.NoError(t, ociStore.Tag(t.Context(), d, "tag-b"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		require.NoError(t, svc.DeleteBuild(t.Context(), "tag-a"))
+
+		// tag-b still exists and the shared artifact is accessible.
+		builds, listErr := svc.ListBuilds(t.Context())
+		require.NoError(t, listErr)
+		require.Len(t, builds, 1)
+		assert.Equal(t, "tag-b", builds[0].Tag)
+	})
+}

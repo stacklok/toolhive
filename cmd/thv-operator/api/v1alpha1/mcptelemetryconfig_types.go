@@ -82,6 +82,13 @@ type MCPTelemetryOTelConfig struct {
 	// +kubebuilder:default=true
 	// +optional
 	UseLegacyAttributes bool `json:"useLegacyAttributes"`
+
+	// CABundleRef references a ConfigMap containing a PEM-encoded CA certificate bundle
+	// for the OTLP endpoint. The custom CA is appended to the system certificate pool
+	// so that both the custom CA and default system CAs are trusted.
+	// Ignored when insecure is true.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 }
 
 // MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.

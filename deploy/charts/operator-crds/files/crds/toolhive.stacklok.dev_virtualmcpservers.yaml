@@ -1669,6 +1669,13 @@ spec:
                       Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
                       including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
                     properties:
+                      caCertFile:
+                        description: |-
+                          CACertFile is the file path to a PEM-encoded CA certificate bundle
+                          used to verify the OTLP endpoint's TLS certificate.
+                          The custom CA is appended to the system certificate pool.
+                          Ignored when Insecure is true.
+                        type: string
                       customAttributes:
                         additionalProperties:
                           type: string
@@ -2264,6 +2271,40 @@ spec:
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+              telemetryCABundleRef:
+                description: |-
+                  TelemetryCABundleRef references a ConfigMap containing a PEM-encoded CA certificate
+                  bundle for the OTLP telemetry endpoint. The custom CA is appended to the system
+                  certificate pool. This is a Kubernetes-specific override — telemetry endpoint and
+                  other settings are configured via spec.config.telemetry.
+                  Ignored when spec.config.telemetry.insecure is true.
+                properties:
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                      If Key is not specified, it defaults to "ca.crt".
+                    properties:
+                      key:
+                        description: The key to select.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must
+                          be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
             required:
             - incomingAuth
             type: object

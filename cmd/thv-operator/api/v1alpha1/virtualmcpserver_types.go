@@ -93,6 +93,14 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// TelemetryCABundleRef references a ConfigMap containing a PEM-encoded CA certificate
+	// bundle for the OTLP telemetry endpoint. The custom CA is appended to the system
+	// certificate pool. This is a Kubernetes-specific override — telemetry endpoint and
+	// other settings are configured via spec.config.telemetry.
+	// Ignored when spec.config.telemetry.insecure is true.
+	// +optional
+	TelemetryCABundleRef *CABundleSource `json:"telemetryCABundleRef,omitempty"`
+
 	// SessionStorage configures session storage for stateful horizontal scaling.
 	// When nil, no session storage is configured.
 	// +optional

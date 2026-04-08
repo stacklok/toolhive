@@ -290,6 +290,13 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 		}
 	}
 
+	// Add OTel CA bundle volume if configured
+	if vmcp.Spec.TelemetryCABundleRef != nil {
+		caVolumes, caMounts := ctrlutil.AddOTelCABundleVolumes(vmcp.Spec.TelemetryCABundleRef)
+		volumes = append(volumes, caVolumes...)
+		volumeMounts = append(volumeMounts, caMounts...)
+	}
+
 	// TODO: Add volumes for composite tool definitions from VirtualMCPCompositeToolDefinition refs
 
 	return volumeMounts, volumes, nil

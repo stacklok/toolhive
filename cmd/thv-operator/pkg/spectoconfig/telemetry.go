@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
@@ -136,6 +137,11 @@ func NormalizeMCPTelemetryConfig(
 		}
 		if otel.Metrics != nil {
 			config.MetricsEnabled = otel.Metrics.Enabled
+		}
+
+		// Compute CA bundle path for the OTLP endpoint
+		if otel.CABundleRef != nil && !otel.Insecure {
+			config.CACertFile = ctrlutil.ComputeOTelCABundlePath(otel.CABundleRef)
 		}
 	}
 

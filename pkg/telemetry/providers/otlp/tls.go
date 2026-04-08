@@ -18,7 +18,7 @@ func buildTLSConfig(caCertFile string) (*tls.Config, error) {
 		certPool = x509.NewCertPool()
 	}
 
-	pemData, err := os.ReadFile(caCertFile)
+	pemData, err := os.ReadFile(caCertFile) //nolint:gosec // G304: path comes from operator-controlled config, not user input
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CA certificate file: %w", err)
 	}

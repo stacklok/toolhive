@@ -140,6 +140,9 @@ func (c *Converter) Convert(
 	// are handled by kubebuilder annotations in pkg/telemetry/config.go and applied by the API server.
 	config.Telemetry = spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 
+	// Set telemetry CA bundle path from the spec-level Kubernetes reference
+	setTelemetryCABundlePath(config, vmcp.Spec.TelemetryCABundleRef)
+
 	if vmcp.Spec.Config.Audit != nil && vmcp.Spec.Config.Audit.Enabled {
 		config.Audit = vmcp.Spec.Config.Audit
 	}
@@ -776,4 +779,14 @@ func validateCompositeToolNames(tools []vmcpconfig.CompositeToolConfig) error {
 		seen[tools[i].Name] = true
 	}
 	return nil
+}
+
+// setTelemetryCABundlePath sets the CACertFile on the telemetry config from a
+// Kubernetes CABundleSource reference. Skipped when the reference is nil, telemetry
+// is unconfigured, or insecure mode is enabled.
+func setTelemetryCABundlePath(config *vmcpconfig.Config, ref *mcpv1alpha1.CABundleSource) {
+	if ref == nil || config.Telemetry == nil || config.Telemetry.Insecure {
+		return
+	}
+	config.Telemetry.CACertFile = controllerutil.ComputeOTelCABundlePath(ref)
 }

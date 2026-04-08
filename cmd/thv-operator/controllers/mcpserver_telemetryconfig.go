@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 // handleTelemetryConfig validates and tracks the hash of the referenced MCPTelemetryConfig.
@@ -58,6 +59,20 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 			ObservedGeneration: m.Generation,
 		})
 		return fmt.Errorf("MCPTelemetryConfig %s not found", m.Spec.TelemetryConfigRef.Name)
+	}
+
+	// Validate CA bundle reference if present
+	if telemetryConfig.Spec.OpenTelemetry != nil && telemetryConfig.Spec.OpenTelemetry.CABundleRef != nil {
+		if err := validation.ValidateCABundleSource(telemetryConfig.Spec.OpenTelemetry.CABundleRef); err != nil {
+			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+				Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1alpha1.ConditionReasonTelemetryConfigRefInvalid,
+				Message:            fmt.Sprintf("MCPTelemetryConfig %s has invalid caBundleRef: %v", m.Spec.TelemetryConfigRef.Name, err),
+				ObservedGeneration: m.Generation,
+			})
+			return fmt.Errorf("MCPTelemetryConfig %s has invalid caBundleRef: %w", m.Spec.TelemetryConfigRef.Name, err)
+		}
 	}
 
 	// Validate that the MCPTelemetryConfig is valid (has Valid=True condition)

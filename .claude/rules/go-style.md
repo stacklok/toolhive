@@ -18,7 +18,11 @@ Applies to all Go files in the project.
 Check these whenever adding a method to an interface or defining a new type:
 
 - **Minimal surface**: Don't add interface methods that duplicate the semantics of existing ones. If an existing method already answers the question (possibly with a side effect), don't add a separate method for the same check.
-- **No no-op implementations**: If a method is only meaningful for some implementations of an interface, the interface is too broad. A no-op silently breaks callers that depend on the method working. Narrow the interface or use a separate capability interface.
+- **No silent no-ops**: A no-op that silently breaks callers who depend on the method working is a sign the interface is too broad. Narrow the interface or use a separate capability interface. Benign no-ops (e.g., `Close()` on an in-memory store) are fine.
+- **Option pattern must be compile-time safe**: Options should not have runtime failures. Never define a local anonymous interface inside an option and type-assert against it — a silent no-op results if the target doesn't implement it. Two typesafe approaches:
+  - *Config struct field*: put the setting on the config struct (e.g., `types.Config.SessionStorage`) so all consumers see it at compile time.
+  - *Typed functional option*: use `func(*ConcreteType)` so the option only compiles against the correct receiver.
+  If you need to cast inside an option to check whether the target supports it, the option is on the wrong abstraction. See #4638.
 - **Avoid parallel types that drift**: Don't define a separate config/data type that mirrors an existing one. Embed or reuse the original — two parallel structs require a conversion step and will diverge over time.
 
 ## Resource Leaks

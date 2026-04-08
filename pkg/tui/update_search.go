@@ -218,31 +218,52 @@ func buildHighlightedLogContent(lines []string, query string, matches []int, cur
 }
 
 // highlightSubstring wraps all case-insensitive occurrences of query within line
-// with a lipgloss background color.
+// with a lipgloss background color. It operates on rune indices so that
+// multi-byte UTF-8 characters and Unicode case mappings are handled correctly.
 func highlightSubstring(line, query, lowerQuery string, bg lipgloss.Color) string {
 	if query == "" {
 		return line
 	}
-	lowerLine := strings.ToLower(line)
+	lineRunes := []rune(line)
+	lowerLineRunes := []rune(strings.ToLower(line))
+	queryRunes := []rune(lowerQuery)
+	qLen := len(queryRunes)
 	hlStyle := lipgloss.NewStyle().Background(bg).Foreground(ui.ColorBg)
 
 	var sb strings.Builder
 	pos := 0
-	for {
-		idx := strings.Index(lowerLine[pos:], lowerQuery)
+	for pos <= len(lowerLineRunes)-qLen {
+		idx := runesIndex(lowerLineRunes[pos:], queryRunes)
 		if idx < 0 {
-			sb.WriteString(line[pos:])
 			break
 		}
 		abs := pos + idx
-		sb.WriteString(line[pos:abs])
-		sb.WriteString(hlStyle.Render(line[abs : abs+len(query)]))
-		pos = abs + len(query)
-		if pos >= len(line) {
-			break
+		sb.WriteString(string(lineRunes[pos:abs]))
+		sb.WriteString(hlStyle.Render(string(lineRunes[abs : abs+qLen])))
+		pos = abs + qLen
+	}
+	sb.WriteString(string(lineRunes[pos:]))
+	return sb.String()
+}
+
+// runesIndex returns the rune index of the first occurrence of sub in s, or -1.
+func runesIndex(s, sub []rune) int {
+	if len(sub) == 0 {
+		return 0
+	}
+	for i := 0; i <= len(s)-len(sub); i++ {
+		match := true
+		for j := range sub {
+			if s[i+j] != sub[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
 		}
 	}
-	return sb.String()
+	return -1
 }
 
 // xansiCutLine applies ANSI-aware horizontal slicing to a single line.

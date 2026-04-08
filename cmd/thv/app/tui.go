@@ -62,7 +62,7 @@ func tuiCmdFunc(cmd *cobra.Command, _ []string) error {
 	// quit. On a normal quit, View() emits the reset; this defer covers other
 	// exit paths. "\x1b]111;\x07" is the OSC 111 sequence that restores the
 	// terminal's default background colour.
-	defer fmt.Fprint(os.Stdout, "\x1b]111;\x07")
+	defer func() { _, _ = fmt.Fprint(os.Stdout, "\x1b]111;\x07") }()
 
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {

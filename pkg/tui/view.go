@@ -156,7 +156,7 @@ func (m Model) renderSidebar() string {
 
 	sidebarStyle := lipgloss.NewStyle().
 		Width(sw).
-		Height(m.height-2).MaxHeight(m.height-2). // body = m.height-2, statusbar = 2, total = m.height
+		Height(m.height - 2).MaxHeight(m.height - 2). // body = m.height-2, statusbar = 2, total = m.height
 		PaddingRight(1)
 
 	return sidebarStyle.Render(sb.String())
@@ -283,7 +283,7 @@ func (m Model) renderMain() string {
 		}
 	}
 
-	mainStyle := lipgloss.NewStyle().Width(mainW).Height(m.height-2).MaxHeight(m.height-2)
+	mainStyle := lipgloss.NewStyle().Width(mainW).Height(m.height - 2).MaxHeight(m.height - 2)
 
 	// Only include toolbar if non-empty to avoid a trailing blank line.
 	bodyParts := []string{titleText, tabBar, sep, content}

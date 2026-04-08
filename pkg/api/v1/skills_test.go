@@ -525,6 +525,36 @@ func TestSkillsRouter(t *testing.T) {
 			expectedStatus: http.StatusInternalServerError,
 			expectedBody:   "Internal Server Error",
 		},
+		{
+			name:   "delete build success",
+			method: "DELETE",
+			path:   "/builds/my-skill",
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().DeleteBuild(gomock.Any(), "my-skill").Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+		},
+		{
+			name:   "delete build not found",
+			method: "DELETE",
+			path:   "/builds/missing",
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().DeleteBuild(gomock.Any(), "missing").
+					Return(httperr.WithCode(fmt.Errorf("tag not found"), http.StatusNotFound))
+			},
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:   "delete build service error",
+			method: "DELETE",
+			path:   "/builds/my-skill",
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().DeleteBuild(gomock.Any(), "my-skill").
+					Return(httperr.WithCode(fmt.Errorf("oci store not configured"), http.StatusInternalServerError))
+			},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBody:   "Internal Server Error",
+		},
 	}
 
 	for _, tt := range tests {

@@ -2062,11 +2062,12 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
-// It updates the MCPServer status when the auth server configuration changes.
+// It updates the MCPServer status when the auth server configuration changes and sets
+// the AuthServerRefValidated condition.
 func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	if m.Spec.AuthServerRef == nil {
-		// No authServerRef, clear any stored hash
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1alpha1.ConditionTypeAuthServerRefValidated)
 		if m.Status.AuthServerConfigHash != "" {
 			m.Status.AuthServerConfigHash = ""
 			if err := r.Status().Update(ctx, m); err != nil {
@@ -2078,14 +2079,80 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 
 	// Only MCPExternalAuthConfig kind is supported
 	if m.Spec.AuthServerRef.Kind != "MCPExternalAuthConfig" {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidKind,
+			Message: fmt.Sprintf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported",
+				m.Spec.AuthServerRef.Kind),
+			ObservedGeneration: m.Generation,
+		})
 		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", m.Spec.AuthServerRef.Kind)
 	}
 
 	// Fetch the referenced MCPExternalAuthConfig
 	authConfig, err := ctrlutil.GetExternalAuthConfigByName(ctx, r.Client, m.Namespace, m.Spec.AuthServerRef.Name)
 	if err != nil {
+		if errors.IsNotFound(err) {
+			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+				Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+				Status: metav1.ConditionFalse,
+				Reason: mcpv1alpha1.ConditionReasonAuthServerRefNotFound,
+				Message: fmt.Sprintf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+					m.Spec.AuthServerRef.Name, m.Namespace),
+				ObservedGeneration: m.Generation,
+			})
+			return fmt.Errorf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+				m.Spec.AuthServerRef.Name, m.Namespace)
+		}
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonAuthServerRefFetchError,
+			Message:            fmt.Sprintf("Failed to fetch MCPExternalAuthConfig '%s'", m.Spec.AuthServerRef.Name),
+			ObservedGeneration: m.Generation,
+		})
 		return fmt.Errorf("failed to get authServerRef MCPExternalAuthConfig %s: %w", m.Spec.AuthServerRef.Name, err)
 	}
+
+	// Validate the config type is embeddedAuthServer
+	if authConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidType,
+			Message: fmt.Sprintf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
+				m.Spec.AuthServerRef.Name, authConfig.Spec.Type),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
+			m.Spec.AuthServerRef.Name, authConfig.Spec.Type)
+	}
+
+	// MCPServer supports only single-upstream embedded auth server configs
+	if embeddedCfg := authConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonAuthServerRefMultiUpstream,
+			Message: fmt.Sprintf("MCPServer supports only one upstream provider (found %d); "+
+				"use VirtualMCPServer for multi-upstream",
+				len(embeddedCfg.UpstreamProviders)),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("MCPServer %s/%s: embedded auth server has %d upstream providers, "+
+			"but only 1 is supported; use VirtualMCPServer",
+			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
+	}
+
+	// AuthServerRef valid
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonAuthServerRefValid,
+		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
+		ObservedGeneration: m.Generation,
+	})
 
 	// Check if the config hash has changed
 	if m.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {

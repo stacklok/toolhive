@@ -230,6 +230,9 @@ const (
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
 
+	// ConditionTypeMCPRemoteProxyAuthServerRefValidated indicates whether the AuthServerRef is valid
+	ConditionTypeMCPRemoteProxyAuthServerRefValidated = "AuthServerRefValidated"
+
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
 )
@@ -287,6 +290,24 @@ const (
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream indicates multi-upstream is not supported
 	// for MCPRemoteProxy (use VirtualMCPServer for multi-upstream).
 	ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefValid indicates the AuthServerRef is valid
+	ConditionReasonMCPRemoteProxyAuthServerRefValid = "AuthServerRefValid"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefNotFound indicates the referenced auth server config was not found
+	ConditionReasonMCPRemoteProxyAuthServerRefNotFound = "AuthServerRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefFetchError indicates an error occurred fetching the auth server config
+	ConditionReasonMCPRemoteProxyAuthServerRefFetchError = "AuthServerRefFetchError"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind indicates the authServerRef kind is not supported
+	ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind = "AuthServerRefInvalidKind"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
+	ConditionReasonMCPRemoteProxyAuthServerRefInvalidType = "AuthServerRefInvalidType"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream indicates multi-upstream is not supported
+	ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"

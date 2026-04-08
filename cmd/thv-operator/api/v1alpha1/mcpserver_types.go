@@ -108,6 +108,31 @@ const (
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 )
 
+const (
+	// ConditionTypeAuthServerRefValidated indicates whether the AuthServerRef is valid
+	ConditionTypeAuthServerRefValidated = "AuthServerRefValidated"
+)
+
+const (
+	// ConditionReasonAuthServerRefValid indicates the referenced auth server config is valid
+	ConditionReasonAuthServerRefValid = "AuthServerRefValid"
+
+	// ConditionReasonAuthServerRefNotFound indicates the referenced auth server config was not found
+	ConditionReasonAuthServerRefNotFound = "AuthServerRefNotFound"
+
+	// ConditionReasonAuthServerRefFetchError indicates an error occurred fetching the auth server config
+	ConditionReasonAuthServerRefFetchError = "AuthServerRefFetchError"
+
+	// ConditionReasonAuthServerRefInvalidKind indicates the authServerRef kind is not supported
+	ConditionReasonAuthServerRefInvalidKind = "AuthServerRefInvalidKind"
+
+	// ConditionReasonAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
+	ConditionReasonAuthServerRefInvalidType = "AuthServerRefInvalidType"
+
+	// ConditionReasonAuthServerRefMultiUpstream indicates multi-upstream is not supported
+	ConditionReasonAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
+)
+
 // ConditionTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
 const ConditionTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
 

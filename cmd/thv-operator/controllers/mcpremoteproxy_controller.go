@@ -723,11 +723,12 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
-// It updates the MCPRemoteProxy status when the auth server configuration changes.
+// It updates the MCPRemoteProxy status when the auth server configuration changes and sets
+// the AuthServerRefValidated condition.
 func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 	if proxy.Spec.AuthServerRef == nil {
-		// No authServerRef, clear any stored hash
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated)
 		if proxy.Status.AuthServerConfigHash != "" {
 			proxy.Status.AuthServerConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
@@ -739,14 +740,81 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 
 	// Only MCPExternalAuthConfig kind is supported
 	if proxy.Spec.AuthServerRef.Kind != "MCPExternalAuthConfig" {
-		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", proxy.Spec.AuthServerRef.Kind)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind,
+			Message: fmt.Sprintf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported",
+				proxy.Spec.AuthServerRef.Kind),
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported",
+			proxy.Spec.AuthServerRef.Kind)
 	}
 
 	// Fetch the referenced MCPExternalAuthConfig
 	authConfig, err := ctrlutil.GetExternalAuthConfigByName(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthServerRef.Name)
 	if err != nil {
+		if errors.IsNotFound(err) {
+			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+				Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+				Status: metav1.ConditionFalse,
+				Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefNotFound,
+				Message: fmt.Sprintf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+					proxy.Spec.AuthServerRef.Name, proxy.Namespace),
+				ObservedGeneration: proxy.Generation,
+			})
+			return fmt.Errorf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+				proxy.Spec.AuthServerRef.Name, proxy.Namespace)
+		}
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefFetchError,
+			Message:            fmt.Sprintf("Failed to fetch MCPExternalAuthConfig '%s'", proxy.Spec.AuthServerRef.Name),
+			ObservedGeneration: proxy.Generation,
+		})
 		return fmt.Errorf("failed to get authServerRef MCPExternalAuthConfig %s: %w", proxy.Spec.AuthServerRef.Name, err)
 	}
+
+	// Validate the config type is embeddedAuthServer
+	if authConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidType,
+			Message: fmt.Sprintf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
+				proxy.Spec.AuthServerRef.Name, authConfig.Spec.Type),
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
+			proxy.Spec.AuthServerRef.Name, authConfig.Spec.Type)
+	}
+
+	// MCPRemoteProxy supports only single-upstream embedded auth server configs
+	if embeddedCfg := authConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream,
+			Message: fmt.Sprintf("MCPRemoteProxy supports only one upstream provider (found %d); "+
+				"use VirtualMCPServer for multi-upstream",
+				len(embeddedCfg.UpstreamProviders)),
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("MCPRemoteProxy %s/%s: embedded auth server has %d upstream providers, "+
+			"but only 1 is supported; use VirtualMCPServer",
+			proxy.Namespace, proxy.Name, len(embeddedCfg.UpstreamProviders))
+	}
+
+	// AuthServerRef valid
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefValid,
+		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
+		ObservedGeneration: proxy.Generation,
+	})
 
 	// Check if the config hash has changed
 	if proxy.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {

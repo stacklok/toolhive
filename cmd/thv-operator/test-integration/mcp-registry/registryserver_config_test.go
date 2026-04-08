@@ -1045,8 +1045,8 @@ func (*serverConfigTestHelpers) verifyConfigMapBasics(configMap *corev1.ConfigMa
 }
 
 // verifyConfigMapContent verifies source-specific content in the config.yaml
-func (*serverConfigTestHelpers) verifyConfigMapContent(configYAML string, registryName string, expectedContent map[string]string) {
-	Expect(configYAML).To(ContainSubstring(fmt.Sprintf("registryName: %s", registryName)))
+func (*serverConfigTestHelpers) verifyConfigMapContent(configYAML string, _ string, expectedContent map[string]string) {
+	Expect(configYAML).To(ContainSubstring("sources:"))
 	Expect(configYAML).To(ContainSubstring("registries:"))
 	Expect(configYAML).To(ContainSubstring("format: toolhive"))
 

@@ -16,6 +16,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/test/e2e/images"
+	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
 
 var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
@@ -63,13 +64,13 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 		Expect(k8sClient.Create(ctx, server)).To(Succeed())
 
 		By("Waiting for MCPServer to be running")
-		WaitForMCPServerRunning(ctx, k8sClient, serverName, testNamespace, timeout, pollingInterval)
+		testutil.WaitForMCPServerRunning(ctx, k8sClient, serverName, testNamespace, timeout, pollingInterval)
 
 		By("Creating NodePort service for MCPServer proxy")
-		CreateNodePortService(ctx, k8sClient, serverName, testNamespace)
+		testutil.CreateNodePortService(ctx, k8sClient, serverName, testNamespace)
 
 		By("Getting NodePort")
-		nodePort = GetNodePort(ctx, k8sClient, serverName+"-nodeport", testNamespace, timeout, pollingInterval)
+		nodePort = testutil.GetNodePort(ctx, k8sClient, serverName+"-nodeport", testNamespace, timeout, pollingInterval)
 		GinkgoWriter.Printf("MCPServer accessible at http://localhost:%d\n", nodePort)
 
 		By("Waiting for proxy to be reachable")
@@ -168,7 +169,7 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 		Expect(k8sClient.Create(ctx, server2)).To(Succeed())
 
 		By("Waiting for MCPServer with both configs to be running")
-		WaitForMCPServerRunning(ctx, k8sClient, server2Name, testNamespace, timeout, pollingInterval)
+		testutil.WaitForMCPServerRunning(ctx, k8sClient, server2Name, testNamespace, timeout, pollingInterval)
 
 		By("Cleaning up second MCPServer")
 		_ = k8sClient.Delete(ctx, server2)

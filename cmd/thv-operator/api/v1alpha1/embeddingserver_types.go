@@ -187,7 +187,7 @@ type EmbeddingServerStatus struct {
 }
 
 // EmbeddingServerPhase is the phase of the EmbeddingServer
-// +kubebuilder:validation:Enum=Pending;Downloading;Running;Failed;Terminating
+// +kubebuilder:validation:Enum=Pending;Downloading;Ready;Failed;Terminating
 type EmbeddingServerPhase string
 
 const (
@@ -197,8 +197,8 @@ const (
 	// EmbeddingServerPhaseDownloading means the model is being downloaded
 	EmbeddingServerPhaseDownloading EmbeddingServerPhase = "Downloading"
 
-	// EmbeddingServerPhaseRunning means the EmbeddingServer is running and ready
-	EmbeddingServerPhaseRunning EmbeddingServerPhase = "Running"
+	// EmbeddingServerPhaseReady means the EmbeddingServer is ready
+	EmbeddingServerPhaseReady EmbeddingServerPhase = "Ready"
 
 	// EmbeddingServerPhaseFailed means the EmbeddingServer failed to start
 	EmbeddingServerPhaseFailed EmbeddingServerPhase = "Failed"

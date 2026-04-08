@@ -997,15 +997,15 @@ type MCPServerStatus struct {
 }
 
 // MCPServerPhase is the phase of the MCPServer
-// +kubebuilder:validation:Enum=Pending;Running;Failed;Terminating;Stopped
+// +kubebuilder:validation:Enum=Pending;Ready;Failed;Terminating;Stopped
 type MCPServerPhase string
 
 const (
 	// MCPServerPhasePending means the MCPServer is being created
 	MCPServerPhasePending MCPServerPhase = "Pending"
 
-	// MCPServerPhaseRunning means the MCPServer is running
-	MCPServerPhaseRunning MCPServerPhase = "Running"
+	// MCPServerPhaseReady means the MCPServer is ready
+	MCPServerPhaseReady MCPServerPhase = "Ready"
 
 	// MCPServerPhaseFailed means the MCPServer failed to start
 	MCPServerPhaseFailed MCPServerPhase = "Failed"

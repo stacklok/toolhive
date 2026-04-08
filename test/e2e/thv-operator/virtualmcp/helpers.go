@@ -788,7 +788,7 @@ func CreateMCPServerAndWait(
 		if err != nil {
 			return fmt.Errorf("failed to get server: %w", err)
 		}
-		if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+		if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 			return nil
 		}
 		return fmt.Errorf("%s not ready yet, phase: %s", name, server.Status.Phase)
@@ -887,7 +887,7 @@ func CreateMultipleMCPServersInParallel(
 			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed {
 				return gomega.StopTrying(fmt.Sprintf("%s failed: %s", cfg.Name, server.Status.Message))
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("%s not ready yet, phase: %s", cfg.Name, server.Status.Phase)
 			}
 		}

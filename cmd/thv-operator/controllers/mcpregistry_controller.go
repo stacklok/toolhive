@@ -247,7 +247,7 @@ func (r *MCPRegistryReconciler) updateRegistryStatus(
 		if isReady {
 			endpoint := fmt.Sprintf("http://%s.%s:8080",
 				mcpRegistry.GetAPIResourceName(), mcpRegistry.Namespace)
-			latest.Status.Phase = mcpv1alpha1.MCPRegistryPhaseRunning
+			latest.Status.Phase = mcpv1alpha1.MCPRegistryPhaseReady
 			latest.Status.Message = "Registry API is ready and serving requests"
 			latest.Status.URL = endpoint
 			setRegistryReadyCondition(latest, metav1.ConditionTrue,

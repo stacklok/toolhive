@@ -721,15 +721,15 @@ type MCPRegistryStatus struct {
 }
 
 // MCPRegistryPhase represents the phase of the MCPRegistry
-// +kubebuilder:validation:Enum=Pending;Running;Failed;Terminating
+// +kubebuilder:validation:Enum=Pending;Ready;Failed;Terminating
 type MCPRegistryPhase string
 
 const (
 	// MCPRegistryPhasePending means the MCPRegistry is being initialized
 	MCPRegistryPhasePending MCPRegistryPhase = "Pending"
 
-	// MCPRegistryPhaseRunning means the MCPRegistry is running and operational
-	MCPRegistryPhaseRunning MCPRegistryPhase = "Running"
+	// MCPRegistryPhaseReady means the MCPRegistry is ready and operational
+	MCPRegistryPhaseReady MCPRegistryPhase = "Ready"
 
 	// MCPRegistryPhaseFailed means the MCPRegistry has failed
 	MCPRegistryPhaseFailed MCPRegistryPhase = "Failed"

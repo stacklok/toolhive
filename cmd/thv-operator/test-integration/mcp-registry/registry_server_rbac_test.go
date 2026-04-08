@@ -50,7 +50,7 @@ var _ = Describe("MCPRegistry RBAC Resources", Label("k8s", "registry", "rbac"),
 
 			// Wait for registry to be reconciled
 			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{
-				mcpv1alpha1.MCPRegistryPhaseRunning,
+				mcpv1alpha1.MCPRegistryPhaseReady,
 				mcpv1alpha1.MCPRegistryPhasePending,
 			}, MediumTimeout)
 

@@ -1053,7 +1053,7 @@ spec:
                 description: Phase is the current phase of the MCPServer
                 enum:
                 - Pending
-                - Running
+                - Ready
                 - Failed
                 - Terminating
                 - Stopped

@@ -5,4 +5,4 @@ metadata:
   namespace: toolhive-system
 status:
   message: "MCP server is running"
-  phase: "Running"
+  phase: "Ready"

@@ -305,7 +305,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseRunning, updated.Status.Phase)
+				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseReady, updated.Status.Phase)
 				assert.Equal(t, int32(1), updated.Status.ReadyReplicas)
 			},
 		},

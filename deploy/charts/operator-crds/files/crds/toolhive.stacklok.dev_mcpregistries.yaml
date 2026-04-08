@@ -936,7 +936,7 @@ spec:
                 description: Phase represents the current overall phase of the MCPRegistry
                 enum:
                 - Pending
-                - Running
+                - Ready
                 - Failed
                 - Terminating
                 type: string

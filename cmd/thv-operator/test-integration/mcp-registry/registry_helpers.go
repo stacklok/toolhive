@@ -414,7 +414,7 @@ func (h *MCPRegistryTestHelper) WaitForRegistryInitialization(registryName strin
 	ginkgo.By("waiting for controller to process and verify initial status")
 	statusHelper.WaitForPhaseAny(registryName, []mcpv1alpha1.MCPRegistryPhase{
 		mcpv1alpha1.MCPRegistryPhasePending,
-		mcpv1alpha1.MCPRegistryPhaseRunning,
+		mcpv1alpha1.MCPRegistryPhaseReady,
 	}, MediumTimeout)
 }
 

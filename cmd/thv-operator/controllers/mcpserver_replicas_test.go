@@ -452,7 +452,7 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 	}, updatedMCPServer)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.MCPServerPhaseRunning, updatedMCPServer.Status.Phase)
+	assert.Equal(t, mcpv1alpha1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
 	assert.Equal(t, int32(2), updatedMCPServer.Status.ReadyReplicas,
 		"ReadyReplicas should match the number of running pods")
 }
@@ -975,7 +975,7 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 	}, updatedMCPServer)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.MCPServerPhaseRunning, updatedMCPServer.Status.Phase)
+	assert.Equal(t, mcpv1alpha1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
 	assert.Equal(t, int32(2), updatedMCPServer.Status.ReadyReplicas,
 		"ReadyReplicas should exclude terminating pods")
 }

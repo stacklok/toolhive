@@ -1051,7 +1051,7 @@ _Underlying type:_ _string_
 EmbeddingServerPhase is the phase of the EmbeddingServer
 
 _Validation:_
-- Enum: [Pending Downloading Running Failed Terminating]
+- Enum: [Pending Downloading Ready Failed Terminating]
 
 _Appears in:_
 - [api.v1alpha1.EmbeddingServerStatus](#apiv1alpha1embeddingserverstatus)
@@ -1060,7 +1060,7 @@ _Appears in:_
 | --- | --- |
 | `Pending` | EmbeddingServerPhasePending means the EmbeddingServer is being created<br /> |
 | `Downloading` | EmbeddingServerPhaseDownloading means the model is being downloaded<br /> |
-| `Running` | EmbeddingServerPhaseRunning means the EmbeddingServer is running and ready<br /> |
+| `Ready` | EmbeddingServerPhaseReady means the EmbeddingServer is ready<br /> |
 | `Failed` | EmbeddingServerPhaseFailed means the EmbeddingServer failed to start<br /> |
 | `Terminating` | EmbeddingServerPhaseTerminating means the EmbeddingServer is being deleted<br /> |
 
@@ -1123,7 +1123,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the EmbeddingServer's state |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.EmbeddingServerPhase](#apiv1alpha1embeddingserverphase)_ | Phase is the current phase of the EmbeddingServer |  | Enum: [Pending Downloading Running Failed Terminating] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1alpha1.EmbeddingServerPhase](#apiv1alpha1embeddingserverphase)_ | Phase is the current phase of the EmbeddingServer |  | Enum: [Pending Downloading Ready Failed Terminating] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the embedding service can be accessed |  | Optional: \{\} <br /> |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready replicas |  | Optional: \{\} <br /> |
@@ -1986,7 +1986,7 @@ _Underlying type:_ _string_
 MCPRegistryPhase represents the phase of the MCPRegistry
 
 _Validation:_
-- Enum: [Pending Running Failed Terminating]
+- Enum: [Pending Ready Failed Terminating]
 
 _Appears in:_
 - [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
@@ -1994,7 +1994,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `Pending` | MCPRegistryPhasePending means the MCPRegistry is being initialized<br /> |
-| `Running` | MCPRegistryPhaseRunning means the MCPRegistry is running and operational<br /> |
+| `Ready` | MCPRegistryPhaseReady means the MCPRegistry is ready and operational<br /> |
 | `Failed` | MCPRegistryPhaseFailed means the MCPRegistry has failed<br /> |
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
@@ -2084,7 +2084,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPRegistryPhase](#apiv1alpha1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry |  | Enum: [Pending Running Failed Terminating] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1alpha1.MCPRegistryPhase](#apiv1alpha1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry |  | Enum: [Pending Ready Failed Terminating] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the registry API can be accessed |  | Optional: \{\} <br /> |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready registry API replicas |  | Optional: \{\} <br /> |
@@ -2316,7 +2316,7 @@ _Underlying type:_ _string_
 MCPServerPhase is the phase of the MCPServer
 
 _Validation:_
-- Enum: [Pending Running Failed Terminating Stopped]
+- Enum: [Pending Ready Failed Terminating Stopped]
 
 _Appears in:_
 - [api.v1alpha1.MCPServerStatus](#apiv1alpha1mcpserverstatus)
@@ -2324,7 +2324,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `Pending` | MCPServerPhasePending means the MCPServer is being created<br /> |
-| `Running` | MCPServerPhaseRunning means the MCPServer is running<br /> |
+| `Ready` | MCPServerPhaseReady means the MCPServer is ready<br /> |
 | `Failed` | MCPServerPhaseFailed means the MCPServer failed to start<br /> |
 | `Terminating` | MCPServerPhaseTerminating means the MCPServer is being deleted<br /> |
 | `Stopped` | MCPServerPhaseStopped means the MCPServer is scaled to zero<br /> |
@@ -2395,7 +2395,7 @@ _Appears in:_
 | `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection |  | Optional: \{\} <br /> |
 | `telemetryConfigHash` _string_ | TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPServerPhase](#apiv1alpha1mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating Stopped] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1alpha1.MCPServerPhase](#apiv1alpha1mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Ready Failed Terminating Stopped] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready proxy replicas |  | Optional: \{\} <br /> |
 

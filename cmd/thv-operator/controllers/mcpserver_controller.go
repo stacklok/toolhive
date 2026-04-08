@@ -1572,7 +1572,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 
 	// Update the status based on pod health
 	if running > 0 {
-		m.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+		m.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
 	} else if failed > 0 {
 		m.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
@@ -1590,7 +1590,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	}
 
 	// Set the top-level Ready condition based on the determined phase
-	if m.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+	if m.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 		setReadyCondition(m, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonReady, "MCP server is running")
 	} else {
 		setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, m.Status.Message)

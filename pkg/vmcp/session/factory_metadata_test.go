@@ -98,3 +98,71 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 		assert.Equal(t, "vmcp.backend.session.", MetadataKeyBackendSessionPrefix)
 	})
 }
+
+func TestRestoreSession_FreshlyPopulatesMetadataKeyBackendIDs(t *testing.T) {
+	t.Parallel()
+
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
+		ids := map[string]string{
+			"backend-a": "sess-a",
+			"backend-b": "sess-b",
+		}
+		sessID, ok := ids[target.WorkloadID]
+		if !ok {
+			return nil, nil, nil
+		}
+		return &mockConnectedBackend{sessID: sessID}, &vmcp.CapabilityList{}, nil
+	}
+
+	factory := newSessionFactoryWithConnector(connector)
+	backends := []*vmcp.Backend{
+		{ID: "backend-a"},
+		{ID: "backend-b"},
+	}
+	sessionID := "restore-test-session"
+
+	// Create the initial session so we have a real token hash in metadata.
+	original, err := factory.MakeSessionWithID(t.Context(), sessionID, nil, true, backends)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = original.Close() })
+
+	// Simulate what storage looks like after NotifyBackendExpired ran for
+	// backend-a: the per-backend session key is deleted and MetadataKeyBackendIDs
+	// is trimmed to the remaining backend.
+	storedMeta := original.GetMetadata() // returns a copy
+	delete(storedMeta, MetadataKeyBackendSessionPrefix+"backend-a")
+	storedMeta[MetadataKeyBackendIDs] = "backend-b"
+
+	// RestoreSession must freshly compute MetadataKeyBackendIDs from the
+	// backends that actually reconnect, not copy the stored value verbatim.
+	// Passing both backends to allBackends mirrors how Manager.loadSession
+	// calls factory.RestoreSession; filterBackendsByStoredIDs will filter to
+	// just backend-b based on the trimmed MetadataKeyBackendIDs.
+	restored, err := factory.RestoreSession(t.Context(), sessionID, storedMeta, backends)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = restored.Close() })
+
+	meta := restored.GetMetadata()
+	assert.Equal(t, "backend-b", meta[MetadataKeyBackendIDs],
+		"MetadataKeyBackendIDs must reflect only the backends that reconnected")
+	_, expiredPresent := meta[MetadataKeyBackendSessionPrefix+"backend-a"]
+	assert.False(t, expiredPresent,
+		"expired backend-a must not appear in restored session metadata")
+	assert.Equal(t, "sess-b", meta[MetadataKeyBackendSessionPrefix+"backend-b"],
+		"surviving backend-b session key must be present")
+}
+
+func TestRestoreSession_AbsentMetadataKeyBackendIDsReturnsError(t *testing.T) {
+	t.Parallel()
+
+	factory := newSessionFactoryWithConnector(nilBackendConnector())
+
+	// Metadata with no MetadataKeyBackendIDs key simulates corrupted or
+	// placeholder storage that was never fully initialised.
+	corrupted := map[string]string{}
+
+	_, err := factory.RestoreSession(t.Context(), "some-session-id", corrupted, nil)
+	require.Error(t, err, "absent MetadataKeyBackendIDs must return an error")
+	assert.Contains(t, err.Error(), MetadataKeyBackendIDs,
+		"error message must name the missing key")
+}

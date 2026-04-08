@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -195,6 +196,13 @@ const terminateTimeout = 5 * time.Second
 // DecorateSession is called during session setup (OnRegisterSession hook) and
 // performs a single Redis SET. 5 s is consistent with terminateTimeout.
 const decorateTimeout = 5 * time.Second
+
+// notifyBackendExpiredTimeout bounds each individual storage operation inside
+// NotifyBackendExpired() — one Load and one Upsert, each capped independently.
+// Each is a single-key Redis operation, so 5 s per call is consistent with
+// terminateTimeout and decorateTimeout. Worst-case wall-clock for the function
+// is 2 × 5 s = 10 s.
+const notifyBackendExpiredTimeout = 5 * time.Second
 
 // Generate implements the SDK's SessionIdManager.Generate().
 //
@@ -513,6 +521,116 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	return false, nil
 }
 
+// NotifyBackendExpired updates session metadata in storage to reflect that the
+// backend identified by workloadID is no longer connected. It removes the
+// per-backend session ID key and rebuilds MetadataKeyBackendIDs so that a
+// cross-pod RestoreSession call does not attempt to reconnect to the expired
+// backend session.
+//
+// After a successful storage update the session is evicted from the node-local
+// cache; the next GetMultiSession call triggers RestoreSession with the updated
+// metadata, discarding the stale in-memory copy.
+//
+// This is a best-effort operation. If the session is absent from storage (not
+// found or terminated) the call is a silent no-op. Storage errors are logged
+// but not returned; on error the cache is not evicted.
+func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), notifyBackendExpiredTimeout)
+	defer loadCancel()
+	metadata, err := sm.storage.Load(loadCtx, sessionID)
+	if err != nil {
+		if !errors.Is(err, transportsession.ErrSessionNotFound) {
+			slog.Warn("NotifyBackendExpired: failed to load session from storage",
+				"session_id", sessionID,
+				"workload_id", workloadID,
+				"error", err)
+		}
+		return
+	}
+	if metadata[MetadataKeyTerminated] == MetadataValTrue {
+		return
+	}
+
+	// MetadataKeyBackendIDs must be present. An absent key means the metadata
+	// is corrupted or was never fully initialised; clobbering it with "" would
+	// silently drop all remaining backends from subsequent restores.
+	backendIDs, backendIDsPresent := metadata[vmcpsession.MetadataKeyBackendIDs]
+	if !backendIDsPresent {
+		slog.Warn("NotifyBackendExpired: MetadataKeyBackendIDs absent from session metadata; skipping update",
+			"session_id", sessionID,
+			"workload_id", workloadID)
+		return
+	}
+
+	// Build updated metadata: remove the expired backend's session-ID key and
+	// rebuild MetadataKeyBackendIDs. Always write the key (even as "") to match
+	// populateBackendMetadata, which uses key presence to distinguish an
+	// explicit zero-backend state from absent/corrupted metadata in
+	// RestoreSession. Trim spaces and drop empty parts for robustness.
+	delete(metadata, vmcpsession.MetadataKeyBackendSessionPrefix+workloadID)
+	var remaining []string
+	for _, p := range strings.Split(backendIDs, ",") {
+		if t := strings.TrimSpace(p); t != "" && t != workloadID {
+			remaining = append(remaining, t)
+		}
+	}
+	metadata[vmcpsession.MetadataKeyBackendIDs] = strings.Join(remaining, ",")
+
+	if err := sm.updateMetadata(sessionID, metadata); err != nil {
+		slog.Warn("NotifyBackendExpired: failed to persist backend expiry to storage",
+			"session_id", sessionID,
+			"workload_id", workloadID,
+			"error", err)
+	}
+}
+
+// updateMetadata writes a complete metadata snapshot to storage and evicts the
+// session from the node-local cache so the next GetMultiSession call triggers a
+// fresh RestoreSession with the updated state.
+//
+// Cross-pod TOCTOU: a re-check Load is performed immediately before the Upsert
+// to detect cross-pod session termination (where another pod calls
+// storage.Delete). If the key is absent at re-check time we bail without
+// upserting. A residual race remains between the re-check and the Upsert (a
+// concurrent pod could delete the key in that window), but the window is now
+// microseconds rather than the full NotifyBackendExpired span. Closing the race
+// entirely would require a conditional write primitive (e.g. Redis SET XX /
+// UpsertIfPresent) added to the DataStorage interface.
+//
+// NOTE: concurrent calls for the same session are last-write-wins. We assume
+// parallel metadata writers within a session do not occur; NotifyBackendExpired
+// is the only post-creation writer and backend expiry events are serialised by
+// the backend registry. This can be retrofitted with CAS semantics or a version
+// counter if that assumption changes.
+func (sm *Manager) updateMetadata(sessionID string, metadata map[string]string) error {
+	// Same-pod guard: if Terminate() is already tearing down this session on
+	// this pod the sentinel is in the cache and storage is already deleted.
+	if raw, ok := sm.sessions.Peek(sessionID); ok {
+		if _, isSentinel := raw.(terminatedSentinel); isSentinel {
+			return nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), notifyBackendExpiredTimeout)
+	defer cancel()
+
+	// Cross-pod guard: re-check that the storage record still exists before
+	// upserting. If another pod terminated the session (deleting the key) after
+	// NotifyBackendExpired's initial Load, we must not recreate the record.
+	if _, err := sm.storage.Load(ctx, sessionID); err != nil {
+		if errors.Is(err, transportsession.ErrSessionNotFound) {
+			return nil // session was terminated elsewhere; nothing to update
+		}
+		return err
+	}
+
+	if err := sm.storage.Upsert(ctx, sessionID, metadata); err != nil {
+		return err
+	}
+	sm.sessions.Delete(sessionID)
+	return nil
+}
+
 // GetMultiSession retrieves the fully-formed MultiSession for a given SDK session ID.
 // Returns (nil, false) if the session does not exist or has not yet been
 // upgraded from placeholder to MultiSession.
@@ -539,6 +657,13 @@ func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, 
 // It returns ErrExpired when the session has been deleted or terminated
 // (including termination by another pod), so the cache evicts the entry and
 // onEvict closes backend connections.
+//
+// Cross-pod propagation: if the stored backend list differs from the cached
+// session's, ErrExpired is returned to evict the stale entry. The next
+// GetMultiSession call triggers RestoreSession with the up-to-date metadata,
+// replacing the old session and its backend connections. This ensures that a
+// backend-expiry update written by pod A propagates to pod B on the next
+// cache access rather than waiting for natural TTL expiry.
 func (sm *Manager) checkSession(sessionID string) error {
 	checkCtx, cancel := context.WithTimeout(context.Background(), restoreStorageTimeout)
 	defer cancel()
@@ -552,6 +677,22 @@ func (sm *Manager) checkSession(sessionID string) error {
 	if metadata[MetadataKeyTerminated] == MetadataValTrue {
 		return ErrExpired
 	}
+
+	// If the cached session has backend metadata and it differs from storage,
+	// evict to pick up the update. Only compare when the cached session
+	// explicitly carries MetadataKeyBackendIDs to avoid spurious evictions for
+	// sessions whose in-memory representation does not track backend IDs (e.g.
+	// test mocks that return an empty metadata map).
+	if raw, ok := sm.sessions.Peek(sessionID); ok {
+		if sess, ok := raw.(vmcpsession.MultiSession); ok {
+			if cachedIDs, present := sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs]; present {
+				if cachedIDs != metadata[vmcpsession.MetadataKeyBackendIDs] {
+					return ErrExpired
+				}
+			}
+		}
+	}
+
 	return nil
 }
 

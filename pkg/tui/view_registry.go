@@ -395,7 +395,11 @@ func buildRunCmd(item regtypes.ServerMetadata) string {
 		}
 	}
 
-	// Required env vars → --secret; optional → comment line.
+	// Required env vars → --secret <name> (references a named secret already
+	// stored in the secrets manager); optional → comment line.
+	// Note: the run form uses --env for literal values entered by the user;
+	// this clipboard command is intended for users who manage secrets via
+	// `thv secret` and want a ready-to-paste shell invocation.
 	var optional []string
 	for _, ev := range item.GetEnvVars() {
 		if ev == nil {

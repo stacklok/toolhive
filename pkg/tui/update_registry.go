@@ -174,6 +174,10 @@ func (m *Model) runFormForwardToField(msg tea.KeyMsg) tea.Cmd {
 
 // runFormSubmit validates required fields and launches the run command.
 func (m *Model) runFormSubmit() tea.Cmd {
+	if len(m.runForm.fields) == 0 {
+		return m.showNotif("✗ no form fields", false)
+	}
+
 	// Validate required fields.
 	for _, f := range m.runForm.fields {
 		if f.required && strings.TrimSpace(f.input.Value()) == "" {

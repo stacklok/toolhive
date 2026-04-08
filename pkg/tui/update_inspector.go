@@ -14,6 +14,8 @@ import (
 )
 
 // handleInspectorKey handles key input when the inspector panel is active.
+//
+//nolint:gocyclo // key-handler switch; complexity is inherent to dispatching over all inspector key bindings
 func (m *Model) handleInspectorKey(msg tea.KeyMsg) tea.Cmd {
 	// Info modal captures all input — any key closes it.
 	if m.insp.showInfo {

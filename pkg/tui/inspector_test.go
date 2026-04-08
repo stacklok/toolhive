@@ -148,7 +148,10 @@ func TestBuildCurlStr(t *testing.T) {
 		{
 			name:     "nil workload returns empty",
 			workload: nil,
-			check:    func(t *testing.T, result string) { assert.Empty(t, result) },
+			check: func(t *testing.T, result string) {
+				t.Helper()
+				assert.Empty(t, result)
+			},
 		},
 		{
 			name:     "single quote in arg value is escaped",
@@ -156,6 +159,7 @@ func TestBuildCurlStr(t *testing.T) {
 			toolName: "echo",
 			args:     map[string]any{"msg": "it's dangerous"},
 			check: func(t *testing.T, result string) {
+				t.Helper()
 				assert.NotContains(t, result, "'it's", "unescaped single quote in payload")
 				assert.Contains(t, result, "curl -X POST")
 			},
@@ -166,6 +170,7 @@ func TestBuildCurlStr(t *testing.T) {
 			toolName: "echo",
 			args:     map[string]any{},
 			check: func(t *testing.T, result string) {
+				t.Helper()
 				assert.NotContains(t, result, "'http://localhost:8080/path'inject'",
 					"unescaped single quote in URL")
 			},

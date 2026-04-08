@@ -135,12 +135,6 @@ func (m *Model) handleLogSearchKey(msg tea.KeyMsg) tea.Cmd {
 	return handleSearchKey(msg, m.logSearchParams())
 }
 
-// rebuildLogSearch recalculates which log lines match the current query
-// and refreshes the viewport content with highlights.
-func (m *Model) rebuildLogSearch() {
-	rebuildSearch(m.logSearchParams())
-}
-
 // scrollToMatch updates the viewport content with highlights and scrolls to the current match.
 func (m *Model) scrollToMatch() {
 	scrollToSearchMatch(m.logSearchParams())
@@ -149,11 +143,6 @@ func (m *Model) scrollToMatch() {
 // handleProxyLogSearchKey processes key events when proxy log search is active.
 func (m *Model) handleProxyLogSearchKey(msg tea.KeyMsg) tea.Cmd {
 	return handleSearchKey(msg, m.proxyLogSearchParams())
-}
-
-// rebuildProxyLogSearch recomputes proxyLogSearchMatches for the current query and refreshes the viewport.
-func (m *Model) rebuildProxyLogSearch() {
-	rebuildSearch(m.proxyLogSearchParams())
 }
 
 // scrollToProxyMatch updates the proxy log viewport with highlights and scrolls to the current match.

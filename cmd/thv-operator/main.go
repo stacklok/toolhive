@@ -189,9 +189,10 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	return nil
 }
 
-// setupServerControllers sets up server-related controllers (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, ToolConfig)
-func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
-	// Set up field indexing for MCPServer.Spec.GroupRef
+// setupGroupRefFieldIndexes sets up field indexing for spec.groupRef on all resource types
+// that can reference an MCPGroup. This enables efficient lookups by groupRef in controllers.
+func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
+	// MCPServer.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&mcpv1alpha1.MCPServer{},
@@ -207,7 +208,7 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create field index for MCPServer spec.groupRef: %w", err)
 	}
 
-	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef
+	// MCPRemoteProxy.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&mcpv1alpha1.MCPRemoteProxy{},
@@ -221,6 +222,32 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
+	}
+
+	// MCPServerEntry.Spec.GroupRef
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPServerEntry{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			if mcpServerEntry.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpServerEntry.Spec.GroupRef}
+		},
+	); err != nil {
+		return fmt.Errorf("unable to create field index for MCPServerEntry spec.groupRef: %w", err)
+	}
+
+	return nil
+}
+
+// setupServerControllers sets up server-related controllers
+// (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, MCPServerEntry, ToolConfig).
+func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
+	if err := setupGroupRefFieldIndexes(mgr); err != nil {
+		return err
 	}
 
 	// Set image validation mode based on whether registry is enabled
@@ -294,6 +321,13 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		ImageValidation:  imageValidation,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller EmbeddingServer: %w", err)
+	}
+
+	// Set up MCPServerEntry controller (validation-only, no infrastructure)
+	if err := (&controllers.MCPServerEntryReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPServerEntry: %w", err)
 	}
 
 	return nil

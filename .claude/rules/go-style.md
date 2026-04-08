@@ -19,7 +19,7 @@ Check these whenever adding a method to an interface or defining a new type:
 
 - **Minimal surface**: Don't add interface methods that duplicate the semantics of existing ones. If an existing method already answers the question (possibly with a side effect), don't add a separate method for the same check.
 - **No silent no-ops**: A no-op that silently breaks callers who depend on the method working is a sign the interface is too broad. Narrow the interface or use a separate capability interface. Benign no-ops (e.g., `Close()` on an in-memory store) are fine.
-- **Option pattern must be compile-time safe**: Options should not have runtime failures. Never define a local anonymous interface inside an option and type-assert against it — a silent no-op results if the target doesn't implement it. Two typesafe approaches:
+- **Option pattern must be compile-time safe**: Never define a local anonymous interface inside an option and type-assert against it to check capability — a silent no-op results if the target doesn't implement it. (Returning an explicit error from an option for input validation is fine.) Two typesafe approaches:
   - *Config struct field*: put the setting on the config struct (e.g., `types.Config.SessionStorage`) so all consumers see it at compile time.
   - *Typed functional option*: use `func(*ConcreteType)` so the option only compiles against the correct receiver.
   If you need to cast inside an option to check whether the target supports it, the option is on the wrong abstraction. See #4638.
@@ -124,3 +124,13 @@ Keep comments about mutexes, locks, and concurrency accurate — they are easy t
 - **INFO** sparingly — only for long-running operations like image pulls
 - **WARN** for non-fatal issues (deprecations, fallback behavior, cleanup failures)
 - **Never log** credentials, tokens, API keys, or passwords
+
+## Prefer Existing Code and Packages Over From-Scratch Implementations
+
+Before implementing any non-trivial functionality from scratch:
+
+1. **Search the toolhive repo first** — check if an existing method, utility, or package already provides the functionality or something close enough to extend.
+2. **Check the Go standard library** — the stdlib covers a wide surface area; prefer it over third-party packages when it fits.
+3. **Look for existing Go packages** — search for well-maintained OSS libraries that solve the problem before writing custom implementations.
+
+Implementing from scratch should be a last resort, justified by a specific gap no existing solution fills.

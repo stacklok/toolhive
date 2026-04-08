@@ -984,10 +984,10 @@ func TestRateLimitConfigValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		spec           mcpv1alpha1.MCPServerSpec
-		expectStatus   metav1.ConditionStatus
-		expectReason   string
+		name         string
+		spec         mcpv1alpha1.MCPServerSpec
+		expectStatus metav1.ConditionStatus
+		expectReason string
 	}{
 		{
 			name: "no rate limiting configured",

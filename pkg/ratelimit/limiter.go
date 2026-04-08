@@ -100,12 +100,12 @@ type bucketSpec struct {
 
 // limiter is the concrete implementation of Limiter.
 type limiter struct {
-	client         redis.Cmdable
-	serverBucket   *bucket.TokenBucket            // nil when no shared server limit
-	toolBuckets    map[string]*bucket.TokenBucket  // tool name -> shared bucket
+	client           redis.Cmdable
+	serverBucket     *bucket.TokenBucket            // nil when no shared server limit
+	toolBuckets      map[string]*bucket.TokenBucket // tool name -> shared bucket
 	hasPerUserServer bool
-	perUserServer  bucketSpec                     // valid when hasPerUserServer is true
-	perUserTools   map[string]bucketSpec           // tool name -> per-user bucket spec; nil when none
+	perUserServer    bucketSpec            // valid when hasPerUserServer is true
+	perUserTools     map[string]bucketSpec // tool name -> per-user bucket spec; nil when none
 }
 
 // Allow atomically checks all applicable rate limit buckets for the request.

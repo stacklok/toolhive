@@ -368,24 +368,30 @@ func (m Model) renderRunFormOverlay() string {
 // buildRunCmd builds a suggested `thv run` command string from registry metadata.
 // Required env vars become --secret flags; optional ones are shown as comments.
 // Non-default transport and permission profile are included when present.
+// All dynamic values are single-quoted and escaped to prevent shell injection
+// when the user pastes the copied command into a terminal.
 func buildRunCmd(item regtypes.ServerMetadata) string {
 	const defaultTransport = "streamable-http"
 
+	sq := func(s string) string {
+		return "'" + shellEscapeSingleQuote(s) + "'"
+	}
+
 	var sb strings.Builder
 	sb.WriteString("thv run ")
-	sb.WriteString(item.GetName())
+	sb.WriteString(sq(item.GetName()))
 
 	// Transport only when non-default.
 	if t := item.GetTransport(); t != "" && t != defaultTransport {
 		sb.WriteString(" --transport ")
-		sb.WriteString(t)
+		sb.WriteString(sq(t))
 	}
 
 	// Permission profile from ImageMetadata (Permissions is a direct field, not on the interface).
 	if img, ok := item.(*regtypes.ImageMetadata); ok && img != nil && img.Permissions != nil {
 		if name := img.Permissions.Name; name != "" && name != "none" {
 			sb.WriteString(" --permission-profile ")
-			sb.WriteString(name)
+			sb.WriteString(sq(name))
 		}
 	}
 
@@ -397,14 +403,14 @@ func buildRunCmd(item regtypes.ServerMetadata) string {
 		}
 		if ev.Required {
 			sb.WriteString(" --secret ")
-			sb.WriteString(ev.Name)
+			sb.WriteString(sq(ev.Name))
 		} else {
 			optional = append(optional, ev.Name)
 		}
 	}
 	for _, name := range optional {
 		sb.WriteString("\n# optional: --env ")
-		sb.WriteString(name)
+		sb.WriteString(sq(name))
 		sb.WriteString("=<value>")
 	}
 

@@ -29,6 +29,7 @@ type MCPRegistrySpec struct {
 	// Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
 	// +listType=map
 	// +listMapKey=name
 	Sources []MCPRegistrySourceConfig `json:"sources"`
@@ -37,6 +38,7 @@ type MCPRegistrySpec struct {
 	// Each registry references sources by name and can optionally gate access via claims.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
 	// +listType=map
 	// +listMapKey=name
 	Registries []MCPRegistryViewConfig `json:"registries"`
@@ -890,7 +892,6 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="self.spec.registries.all(r, r.sources.all(s, self.spec.sources.exists(src, src.name == s)))",message="all registry source references must match a defined source name"
 //+kubebuilder:validation:XValidation:rule="self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
 
 // MCPRegistry is the Schema for the mcpregistries API

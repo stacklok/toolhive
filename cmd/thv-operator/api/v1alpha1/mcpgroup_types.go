@@ -43,6 +43,15 @@ type MCPGroupStatus struct {
 	// +optional
 	RemoteProxyCount int32 `json:"remoteProxyCount,omitempty"`
 
+	// Entries lists MCPServerEntry names in this group
+	// +listType=set
+	// +optional
+	Entries []string `json:"entries,omitempty"`
+
+	// EntryCount is the number of MCPServerEntries
+	// +optional
+	EntryCount int32 `json:"entryCount,omitempty"`
+
 	// Conditions represent observations
 	// +listType=map
 	// +listMapKey=type
@@ -80,6 +89,7 @@ const (
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
+//+kubebuilder:printcolumn:name="Entries",type="integer",JSONPath=".status.entryCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Checked",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

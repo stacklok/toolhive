@@ -169,9 +169,9 @@ func formatInspResult(result *vmcp.ToolCallResult) string {
 	parts := make([]string, 0, len(result.Content))
 	for _, c := range result.Content {
 		switch c.Type {
-		case "text":
+		case vmcp.ContentTypeText:
 			parts = append(parts, c.Text)
-		default:
+		case vmcp.ContentTypeImage, vmcp.ContentTypeAudio, vmcp.ContentTypeResource, vmcp.ContentTypeLink:
 			b, _ := json.MarshalIndent(c, "", "  ")
 			parts = append(parts, string(b))
 		}

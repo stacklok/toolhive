@@ -13,6 +13,8 @@ import (
 )
 
 // renderStatusBar renders the bottom 2-line help bar (separator + key hints).
+//
+//nolint:gocyclo // renders all status-bar states per panel; helper extraction done in separate funcs
 func (m Model) renderStatusBar() string {
 	const statusBg = lipgloss.Color("#1e2030")
 	const badgeBg = lipgloss.Color("#2a2f45")
@@ -110,38 +112,12 @@ func (m Model) renderStatusBar() string {
 			parts = append(parts, hint("i", "tool info"))
 			parts = append(parts, hint("/", "filter tools"))
 		}
-	default:
-		parts = []string{
-			hint("↑↓", "navigate"),
-			hint("tab", "panel"),
-			hint("s", "stop"),
-			hint("r", "restart"),
-			hint("d", "delete"),
-			hint("u", "copy URL"),
-			hint("R", "registry"),
-			hint("/", "filter"),
-			hint("?", "help"),
-			hint("q", "quit"),
-		}
-		// When log search is active (prompt closed but highlights on), add search navigation hints.
-		if m.panel == panelLogs && m.logSearchQuery != "" {
-			parts = []string{
-				hint("n", "next match"),
-				hint("N", "prev match"),
-				hint("esc", "clear search"),
-				hint("/", "new search"),
-				hint("q", "quit"),
-			}
-		}
-		if m.panel == panelProxyLogs && m.proxyLogSearchQuery != "" {
-			parts = []string{
-				hint("n", "next match"),
-				hint("N", "prev match"),
-				hint("esc", "clear search"),
-				hint("/", "new search"),
-				hint("q", "quit"),
-			}
-		}
+	case panelLogs:
+		parts = m.renderStatusBarLogHints(hint)
+	case panelProxyLogs:
+		parts = m.renderStatusBarProxyLogHints(hint)
+	case panelInfo, panelTools:
+		parts = renderStatusBarDefaultHints(hint)
 	}
 
 	hints := "  " + strings.Join(parts, spacer)
@@ -169,6 +145,53 @@ func (m Model) renderStatusBar() string {
 	content := hints + strings.Repeat(" ", gap) + notif
 	contentLine := lipgloss.NewStyle().Width(m.width).Background(statusBg).Render(content)
 	return sepLine + "\n" + contentLine
+}
+
+// renderStatusBarDefaultHints returns the default status bar hints for panels
+// that do not have specialized key bindings (Info, Tools).
+func renderStatusBarDefaultHints(hint func(k, desc string) string) []string {
+	return []string{
+		hint("↑↓", "navigate"),
+		hint("tab", "panel"),
+		hint("s", "stop"),
+		hint("r", "restart"),
+		hint("d", "delete"),
+		hint("u", "copy URL"),
+		hint("R", "registry"),
+		hint("/", "filter"),
+		hint("?", "help"),
+		hint("q", "quit"),
+	}
+}
+
+// renderStatusBarLogHints returns the status bar hints for the Logs panel,
+// switching to search-navigation hints when a search is active.
+func (m Model) renderStatusBarLogHints(hint func(k, desc string) string) []string {
+	if m.logSearchQuery != "" {
+		return []string{
+			hint("n", "next match"),
+			hint("N", "prev match"),
+			hint("esc", "clear search"),
+			hint("/", "new search"),
+			hint("q", "quit"),
+		}
+	}
+	return renderStatusBarDefaultHints(hint)
+}
+
+// renderStatusBarProxyLogHints returns the status bar hints for the Proxy Logs panel,
+// switching to search-navigation hints when a search is active.
+func (m Model) renderStatusBarProxyLogHints(hint func(k, desc string) string) []string {
+	if m.proxyLogSearchQuery != "" {
+		return []string{
+			hint("n", "next match"),
+			hint("N", "prev match"),
+			hint("esc", "clear search"),
+			hint("/", "new search"),
+			hint("q", "quit"),
+		}
+	}
+	return renderStatusBarDefaultHints(hint)
 }
 
 // renderHelpOverlay renders the help modal centred on the terminal.

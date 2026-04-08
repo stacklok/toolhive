@@ -38,7 +38,7 @@ func NewSpinner(msg string) *Spinner {
 
 // Start launches the spinner goroutine. Call Stop or Fail to end it.
 func (s *Spinner) Start() {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) { //nolint:gosec // uintptr fits int on all supported platforms
 		return
 	}
 	go func() {

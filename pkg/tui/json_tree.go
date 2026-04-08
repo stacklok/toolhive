@@ -29,8 +29,8 @@ const (
 // jsonNode is a node in a parsed JSON tree.
 type jsonNode struct {
 	kind      jsonNodeKind
-	key       string      // non-empty when this is an object field
-	value     string      // rendered value for primitive types
+	key       string // non-empty when this is an object field
+	value     string // rendered value for primitive types
 	children  []*jsonNode
 	collapsed bool
 	isLast    bool // last child in parent — no trailing comma
@@ -214,6 +214,8 @@ func nodeToJSON(node *jsonNode) string {
 }
 
 // renderJSONItem converts a single visItem to a syntax-colored terminal line.
+//
+//nolint:gocyclo // switch on kind + collapsed/empty sub-cases; splitting would obscure the rendering logic
 func renderJSONItem(item visItem) string {
 	node := item.node
 	indent := strings.Repeat("  ", item.depth)

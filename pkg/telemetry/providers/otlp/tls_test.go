@@ -7,14 +7,19 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // generateSelfSignedCert creates a PEM-encoded self-signed certificate
@@ -114,41 +119,19 @@ func TestBuildTLSConfig(t *testing.T) {
 			cfg, err := buildTLSConfig(path)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
+				require.Error(t, err)
+				if tt.errSubstr != "" {
+					assert.True(t, strings.Contains(err.Error(), tt.errSubstr),
+						"error %q does not contain %q", err.Error(), tt.errSubstr)
 				}
-				if tt.errSubstr != "" && !containsSubstring(err.Error(), tt.errSubstr) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.errSubstr)
-				}
-				if cfg != nil {
-					t.Error("expected nil config on error")
-				}
+				assert.Nil(t, cfg, "expected nil config on error")
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if cfg == nil {
-				t.Fatal("expected non-nil TLS config")
-			}
-			if cfg.RootCAs == nil {
-				t.Error("expected non-nil RootCAs in TLS config")
-			}
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			assert.NotNil(t, cfg.RootCAs, "expected non-nil RootCAs in TLS config")
+			assert.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion, "expected TLS 1.2 minimum version")
 		})
 	}
-}
-
-// containsSubstring checks whether s contains substr.
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

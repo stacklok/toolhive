@@ -455,6 +455,17 @@ func (r *VirtualMCPServer) Validate() error {
 	// Note: AuthServerConfig validation is handled by the reconciler (validateAuthServerConfig)
 	// so it can set the AuthServerConfigValidated condition on failure.
 
+	// Validate TelemetryCABundleRef structural requirements
+	if r.Spec.TelemetryCABundleRef != nil {
+		ref := r.Spec.TelemetryCABundleRef
+		if ref.ConfigMapRef == nil {
+			return fmt.Errorf("telemetryCABundleRef.configMapRef must be specified")
+		}
+		if ref.ConfigMapRef.Name == "" {
+			return fmt.Errorf("telemetryCABundleRef.configMapRef.name must be specified")
+		}
+	}
+
 	// Validate EmbeddingServer / EmbeddingServerRef
 	return r.validateEmbeddingServer()
 }

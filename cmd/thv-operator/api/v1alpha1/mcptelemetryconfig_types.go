@@ -182,7 +182,26 @@ func (r *MCPTelemetryConfig) Validate() error {
 	if err := r.validateEndpointRequiresSignals(); err != nil {
 		return err
 	}
-	return r.validateSensitiveHeaders()
+	if err := r.validateSensitiveHeaders(); err != nil {
+		return err
+	}
+	return r.validateCABundleRef()
+}
+
+// validateCABundleRef validates the CA bundle reference if present.
+// This is a structural check only — ConfigMap existence is verified by the consuming controller.
+func (r *MCPTelemetryConfig) validateCABundleRef() error {
+	if r.Spec.OpenTelemetry == nil || r.Spec.OpenTelemetry.CABundleRef == nil {
+		return nil
+	}
+	ref := r.Spec.OpenTelemetry.CABundleRef
+	if ref.ConfigMapRef == nil {
+		return fmt.Errorf("configMapRef must be specified in caBundleRef")
+	}
+	if ref.ConfigMapRef.Name == "" {
+		return fmt.Errorf("configMapRef.name must be specified in caBundleRef")
+	}
+	return nil
 }
 
 // validateEndpointRequiresSignals rejects an endpoint when neither tracing nor metrics is enabled.

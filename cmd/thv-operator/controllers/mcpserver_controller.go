@@ -196,9 +196,10 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Validate CABundleRef if specified
 	r.validateCABundleRef(ctx, mcpServer)
 
-	// Validate stdio replica cap and session storage requirements
+	// Validate stdio replica cap, session storage, and rate limit config
 	r.validateStdioReplicaCap(ctx, mcpServer)
 	r.validateSessionStorageForReplicas(ctx, mcpServer)
+	r.validateRateLimitConfig(ctx, mcpServer)
 
 	// Validate PodTemplateSpec early - before other validations
 	// This ensures we fail fast if the spec is invalid
@@ -2286,6 +2287,59 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 	}
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to update MCPServer status after session storage validation")
+	}
+}
+
+// setRateLimitConfigCondition sets the RateLimitConfigValid status condition.
+func setRateLimitConfigCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionRateLimitConfigValid,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+}
+
+// validateRateLimitConfig validates that per-user rate limiting has authentication enabled.
+// Sets the RateLimitConfigValid condition. This is defense-in-depth alongside CEL validation.
+func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	rl := mcpServer.Spec.RateLimiting
+	if rl == nil {
+		setRateLimitConfigCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonRateLimitNotApplicable,
+			"rate limiting is not configured")
+		if err := r.Status().Update(ctx, mcpServer); err != nil {
+			log.FromContext(ctx).Error(err, "Failed to update MCPServer status after rate limit validation")
+		}
+		return
+	}
+
+	authEnabled := mcpServer.Spec.OIDCConfig != nil ||
+		mcpServer.Spec.OIDCConfigRef != nil ||
+		mcpServer.Spec.ExternalAuthConfigRef != nil
+
+	hasPerUser := rl.PerUser != nil
+	if !hasPerUser {
+		for _, t := range rl.Tools {
+			if t.PerUser != nil {
+				hasPerUser = true
+				break
+			}
+		}
+	}
+
+	if hasPerUser && !authEnabled {
+		setRateLimitConfigCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
+			"perUser rate limiting requires authentication to be enabled (oidcConfig, oidcConfigRef, or externalAuthConfigRef)")
+	} else {
+		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonRateLimitConfigValid,
+			"rate limit configuration is valid")
+	}
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPServer status after rate limit validation")
 	}
 }
 

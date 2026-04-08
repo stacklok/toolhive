@@ -979,3 +979,156 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 	assert.Equal(t, int32(2), updatedMCPServer.Status.ReadyReplicas,
 		"ReadyReplicas should exclude terminating pods")
 }
+
+func TestRateLimitConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		spec           mcpv1alpha1.MCPServerSpec
+		expectStatus   metav1.ConditionStatus
+		expectReason   string
+	}{
+		{
+			name: "no rate limiting configured",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     "test-image:latest",
+				Transport: "sse",
+				ProxyPort: 8080,
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: mcpv1alpha1.ConditionReasonRateLimitNotApplicable,
+		},
+		{
+			name: "perUser with auth",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     "test-image:latest",
+				Transport: "sse",
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					Address:  "redis:6379",
+				},
+				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{Type: "kubernetes"},
+				RateLimiting: &mcpv1alpha1.RateLimitConfig{
+					PerUser: &mcpv1alpha1.RateLimitBucket{
+						MaxTokens:    100,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+			},
+			expectStatus: metav1.ConditionTrue,
+			expectReason: mcpv1alpha1.ConditionReasonRateLimitConfigValid,
+		},
+		{
+			name: "perUser without auth",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     "test-image:latest",
+				Transport: "sse",
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					Address:  "redis:6379",
+				},
+				RateLimiting: &mcpv1alpha1.RateLimitConfig{
+					PerUser: &mcpv1alpha1.RateLimitBucket{
+						MaxTokens:    100,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
+		},
+		{
+			name: "per-tool perUser without auth",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     "test-image:latest",
+				Transport: "sse",
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					Address:  "redis:6379",
+				},
+				RateLimiting: &mcpv1alpha1.RateLimitConfig{
+					Tools: []mcpv1alpha1.ToolRateLimitConfig{
+						{
+							Name: "search",
+							PerUser: &mcpv1alpha1.RateLimitBucket{
+								MaxTokens:    10,
+								RefillPeriod: metav1.Duration{Duration: time.Minute},
+							},
+						},
+					},
+				},
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
+		},
+		{
+			name: "shared only without auth is valid",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image:     "test-image:latest",
+				Transport: "sse",
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					Address:  "redis:6379",
+				},
+				RateLimiting: &mcpv1alpha1.RateLimitConfig{
+					Shared: &mcpv1alpha1.RateLimitBucket{
+						MaxTokens:    1000,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+			},
+			expectStatus: metav1.ConditionTrue,
+			expectReason: mcpv1alpha1.ConditionReasonRateLimitConfigValid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			name := "rl-" + tt.name
+			namespace := testNamespaceDefault
+
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+				},
+				Spec: tt.spec,
+			}
+
+			testScheme := createTestScheme()
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(mcpServer).
+				WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+				Build()
+
+			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+			_, err := reconciler.Reconcile(t.Context(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+			})
+			require.NoError(t, err)
+
+			updated := &mcpv1alpha1.MCPServer{}
+			err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
+			require.NoError(t, err)
+
+			var found bool
+			for _, cond := range updated.Status.Conditions {
+				if cond.Type == mcpv1alpha1.ConditionRateLimitConfigValid {
+					found = true
+					assert.Equal(t, tt.expectStatus, cond.Status)
+					assert.Equal(t, tt.expectReason, cond.Reason)
+				}
+			}
+			assert.True(t, found, "ConditionRateLimitConfigValid condition should be set")
+		})
+	}
+}

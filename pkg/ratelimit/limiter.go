@@ -59,8 +59,7 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1alpha1.Rate
 		if err != nil {
 			return nil, fmt.Errorf("perUser bucket: %w", err)
 		}
-		l.hasPerUserServer = true
-		l.perUserServer = spec
+		l.perUserSpec = &spec
 	}
 
 	for _, t := range crd.Tools {
@@ -100,12 +99,11 @@ type bucketSpec struct {
 
 // limiter is the concrete implementation of Limiter.
 type limiter struct {
-	client           redis.Cmdable
-	serverBucket     *bucket.TokenBucket            // nil when no shared server limit
-	toolBuckets      map[string]*bucket.TokenBucket // tool name -> shared bucket
-	hasPerUserServer bool
-	perUserServer    bucketSpec            // valid when hasPerUserServer is true
-	perUserTools     map[string]bucketSpec // tool name -> per-user bucket spec; nil when none
+	client       redis.Cmdable
+	serverBucket *bucket.TokenBucket            // nil when no shared server limit
+	toolBuckets  map[string]*bucket.TokenBucket // tool name -> shared bucket
+	perUserSpec  *bucketSpec                    // nil when no server-level per-user limit
+	perUserTools map[string]bucketSpec          // tool name -> per-user bucket spec; nil when none
 }
 
 // Allow atomically checks all applicable rate limit buckets for the request.
@@ -126,8 +124,8 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	// Per-user buckets are created on the fly because userID is request-scoped.
 	// bucket.New only allocates a struct (no I/O), so this is cheap.
 	if userID != "" {
-		if l.hasPerUserServer {
-			s := l.perUserServer
+		if l.perUserSpec != nil {
+			s := l.perUserSpec
 			buckets = append(buckets, bucket.New(
 				s.namespace, s.serverName,
 				"user:"+userID,
@@ -136,9 +134,11 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 		}
 		if toolName != "" && l.perUserTools != nil {
 			if s, ok := l.perUserTools[toolName]; ok {
+				// Key prefix "user-tool:" is distinct from "user:" to prevent
+				// collisions when a userID contains delimiter characters.
 				buckets = append(buckets, bucket.New(
 					s.namespace, s.serverName,
-					"user:"+userID+":tool:"+toolName,
+					"user-tool:"+toolName+":"+userID,
 					s.maxTokens, s.refillPeriod,
 				))
 			}
@@ -170,32 +170,38 @@ func (noopLimiter) Allow(context.Context, string, string) (*Decision, error) {
 	return &Decision{Allowed: true}, nil
 }
 
-// newBucket validates a CRD bucket spec and creates a TokenBucket.
-func newBucket(namespace, serverName, suffix string, b *v1alpha1.RateLimitBucket) (*bucket.TokenBucket, error) {
+// validateBucketCRD checks that a CRD bucket spec has valid parameters.
+func validateBucketCRD(b *v1alpha1.RateLimitBucket) (int32, time.Duration, error) {
 	if b.MaxTokens < 1 {
-		return nil, fmt.Errorf("maxTokens must be >= 1, got %d", b.MaxTokens)
+		return 0, 0, fmt.Errorf("maxTokens must be >= 1, got %d", b.MaxTokens)
 	}
 	d := b.RefillPeriod.Duration
 	if d <= 0 {
-		return nil, fmt.Errorf("refillPeriod must be positive, got %s", d)
+		return 0, 0, fmt.Errorf("refillPeriod must be positive, got %s", d)
 	}
-	return bucket.New(namespace, serverName, suffix, b.MaxTokens, d), nil
+	return b.MaxTokens, d, nil
+}
+
+// newBucket validates a CRD bucket spec and creates a TokenBucket.
+func newBucket(namespace, serverName, suffix string, b *v1alpha1.RateLimitBucket) (*bucket.TokenBucket, error) {
+	maxTokens, refillPeriod, err := validateBucketCRD(b)
+	if err != nil {
+		return nil, err
+	}
+	return bucket.New(namespace, serverName, suffix, maxTokens, refillPeriod), nil
 }
 
 // newBucketSpec validates a CRD bucket spec and creates a deferred bucketSpec
 // for per-user buckets that are materialized at Allow() time.
 func newBucketSpec(namespace, serverName string, b *v1alpha1.RateLimitBucket) (bucketSpec, error) {
-	if b.MaxTokens < 1 {
-		return bucketSpec{}, fmt.Errorf("maxTokens must be >= 1, got %d", b.MaxTokens)
-	}
-	d := b.RefillPeriod.Duration
-	if d <= 0 {
-		return bucketSpec{}, fmt.Errorf("refillPeriod must be positive, got %s", d)
+	maxTokens, refillPeriod, err := validateBucketCRD(b)
+	if err != nil {
+		return bucketSpec{}, err
 	}
 	return bucketSpec{
 		namespace:    namespace,
 		serverName:   serverName,
-		maxTokens:    b.MaxTokens,
-		refillPeriod: d,
+		maxTokens:    maxTokens,
+		refillPeriod: refillPeriod,
 	}, nil
 }

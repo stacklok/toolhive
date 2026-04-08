@@ -111,9 +111,14 @@ type MultiSession interface {
 	transportsession.Session
 	Caller
 
-	// Tools returns the resolved tools available in this session.
+	// Tools returns the advertised tools available in this session (shown to MCP clients).
 	// The list is built once at session creation and is read-only thereafter.
 	Tools() []vmcp.Tool
+
+	// AllTools returns all resolved tools in this session, including tools that are
+	// excluded from advertising to MCP clients via excludeAll or filter configuration.
+	// Used by the workflow engine for argument type coercion via InputSchema lookup.
+	AllTools() []vmcp.Tool
 
 	// Resources returns the resolved resources available in this session.
 	Resources() []vmcp.Resource

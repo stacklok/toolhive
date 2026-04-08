@@ -285,11 +285,14 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 // pipeline (overrides, conflict resolution, advertising filter) to the raw
 // backend capabilities in results, producing resolved tool names identical to
 // the standard aggregation path. Resources and prompts pass through unchanged.
+//
+// Returns the routing table, advertised tools (for MCP clients), all resolved
+// tools (for schema lookup), resources, prompts, and any error.
 func buildRoutingTableWithAggregator(
 	ctx context.Context,
 	agg aggregator.Aggregator,
 	results []initResult,
-) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
+) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
 	toolsByBackend := make(map[string][]vmcp.Tool, len(results))
 	targets := make(map[string]*vmcp.BackendTarget, len(results))
 	for i := range results {
@@ -298,9 +301,9 @@ func buildRoutingTableWithAggregator(
 		targets[r.target.WorkloadID] = r.target
 	}
 
-	allTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
+	advertisedTools, allResolvedTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	rt := &vmcp.RoutingTable{
@@ -326,7 +329,7 @@ func buildRoutingTableWithAggregator(
 		}
 	}
 
-	return rt, allTools, allResources, allPrompts, nil
+	return rt, advertisedTools, allResolvedTools, allResources, allPrompts, nil
 }
 
 // MakeSessionWithID implements MultiSessionFactory.
@@ -453,19 +456,22 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	}
 
 	var (
-		routingTable *vmcp.RoutingTable
-		allTools     []vmcp.Tool
-		allResources []vmcp.Resource
-		allPrompts   []vmcp.Prompt
+		routingTable     *vmcp.RoutingTable
+		advertisedTools  []vmcp.Tool
+		allResolvedTools []vmcp.Tool
+		allResources     []vmcp.Resource
+		allPrompts       []vmcp.Prompt
 	)
 	if f.aggregator != nil {
 		var aggErr error
-		routingTable, allTools, allResources, allPrompts, aggErr = buildRoutingTableWithAggregator(ctx, f.aggregator, results)
+		routingTable, advertisedTools, allResolvedTools, allResources, allPrompts, aggErr =
+			buildRoutingTableWithAggregator(ctx, f.aggregator, results)
 		if aggErr != nil {
 			return nil, fmt.Errorf("failed to process backend capabilities: %w", aggErr)
 		}
 	} else {
-		routingTable, allTools, allResources, allPrompts = buildRoutingTable(results)
+		routingTable, advertisedTools, allResources, allPrompts = buildRoutingTable(results)
+		allResolvedTools = advertisedTools // no filter when no aggregator
 	}
 
 	transportSess := transportsession.NewStreamableSession(sessID)
@@ -478,7 +484,8 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 		Session:         transportSess,
 		connections:     connections,
 		routingTable:    routingTable,
-		tools:           allTools,
+		tools:           advertisedTools,
+		allTools:        allResolvedTools,
 		resources:       allResources,
 		prompts:         allPrompts,
 		backendSessions: backendSessions,

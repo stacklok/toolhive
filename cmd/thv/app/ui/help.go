@@ -79,7 +79,7 @@ var rootHelpSections = []helpSection{
 // - Parent commands with subcommands: styled subcommand list
 // - Non-TTY or leaf commands: falls back to cmd.Usage()
 func RenderHelp(cmd *cobra.Command) {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) { //nolint:gosec // uintptr fits int on all supported platforms
 		_ = cmd.Usage()
 		return
 	}
@@ -124,12 +124,12 @@ func RenderHelp(cmd *cobra.Command) {
 	var sb strings.Builder
 
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("  %s\n\n", brand))
+	fmt.Fprintf(&sb, "  %s\n\n", brand)
 	for _, line := range strings.Split(strings.TrimSpace(cmd.Long), "\n") {
-		sb.WriteString(fmt.Sprintf("  %s\n", descStyle.Render(line)))
+		fmt.Fprintf(&sb, "  %s\n", descStyle.Render(line))
 	}
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("  %s\n\n", usageLine))
+	fmt.Fprintf(&sb, "  %s\n\n", usageLine)
 
 	// Render sections in two columns
 	cols := [][]helpSection{
@@ -190,7 +190,7 @@ func RenderHelp(cmd *cobra.Command) {
 // RenderCommandUsage prints a styled usage hint for a command when the user
 // omits required arguments. Falls back to cmd.Usage() on non-TTY output.
 func RenderCommandUsage(cmd *cobra.Command) {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) { //nolint:gosec // uintptr fits int on all supported platforms
 		_ = cmd.Usage()
 		return
 	}

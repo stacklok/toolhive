@@ -50,6 +50,8 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // handleNormalKey handles key input in normal (non-filter) mode.
+//
+//nolint:gocyclo // key-handler switch; complexity is inherent to dispatching over all normal-mode key bindings
 func (m *Model) handleNormalKey(msg tea.KeyMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Quit):

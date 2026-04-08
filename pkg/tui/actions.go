@@ -64,7 +64,12 @@ type runFormResultMsg struct {
 }
 
 // runFromRegistry returns a tea.Cmd that runs a registry server via the thv CLI.
-func runFromRegistry(ctx context.Context, item regtypes.ServerMetadata, workloadName string, secrets, envs map[string]string) tea.Cmd {
+func runFromRegistry(
+	ctx context.Context,
+	item regtypes.ServerMetadata,
+	workloadName string,
+	secrets, envs map[string]string,
+) tea.Cmd {
 	return func() tea.Msg {
 		exe, err := os.Executable()
 		if err != nil {
@@ -101,7 +106,7 @@ func runFromRegistry(ctx context.Context, item regtypes.ServerMetadata, workload
 			args = append(args, "--env", k+"="+v)
 		}
 
-		cmd := exec.CommandContext(ctx, exe, args...)
+		cmd := exec.CommandContext(ctx, exe, args...) //nolint:gosec // executable path is resolved via os.Executable, not user input
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return runFormResultMsg{
@@ -113,4 +118,3 @@ func runFromRegistry(ctx context.Context, item regtypes.ServerMetadata, workload
 		return runFormResultMsg{name: workloadName, server: serverName}
 	}
 }
-

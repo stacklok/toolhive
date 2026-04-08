@@ -25,6 +25,7 @@ import (
 const oscSetBg = "\x1b]11;#1e2030\x07"
 const oscResetBg = "\x1b]111;\x07"
 
+// View implements tea.Model and renders the full TUI to a string.
 func (m Model) View() string {
 	if m.quitting {
 		// Reset terminal background before handing control back to the shell.
@@ -162,6 +163,8 @@ func (m Model) renderSidebar() string {
 }
 
 // renderMain renders the main content panel (logs or info).
+//
+//nolint:gocyclo // builds the full main-area layout; the toolbar sub-sections are tightly coupled to panel state
 func (m Model) renderMain() string {
 	sw := sidebarW(m.width)
 	mainW := m.width - sw - 1

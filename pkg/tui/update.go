@@ -191,6 +191,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleMsg dispatches a message and returns (cmd, earlyReturn).
 // earlyReturn=true means Update should return immediately with cmd.
+//
+//nolint:gocyclo // dispatches over all message types; splitting would add indirection without clarity
 func (m *Model) handleMsg(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:

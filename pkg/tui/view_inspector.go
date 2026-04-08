@@ -224,6 +224,8 @@ func (m Model) renderInspForm(width, height int) string {
 }
 
 // renderInspResponse renders the right response column of the inspector.
+//
+//nolint:gocyclo // renders all response states (loading, JSON tree, plain text, empty); splitting would scatter related view logic
 func (m Model) renderInspResponse(width, height int) string {
 	sel := m.selected()
 	dimStyle := lipgloss.NewStyle().Foreground(ui.ColorDim)
@@ -316,7 +318,7 @@ func (m Model) renderInspResponse(width, height int) string {
 }
 
 // renderTools renders the tools list for the selected workload using the toolsView viewport.
-func (m Model) renderTools(width int) string {
+func (m Model) renderTools(_ int) string {
 	if m.selected() == nil {
 		return lipgloss.NewStyle().Foreground(ui.ColorDim).Render("No server selected")
 	}

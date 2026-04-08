@@ -285,7 +285,9 @@ func TestBuildServerConfig(t *testing.T) {
 		name          string
 		imageURL      string
 		imageMetadata *regtypes.ImageMetadata
+		extraOpts     []runner.RunConfigBuilderOption
 		expectError   bool
+		checkConfig   func(t *testing.T, rc *runner.RunConfig)
 	}{
 		{
 			name:          "valid config with nil metadata",
@@ -308,13 +310,32 @@ func TestBuildServerConfig(t *testing.T) {
 			},
 			expectError: false, // Actually succeeds and tests the type assertion line
 		},
+		{
+			name:     "registry source URLs are recorded on config",
+			imageURL: "test/image:latest",
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Transport: "stdio",
+				},
+				Image: "test/image:latest",
+			},
+			extraOpts: []runner.RunConfigBuilderOption{
+				runner.WithRegistrySourceURLs("https://api.example.com", "https://registry.example.com"),
+			},
+			expectError: false,
+			checkConfig: func(t *testing.T, rc *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "https://api.example.com", rc.RegistryAPIURL)
+				assert.Equal(t, "https://registry.example.com", rc.RegistryURL)
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			runConfig, err := buildServerConfig(ctx, args, tt.imageURL, tt.imageMetadata)
+			runConfig, err := buildServerConfig(ctx, args, tt.imageURL, tt.imageMetadata, tt.extraOpts...)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -322,6 +343,9 @@ func TestBuildServerConfig(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, runConfig)
+				if tt.checkConfig != nil {
+					tt.checkConfig(t, runConfig)
+				}
 			}
 		})
 	}

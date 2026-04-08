@@ -37,4 +37,5 @@ thv skill builds [flags]
 ### SEE ALSO
 
 * [thv skill](thv_skill.md)	 - Manage skills
+* [thv skill builds remove](thv_skill_builds_remove.md)	 - Remove a locally-built skill artifact
 

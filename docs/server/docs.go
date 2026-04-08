@@ -1179,6 +1179,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "registry_api_url": {
+                        "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
+                    "registry_url": {
+                        "description": "RegistryURL is the registry URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
                     },
@@ -4734,6 +4742,58 @@ const docTemplate = `{
                     }
                 },
                 "summary": "List locally-built skill artifacts",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/builds/{tag}": {
+            "delete": {
+                "description": "Remove a locally-built OCI skill artifact and its blobs from the local store",
+                "parameters": [
+                    {
+                        "description": "Artifact tag",
+                        "in": "path",
+                        "name": "tag",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Delete a locally-built skill artifact",
                 "tags": [
                     "skills"
                 ]

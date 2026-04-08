@@ -242,6 +242,11 @@ func (c *Client) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 	return resp.Builds, nil
 }
 
+// DeleteBuild removes a locally-built OCI skill artifact from the local store.
+func (c *Client) DeleteBuild(ctx context.Context, tag string) error {
+	return c.doJSONRequest(ctx, http.MethodDelete, "/builds/"+url.PathEscape(tag), nil, nil, nil)
+}
+
 // --- internal helpers ---
 
 func (c *Client) buildURL(path string, query url.Values) string {

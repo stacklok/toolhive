@@ -54,6 +54,14 @@ type RunConfig struct {
 	// RemoteURL is the URL of the remote MCP server (if running remotely)
 	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
 
+	// RegistryAPIURL is the registry API URL that served this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryAPIURL string `json:"registry_api_url,omitempty" yaml:"registry_api_url,omitempty"`
+
+	// RegistryURL is the registry URL that served this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryURL string `json:"registry_url,omitempty" yaml:"registry_url,omitempty"`
+
 	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
 	RemoteAuthConfig *remote.Config `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
 

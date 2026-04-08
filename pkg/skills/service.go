@@ -25,4 +25,6 @@ type SkillService interface {
 	Push(ctx context.Context, opts PushOptions) error
 	// ListBuilds returns all locally-built OCI skill artifacts in the local store.
 	ListBuilds(ctx context.Context) ([]LocalBuild, error)
+	// DeleteBuild removes a locally-built OCI skill artifact from the local store.
+	DeleteBuild(ctx context.Context, tag string) error
 }

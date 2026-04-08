@@ -41,7 +41,7 @@ metadata:
   namespace: redis
 type: Opaque
 stringData:
-  users.acl: "user toolhive-auth on ><your-redis-password> ~thv:auth:* &* +GET +SET +SETNX +DEL +EXISTS +EXPIRE +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +EVALSHA +PING"
+  users.acl: "user toolhive-auth on ><your-redis-password> ~thv:auth:* &* +GET +SET +SETNX +DEL +EXISTS +EXPIRE +PEXPIRE +PTTL +MGET +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +EVALSHA +PING"
 ---
 # Headless Service gives Redis pods stable, individually addressable DNS names:
 #   redis-0.redis.redis.svc.cluster.local

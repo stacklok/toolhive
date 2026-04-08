@@ -127,27 +127,13 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Create(registryHelper)
 
 			// Wait for registry to be ready
-			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
-
-			// Store initial storage reference for cleanup verification
-			status, err := registryHelper.GetRegistryStatus(registry.Name)
-			Expect(err).NotTo(HaveOccurred())
-			initialStorageRef := status.StorageRef
+			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseRunning, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Delete the registry
 			Expect(registryHelper.DeleteRegistry(registry.Name)).To(Succeed())
 
 			// Verify graceful deletion process
 			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseTerminating, QuickTimeout)
-
-			// Verify cleanup of associated resources (if any storage was created)
-			if initialStorageRef != nil && initialStorageRef.ConfigMapRef != nil {
-				timingHelper.WaitForControllerReconciliation(func() interface{} {
-					_, err := configMapHelper.GetConfigMap(initialStorageRef.ConfigMapRef.Name)
-					// Storage ConfigMap should be cleaned up or marked for deletion
-					return errors.IsNotFound(err)
-				}).Should(BeTrue())
-			}
 
 			// Verify complete deletion
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
@@ -197,8 +183,8 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Create(registryHelper)
 
 			// Both should become ready independently
-			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
-			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseRunning, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseRunning, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Verify they operate independently
 			Expect(registry1.Spec.Sources[0].SyncPolicy.Interval).To(Equal("1h"))
@@ -223,7 +209,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Create(registryHelper)
 
 			// Both should become ready
-			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseRunning, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
 			By("verifying registry servers config ConfigMap is created")
 			serverConfigMap1 := testHelpers.waitForAndGetServerConfigMap(registry1.Name)
@@ -283,7 +269,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			Expect(errors.IsAlreadyExists(err)).To(BeTrue())
 
 			// Original registry should still be functional
-			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseRunning, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 		})
 	})
 })

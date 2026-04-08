@@ -482,11 +482,11 @@ spec:
 
 ### Status Management
 
-**Pattern**: Batched updates via StatusCollector
+**Pattern**: Direct status update matching MCPServer workload pattern
 
-**Why**: Prevents race conditions, reduces API calls
+**Why**: Simple Phase + Ready condition + ReadyReplicas + URL, enables `kubectl wait --for=condition=Ready`
 
-**Implementation**: `cmd/thv-operator/pkg/mcpregistrystatus/`
+**Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
 ## MCPRegistry Controller
 
@@ -527,7 +527,7 @@ graph TB
 
 **Storage Manager**: `cmd/thv-operator/pkg/sources/storage_manager.go`
 - Creates ConfigMap with key `registry.json` containing full registry data
-- Sync metadata (timestamp, hash, attempt count) stored in MCPRegistry CRD status field `SyncStatus`
+- Sync operations are handled by the registry server itself
 
 **Interface**: `cmd/thv-operator/pkg/sources/types.go`
 
@@ -546,7 +546,7 @@ data:
     { full registry data }
 ```
 
-Sync metadata (timestamp, hash, attempt count) is stored in the MCPRegistry CRD status field `SyncStatus`, not in the ConfigMap.
+Sync operations are handled by the registry server, not the operator.
 
 ### Sync Policy
 

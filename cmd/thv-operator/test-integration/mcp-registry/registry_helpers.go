@@ -151,7 +151,7 @@ func (rb *RegistryBuilder) WithRegistryName(name string) *RegistryBuilder {
 // WithUpstreamFormat configures the source to use upstream MCP format
 func (rb *RegistryBuilder) WithUpstreamFormat() *RegistryBuilder {
 	sourceConfig := rb.getCurrentSourceConfig()
-	sourceConfig.Format = mcpv1alpha1.RegistryFormatToolHive
+	sourceConfig.Format = mcpv1alpha1.RegistryFormatUpstream
 	return rb
 }
 
@@ -414,8 +414,7 @@ func (h *MCPRegistryTestHelper) WaitForRegistryInitialization(registryName strin
 	ginkgo.By("waiting for controller to process and verify initial status")
 	statusHelper.WaitForPhaseAny(registryName, []mcpv1alpha1.MCPRegistryPhase{
 		mcpv1alpha1.MCPRegistryPhasePending,
-		mcpv1alpha1.MCPRegistryPhaseReady,
-		mcpv1alpha1.MCPRegistryPhaseSyncing,
+		mcpv1alpha1.MCPRegistryPhaseRunning,
 	}, MediumTimeout)
 }
 

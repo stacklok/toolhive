@@ -1179,6 +1179,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "registry_api_url": {
+                        "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
+                    "registry_url": {
+                        "description": "RegistryURL is the registry URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
                     },
@@ -1408,6 +1416,31 @@ const docTemplate = `{
                     },
                     "tag": {
                         "description": "Tag is the OCI tag (e.g. v1.0.0).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.LocalBuild": {
+                "properties": {
+                    "description": {
+                        "description": "Description is the skill description extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest of the artifact (sha256:...).",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag or name used to reference the artifact.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the skill version extracted from the artifact metadata, if available.",
                         "type": "string"
                     }
                 },
@@ -1829,6 +1862,20 @@ const docTemplate = `{
                     "type": {
                         "description": "Registry type after update",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.buildListResponse": {
+                "description": "Response containing a list of locally-built OCI skill artifacts",
+                "properties": {
+                    "builds": {
+                        "description": "List of locally-built OCI skill artifacts",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.LocalBuild"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -4664,6 +4711,89 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Build a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/builds": {
+            "get": {
+                "description": "Get a list of all locally-built OCI skill artifacts in the local store",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.buildListResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "List locally-built skill artifacts",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/builds/{tag}": {
+            "delete": {
+                "description": "Remove a locally-built OCI skill artifact and its blobs from the local store",
+                "parameters": [
+                    {
+                        "description": "Artifact tag",
+                        "in": "path",
+                        "name": "tag",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Delete a locally-built skill artifact",
                 "tags": [
                     "skills"
                 ]

@@ -2745,3 +2745,175 @@ func TestQualifiedOCIRef(t *testing.T) {
 		})
 	}
 }
+
+func TestListBuilds(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil oci store returns 500", func(t *testing.T) {
+		t.Parallel()
+		svc := New(&storage.NoopSkillStore{})
+		_, err := svc.ListBuilds(t.Context())
+		require.Error(t, err)
+		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
+	})
+
+	t.Run("empty store returns empty list", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, artifacts)
+	})
+
+	t.Run("lists tagged artifacts with metadata", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// Build a real artifact via the packager so extractOCIContent works.
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.2.3")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "my-skill"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+
+		assert.Equal(t, "my-skill", artifacts[0].Tag)
+		assert.Contains(t, artifacts[0].Digest, "sha256:")
+		assert.Equal(t, "my-skill", artifacts[0].Name)
+		assert.Equal(t, "1.2.3", artifacts[0].Version)
+	})
+
+	t.Run("lists multiple tagged artifacts", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		d1 := buildTestArtifact(t, ociStore, "skill-a", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d1, "skill-a"))
+		d2 := buildTestArtifact(t, ociStore, "skill-b", "2.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d2, "skill-b"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Len(t, artifacts, 2)
+
+		// Collect names for assertion (order may vary).
+		names := make(map[string]string)
+		for _, a := range artifacts {
+			names[a.Tag] = a.Version
+		}
+		assert.Equal(t, "1.0.0", names["skill-a"])
+		assert.Equal(t, "2.0.0", names["skill-b"])
+	})
+
+	t.Run("skill artifact with no extractable metadata still appears", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// Store an index with ArtifactType set to the skill type but no child manifests —
+		// extractOCIContent will fail but the artifact should still appear with empty metadata fields.
+		skillIndex := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","artifactType":"dev.toolhive.skills.v1","manifests":[]}`
+		d, putErr := ociStore.PutManifest(t.Context(), []byte(skillIndex))
+		require.NoError(t, putErr)
+		require.NoError(t, ociStore.Tag(t.Context(), d, "bare-skill-tag"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+
+		assert.Equal(t, "bare-skill-tag", artifacts[0].Tag)
+		assert.Contains(t, artifacts[0].Digest, "sha256:")
+		assert.Empty(t, artifacts[0].Name)
+		assert.Empty(t, artifacts[0].Version)
+	})
+
+	t.Run("non-skill artifact is excluded", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// Store a valid skill artifact that should be returned.
+		skillDigest := buildTestArtifact(t, ociStore, "real-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), skillDigest, "real-skill"))
+
+		// Store an index whose ArtifactType is not the skill type — simulates a
+		// remotely-pulled non-skill OCI artifact sharing the same store.
+		otherIndex := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","artifactType":"application/vnd.docker.distribution.manifest.v2","manifests":[]}`
+		otherDigest, putErr := ociStore.PutManifest(t.Context(), []byte(otherIndex))
+		require.NoError(t, putErr)
+		require.NoError(t, ociStore.Tag(t.Context(), otherDigest, "non-skill-tag"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+		assert.Equal(t, "real-skill", artifacts[0].Tag)
+	})
+}
+
+func TestDeleteBuild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil oci store returns 500", func(t *testing.T) {
+		t.Parallel()
+		svc := New(&storage.NoopSkillStore{})
+		err := svc.DeleteBuild(t.Context(), "my-skill")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
+	})
+
+	t.Run("removes tag and blobs", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "my-skill"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		require.NoError(t, svc.DeleteBuild(t.Context(), "my-skill"))
+
+		// Tag should be gone — ListBuilds should return empty.
+		builds, listErr := svc.ListBuilds(t.Context())
+		require.NoError(t, listErr)
+		assert.Empty(t, builds)
+	})
+
+	t.Run("tag does not exist returns 404", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		err = svc.DeleteBuild(t.Context(), "nonexistent")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusNotFound, httperr.Code(err))
+	})
+
+	t.Run("blobs retained when another tag shares the same digest", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		d := buildTestArtifact(t, ociStore, "shared-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "tag-a"))
+		require.NoError(t, ociStore.Tag(t.Context(), d, "tag-b"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		require.NoError(t, svc.DeleteBuild(t.Context(), "tag-a"))
+
+		// tag-b still exists and the shared artifact is accessible.
+		builds, listErr := svc.ListBuilds(t.Context())
+		require.NoError(t, listErr)
+		require.Len(t, builds, 1)
+		assert.Equal(t, "tag-b", builds[0].Tag)
+	})
+}

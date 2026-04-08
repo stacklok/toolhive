@@ -743,6 +743,8 @@ _Appears in:_
 - [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
 - [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
 - [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
+- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
+- [api.v1alpha1.MCPServerEntryList](#apiv1alpha1mcpserverentrylist)
 - [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
 - [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
 - [api.v1alpha1.MCPTelemetryConfigList](#apiv1alpha1mcptelemetryconfiglist)
@@ -753,27 +755,6 @@ _Appears in:_
 - [api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver)
 - [api.v1alpha1.VirtualMCPServerList](#apiv1alpha1virtualmcpserverlist)
 
-
-
-#### api.v1alpha1.APIPhase
-
-_Underlying type:_ _string_
-
-APIPhase represents the API service state
-
-_Validation:_
-- Enum: [NotStarted Deploying Ready Unhealthy Error]
-
-_Appears in:_
-- [api.v1alpha1.APIStatus](#apiv1alpha1apistatus)
-
-| Field | Description |
-| --- | --- |
-| `NotStarted` | APIPhaseNotStarted means API deployment has not been created<br /> |
-| `Deploying` | APIPhaseDeploying means API is being deployed<br /> |
-| `Ready` | APIPhaseReady means API is ready to serve requests<br /> |
-| `Unhealthy` | APIPhaseUnhealthy means API is deployed but not healthy<br /> |
-| `Error` | APIPhaseError means API deployment failed<br /> |
 
 
 #### api.v1alpha1.APISource
@@ -792,25 +773,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `endpoint` _string_ | Endpoint is the base API URL (without path)<br />The controller will append the appropriate paths:<br />Phase 1 (ToolHive API):<br />  - /v0/servers - List all servers (single response, no pagination)<br />  - /v0/servers/\{name\} - Get specific server (future)<br />  - /v0/info - Get registry metadata (future)<br />Example: "http://my-registry-api.default.svc.cluster.local/api" |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
-
-
-#### api.v1alpha1.APIStatus
-
-
-
-APIStatus provides detailed information about the API service
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `phase` _[api.v1alpha1.APIPhase](#apiv1alpha1apiphase)_ | Phase represents the current API service phase |  | Enum: [NotStarted Deploying Ready Unhealthy Error] <br /> |
-| `message` _string_ | Message provides additional information about the API status |  | Optional: \{\} <br /> |
-| `endpoint` _string_ | Endpoint is the URL where the API is accessible |  | Optional: \{\} <br /> |
-| `readySince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | ReadySince is the timestamp when the API became ready |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.AWSStsConfig
@@ -955,6 +917,7 @@ _Appears in:_
 - [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
+- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1217,6 +1180,7 @@ The referenced MCPExternalAuthConfig must be in the same namespace as the MCPSer
 _Appears in:_
 - [api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig)
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
+- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -1297,6 +1261,7 @@ HeaderForwardConfig defines header forward configuration for remote servers.
 
 _Appears in:_
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
+- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1675,6 +1640,8 @@ _Appears in:_
 | `serverCount` _integer_ | ServerCount is the number of MCPServers |  | Optional: \{\} <br /> |
 | `remoteProxies` _string array_ | RemoteProxies lists MCPRemoteProxy names in this group |  | Optional: \{\} <br /> |
 | `remoteProxyCount` _integer_ | RemoteProxyCount is the number of MCPRemoteProxies |  | Optional: \{\} <br /> |
+| `entries` _string array_ | Entries lists MCPServerEntry names in this group |  | Optional: \{\} <br /> |
+| `entryCount` _integer_ | EntryCount is the number of MCPServerEntries |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  | Optional: \{\} <br /> |
 
 
@@ -2024,7 +1991,7 @@ _Underlying type:_ _string_
 MCPRegistryPhase represents the phase of the MCPRegistry
 
 _Validation:_
-- Enum: [Pending Ready Failed Syncing Terminating]
+- Enum: [Pending Running Failed Terminating]
 
 _Appears in:_
 - [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
@@ -2032,9 +1999,8 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `Pending` | MCPRegistryPhasePending means the MCPRegistry is being initialized<br /> |
-| `Ready` | MCPRegistryPhaseReady means the MCPRegistry is ready and operational<br /> |
+| `Running` | MCPRegistryPhaseRunning means the MCPRegistry is running and operational<br /> |
 | `Failed` | MCPRegistryPhaseFailed means the MCPRegistry has failed<br /> |
-| `Syncing` | MCPRegistryPhaseSyncing means the MCPRegistry is currently syncing data<br /> |
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
@@ -2121,15 +2087,12 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPRegistryPhase](#apiv1alpha1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry<br />Derived from sync and API status |  | Enum: [Pending Ready Failed Syncing Terminating] <br />Optional: \{\} <br /> |
-| `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
-| `syncStatus` _[api.v1alpha1.SyncStatus](#apiv1alpha1syncstatus)_ | SyncStatus provides detailed information about data synchronization |  | Optional: \{\} <br /> |
-| `apiStatus` _[api.v1alpha1.APIStatus](#apiv1alpha1apistatus)_ | APIStatus provides detailed information about the API service |  | Optional: \{\} <br /> |
-| `lastAppliedFilterHash` _string_ | LastAppliedFilterHash is the hash of the last applied filter |  | Optional: \{\} <br /> |
-| `storageRef` _[api.v1alpha1.StorageReference](#apiv1alpha1storagereference)_ | StorageRef is a reference to the internal storage location |  | Optional: \{\} <br /> |
-| `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  | Optional: \{\} <br /> |
+| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
+| `phase` _[api.v1alpha1.MCPRegistryPhase](#apiv1alpha1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry |  | Enum: [Pending Running Failed Terminating] <br />Optional: \{\} <br /> |
+| `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
+| `url` _string_ | URL is the URL where the registry API can be accessed |  | Optional: \{\} <br /> |
+| `readyReplicas` _integer_ | ReadyReplicas is the number of ready registry API replicas |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryTelemetryConfig
@@ -2329,6 +2292,110 @@ _Appears in:_
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `spec` _[api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)_ |  |  |  |
 | `status` _[api.v1alpha1.MCPServerStatus](#apiv1alpha1mcpserverstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPServerEntry
+
+
+
+MCPServerEntry is the Schema for the mcpserverentries API.
+It declares a remote MCP server endpoint for vMCP discovery and routing
+without deploying any infrastructure.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPServerEntryList](#apiv1alpha1mcpserverentrylist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPServerEntry` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)_ |  |  |  |
+| `status` _[api.v1alpha1.MCPServerEntryStatus](#apiv1alpha1mcpserverentrystatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPServerEntryList
+
+
+
+MCPServerEntryList contains a list of MCPServerEntry.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPServerEntryList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPServerEntryPhase
+
+_Underlying type:_ _string_
+
+MCPServerEntryPhase represents the lifecycle phase of an MCPServerEntry.
+
+_Validation:_
+- Enum: [Valid Pending Failed]
+
+_Appears in:_
+- [api.v1alpha1.MCPServerEntryStatus](#apiv1alpha1mcpserverentrystatus)
+
+| Field | Description |
+| --- | --- |
+| `Valid` | MCPServerEntryPhaseValid indicates all validations passed and the entry is usable.<br /> |
+| `Pending` | MCPServerEntryPhasePending indicates the entry is waiting for referenced resources.<br /> |
+| `Failed` | MCPServerEntryPhaseFailed indicates a validation error occurred.<br /> |
+
+
+#### api.v1alpha1.MCPServerEntrySpec
+
+
+
+MCPServerEntrySpec defines the desired state of MCPServerEntry.
+MCPServerEntry is a zero-infrastructure catalog entry that declares a remote MCP
+server endpoint. Unlike MCPRemoteProxy, it creates no pods, services, or deployments.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `remoteURL` _string_ | RemoteURL is the URL of the remote MCP server.<br />HTTPS is enforced by default; set the annotation<br />toolhive.stacklok.dev/allow-insecure: "true" to allow HTTP for development. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
+| `groupRef` _string_ | GroupRef is the name of the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
+| `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like API keys or correlation IDs. |  | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing CA certificates for TLS verification<br />when connecting to the remote MCP server. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPServerEntryStatus
+
+
+
+MCPServerEntryStatus defines the observed state of MCPServerEntry.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller. |  | Optional: \{\} <br /> |
+| `phase` _[api.v1alpha1.MCPServerEntryPhase](#apiv1alpha1mcpserverentryphase)_ | Phase indicates the current lifecycle phase of the MCPServerEntry. | Pending | Enum: [Valid Pending Failed] <br />Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPServerEntry's state. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPServerList
@@ -3275,42 +3342,6 @@ _Appears in:_
 | `passwordRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.StorageReference
-
-
-
-StorageReference defines a reference to internal storage
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the storage type (configmap) |  | Enum: [configmap] <br /> |
-| `configMapRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core)_ | ConfigMapRef is a reference to a ConfigMap storage<br />Only used when Type is "configmap" |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.SyncPhase
-
-_Underlying type:_ _string_
-
-SyncPhase represents the data synchronization state
-
-_Validation:_
-- Enum: [Syncing Complete Failed]
-
-_Appears in:_
-- [api.v1alpha1.SyncStatus](#apiv1alpha1syncstatus)
-
-| Field | Description |
-| --- | --- |
-| `Syncing` | SyncPhaseSyncing means sync is currently in progress<br /> |
-| `Complete` | SyncPhaseComplete means sync completed successfully<br /> |
-| `Failed` | SyncPhaseFailed means sync failed<br /> |
-
-
 #### api.v1alpha1.SyncPolicy
 
 
@@ -3328,28 +3359,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `interval` _string_ | Interval is the sync interval for automatic synchronization (Go duration format)<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Required: \{\} <br /> |
-
-
-#### api.v1alpha1.SyncStatus
-
-
-
-SyncStatus provides detailed information about data synchronization
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `phase` _[api.v1alpha1.SyncPhase](#apiv1alpha1syncphase)_ | Phase represents the current synchronization phase |  | Enum: [Syncing Complete Failed] <br /> |
-| `message` _string_ | Message provides additional information about the sync status |  | Optional: \{\} <br /> |
-| `lastAttempt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastAttempt is the timestamp of the last sync attempt |  | Optional: \{\} <br /> |
-| `attemptCount` _integer_ | AttemptCount is the number of sync attempts since last success |  | Minimum: 0 <br />Optional: \{\} <br /> |
-| `lastSyncTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastSyncTime is the timestamp of the last successful sync |  | Optional: \{\} <br /> |
-| `lastSyncHash` _string_ | LastSyncHash is the hash of the last successfully synced data<br />Used to detect changes in source data |  | Optional: \{\} <br /> |
-| `serverCount` _integer_ | ServerCount is the total number of servers in the registry |  | Minimum: 0 <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.TagFilter

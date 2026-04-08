@@ -102,3 +102,17 @@ type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
 }
+
+// LocalBuild represents a locally-built OCI skill artifact in the local store.
+type LocalBuild struct {
+	// Tag is the OCI tag or name used to reference the artifact.
+	Tag string `json:"tag"`
+	// Digest is the OCI digest of the artifact (sha256:...).
+	Digest string `json:"digest"`
+	// Name is the skill name extracted from the artifact metadata, if available.
+	Name string `json:"name,omitempty"`
+	// Description is the skill description extracted from the artifact metadata, if available.
+	Description string `json:"description,omitempty"`
+	// Version is the skill version extracted from the artifact metadata, if available.
+	Version string `json:"version,omitempty"`
+}

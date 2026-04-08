@@ -802,6 +802,8 @@ github.com/stacklok/toolhive-catalog v0.20260406.0 h1:MzcSoYJmjwf+sOXiw9uw6wzfz/
 github.com/stacklok/toolhive-catalog v0.20260406.0/go.mod h1:VeHaVQx4dP484wxQT947GA+ocP4YiuKCTN+v7upEPiU=
 github.com/stacklok/toolhive-core v0.0.13 h1:iKMnI7VIVeBXkeCccF5UdOMy5RUPeL+Bmg4DjgFeiHU=
 github.com/stacklok/toolhive-core v0.0.13/go.mod h1:AAeOC8CxDVtburJEkVVdR2bO5z2fiY9dgYRnhcjkHvI=
+github.com/stacklok/toolhive-core v0.0.14 h1:/tyTrtoAMDPH66q1aeKIDDe50P4RGxKGP+bG+7MZ7gs=
+github.com/stacklok/toolhive-core v0.0.14/go.mod h1:MQ+SN7cUwoKj5TX/LmuY1WLgDBm2vRpRwwwYOlT3hug=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.1.1/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.2.0/go.mod h1:qt09Ya8vawLte6SNmTgCsAVtYtaKzEcn8ATUoHMkEqE=

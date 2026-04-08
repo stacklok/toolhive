@@ -137,20 +137,15 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			// but verify that sync is complete and API deployment is in progress
 			Expect(registry.Status.Phase).To(BeElementOf(
 				mcpv1alpha1.MCPRegistryPhasePending, // API deployment in progress
-				mcpv1alpha1.MCPRegistryPhaseReady,   // If somehow API becomes ready
+				mcpv1alpha1.MCPRegistryPhaseRunning, // If somehow API becomes ready
 			))
 
 			// Verify ObservedGeneration is set after reconciliation
 			Expect(registry.Status.ObservedGeneration).To(Equal(registry.Generation))
 
-			// Verify API status exists and shows deployment
-			Expect(registry.Status.APIStatus).NotTo(BeNil())
-			Expect(registry.Status.APIStatus.Phase).To(BeElementOf(
-				mcpv1alpha1.APIPhaseDeploying, // Deployment created but not ready
-				mcpv1alpha1.APIPhaseReady,     // If somehow becomes ready
-			))
-			if registry.Status.APIStatus.Phase == mcpv1alpha1.APIPhaseReady {
-				Expect(registry.Status.APIStatus.Endpoint).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", apiResourceName, testNamespace)))
+			// Verify phase and URL
+			if registry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseRunning {
+				Expect(registry.Status.URL).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", apiResourceName, testNamespace)))
 			}
 
 			By("verifying registry server config ConfigMap is created")
@@ -1062,17 +1057,17 @@ func (h *serverConfigTestHelpers) verifyPodTemplateValidCondition(registryName s
 		if err != nil {
 			return false
 		}
-		condition := meta.FindStatusCondition(updatedRegistry.Status.Conditions, mcpv1alpha1.ConditionRegistryPodTemplateValid)
+		condition := meta.FindStatusCondition(updatedRegistry.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
 		if condition == nil {
 			return false
 		}
 
 		if expectedValid {
 			return condition.Status == metav1.ConditionTrue &&
-				condition.Reason == mcpv1alpha1.ConditionReasonRegistryPodTemplateValid
+				condition.Reason == mcpv1alpha1.ConditionReasonPodTemplateValid
 		}
 		return condition.Status == metav1.ConditionFalse &&
-			condition.Reason == mcpv1alpha1.ConditionReasonRegistryPodTemplateInvalid
+			condition.Reason == mcpv1alpha1.ConditionReasonPodTemplateInvalid
 	}, MediumTimeout, DefaultPollingInterval).Should(BeTrue(),
 		fmt.Sprintf("PodTemplateValid condition should be %v", expectedValid))
 }

@@ -51,7 +51,7 @@ func filterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []
 	}
 
 	if denied := len(tools) - len(filtered); denied > 0 {
-		slog.Info("Authorization policy filtered tools",
+		slog.Debug("Authorization policy filtered tools",
 			"total", len(tools), "allowed", len(filtered), "denied", denied)
 	}
 

@@ -378,7 +378,7 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 	}
 
 	if denied := len(listResult.Prompts) - len(filteredPrompts); denied > 0 {
-		slog.Info("Authorization policy filtered prompts",
+		slog.Debug("Authorization policy filtered prompts",
 			"total", len(listResult.Prompts), "allowed", len(filteredPrompts), "denied", denied)
 	}
 
@@ -439,7 +439,7 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 	}
 
 	if denied := len(listResult.Resources) - len(filteredResources); denied > 0 {
-		slog.Info("Authorization policy filtered resources",
+		slog.Debug("Authorization policy filtered resources",
 			"total", len(listResult.Resources), "allowed", len(filteredResources), "denied", denied)
 	}
 

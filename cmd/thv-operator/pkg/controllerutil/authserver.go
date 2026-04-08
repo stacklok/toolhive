@@ -108,7 +108,11 @@ func EmbeddedAuthServerConfigName(
 
 // GenerateAuthServerConfigByName fetches an MCPExternalAuthConfig by name and, if its type
 // is embeddedAuthServer, returns the corresponding volumes, volume mounts, and env vars.
-// Returns empty slices if the config type is not embeddedAuthServer.
+// Returns empty slices (no error) if the config type is not embeddedAuthServer, because
+// this function may be called via the externalAuthConfigRef fallback path where non-embedded
+// types (headerInjection, tokenExchange, etc.) are valid — they simply don't need auth
+// server volumes. Type validation for the authServerRef path is handled earlier by
+// handleAuthServerRef which sets an InvalidType condition.
 func GenerateAuthServerConfigByName(
 	ctx context.Context,
 	c client.Client,
@@ -120,7 +124,6 @@ func GenerateAuthServerConfigByName(
 		return nil, nil, nil, fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
 	}
 
-	// Only process embeddedAuthServer type
 	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
 		return nil, nil, nil, nil
 	}

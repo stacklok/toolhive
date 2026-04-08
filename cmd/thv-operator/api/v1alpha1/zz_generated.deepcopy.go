@@ -1287,8 +1287,8 @@ func (in *MCPRegistryOAuthProviderConfig) DeepCopyInto(out *MCPRegistryOAuthProv
 	*out = *in
 	if in.ClientSecretRef != nil {
 		in, out := &in.ClientSecretRef, &out.ClientSecretRef
-		*out = new(corev1.SecretKeySelector)
-		(*in).DeepCopyInto(*out)
+		*out = new(SecretKeyRef)
+		**out = **in
 	}
 	if in.CACertRef != nil {
 		in, out := &in.CACertRef, &out.CACertRef
@@ -1297,8 +1297,8 @@ func (in *MCPRegistryOAuthProviderConfig) DeepCopyInto(out *MCPRegistryOAuthProv
 	}
 	if in.AuthTokenRef != nil {
 		in, out := &in.AuthTokenRef, &out.AuthTokenRef
-		*out = new(corev1.SecretKeySelector)
-		(*in).DeepCopyInto(*out)
+		*out = new(SecretKeyRef)
+		**out = **in
 	}
 }
 

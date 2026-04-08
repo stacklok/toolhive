@@ -190,11 +190,9 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 								Path:       "registry.json",
 								Auth: &mcpv1alpha1.GitAuthConfig{
 									Username: "git",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-credentials",
-										},
-										Key: "token",
+									PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+										Name: "git-credentials",
+										Key:  "token",
 									},
 								},
 							},
@@ -260,11 +258,9 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 								Path:       "registry.json",
 								Auth: &mcpv1alpha1.GitAuthConfig{
 									Username: "git",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-credentials-1",
-										},
-										Key: "token",
+									PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+										Name: "git-credentials-1",
+										Key:  "token",
 									},
 								},
 							},
@@ -278,11 +274,9 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 								Path:       "registry.json",
 								Auth: &mcpv1alpha1.GitAuthConfig{
 									Username: "git",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-credentials-2",
-										},
-										Key: "password",
+									PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+										Name: "git-credentials-2",
+										Key:  "password",
 									},
 								},
 							},

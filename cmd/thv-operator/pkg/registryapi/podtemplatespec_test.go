@@ -1099,11 +1099,9 @@ func TestWithGitAuthMount(t *testing.T) {
 	t.Run("adds secret volume for git auth", func(t *testing.T) {
 		t.Parallel()
 
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
-			},
-			Key: "token",
+		secretRef := mcpv1alpha1.SecretKeyRef{
+			Name: testSecretName,
+			Key:  "token",
 		}
 
 		builder := NewPodTemplateSpecBuilderFrom(nil)
@@ -1132,11 +1130,9 @@ func TestWithGitAuthMount(t *testing.T) {
 	t.Run("adds volume mount at correct path", func(t *testing.T) {
 		t.Parallel()
 
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
-			},
-			Key: "token",
+		secretRef := mcpv1alpha1.SecretKeyRef{
+			Name: testSecretName,
+			Key:  "token",
 		}
 
 		builder := NewPodTemplateSpecBuilderFrom(nil)
@@ -1165,10 +1161,8 @@ func TestWithGitAuthMount(t *testing.T) {
 	t.Run("does nothing when key is empty", func(t *testing.T) {
 		t.Parallel()
 
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
-			},
+		secretRef := mcpv1alpha1.SecretKeyRef{
+			Name: testSecretName,
 			// Key is empty - should be skipped (key is required)
 		}
 
@@ -1187,11 +1181,9 @@ func TestWithGitAuthMount(t *testing.T) {
 	t.Run("does nothing when secret name is empty", func(t *testing.T) {
 		t.Parallel()
 
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "", // Empty name should be skipped
-			},
-			Key: "token",
+		secretRef := mcpv1alpha1.SecretKeyRef{
+			Name: "", // Empty name should be skipped
+			Key:  "token",
 		}
 
 		builder := NewPodTemplateSpecBuilderFrom(nil)
@@ -1215,17 +1207,13 @@ func TestWithGitAuthMount(t *testing.T) {
 			secretName2 = "git-credentials-2"
 		)
 
-		secretRef1 := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: secretName1,
-			},
-			Key: "token",
+		secretRef1 := mcpv1alpha1.SecretKeyRef{
+			Name: secretName1,
+			Key:  "token",
 		}
-		secretRef2 := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: secretName2,
-			},
-			Key: "password",
+		secretRef2 := mcpv1alpha1.SecretKeyRef{
+			Name: secretName2,
+			Key:  "password",
 		}
 
 		builder := NewPodTemplateSpecBuilderFrom(nil)
@@ -1254,11 +1242,9 @@ func TestWithGitAuthMount(t *testing.T) {
 	t.Run("volumes are idempotent when called multiple times with same secret", func(t *testing.T) {
 		t.Parallel()
 
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
-			},
-			Key: "token",
+		secretRef := mcpv1alpha1.SecretKeyRef{
+			Name: testSecretName,
+			Key:  "token",
 		}
 
 		builder := NewPodTemplateSpecBuilderFrom(nil)

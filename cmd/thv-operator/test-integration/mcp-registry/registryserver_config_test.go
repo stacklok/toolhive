@@ -590,11 +590,9 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 								Path:       "registry.json",
 								Auth: &mcpv1alpha1.GitAuthConfig{
 									Username: "user1",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-auth-1",
-										},
-										Key: "password",
+									PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+										Name: "git-auth-1",
+										Key:  "password",
 									},
 								},
 							},
@@ -611,11 +609,9 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 								Path:       "servers.json",
 								Auth: &mcpv1alpha1.GitAuthConfig{
 									Username: "user2",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-auth-2",
-										},
-										Key: "token",
+									PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+										Name: "git-auth-2",
+										Key:  "token",
 									},
 								},
 							},

@@ -33,7 +33,12 @@ func (m *manager) ensurePGPassSecret(
 	dbConfig := mcpRegistry.GetDatabaseConfig()
 
 	// Read app user password from secret
-	appUserPassword, err := m.kubeHelper.Secrets.GetValue(ctx, mcpRegistry.Namespace, dbConfig.DBAppUserPasswordSecretRef)
+	appUserPassword, err := m.kubeHelper.Secrets.GetValue(
+		ctx,
+		mcpRegistry.Namespace,
+		dbConfig.DBAppUserPasswordSecretRef.Name,
+		dbConfig.DBAppUserPasswordSecretRef.Key,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to read app user password from secret %s: %w",
 			dbConfig.DBAppUserPasswordSecretRef.Name, err)
@@ -41,7 +46,11 @@ func (m *manager) ensurePGPassSecret(
 
 	// Read migration user password from secret
 	migrationUserPassword, err := m.kubeHelper.Secrets.GetValue(
-		ctx, mcpRegistry.Namespace, dbConfig.DBMigrationUserPasswordSecretRef)
+		ctx,
+		mcpRegistry.Namespace,
+		dbConfig.DBMigrationUserPasswordSecretRef.Name,
+		dbConfig.DBMigrationUserPasswordSecretRef.Key,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to read migration user password from secret %s: %w",
 			dbConfig.DBMigrationUserPasswordSecretRef.Name, err)

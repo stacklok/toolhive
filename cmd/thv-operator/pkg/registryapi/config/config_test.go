@@ -495,11 +495,9 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 							Path:       "registry.json",
 							Auth: &mcpv1alpha1.GitAuthConfig{
 								Username: "git",
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "git-credentials",
-									},
-									Key: "token",
+								PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+									Name: "git-credentials",
+									Key:  "token",
 								},
 							},
 						},
@@ -543,10 +541,8 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 							Path:       "registry.json",
 							Auth: &mcpv1alpha1.GitAuthConfig{
 								Username: "git",
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "git-credentials",
-									},
+								PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+									Name: "git-credentials",
 									// Key is empty - should cause an error
 								},
 							},
@@ -581,11 +577,9 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 							Path:       "registry.json",
 							Auth: &mcpv1alpha1.GitAuthConfig{
 								// Username is empty - should cause an error
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "git-credentials",
-									},
-									Key: "token",
+								PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+									Name: "git-credentials",
+									Key:  "token",
 								},
 							},
 						},
@@ -619,11 +613,9 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 							Path:       "registry.json",
 							Auth: &mcpv1alpha1.GitAuthConfig{
 								Username: "git",
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "", // Empty name should cause an error
-									},
-									Key: "token",
+								PasswordSecretRef: mcpv1alpha1.SecretKeyRef{
+									Name: "", // Empty name should cause an error
+									Key:  "token",
 								},
 							},
 						},
@@ -1673,11 +1665,9 @@ func TestBuildConfig_AuthConfig(t *testing.T) {
 								IssuerURL: "https://keycloak.example.com/realms/myrealm",
 								Audience:  "registry-api",
 								ClientID:  "registry-client",
-								ClientSecretRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "keycloak-secret",
-									},
-									Key: "client-secret",
+								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "keycloak-secret",
+									Key:  "client-secret",
 								},
 								CACertRef: &corev1.ConfigMapKeySelector{
 									LocalObjectReference: corev1.LocalObjectReference{
@@ -1984,11 +1974,9 @@ func TestBuildSecretFilePath(t *testing.T) {
 
 	t.Run("secret ref with key", func(t *testing.T) {
 		t.Parallel()
-		secretRef := &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "my-secret",
-			},
-			Key: "my-key",
+		secretRef := &mcpv1alpha1.SecretKeyRef{
+			Name: "my-secret",
+			Key:  "my-key",
 		}
 		result := buildSecretFilePath(secretRef)
 		assert.Equal(t, "/secrets/my-secret/my-key", result)
@@ -1996,11 +1984,9 @@ func TestBuildSecretFilePath(t *testing.T) {
 
 	t.Run("secret ref without key uses default", func(t *testing.T) {
 		t.Parallel()
-		secretRef := &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "my-secret",
-			},
-			Key: "",
+		secretRef := &mcpv1alpha1.SecretKeyRef{
+			Name: "my-secret",
+			Key:  "",
 		}
 		result := buildSecretFilePath(secretRef)
 		assert.Equal(t, "/secrets/my-secret/clientSecret", result)
@@ -2176,11 +2162,9 @@ func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
 								IssuerURL:     "https://issuer.example.com",
 								Audience:      "my-app",
 								AuthTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token", // Direct path
-								AuthTokenRef: &corev1.SecretKeySelector{ // Should be ignored
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "token-secret",
-									},
-									Key: "token",
+								AuthTokenRef: &mcpv1alpha1.SecretKeyRef{ // Should be ignored
+									Name: "token-secret",
+									Key:  "token",
 								},
 							},
 						},
@@ -2228,11 +2212,9 @@ func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
 								IssuerURL: "https://issuer.example.com",
 								Audience:  "my-app",
 								// AuthTokenFile not set
-								AuthTokenRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "token-secret",
-									},
-									Key: "my-token",
+								AuthTokenRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "token-secret",
+									Key:  "my-token",
 								},
 							},
 						},

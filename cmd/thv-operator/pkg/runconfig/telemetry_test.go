@@ -253,6 +253,7 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 		spec                *mcpv1alpha1.MCPTelemetryConfigSpec
 		serviceNameOverride string
 		defaultServiceName  string
+		caBundleFilePath    string
 		//nolint:thelper // We want to see the error at the specific line
 		expected func(t *testing.T, config *runner.RunConfig)
 	}{
@@ -286,6 +287,25 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 				assert.True(t, config.TelemetryConfig.TracingEnabled)
 				assert.True(t, config.TelemetryConfig.MetricsEnabled)
 				assert.Equal(t, "0.1", config.TelemetryConfig.SamplingRate)
+				assert.Empty(t, config.TelemetryConfig.CACertPath)
+			},
+		},
+		{
+			name: "CA bundle file path is threaded through to config",
+			spec: &mcpv1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "https://otel-collector:4317",
+					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+				},
+			},
+			serviceNameOverride: "my-server",
+			defaultServiceName:  "fallback",
+			caBundleFilePath:    "/config/certs/otel/my-ca-bundle/ca.crt",
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				require.NotNil(t, config.TelemetryConfig)
+				assert.Equal(t, "/config/certs/otel/my-ca-bundle/ca.crt", config.TelemetryConfig.CACertPath)
 			},
 		},
 	}
@@ -298,7 +318,7 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 				runner.WithName("test-server"),
 				runner.WithImage(testImage),
 			}
-			AddMCPTelemetryConfigRefOptions(&options, tt.spec, tt.serviceNameOverride, tt.defaultServiceName)
+			AddMCPTelemetryConfigRefOptions(&options, tt.spec, tt.serviceNameOverride, tt.defaultServiceName, tt.caBundleFilePath)
 
 			rc, err := runner.NewOperatorRunConfigBuilder(context.Background(), nil, nil, nil, options...)
 			assert.NoError(t, err)
@@ -321,6 +341,6 @@ func TestAddMCPTelemetryConfigRefOptions_NilOptions(t *testing.T) {
 
 	// Test with nil options pointer - should not panic
 	assert.NotPanics(t, func() {
-		AddMCPTelemetryConfigRefOptions(nil, spec, "override", "default")
+		AddMCPTelemetryConfigRefOptions(nil, spec, "override", "default", "")
 	}, "AddMCPTelemetryConfigRefOptions should not panic with nil options")
 }

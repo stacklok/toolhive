@@ -1394,6 +1394,13 @@ components:
         DEPRECATED: Middleware configuration.
         TelemetryConfig contains the OpenTelemetry configuration
       properties:
+        caCertPath:
+          description: |-
+            CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.
+            When set, the OTLP exporters use this CA to verify the collector's TLS certificate
+            instead of relying solely on the system CA pool.
+            +optional
+          type: string
         customAttributes:
           additionalProperties:
             type: string

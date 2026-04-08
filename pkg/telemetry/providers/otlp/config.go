@@ -10,4 +10,5 @@ type Config struct {
 	Headers      map[string]string
 	Insecure     bool
 	SamplingRate float64
+	CACertPath   string
 }

@@ -1207,6 +1207,21 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
+	// Add telemetry CA bundle volume if configured via MCPTelemetryConfig
+	if m.Spec.TelemetryConfigRef != nil {
+		telCfg, err := getTelemetryConfigForMCPServer(ctx, r.Client, m)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to fetch MCPTelemetryConfig for CA bundle volume")
+			return nil
+		}
+		if telCfg != nil {
+			caVolumes, caMounts := ctrlutil.AddTelemetryCABundleVolumes(telCfg)
+			volumes = append(volumes, caVolumes...)
+			volumeMounts = append(volumeMounts, caMounts...)
+		}
+	}
+
 	// Add embedded auth server volumes and env vars if configured
 	if m.Spec.ExternalAuthConfigRef != nil {
 		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(

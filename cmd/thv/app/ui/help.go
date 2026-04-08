@@ -182,7 +182,7 @@ func RenderHelp(cmd *cobra.Command) {
 		sb.WriteString(padded + right + "\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("  %s\n\n", footerHint))
+	fmt.Fprintf(&sb, "  %s\n\n", footerHint)
 
 	fmt.Print(sb.String())
 }
@@ -204,29 +204,24 @@ func RenderCommandUsage(cmd *cobra.Command) {
 	sb.WriteString("\n")
 
 	if desc != "" {
-		sb.WriteString(fmt.Sprintf("  %s\n\n",
-			lipgloss.NewStyle().Foreground(ColorDim2).Render(desc)))
+		fmt.Fprintf(&sb, "  %s\n\n", lipgloss.NewStyle().Foreground(ColorDim2).Render(desc))
 	}
 
-	sb.WriteString(fmt.Sprintf("  %s\n",
-		lipgloss.NewStyle().Foreground(ColorDim).Render("Usage:")))
-	sb.WriteString(fmt.Sprintf("    %s\n",
-		lipgloss.NewStyle().Foreground(ColorCyan).Render(cmd.UseLine())))
+	fmt.Fprintf(&sb, "  %s\n", lipgloss.NewStyle().Foreground(ColorDim).Render("Usage:"))
+	fmt.Fprintf(&sb, "    %s\n", lipgloss.NewStyle().Foreground(ColorCyan).Render(cmd.UseLine()))
 
 	if cmd.Example != "" {
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("  %s\n",
-			lipgloss.NewStyle().Foreground(ColorDim).Render("Examples:")))
+		fmt.Fprintf(&sb, "  %s\n", lipgloss.NewStyle().Foreground(ColorDim).Render("Examples:"))
 		for _, line := range strings.Split(strings.TrimRight(cmd.Example, "\n"), "\n") {
-			sb.WriteString(fmt.Sprintf("    %s\n",
-				lipgloss.NewStyle().Foreground(ColorDim2).Render(line)))
+			fmt.Fprintf(&sb, "    %s\n", lipgloss.NewStyle().Foreground(ColorDim2).Render(line))
 		}
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("  %s\n\n",
+	fmt.Fprintf(&sb, "  %s\n\n",
 		lipgloss.NewStyle().Foreground(ColorDim).Render(
-			"Run  thv "+cmd.Name()+" --help  for more information.")))
+			"Run  thv "+cmd.Name()+" --help  for more information."))
 
 	fmt.Print(sb.String())
 }
@@ -241,17 +236,13 @@ func renderParentHelp(cmd *cobra.Command) {
 		desc = cmd.Short
 	}
 	if desc != "" {
-		sb.WriteString(fmt.Sprintf("  %s\n\n",
-			lipgloss.NewStyle().Foreground(ColorDim2).Render(desc)))
+		fmt.Fprintf(&sb, "  %s\n\n", lipgloss.NewStyle().Foreground(ColorDim2).Render(desc))
 	}
 
-	sb.WriteString(fmt.Sprintf("  %s\n",
-		lipgloss.NewStyle().Foreground(ColorDim).Render("Usage:")))
-	sb.WriteString(fmt.Sprintf("    %s\n\n",
-		lipgloss.NewStyle().Foreground(ColorCyan).Render("thv "+cmd.Name()+" <command> [flags]")))
+	fmt.Fprintf(&sb, "  %s\n", lipgloss.NewStyle().Foreground(ColorDim).Render("Usage:"))
+	fmt.Fprintf(&sb, "    %s\n\n", lipgloss.NewStyle().Foreground(ColorCyan).Render("thv "+cmd.Name()+" <command> [flags]"))
 
-	sb.WriteString(fmt.Sprintf("  %s\n",
-		lipgloss.NewStyle().Foreground(ColorPurple).Bold(true).Render("Commands")))
+	fmt.Fprintf(&sb, "  %s\n", lipgloss.NewStyle().Foreground(ColorPurple).Bold(true).Render("Commands"))
 
 	nameStyle := lipgloss.NewStyle().Foreground(ColorCyan).Width(14)
 	descStyle := lipgloss.NewStyle().Foreground(ColorDim2)
@@ -260,16 +251,13 @@ func renderParentHelp(cmd *cobra.Command) {
 		if sub.Hidden {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("    %s%s\n",
-			nameStyle.Render(sub.Name()),
-			descStyle.Render(sub.Short),
-		))
+		fmt.Fprintf(&sb, "    %s%s\n", nameStyle.Render(sub.Name()), descStyle.Render(sub.Short))
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("  %s\n\n",
+	fmt.Fprintf(&sb, "  %s\n\n",
 		lipgloss.NewStyle().Foreground(ColorDim).Render(
-			"Run  thv "+cmd.Name()+" <command> --help  for details.")))
+			"Run  thv "+cmd.Name()+" <command> --help  for details."))
 
 	fmt.Print(sb.String())
 }

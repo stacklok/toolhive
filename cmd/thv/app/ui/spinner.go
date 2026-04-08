@@ -82,7 +82,7 @@ func printCheckpoint(doneMsg string) {
 // Checkpoint commits the current step as done (prints ✓ doneMsg) and keeps
 // the spinner running. Safe to call from any goroutine.
 func (s *Spinner) Checkpoint(doneMsg string) {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) { //nolint:gosec // uintptr fits int on all supported platforms
 		return
 	}
 	s.checkpointCh <- doneMsg
@@ -97,7 +97,7 @@ func (s *Spinner) Update(msg string) {
 
 // Stop halts the spinner and prints a final success line.
 func (s *Spinner) Stop(successMsg string) {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) { //nolint:gosec // uintptr fits int on all supported platforms
 		return
 	}
 	close(s.stopCh)
@@ -109,7 +109,7 @@ func (s *Spinner) Stop(successMsg string) {
 
 // Fail halts the spinner and prints a final error line.
 func (s *Spinner) Fail(errMsg string) {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) { //nolint:gosec // uintptr fits int on all supported platforms
 		return
 	}
 	close(s.stopCh)

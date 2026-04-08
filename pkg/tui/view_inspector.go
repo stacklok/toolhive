@@ -225,7 +225,7 @@ func (m Model) renderInspForm(width, height int) string {
 
 // renderInspResponse renders the right response column of the inspector.
 //
-//nolint:gocyclo // renders all response states (loading, JSON tree, plain text, empty); splitting would scatter related view logic
+//nolint:gocyclo // renders all response states; splitting would scatter related view logic
 func (m Model) renderInspResponse(width, height int) string {
 	sel := m.selected()
 	dimStyle := lipgloss.NewStyle().Foreground(ui.ColorDim)

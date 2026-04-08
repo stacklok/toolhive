@@ -405,7 +405,7 @@ func (r *MCPGroupReconciler) updateReferencingEntriesOnDeletion(
 
 	for _, entry := range entries {
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValid,
+			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotFound,
 			Message:            "Referenced MCPGroup is being deleted",

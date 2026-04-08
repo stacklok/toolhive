@@ -33,8 +33,9 @@ components:
       type: object
     github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket:
       description: |-
-        Shared defines a token bucket shared across all users for this specific tool.
-        +kubebuilder:validation:Required
+        PerUser defines a token bucket applied independently to each authenticated user
+        for this specific tool. Requires authentication to be enabled.
+        +optional
       properties:
         maxTokens:
           description: |-
@@ -52,6 +53,8 @@ components:
         RateLimitConfig contains the CRD rate limiting configuration.
         When set, rate limiting middleware is added to the proxy middleware chain.
       properties:
+        perUser:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
         shared:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
         tools:
@@ -75,6 +78,8 @@ components:
             +kubebuilder:validation:Required
             +kubebuilder:validation:MinLength=1
           type: string
+        perUser:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
         shared:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
       type: object

@@ -66,9 +66,11 @@ func splitLines(s string) []string {
 
 // diffLines returns lines in next that are not in prev (suffix-based).
 // This detects new lines appended since the last poll.
-// NOTE: If the same log line appears multiple times, the match may land on
-// the wrong occurrence — causing duplicated or missed lines. This is an
-// inherent limitation of content-based diffing without sequence numbers.
+//
+// To handle duplicate log lines reliably, we match a suffix of prev (up to
+// diffMatchLen lines) as a contiguous sequence in next, rather than matching
+// only the last line. This makes false positional matches exponentially
+// less likely when the same log message repeats.
 func diffLines(prev, next []string) []string {
 	if len(next) == 0 {
 		return nil
@@ -77,7 +79,21 @@ func diffLines(prev, next []string) []string {
 		return next
 	}
 
-	// Find where next diverges from prev by matching the last known line.
+	// Take the last few lines of prev as the match sequence.
+	matchLen := diffMatchLen
+	if matchLen > len(prev) {
+		matchLen = len(prev)
+	}
+	suffix := prev[len(prev)-matchLen:]
+
+	// Scan next from the end looking for the suffix sequence.
+	for i := len(next) - matchLen; i >= 0; i-- {
+		if slicesEqual(next[i:i+matchLen], suffix) {
+			return next[i+matchLen:]
+		}
+	}
+
+	// No sequence match — fall back to single-line match on the last prev line.
 	lastPrev := prev[len(prev)-1]
 	for i := len(next) - 1; i >= 0; i-- {
 		if next[i] == lastPrev {
@@ -87,4 +103,22 @@ func diffLines(prev, next []string) []string {
 
 	// No overlap found — return all lines in next.
 	return next
+}
+
+// diffMatchLen is the number of trailing lines from the previous poll used
+// to anchor the suffix match. Higher values reduce false matches with
+// duplicate lines but require more overlap to detect the boundary.
+const diffMatchLen = 3
+
+// slicesEqual returns true if a and b have the same length and contents.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

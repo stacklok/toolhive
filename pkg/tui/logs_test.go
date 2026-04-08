@@ -100,10 +100,22 @@ func TestDiffLines(t *testing.T) {
 			expected: []string{"a", "b", "c"},
 		},
 		{
-			name:     "duplicate of last prev line in next matches last occurrence",
+			name:     "duplicate last line resolved by suffix sequence match",
 			prev:     []string{"a", "b"},
+			next:     []string{"a", "b", "b", "c"},
+			expected: []string{"b", "c"},
+		},
+		{
+			name:     "single-line prev falls back to last-line match",
+			prev:     []string{"b"},
 			next:     []string{"b", "x", "b", "y"},
 			expected: []string{"y"},
+		},
+		{
+			name:     "suffix sequence anchors correctly with repeating lines",
+			prev:     []string{"x", "x", "x"},
+			next:     []string{"x", "x", "x", "x", "x", "new"},
+			expected: []string{"new"},
 		},
 	}
 	for _, tc := range tests {

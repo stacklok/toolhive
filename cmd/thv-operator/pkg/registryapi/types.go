@@ -9,7 +9,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 )
 
 const (
@@ -90,18 +89,39 @@ const (
 	gitAuthSecretsBasePath = "/secrets"
 )
 
+// Error represents a structured error with condition information for operator components
+type Error struct {
+	Err             error
+	Message         string
+	ConditionReason string
+}
+
+func (e *Error) Error() string {
+	return e.Message
+}
+
+func (e *Error) Unwrap() error {
+	return e.Err
+}
+
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=types.go Manager
 
 // Manager handles registry API deployment operations
 type Manager interface {
 	// ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API
-	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *mcpregistrystatus.Error
+	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *Error
 
 	// CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
 	CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deployment) bool
 
 	// IsAPIReady checks if the registry API deployment is ready and serving requests
 	IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool
+
+	// GetReadyReplicas returns the number of ready replicas for the registry API deployment
+	GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) int32
+
+	// GetAPIStatus returns the readiness state and ready replica count from a single Deployment fetch
+	GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ready bool, readyReplicas int32)
 }
 
 // GetServiceAccountName returns the service account name for a given MCPRegistry.

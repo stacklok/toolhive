@@ -198,7 +198,7 @@ func (v *RegistryEnforcingValidator) checkImageInRegistry(
 	image string,
 ) (bool, error) {
 	// Only check registries that are ready
-	if mcpRegistry.Status.Phase != mcpv1alpha1.MCPRegistryPhaseReady {
+	if mcpRegistry.Status.Phase != mcpv1alpha1.MCPRegistryPhaseRunning {
 		return false, nil
 	}
 

@@ -5,6 +5,8 @@ package recovery
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -75,6 +77,38 @@ func TestRecoveryMiddleware_RePanicsErrAbortHandler(t *testing.T) {
 
 	// The middleware must re-panic http.ErrAbortHandler so Go's HTTP
 	// server can handle it (silently close the connection).
+	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		wrappedHandler.ServeHTTP(rec, req)
+	})
+}
+
+func TestRecoveryMiddleware_RePanicsWrappedErrAbortHandler(t *testing.T) {
+	t.Parallel()
+
+	testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic(fmt.Errorf("upstream: %w", http.ErrAbortHandler))
+	})
+	wrappedHandler := Middleware(testHandler)
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		wrappedHandler.ServeHTTP(rec, req)
+	})
+}
+
+func TestRecoveryMiddleware_RePanicsErrAbortHandlerByMessage(t *testing.T) {
+	t.Parallel()
+
+	// Distinct pointer from http.ErrAbortHandler but identical text — recover()
+	// would not match rec == http.ErrAbortHandler; we still must re-panic.
+	testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic(errors.New(http.ErrAbortHandler.Error()))
+	})
+	wrappedHandler := Middleware(testHandler)
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
 	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
 		wrappedHandler.ServeHTTP(rec, req)
 	})

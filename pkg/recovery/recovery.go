@@ -21,6 +21,32 @@ import (
 // MiddlewareType is the type constant for recovery middleware
 const MiddlewareType = "recovery"
 
+// isErrAbortHandler reports whether rec is the net/http abort-handler sentinel
+// (or an error wrapping it). httputil.ReverseProxy uses this panic to stop
+// copying a streaming response when the backend or client drops the connection.
+//
+// We must not treat it as a normal panic: logging it as ERROR and calling
+// http.Error would run after headers may already be sent (SSE), which produces
+// "superfluous response.WriteHeader" and corrupts the response.
+func isErrAbortHandler(rec any) bool {
+	if rec == nil {
+		return false
+	}
+	if rec == http.ErrAbortHandler {
+		return true
+	}
+	err, ok := rec.(error)
+	if !ok {
+		return false
+	}
+	if errors.Is(err, http.ErrAbortHandler) {
+		return true
+	}
+	// Some code paths may panic with a distinct error value whose message still
+	// matches the stdlib sentinel; pointer identity and errors.Is would miss it.
+	return err.Error() == http.ErrAbortHandler.Error()
+}
+
 // Middleware is an HTTP middleware that recovers from panics.
 // When a panic occurs, it logs the error and returns
 // a 500 Internal Server Error response to the client.
@@ -33,7 +59,7 @@ func Middleware(next http.Handler) http.Handler {
 				// ReverseProxy panics with this sentinel when a streaming
 				// response breaks mid-copy; catching it would log noisy
 				// stack traces and corrupt the already-in-flight response.
-				if rec == http.ErrAbortHandler {
+				if isErrAbortHandler(rec) {
 					panic(http.ErrAbortHandler)
 				}
 				stack := debug.Stack()

@@ -1172,6 +1172,14 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "registry_api_url": {
+                        "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
+                    "registry_url": {
+                        "description": "RegistryURL is the registry URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
                     },

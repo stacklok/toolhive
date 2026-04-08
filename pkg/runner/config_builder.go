@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
+	appconfig "github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -99,6 +100,26 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 		b.config.RemoteURL = remoteURL
 		return nil
 	}
+}
+
+// WithRegistrySourceURLs records the registry URLs that served this server's metadata.
+func WithRegistrySourceURLs(apiURL, registryURL string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RegistryAPIURL = apiURL
+		b.config.RegistryURL = registryURL
+		return nil
+	}
+}
+
+// ResolveRegistrySourceURLs returns the registry API URL and registry URL from
+// config when the server was discovered via registry lookup (non-nil metadata).
+// Both values are empty when metadata is nil (direct image reference or protocol scheme)
+// or when appConfig is nil.
+func ResolveRegistrySourceURLs(serverMetadata regtypes.ServerMetadata, appConfig *appconfig.Config) (apiURL, registryURL string) {
+	if serverMetadata == nil || appConfig == nil {
+		return "", ""
+	}
+	return appConfig.RegistryApiUrl, appConfig.RegistryUrl
 }
 
 // WithRegistryProxyPort sets the proxy port from registry metadata.

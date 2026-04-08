@@ -312,8 +312,11 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
+	// Load application config once for the entire build.
+	appConfig := cfg.NewDefaultProvider().GetConfig()
+
 	// Setup telemetry configuration
-	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags)
+	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags, appConfig)
 
 	// Setup runtime and validation
 	rt, envVarValidator, err := setupRuntimeAndValidation(ctx)
@@ -344,9 +347,12 @@ func BuildRunnerConfig(
 		return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 	}
 
+	// Resolve registry source URLs when the server was discovered via registry lookup.
+	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, appConfig)
+
 	// Build the runner config
 	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
-		envVars, envVarValidator, oidcConfig, telemetryConfig)
+		envVars, envVarValidator, oidcConfig, telemetryConfig, runner.WithRegistrySourceURLs(regAPIURL, regURL))
 }
 
 // setupOIDCConfiguration sets up OIDC configuration and validates URLs
@@ -369,11 +375,9 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 }
 
 // setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
-func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
-	configProvider := cfg.NewDefaultProvider()
-	config := configProvider.GetConfig()
+func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags, appConfig *cfg.Config) *telemetry.Config {
 	finalTelemetry := getTelemetryFromFlags(
-		cmd, config, runFlags.OtelEndpoint,
+		cmd, appConfig, runFlags.OtelEndpoint,
 		runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables, runFlags.OtelInsecure,
 		runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelUseLegacyAttributes,
 		runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled)
@@ -566,6 +570,7 @@ func buildRunnerConfig(
 	envVarValidator runner.EnvVarValidator,
 	oidcConfig *auth.TokenValidatorConfig,
 	telemetryConfig *telemetry.Config,
+	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
 	transportType := resolveTransportType(runFlags, serverMetadata)
 	serverName := resolveServerName(runFlags, serverMetadata)
@@ -617,6 +622,7 @@ func buildRunnerConfig(
 		}),
 		runner.WithPublish(runFlags.Publish),
 	}
+	opts = append(opts, extraOpts...)
 
 	// Load tools override configuration
 	toolsOverride, err := loadToolsOverrideConfig(runFlags.ToolsOverride)

@@ -552,6 +552,19 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 	return builds, nil
 }
 
+// DeleteBuild removes a locally-built OCI skill artifact from the local store.
+// It deletes the tag and, when no other tag shares the same digest, also
+// garbage-collects all associated blobs.
+func (s *service) DeleteBuild(ctx context.Context, tag string) error {
+	if s.ociStore == nil {
+		return httperr.WithCode(
+			errors.New("OCI packaging is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	return s.ociStore.DeleteBuild(ctx, tag)
+}
+
 // ociPullTimeout is the maximum time allowed for pulling an OCI artifact.
 const ociPullTimeout = 5 * time.Minute
 

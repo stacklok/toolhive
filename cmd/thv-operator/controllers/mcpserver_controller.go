@@ -1464,6 +1464,12 @@ func areAllContainersReady(containerStatuses []corev1.ContainerStatus) bool {
 
 // categorizePodStatus categorizes a pod into running, pending, or failed and returns the failure reason.
 func categorizePodStatus(pod corev1.Pod) (running, pending, failed int, failureReason string) {
+	// Exclude terminating pods from status counts to avoid inflated ReadyReplicas
+	// during rolling updates (see https://github.com/stacklok/toolhive/issues/4498)
+	if pod.DeletionTimestamp != nil {
+		return 0, 0, 0, ""
+	}
+
 	// Check container statuses for failures (CrashLoopBackOff, CreateContainerError, etc.)
 	for _, containerStatus := range pod.Status.ContainerStatuses {
 		if hasError, reason := checkContainerError(containerStatus); hasError {

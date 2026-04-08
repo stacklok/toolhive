@@ -1519,6 +1519,10 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_telemetry.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
                 "properties": {
+                    "caCertPath": {
+                        "description": "CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.\nWhen set, the OTLP exporters use this CA to verify the collector's TLS certificate\ninstead of relying solely on the system CA pool.\n+optional",
+                        "type": "string"
+                    },
                     "customAttributes": {
                         "additionalProperties": {
                             "type": "string"

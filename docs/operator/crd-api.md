@@ -715,6 +715,7 @@ _Appears in:_
 | `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"] |  | Optional: \{\} <br /> |
 | `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs. |  | Optional: \{\} <br /> |
 | `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names<br />are emitted alongside the new standard attribute names. When true, spans include both<br />old and new attribute names for backward compatibility with existing dashboards.<br />Currently defaults to true; this will change to false in a future release. | true | Optional: \{\} <br /> |
+| `caCertPath` _string_ | CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.<br />When set, the OTLP exporters use this CA to verify the collector's TLS certificate<br />instead of relying solely on the system CA pool. |  | Optional: \{\} <br /> |
 
 
 
@@ -955,6 +956,7 @@ _Appears in:_
 - [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
+- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2403,6 +2405,7 @@ _Appears in:_
 | `metrics` _[api.v1alpha1.OpenTelemetryMetricsConfig](#apiv1alpha1opentelemetrymetricsconfig)_ | Metrics defines OpenTelemetry metrics-specific configuration |  | Optional: \{\} <br /> |
 | `tracing` _[api.v1alpha1.OpenTelemetryTracingConfig](#apiv1alpha1opentelemetrytracingconfig)_ | Tracing defines OpenTelemetry tracing configuration |  | Optional: \{\} <br /> |
 | `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy attribute names are emitted alongside<br />the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.<br />This will change to false in a future release and eventually be removed. | true | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing a CA certificate bundle for the OTLP endpoint.<br />When specified, the operator mounts the ConfigMap into the proxyrunner pod and configures<br />the OTLP exporters to trust the custom CA. This is useful when the OTLP collector uses<br />TLS with certificates signed by an internal or private CA. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPToolConfig

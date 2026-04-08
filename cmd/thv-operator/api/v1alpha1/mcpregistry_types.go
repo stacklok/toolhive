@@ -26,7 +26,7 @@ type MCPRegistrySpec struct {
 	DisplayName string `json:"displayName,omitempty"`
 
 	// Sources defines the data source configurations for the registry.
-	// Each source defines where registry data comes from (Git, API, ConfigMap, PVC, Managed, or Kubernetes).
+	// Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +listType=map
@@ -86,7 +86,7 @@ type MCPRegistrySpec struct {
 }
 
 // MCPRegistrySourceConfig defines a data source configuration for the registry.
-// Exactly one source type must be specified (ConfigMapRef, Git, API, PVCRef, Managed, or Kubernetes).
+// Exactly one source type must be specified (ConfigMapRef, Git, API, URL, Managed, or Kubernetes).
 type MCPRegistrySourceConfig struct {
 	// Name is a unique identifier for this source within the MCPRegistry
 	// +kubebuilder:validation:Required
@@ -106,40 +106,35 @@ type MCPRegistrySourceConfig struct {
 	Claims *apiextensionsv1.JSON `json:"claims,omitempty"`
 
 	// ConfigMapRef defines the ConfigMap source configuration
-	// Mutually exclusive with Git, API, PVCRef, Managed, and Kubernetes
+	// Mutually exclusive with Git, API, URL, Managed, and Kubernetes
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 
 	// Git defines the Git repository source configuration
-	// Mutually exclusive with ConfigMapRef, API, PVCRef, Managed, and Kubernetes
+	// Mutually exclusive with ConfigMapRef, API, URL, Managed, and Kubernetes
 	// +optional
 	Git *GitSource `json:"git,omitempty"`
 
 	// API defines the API source configuration
-	// Mutually exclusive with ConfigMapRef, Git, PVCRef, Managed, and Kubernetes
+	// Mutually exclusive with ConfigMapRef, Git, URL, Managed, and Kubernetes
 	// +optional
 	API *APISource `json:"api,omitempty"`
 
-	// PVCRef defines the PersistentVolumeClaim source configuration
-	// Mutually exclusive with ConfigMapRef, Git, API, URL, Managed, and Kubernetes
-	// +optional
-	PVCRef *PVCSource `json:"pvcRef,omitempty"`
-
 	// URL defines a URL-hosted file source configuration.
 	// The registry server fetches the registry data from the specified HTTP/HTTPS URL.
-	// Mutually exclusive with ConfigMapRef, Git, API, PVCRef, Managed, and Kubernetes
+	// Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes
 	// +optional
 	URL *URLSource `json:"url,omitempty"`
 
 	// Managed defines a managed source that is directly manipulated via the registry API.
 	// Managed sources do not sync from external sources.
 	// At most one managed source is allowed per MCPRegistry.
-	// Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Kubernetes
+	// Mutually exclusive with ConfigMapRef, Git, API, URL, and Kubernetes
 	// +optional
 	Managed *ManagedSource `json:"managed,omitempty"`
 
 	// Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.
-	// Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Managed
+	// Mutually exclusive with ConfigMapRef, Git, API, URL, and Managed
 	// +optional
 	Kubernetes *KubernetesSource `json:"kubernetes,omitempty"`
 
@@ -296,43 +291,6 @@ type APISource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern="^https?://.*"
 	Endpoint string `json:"endpoint"`
-}
-
-// PVCSource defines PersistentVolumeClaim source configuration
-type PVCSource struct {
-	// ClaimName is the name of the PersistentVolumeClaim
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	ClaimName string `json:"claimName"`
-
-	// Path is the relative path to the registry file within the PVC.
-	// The PVC is mounted at /config/registry/{registryName}/.
-	// The full file path becomes: /config/registry/{registryName}/{path}
-	//
-	// This design:
-	// - Each registry gets its own mount point (consistent with ConfigMap sources)
-	// - Multiple registries can share the same PVC by mounting it at different paths
-	// - Users control PVC organization freely via the path field
-	//
-	// Examples:
-	//   Registry "production" using PVC "shared-data" with path "prod/registry.json":
-	//     PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json
-	//
-	//   Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":
-	//     PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json
-	//     (Same PVC, different mount path)
-	//
-	//   Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":
-	//     PVC contains /registry.json → accessed at /config/registry/staging/registry.json
-	//     (Different PVC, independent mount)
-	//
-	//   Registry "team-a" with path "v1/servers.json":
-	//     PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json
-	//     (Subdirectories allowed in path)
-	// +kubebuilder:validation:Pattern=^.*\.json$
-	// +kubebuilder:default=registry.json
-	// +optional
-	Path string `json:"path,omitempty"`
 }
 
 // SyncPolicy defines automatic synchronization behavior.

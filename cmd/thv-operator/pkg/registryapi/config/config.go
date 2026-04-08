@@ -492,12 +492,8 @@ func validateRegistryViewNames(registries []mcpv1alpha1.MCPRegistryViewConfig) e
 }
 
 func buildFilePath(sourceName string) *FileConfig {
-	return buildFilePathWithCustomName(sourceName, RegistryJSONFileName)
-}
-
-func buildFilePathWithCustomName(sourceName string, filename string) *FileConfig {
 	return &FileConfig{
-		Path: filepath.Join(RegistryJSONFilePath, sourceName, filename),
+		Path: filepath.Join(RegistryJSONFilePath, sourceName, RegistryJSONFileName),
 	}
 }
 
@@ -546,14 +542,6 @@ func buildSourceConfig(sourceSpec *mcpv1alpha1.MCPRegistrySourceConfig) (*Source
 			return nil, fmt.Errorf("failed to build API source configuration: %w", err)
 		}
 		sourceConfig.API = apiConfig
-	}
-	if sourceSpec.PVCRef != nil {
-		sourceCount++
-		pvcPath := RegistryJSONFileName
-		if sourceSpec.PVCRef.Path != "" {
-			pvcPath = sourceSpec.PVCRef.Path
-		}
-		sourceConfig.File = buildFilePathWithCustomName(sourceSpec.Name, pvcPath)
 	}
 	if sourceSpec.URL != nil {
 		sourceCount++

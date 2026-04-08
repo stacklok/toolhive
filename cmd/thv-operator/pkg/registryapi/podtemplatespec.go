@@ -385,10 +385,9 @@ func WithGitAuthMount(containerName string, secretRef corev1.SecretKeySelector) 
 	}
 }
 
-// WithRegistrySourceMounts creates volumes and mounts for all registry sources (ConfigMap and PVC).
-// Each source (ConfigMap or PVC) gets its own volume and mount point
-// at /config/registry/{sourceName}/. Multiple sources can share the same PVC
-// by mounting it at different paths.
+// WithRegistrySourceMounts creates volumes and mounts for all registry sources.
+// Each ConfigMap source gets its own volume and mount point
+// at /config/registry/{sourceName}/.
 func WithRegistrySourceMounts(containerName string, sources []mcpv1alpha1.MCPRegistrySourceConfig) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
 		for _, source := range sources {
@@ -424,30 +423,6 @@ func WithRegistrySourceMounts(containerName string, sources []mcpv1alpha1.MCPReg
 				})(pts)
 			}
 
-			if source.PVCRef != nil {
-				// PVC: Create unique volume per source (same PVC can be mounted multiple times)
-				// Mount at /config/registry/{sourceName}/ for consistent path structure
-				volumeName := fmt.Sprintf("registry-data-source-%s", source.Name)
-
-				// Add the PVC volume
-				WithVolume(corev1.Volume{
-					Name: volumeName,
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: source.PVCRef.ClaimName,
-							ReadOnly:  true,
-						},
-					},
-				})(pts)
-
-				// Mount at source-specific subdirectory
-				mountPath := filepath.Join(config.RegistryJSONFilePath, source.Name)
-				WithVolumeMount(containerName, corev1.VolumeMount{
-					Name:      volumeName,
-					MountPath: mountPath,
-					ReadOnly:  true,
-				})(pts)
-			}
 		}
 	}
 }

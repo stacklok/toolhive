@@ -2063,7 +2063,7 @@ _Appears in:_
 
 
 MCPRegistrySourceConfig defines a data source configuration for the registry.
-Exactly one source type must be specified (ConfigMapRef, Git, API, PVCRef, Managed, or Kubernetes).
+Exactly one source type must be specified (ConfigMapRef, Git, API, URL, Managed, or Kubernetes).
 
 
 
@@ -2075,13 +2075,12 @@ _Appears in:_
 | `name` _string_ | Name is a unique identifier for this source within the MCPRegistry |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
 | `claims` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io)_ | Claims are key-value pairs attached to this source for authorization purposes.<br />All entries from this source inherit these claims. Values must be string or []string. |  | Type: object <br />Optional: \{\} <br /> |
-| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `git` _[api.v1alpha1.GitSource](#apiv1alpha1gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `api` _[api.v1alpha1.APISource](#apiv1alpha1apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef, Git, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `pvcRef` _[api.v1alpha1.PVCSource](#apiv1alpha1pvcsource)_ | PVCRef defines the PersistentVolumeClaim source configuration<br />Mutually exclusive with ConfigMapRef, Git, API, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `url` _[api.v1alpha1.URLSource](#apiv1alpha1urlsource)_ | URL defines a URL-hosted file source configuration.<br />The registry server fetches the registry data from the specified HTTP/HTTPS URL.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `managed` _[api.v1alpha1.ManagedSource](#apiv1alpha1managedsource)_ | Managed defines a managed source that is directly manipulated via the registry API.<br />Managed sources do not sync from external sources.<br />At most one managed source is allowed per MCPRegistry.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Kubernetes |  | Optional: \{\} <br /> |
-| `kubernetes` _[api.v1alpha1.KubernetesSource](#apiv1alpha1kubernetessource)_ | Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.<br />Mutually exclusive with ConfigMapRef, Git, API, PVCRef, and Managed |  | Optional: \{\} <br /> |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git, API, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `git` _[api.v1alpha1.GitSource](#apiv1alpha1gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef, API, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `api` _[api.v1alpha1.APISource](#apiv1alpha1apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef, Git, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `url` _[api.v1alpha1.URLSource](#apiv1alpha1urlsource)_ | URL defines a URL-hosted file source configuration.<br />The registry server fetches the registry data from the specified HTTP/HTTPS URL.<br />Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes |  | Optional: \{\} <br /> |
+| `managed` _[api.v1alpha1.ManagedSource](#apiv1alpha1managedsource)_ | Managed defines a managed source that is directly manipulated via the registry API.<br />Managed sources do not sync from external sources.<br />At most one managed source is allowed per MCPRegistry.<br />Mutually exclusive with ConfigMapRef, Git, API, URL, and Kubernetes |  | Optional: \{\} <br /> |
+| `kubernetes` _[api.v1alpha1.KubernetesSource](#apiv1alpha1kubernetessource)_ | Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.<br />Mutually exclusive with ConfigMapRef, Git, API, URL, and Managed |  | Optional: \{\} <br /> |
 | `syncPolicy` _[api.v1alpha1.SyncPolicy](#apiv1alpha1syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this source.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting.<br />Not applicable for Managed and Kubernetes sources (will be ignored). |  | Optional: \{\} <br /> |
 | `filter` _[api.v1alpha1.RegistryFilter](#apiv1alpha1registryfilter)_ | Filter defines include/exclude patterns for registry content.<br />Not applicable for Managed and Kubernetes sources (will be ignored). |  | Optional: \{\} <br /> |
 
@@ -2100,7 +2099,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry |  | Optional: \{\} <br /> |
-| `sources` _[api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig) array_ | Sources defines the data source configurations for the registry.<br />Each source defines where registry data comes from (Git, API, ConfigMap, PVC, Managed, or Kubernetes). |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `sources` _[api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig) array_ | Sources defines the data source configurations for the registry.<br />Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes). |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `registries` _[api.v1alpha1.MCPRegistryViewConfig](#apiv1alpha1mcpregistryviewconfig) array_ | Registries defines lightweight registry views that aggregate one or more sources.<br />Each registry references sources by name and can optionally gate access via claims. |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
@@ -2884,23 +2883,6 @@ _Appears in:_
 | `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer | discovered | Enum: [discovered inline] <br />Optional: \{\} <br /> |
 | `default` _[api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig)_ | Default defines default behavior for backends without explicit auth config |  | Optional: \{\} <br /> |
 | `backends` _object (keys:string, values:[api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.PVCSource
-
-
-
-PVCSource defines PersistentVolumeClaim source configuration
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `claimName` _string_ | ClaimName is the name of the PersistentVolumeClaim |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `path` _string_ | Path is the relative path to the registry file within the PVC.<br />The PVC is mounted at /config/registry/\{registryName\}/.<br />The full file path becomes: /config/registry/\{registryName\}/\{path\}<br />This design:<br />- Each registry gets its own mount point (consistent with ConfigMap sources)<br />- Multiple registries can share the same PVC by mounting it at different paths<br />- Users control PVC organization freely via the path field<br />Examples:<br />  Registry "production" using PVC "shared-data" with path "prod/registry.json":<br />    PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json<br />  Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":<br />    PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json<br />    (Same PVC, different mount path)<br />  Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":<br />    PVC contains /registry.json → accessed at /config/registry/staging/registry.json<br />    (Different PVC, independent mount)<br />  Registry "team-a" with path "v1/servers.json":<br />    PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json<br />    (Subdirectories allowed in path) | registry.json | Pattern: `^.*\.json$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.PermissionProfileRef

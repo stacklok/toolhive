@@ -26,6 +26,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -42,13 +43,6 @@ const (
 	// when a session has been terminated.
 	MetadataValTrue = "true"
 )
-
-// terminatedSentinel is stored in sessions when Terminate() begins tearing
-// down a MultiSession. sessions.Get returns (nil, false) for sentinel entries
-// (non-V values), and DecorateSession's CAS-based re-check will fail,
-// preventing concurrent writers from resurrecting a storage record that
-// Terminate() has already deleted.
-type terminatedSentinel struct{}
 
 // Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
 // to the mark3labs SDK's SessionIdManager interface.
@@ -84,7 +78,7 @@ type Manager struct {
 	// (HTTP connections, routing tables). On a cache miss it restores the
 	// session from stored metadata; on a cache hit it confirms liveness via
 	// storage.Load, which also refreshes the Redis TTL.
-	sessions *RestorableCache[string, vmcpsession.MultiSession]
+	sessions *cache.ValidatingCache[string, vmcpsession.MultiSession]
 }
 
 // New creates a Manager backed by the given SessionDataStorage and backend
@@ -101,6 +95,9 @@ func New(
 ) (*Manager, func(context.Context) error, error) {
 	if cfg == nil || cfg.Base == nil {
 		return nil, nil, fmt.Errorf("sessionmanager.New: FactoryConfig.Base (SessionFactory) is required")
+	}
+	if cfg.CacheCapacity < 0 {
+		return nil, nil, fmt.Errorf("sessionmanager.New: CacheCapacity must be >= 0 (got %d)", cfg.CacheCapacity)
 	}
 	if len(cfg.WorkflowDefs) > 0 && cfg.ComposerFactory == nil {
 		return nil, nil, fmt.Errorf("sessionmanager.New: ComposerFactory is required when WorkflowDefs are provided")
@@ -135,7 +132,8 @@ func New(
 		backendReg: backendRegistry,
 	}
 
-	sm.sessions = newRestorableCache(
+	sm.sessions = cache.New(
+		cfg.CacheCapacity,
 		sm.loadSession,
 		sm.checkSession,
 		func(id string, sess vmcpsession.MultiSession) {
@@ -343,16 +341,29 @@ func (sm *Manager) CreateSession(
 	// Persist the serialisable session metadata to the pluggable backend (e.g.
 	// Redis) so that Validate() and TTL management work correctly. The live
 	// MultiSession itself is cached in the node-local multiSessions map below.
+	//
+	// Use Update (SET XX) rather than Upsert to close the TOCTOU window between
+	// the second placeholder check above and this write. If Terminate deleted the
+	// key in that window, Update returns (false, nil) and we bail without
+	// resurrecting the deleted session.
 	storeCtx, storeCancel := context.WithTimeout(ctx, createSessionStorageTimeout)
 	defer storeCancel()
-	if err := sm.storage.Upsert(storeCtx, sessionID, sess.GetMetadata()); err != nil {
+	stored, err := sm.storage.Update(storeCtx, sessionID, sess.GetMetadata())
+	if err != nil {
 		_ = sess.Close()
 		sm.cleanupFailedPlaceholder(sessionID, placeholder2)
 		return nil, fmt.Errorf("Manager.CreateSession: failed to store session metadata: %w", err)
 	}
+	if !stored {
+		_ = sess.Close()
+		return nil, fmt.Errorf(
+			"Manager.CreateSession: session %q was terminated between placeholder check and metadata store",
+			sessionID,
+		)
+	}
 
 	// Cache the live MultiSession so that GetMultiSession can retrieve it.
-	sm.sessions.Store(sessionID, sess)
+	sm.sessions.Set(sessionID, sess)
 
 	slog.Debug("Manager: created multi-session",
 		"session_id", sessionID,
@@ -366,13 +377,16 @@ func (sm *Manager) CreateSession(
 // as a valid session), and prevents repeated Validate() calls from refreshing
 // the Redis TTL and keeping the placeholder alive indefinitely.
 //
+// Uses Update (SET XX) so that a Terminate() that already deleted the key is
+// not inadvertently resurrected as a terminated entry.
+//
 // Cleanup is best-effort: errors are logged but not returned, since the caller
 // already has an error to report.
 func (sm *Manager) cleanupFailedPlaceholder(sessionID string, metadata map[string]string) {
 	metadata[MetadataKeyTerminated] = MetadataValTrue
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), createSessionStorageTimeout)
 	defer cancel()
-	if err := sm.storage.Upsert(cleanupCtx, sessionID, metadata); err != nil {
+	if _, err := sm.storage.Update(cleanupCtx, sessionID, metadata); err != nil {
 		slog.Warn("Manager.CreateSession: failed to mark failed placeholder as terminated; it will linger until TTL expires",
 			"session_id", sessionID, "error", err)
 	}
@@ -440,38 +454,22 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 
 	// Check the node-local cache first: a fully-formed MultiSession is stored
 	// here while this pod owns it.
-	if v, ok := sm.sessions.Peek(sessionID); ok {
-		// A terminatedSentinel means another goroutine is already tearing down
-		// this session. Do not fall through to the placeholder path — that would
-		// race with the concurrent Terminate's storage.Delete and potentially
-		// recreate the storage record after it was deleted.
-		if _, isSentinel := v.(terminatedSentinel); isSentinel {
-			slog.Debug("Manager.Terminate: concurrent termination in progress, skipping",
-				"session_id", sessionID)
-			return false, nil
+	if multiSess, ok := sm.sessions.Peek(sessionID); ok {
+		// Delete from storage first. Any concurrent RestoreSession (cache miss
+		// path) calls storage.Load, which will return ErrSessionNotFound after
+		// this delete and abort the restore — no resurrection possible.
+		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
+			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
-		if multiSess, ok := v.(vmcpsession.MultiSession); ok {
-			// Publish the tombstone before deleting from storage. Any concurrent
-			// GetMultiSession call will see the terminatedSentinel and return
-			// (nil, false), and DecorateSession's CAS-based re-check will fail,
-			// preventing both from recreating the storage record after we delete it.
-			sm.sessions.Store(sessionID, terminatedSentinel{})
 
-			if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
-				// Rollback: restore the live session so the caller can retry.
-				sm.sessions.Store(sessionID, multiSess)
-				return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
-			}
-
-			// Storage is clean; remove the sentinel and release backend connections.
-			sm.sessions.Delete(sessionID)
-			if closeErr := multiSess.Close(); closeErr != nil {
-				slog.Warn("Manager.Terminate: error closing multi-session backend connections",
-					"session_id", sessionID, "error", closeErr)
-			}
-			slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
-			return false, nil
+		// Storage is clean; evict the cache entry and release backend connections.
+		sm.sessions.Delete(sessionID)
+		if closeErr := multiSess.Close(); closeErr != nil {
+			slog.Warn("Manager.Terminate: error closing multi-session backend connections",
+				"session_id", sessionID, "error", closeErr)
 		}
+		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
+		return false, nil
 	}
 
 	// No MultiSession in the local map — treat as a placeholder session.
@@ -588,44 +586,27 @@ func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
 // session from the node-local cache so the next GetMultiSession call triggers a
 // fresh RestoreSession with the updated state.
 //
-// Cross-pod TOCTOU: a re-check Load is performed immediately before the Upsert
-// to detect cross-pod session termination (where another pod calls
-// storage.Delete). If the key is absent at re-check time we bail without
-// upserting. A residual race remains between the re-check and the Upsert (a
-// concurrent pod could delete the key in that window), but the window is now
-// microseconds rather than the full NotifyBackendExpired span. Closing the race
-// entirely would require a conditional write primitive (e.g. Redis SET XX /
-// UpsertIfPresent) added to the DataStorage interface.
+// The conditional Update (SET XX) replaces the previous Load+Upsert pattern,
+// closing the TOCTOU window where a concurrent Delete (from another pod or a
+// local Terminate) could be followed by an Upsert that silently resurrects the
+// storage record. If the key is absent at Update time, the call is a no-op.
 //
 // NOTE: concurrent calls for the same session are last-write-wins. We assume
 // parallel metadata writers within a session do not occur; NotifyBackendExpired
 // is the only post-creation writer and backend expiry events are serialised by
-// the backend registry. This can be retrofitted with CAS semantics or a version
-// counter if that assumption changes.
+// the backend registry.
 func (sm *Manager) updateMetadata(sessionID string, metadata map[string]string) error {
-	// Same-pod guard: if Terminate() is already tearing down this session on
-	// this pod the sentinel is in the cache and storage is already deleted.
-	if raw, ok := sm.sessions.Peek(sessionID); ok {
-		if _, isSentinel := raw.(terminatedSentinel); isSentinel {
-			return nil
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), notifyBackendExpiredTimeout)
 	defer cancel()
 
-	// Cross-pod guard: re-check that the storage record still exists before
-	// upserting. If another pod terminated the session (deleting the key) after
-	// NotifyBackendExpired's initial Load, we must not recreate the record.
-	if _, err := sm.storage.Load(ctx, sessionID); err != nil {
-		if errors.Is(err, transportsession.ErrSessionNotFound) {
-			return nil // session was terminated elsewhere; nothing to update
-		}
+	// Update only succeeds if the key still exists. A concurrent Delete (same
+	// pod or cross-pod) returns (false, nil), and we bail without resurrecting.
+	updated, err := sm.storage.Update(ctx, sessionID, metadata)
+	if err != nil {
 		return err
 	}
-
-	if err := sm.storage.Upsert(ctx, sessionID, metadata); err != nil {
-		return err
+	if !updated {
+		return nil // session was terminated; nothing to update
 	}
 	sm.sessions.Delete(sessionID)
 	return nil
@@ -669,13 +650,13 @@ func (sm *Manager) checkSession(sessionID string) error {
 	defer cancel()
 	metadata, err := sm.storage.Load(checkCtx, sessionID)
 	if errors.Is(err, transportsession.ErrSessionNotFound) {
-		return ErrExpired
+		return cache.ErrExpired
 	}
 	if err != nil {
 		return err // transient storage error — keep cached
 	}
 	if metadata[MetadataKeyTerminated] == MetadataValTrue {
-		return ErrExpired
+		return cache.ErrExpired
 	}
 
 	// If the cached session has backend metadata and it differs from storage,
@@ -683,12 +664,10 @@ func (sm *Manager) checkSession(sessionID string) error {
 	// explicitly carries MetadataKeyBackendIDs to avoid spurious evictions for
 	// sessions whose in-memory representation does not track backend IDs (e.g.
 	// test mocks that return an empty metadata map).
-	if raw, ok := sm.sessions.Peek(sessionID); ok {
-		if sess, ok := raw.(vmcpsession.MultiSession); ok {
-			if cachedIDs, present := sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs]; present {
-				if cachedIDs != metadata[vmcpsession.MetadataKeyBackendIDs] {
-					return ErrExpired
-				}
+	if sess, ok := sm.sessions.Peek(sessionID); ok {
+		if cachedIDs, present := sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs]; present {
+			if cachedIDs != metadata[vmcpsession.MetadataKeyBackendIDs] {
+				return cache.ErrExpired
 			}
 		}
 	}
@@ -739,6 +718,28 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 		return nil, restoreErr
 	}
 
+	// Post-restore existence check: confirm the storage key still exists.
+	//
+	// This closes the resurrection window where Terminate() deletes the storage
+	// key after this goroutine passed the initial Load above but before the
+	// ValidatingCache stores the restored session. storage.Update uses SET XX
+	// (set-if-exists) semantics: if the key was deleted by Terminate(), it
+	// returns (false, nil) and we discard the freshly-restored session.
+	confirmCtx, confirmCancel := context.WithTimeout(context.Background(), restoreStorageTimeout)
+	defer confirmCancel()
+	stillExists, confirmErr := sm.storage.Update(confirmCtx, sessionID, metadata)
+	if confirmErr != nil {
+		_ = restored.Close()
+		return nil, fmt.Errorf("Manager.loadSession: failed to confirm session %q still exists: %w", sessionID, confirmErr)
+	}
+	if !stillExists {
+		// Terminate() deleted the storage key between our Load and now; the
+		// session must not be cached.
+		slog.Debug("Manager.loadSession: session deleted during restore, discarding", "session_id", sessionID)
+		_ = restored.Close()
+		return nil, transportsession.ErrSessionNotFound
+	}
+
 	slog.Debug("Manager.loadSession: restored session from storage", "session_id", sessionID)
 	return restored, nil
 }
@@ -768,22 +769,26 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 		return fmt.Errorf("DecorateSession: decorator changed session ID from %q to %q", sessionID, decorated.ID())
 	}
 	// Atomically replace the original entry with the decorated one.
-	// If Terminate() has stored a terminatedSentinel between the first
+	// If Terminate() has deleted the session from the cache between the first
 	// GetMultiSession call above and here, CompareAndSwap returns false and
-	// we bail out before touching storage — preventing resurrection of a
-	// terminated session's storage record.
+	// we bail out before touching storage.
 	if !sm.sessions.CompareAndSwap(sessionID, sess, decorated) {
 		return fmt.Errorf("DecorateSession: session %q was terminated or concurrently modified during decoration", sessionID)
 	}
-	// Persist updated metadata to storage. On failure, attempt to rollback
-	// the local-map entry so the caller can retry. If Terminate() has since
-	// replaced the decorated entry with a sentinel, the rollback CAS returns
-	// false and we leave the sentinel in place.
+	// Persist updated metadata via conditional Update (SET XX). If Terminate()
+	// has deleted the session from storage between the CAS and here, Update
+	// returns (false, nil) and we rollback the cache entry to prevent
+	// resurrection of a deleted session's storage record.
 	decorateCtx, decorateCancel := context.WithTimeout(context.Background(), decorateTimeout)
 	defer decorateCancel()
-	if err := sm.storage.Upsert(decorateCtx, sessionID, decorated.GetMetadata()); err != nil {
+	updated, err := sm.storage.Update(decorateCtx, sessionID, decorated.GetMetadata())
+	if err != nil {
 		_ = sm.sessions.CompareAndSwap(sessionID, decorated, sess)
 		return fmt.Errorf("DecorateSession: failed to store decorated session metadata: %w", err)
+	}
+	if !updated {
+		_ = sm.sessions.CompareAndSwap(sessionID, decorated, sess)
+		return fmt.Errorf("DecorateSession: session %q was deleted during decoration", sessionID)
 	}
 	return nil
 }

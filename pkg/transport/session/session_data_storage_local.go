@@ -35,7 +35,8 @@ func (e *localDataEntry) lastAccess() time.Time {
 // Sessions are evicted if they have not been accessed within the configured TTL.
 // A background goroutine runs until Close is called.
 type LocalSessionDataStorage struct {
-	sessions sync.Map // map[string]*localDataEntry
+	sessions sync.Map   // map[string]*localDataEntry
+	mu       sync.Mutex // guards Update's read-modify-write and Delete
 	ttl      time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -93,12 +94,34 @@ func (s *LocalSessionDataStorage) Create(_ context.Context, id string, metadata 
 	return !loaded, nil
 }
 
+// Update overwrites session metadata only if the session ID already exists.
+// Uses mu to make the Load + Store sequence atomic with respect to Delete.
+// Returns (true, nil) if updated, (false, nil) if not found.
+func (s *LocalSessionDataStorage) Update(_ context.Context, id string, metadata map[string]string) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("cannot write session data with empty ID")
+	}
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions.Load(id); !ok {
+		return false, nil
+	}
+	copied := maps.Clone(metadata)
+	s.sessions.Store(id, newLocalDataEntry(copied))
+	return true, nil
+}
+
 // Delete removes session metadata. Not an error if absent.
 func (s *LocalSessionDataStorage) Delete(_ context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("cannot delete session data with empty ID")
 	}
+	s.mu.Lock()
 	s.sessions.Delete(id)
+	s.mu.Unlock()
 	return nil
 }
 

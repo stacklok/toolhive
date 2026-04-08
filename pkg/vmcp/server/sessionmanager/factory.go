@@ -62,6 +62,13 @@ type FactoryConfig struct {
 	// If non-nil, the optimizer factory (whether derived from OptimizerConfig or
 	// supplied via OptimizerFactory) and workflow executors are wrapped with telemetry.
 	TelemetryProvider *telemetry.Provider
+
+	// CacheCapacity is the maximum number of live MultiSession entries held in
+	// the node-local ValidatingCache. When the cache is full the least-recently-used
+	// session is evicted (its backend connections are closed). A value of 0
+	// disables the limit (the cache grows without bound). Negative values are
+	// rejected by sessionmanager.New.
+	CacheCapacity int
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry

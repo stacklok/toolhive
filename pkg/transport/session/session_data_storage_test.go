@@ -191,6 +191,74 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		err := s.Delete(ctx, "")
 		assert.Error(t, err)
 	})
+
+	t.Run("Update overwrites existing entry and returns true", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Upsert(ctx, "sess-update", map[string]string{"v": "original"}))
+
+		updated, err := s.Update(ctx, "sess-update", map[string]string{"v": "updated"})
+		require.NoError(t, err)
+		assert.True(t, updated, "should return true when key exists")
+
+		loaded, err := s.Load(ctx, "sess-update")
+		require.NoError(t, err)
+		assert.Equal(t, "updated", loaded["v"])
+	})
+
+	t.Run("Update on missing key returns (false, nil) without creating it", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		updated, err := s.Update(ctx, "sess-absent", map[string]string{"v": "new"})
+		require.NoError(t, err)
+		assert.False(t, updated, "should return false when key does not exist")
+
+		// The key must not have been created.
+		_, err = s.Load(ctx, "sess-absent")
+		assert.ErrorIs(t, err, ErrSessionNotFound, "Update must not create a missing key")
+	})
+
+	t.Run("Update after Delete returns (false, nil)", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Upsert(ctx, "sess-deleted", map[string]string{"v": "1"}))
+		require.NoError(t, s.Delete(ctx, "sess-deleted"))
+
+		updated, err := s.Update(ctx, "sess-deleted", map[string]string{"v": "2"})
+		require.NoError(t, err)
+		assert.False(t, updated, "should return false after key was deleted")
+	})
+
+	t.Run("Update with empty ID returns error", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Update(ctx, "", map[string]string{})
+		assert.Error(t, err)
+	})
+
+	t.Run("Update nil metadata is treated as empty map", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Upsert(ctx, "sess-update-nil", map[string]string{"v": "original"}))
+
+		updated, err := s.Update(ctx, "sess-update-nil", nil)
+		require.NoError(t, err)
+		assert.True(t, updated)
+
+		loaded, err := s.Load(ctx, "sess-update-nil")
+		require.NoError(t, err)
+		assert.NotNil(t, loaded)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -329,5 +397,25 @@ func TestRedisSessionDataStorage(t *testing.T) {
 		val, err := mr.Get("test:data:nx-test")
 		require.NoError(t, err)
 		assert.NotEmpty(t, val)
+	})
+
+	t.Run("Update refreshes TTL via SET XX", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisDataStorage(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Upsert(ctx, "ttl-update", map[string]string{"v": "1"}))
+		mr.FastForward(29 * time.Minute)
+
+		updated, err := s.Update(ctx, "ttl-update", map[string]string{"v": "2"})
+		require.NoError(t, err)
+		assert.True(t, updated)
+
+		// Advance past the original TTL; Update should have reset the clock.
+		mr.FastForward(2 * time.Minute)
+
+		loaded, err := s.Load(ctx, "ttl-update")
+		require.NoError(t, err, "session should still be alive after TTL reset by Update")
+		assert.Equal(t, "2", loaded["v"])
 	})
 }

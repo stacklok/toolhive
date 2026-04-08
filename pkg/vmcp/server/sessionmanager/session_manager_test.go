@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -90,6 +91,9 @@ func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]strin
 	return nil, transportsession.ErrSessionNotFound
 }
 func (alwaysFailDataStorage) Create(_ context.Context, _ string, _ map[string]string) (bool, error) {
+	return false, errors.New("storage unavailable")
+}
+func (alwaysFailDataStorage) Update(_ context.Context, _ string, _ map[string]string) (bool, error) {
 	return false, errors.New("storage unavailable")
 }
 func (alwaysFailDataStorage) Delete(_ context.Context, _ string) error { return nil }
@@ -1931,7 +1935,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sm, _ := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 
 		err := sm.checkSession("nonexistent-session")
-		assert.ErrorIs(t, err, ErrExpired, "deleted session must return ErrExpired")
+		assert.ErrorIs(t, err, cache.ErrExpired, "deleted session must return ErrExpired")
 	})
 
 	t.Run("terminated session returns ErrExpired", func(t *testing.T) {
@@ -1946,7 +1950,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}))
 
 		err := sm.checkSession(sessionID)
-		assert.ErrorIs(t, err, ErrExpired, "terminated session must return ErrExpired")
+		assert.ErrorIs(t, err, cache.ErrExpired, "terminated session must return ErrExpired")
 	})
 
 	t.Run("stale backend list triggers cross-pod eviction", func(t *testing.T) {
@@ -1970,10 +1974,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		cached.EXPECT().GetMetadata().Return(map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-a,backend-b",
 		}).AnyTimes()
-		sm.sessions.Store(sessionID, cached)
+		sm.sessions.Set(sessionID, cached)
 
 		err := sm.checkSession(sessionID)
-		assert.ErrorIs(t, err, ErrExpired,
+		assert.ErrorIs(t, err, cache.ErrExpired,
 			"stale backend list must return ErrExpired to trigger cross-pod eviction")
 	})
 
@@ -1991,7 +1995,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		cached.EXPECT().GetMetadata().Return(map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-a",
 		}).AnyTimes()
-		sm.sessions.Store(sessionID, cached)
+		sm.sessions.Set(sessionID, cached)
 
 		err := sm.checkSession(sessionID)
 		assert.NoError(t, err, "matching backend list must return nil")
@@ -2011,7 +2015,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		cached := sessionmocks.NewMockMultiSession(ctrl)
 		cached.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
-		sm.sessions.Store(sessionID, cached)
+		sm.sessions.Set(sessionID, cached)
 
 		err := sm.checkSession(sessionID)
 		assert.NoError(t, err, "absent MetadataKeyBackendIDs in cache must not cause eviction")
@@ -2177,9 +2181,13 @@ func TestNotifyBackendExpired(t *testing.T) {
 			"terminated session must not be resurrected by NotifyBackendExpired")
 	})
 
-	t.Run("concurrent termination: sentinel prevents resurrection after Load succeeds", func(t *testing.T) {
+	t.Run("same-pod termination: storage.Update returns false, no resurrection", func(t *testing.T) {
 		t.Parallel()
 
+		// Verify that updateMetadata's storage.Update (SET XX) prevents
+		// resurrection even when Terminate runs concurrently on the same pod.
+		// We model Terminate completing (key deleted) before updateMetadata
+		// reaches its storage.Update call.
 		ctrl := gomock.NewController(t)
 		registry := newFakeRegistry()
 		sess := newMockSession(t, ctrl, "s", nil)
@@ -2196,22 +2204,17 @@ func TestNotifyBackendExpired(t *testing.T) {
 			map[string]string{"workload-a": "sess-a"},
 		)
 
-		// Simulate Terminate-in-progress: inject the terminatedSentinel directly
-		// into the node-local cache (as Terminate does before calling
-		// storage.Delete) while leaving storage intact. This models the TOCTOU
-		// window where NotifyBackendExpired's Load succeeded before Terminate's
-		// storage.Delete ran but our sentinel check runs while the sentinel is
-		// still present.
-		sm.sessions.Store(sessionID, terminatedSentinel{})
+		// Simulate Terminate having completed its storage.Delete already.
+		require.NoError(t, storage.Delete(context.Background(), sessionID))
 
-		// NotifyBackendExpired must detect the terminatedSentinel and bail
-		// before Upsert, leaving the storage record unmodified.
+		// storage.Update (SET XX) in updateMetadata returns (false, nil) because
+		// the key no longer exists — NotifyBackendExpired must bail without
+		// recreating the record.
 		sm.NotifyBackendExpired(sessionID, "workload-a")
 
-		got, loadErr := storage.Load(context.Background(), sessionID)
-		require.NoError(t, loadErr)
-		assert.Equal(t, "workload-a", got[vmcpsession.MetadataKeyBackendIDs],
-			"storage must not be modified when terminatedSentinel is present")
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
+			"NotifyBackendExpired must not resurrect a session whose storage key was deleted by Terminate")
 	})
 
 	t.Run("cross-pod termination: absent storage key is a no-op (no resurrection)", func(t *testing.T) {

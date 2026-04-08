@@ -274,7 +274,7 @@ type MCPServerSpec struct {
 	// OAuth 2.0/OIDC authorization server to authenticate MCP clients.
 	// Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
 	// +optional
-	AuthServerRef *corev1.TypedLocalObjectReference `json:"authServerRef,omitempty"`
+	AuthServerRef *AuthServerRef `json:"authServerRef,omitempty"`
 
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
@@ -839,6 +839,21 @@ type ConfigMapAuthzRef struct {
 type ExternalAuthConfigRef struct {
 	// Name is the name of the MCPExternalAuthConfig resource
 	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
+// AuthServerRef defines a reference to a resource that configures an embedded
+// OAuth 2.0/OIDC authorization server. Currently only MCPExternalAuthConfig is supported;
+// the enum will be extended when a dedicated auth server CRD is introduced.
+type AuthServerRef struct {
+	// Kind identifies the type of the referenced resource.
+	// +kubebuilder:validation:Enum=MCPExternalAuthConfig
+	// +kubebuilder:default=MCPExternalAuthConfig
+	Kind string `json:"kind"`
+
+	// Name is the name of the referenced resource in the same namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
 

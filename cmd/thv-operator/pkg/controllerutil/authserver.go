@@ -95,7 +95,7 @@ func buildUpstreamSecretBindings(
 // AuthServerRef takes precedence; externalAuthConfigRef is used as a fallback.
 func EmbeddedAuthServerConfigName(
 	extAuthRef *mcpv1alpha1.ExternalAuthConfigRef,
-	authServerRef *corev1.TypedLocalObjectReference,
+	authServerRef *mcpv1alpha1.AuthServerRef,
 ) string {
 	if authServerRef != nil {
 		return authServerRef.Name
@@ -686,7 +686,7 @@ func ValidateAndAddAuthServerRefOptions(
 	c client.Client,
 	namespace string,
 	mcpServerName string,
-	authServerRef *corev1.TypedLocalObjectReference,
+	authServerRef *mcpv1alpha1.AuthServerRef,
 	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
@@ -722,7 +722,7 @@ func AddAuthServerRefOptions(
 	c client.Client,
 	namespace string,
 	mcpServerName string,
-	authServerRef *corev1.TypedLocalObjectReference,
+	authServerRef *mcpv1alpha1.AuthServerRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {

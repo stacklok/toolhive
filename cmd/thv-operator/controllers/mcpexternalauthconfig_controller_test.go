@@ -905,7 +905,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image: "test-image",
-			AuthServerRef: &corev1.TypedLocalObjectReference{
+			AuthServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "auth-server-config",
 			},
@@ -1017,7 +1017,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSame
 			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "token-exchange-config",
 			},
-			AuthServerRef: &corev1.TypedLocalObjectReference{
+			AuthServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "embedded-auth-config",
 			},
@@ -1097,7 +1097,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(
 			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "shared-config",
 			},
-			AuthServerRef: &corev1.TypedLocalObjectReference{
+			AuthServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "shared-config",
 			},
@@ -1169,7 +1169,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://remote.example.com",
-			AuthServerRef: &corev1.TypedLocalObjectReference{
+			AuthServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "auth-config",
 			},

@@ -81,23 +81,21 @@ spec:
                   OAuth 2.0/OIDC authorization server to authenticate MCP clients.
                   Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
                 properties:
-                  apiGroup:
-                    description: |-
-                      APIGroup is the group for the resource being referenced.
-                      If APIGroup is not specified, the specified Kind must be in the core API group.
-                      For any other third-party types, APIGroup is required.
-                    type: string
                   kind:
-                    description: Kind is the type of resource being referenced
+                    default: MCPExternalAuthConfig
+                    description: Kind identifies the type of the referenced resource.
+                    enum:
+                    - MCPExternalAuthConfig
                     type: string
                   name:
-                    description: Name is the name of resource being referenced
+                    description: Name is the name of the referenced resource in the
+                      same namespace.
+                    minLength: 1
                     type: string
                 required:
                 - kind
                 - name
                 type: object
-                x-kubernetes-map-type: atomic
               authzConfig:
                 description: AuthzConfig defines authorization policy configuration
                   for the proxy

@@ -1597,7 +1597,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		authServerRef *corev1.TypedLocalObjectReference
+		authServerRef *mcpv1alpha1.AuthServerRef
 		oidcConfig    *oidc.OIDCConfig
 		objects       func() []runtime.Object
 		wantErr       bool
@@ -1613,7 +1613,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "unsupported kind returns error",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "Foo",
 				Name: "some-config",
 			},
@@ -1623,7 +1623,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "non-existent config returns error",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "non-existent",
 			},
@@ -1633,7 +1633,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "wrong type returns error",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "unauth-config",
 			},
@@ -1644,7 +1644,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "valid ref appends option",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "auth-server-config",
 			},
@@ -1655,7 +1655,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "nil OIDC config returns error for valid ref",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "auth-server-config",
 			},
@@ -1745,7 +1745,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 
 	tests := []struct {
 		name                  string
-		authServerRef         *corev1.TypedLocalObjectReference
+		authServerRef         *mcpv1alpha1.AuthServerRef
 		externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
 		oidcConfig            *oidc.OIDCConfig
 		objects               func() []runtime.Object
@@ -1763,7 +1763,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "authServerRef set with nil externalAuthConfigRef succeeds",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "embedded-config",
 			},
@@ -1775,7 +1775,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "both refs pointing to embeddedAuthServer returns conflict error",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "embedded-config",
 			},
@@ -1789,7 +1789,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "authServerRef embedded + externalAuthConfigRef awsSts succeeds",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "embedded-config",
 			},
@@ -1803,7 +1803,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 		},
 		{
 			name: "non-NotFound fetch error for externalAuthConfigRef is returned",
-			authServerRef: &corev1.TypedLocalObjectReference{
+			authServerRef: &mcpv1alpha1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "embedded-config",
 			},

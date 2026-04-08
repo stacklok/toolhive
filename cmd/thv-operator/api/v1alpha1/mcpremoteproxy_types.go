@@ -4,7 +4,6 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -81,7 +80,7 @@ type MCPRemoteProxySpec struct {
 	// OAuth 2.0/OIDC authorization server to authenticate MCP clients.
 	// Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
 	// +optional
-	AuthServerRef *corev1.TypedLocalObjectReference `json:"authServerRef,omitempty"`
+	AuthServerRef *AuthServerRef `json:"authServerRef,omitempty"`
 
 	// HeaderForward configures headers to inject into requests to the remote MCP server.
 	// Use this to add custom headers like X-Tenant-ID or correlation IDs.

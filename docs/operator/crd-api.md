@@ -755,27 +755,6 @@ _Appears in:_
 
 
 
-#### api.v1alpha1.APIPhase
-
-_Underlying type:_ _string_
-
-APIPhase represents the API service state
-
-_Validation:_
-- Enum: [NotStarted Deploying Ready Unhealthy Error]
-
-_Appears in:_
-- [api.v1alpha1.APIStatus](#apiv1alpha1apistatus)
-
-| Field | Description |
-| --- | --- |
-| `NotStarted` | APIPhaseNotStarted means API deployment has not been created<br /> |
-| `Deploying` | APIPhaseDeploying means API is being deployed<br /> |
-| `Ready` | APIPhaseReady means API is ready to serve requests<br /> |
-| `Unhealthy` | APIPhaseUnhealthy means API is deployed but not healthy<br /> |
-| `Error` | APIPhaseError means API deployment failed<br /> |
-
-
 #### api.v1alpha1.APISource
 
 
@@ -792,25 +771,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `endpoint` _string_ | Endpoint is the base API URL (without path)<br />The controller will append the appropriate paths:<br />Phase 1 (ToolHive API):<br />  - /v0/servers - List all servers (single response, no pagination)<br />  - /v0/servers/\{name\} - Get specific server (future)<br />  - /v0/info - Get registry metadata (future)<br />Example: "http://my-registry-api.default.svc.cluster.local/api" |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
-
-
-#### api.v1alpha1.APIStatus
-
-
-
-APIStatus provides detailed information about the API service
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `phase` _[api.v1alpha1.APIPhase](#apiv1alpha1apiphase)_ | Phase represents the current API service phase |  | Enum: [NotStarted Deploying Ready Unhealthy Error] <br /> |
-| `message` _string_ | Message provides additional information about the API status |  | Optional: \{\} <br /> |
-| `endpoint` _string_ | Endpoint is the URL where the API is accessible |  | Optional: \{\} <br /> |
-| `readySince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | ReadySince is the timestamp when the API became ready |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.AWSStsConfig
@@ -1962,7 +1922,7 @@ _Underlying type:_ _string_
 MCPRegistryPhase represents the phase of the MCPRegistry
 
 _Validation:_
-- Enum: [Pending Ready Failed Syncing Terminating]
+- Enum: [Pending Running Failed Terminating]
 
 _Appears in:_
 - [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
@@ -1970,9 +1930,8 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `Pending` | MCPRegistryPhasePending means the MCPRegistry is being initialized<br /> |
-| `Ready` | MCPRegistryPhaseReady means the MCPRegistry is ready and operational<br /> |
+| `Running` | MCPRegistryPhaseRunning means the MCPRegistry is running and operational<br /> |
 | `Failed` | MCPRegistryPhaseFailed means the MCPRegistry has failed<br /> |
-| `Syncing` | MCPRegistryPhaseSyncing means the MCPRegistry is currently syncing data<br /> |
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
@@ -2010,15 +1969,12 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPRegistryPhase](#apiv1alpha1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry<br />Derived from sync and API status |  | Enum: [Pending Ready Failed Syncing Terminating] <br />Optional: \{\} <br /> |
-| `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
-| `syncStatus` _[api.v1alpha1.SyncStatus](#apiv1alpha1syncstatus)_ | SyncStatus provides detailed information about data synchronization |  | Optional: \{\} <br /> |
-| `apiStatus` _[api.v1alpha1.APIStatus](#apiv1alpha1apistatus)_ | APIStatus provides detailed information about the API service |  | Optional: \{\} <br /> |
-| `lastAppliedFilterHash` _string_ | LastAppliedFilterHash is the hash of the last applied filter |  | Optional: \{\} <br /> |
-| `storageRef` _[api.v1alpha1.StorageReference](#apiv1alpha1storagereference)_ | StorageRef is a reference to the internal storage location |  | Optional: \{\} <br /> |
-| `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  | Optional: \{\} <br /> |
+| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
+| `phase` _[api.v1alpha1.MCPRegistryPhase](#apiv1alpha1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry |  | Enum: [Pending Running Failed Terminating] <br />Optional: \{\} <br /> |
+| `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
+| `url` _string_ | URL is the URL where the registry API can be accessed |  | Optional: \{\} <br /> |
+| `readyReplicas` _integer_ | ReadyReplicas is the number of ready registry API replicas |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRemoteProxy
@@ -3073,42 +3029,6 @@ _Appears in:_
 | `passwordRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.StorageReference
-
-
-
-StorageReference defines a reference to internal storage
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the storage type (configmap) |  | Enum: [configmap] <br /> |
-| `configMapRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core)_ | ConfigMapRef is a reference to a ConfigMap storage<br />Only used when Type is "configmap" |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.SyncPhase
-
-_Underlying type:_ _string_
-
-SyncPhase represents the data synchronization state
-
-_Validation:_
-- Enum: [Syncing Complete Failed]
-
-_Appears in:_
-- [api.v1alpha1.SyncStatus](#apiv1alpha1syncstatus)
-
-| Field | Description |
-| --- | --- |
-| `Syncing` | SyncPhaseSyncing means sync is currently in progress<br /> |
-| `Complete` | SyncPhaseComplete means sync completed successfully<br /> |
-| `Failed` | SyncPhaseFailed means sync failed<br /> |
-
-
 #### api.v1alpha1.SyncPolicy
 
 
@@ -3126,28 +3046,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `interval` _string_ | Interval is the sync interval for automatic synchronization (Go duration format)<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Required: \{\} <br /> |
-
-
-#### api.v1alpha1.SyncStatus
-
-
-
-SyncStatus provides detailed information about data synchronization
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `phase` _[api.v1alpha1.SyncPhase](#apiv1alpha1syncphase)_ | Phase represents the current synchronization phase |  | Enum: [Syncing Complete Failed] <br /> |
-| `message` _string_ | Message provides additional information about the sync status |  | Optional: \{\} <br /> |
-| `lastAttempt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastAttempt is the timestamp of the last sync attempt |  | Optional: \{\} <br /> |
-| `attemptCount` _integer_ | AttemptCount is the number of sync attempts since last success |  | Minimum: 0 <br />Optional: \{\} <br /> |
-| `lastSyncTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastSyncTime is the timestamp of the last successful sync |  | Optional: \{\} <br /> |
-| `lastSyncHash` _string_ | LastSyncHash is the hash of the last successfully synced data<br />Used to detect changes in source data |  | Optional: \{\} <br /> |
-| `serverCount` _integer_ | ServerCount is the total number of servers in the registry |  | Minimum: 0 <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.TagFilter

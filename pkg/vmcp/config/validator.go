@@ -68,6 +68,11 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	// Validate static backends
+	if err := v.validateStaticBackends(cfg.Backends); err != nil {
+		errors = append(errors, err.Error())
+	}
+
 	// Validate composite tools
 	if err := v.validateCompositeTools(cfg.CompositeTools); err != nil {
 		errors = append(errors, err.Error())
@@ -97,6 +102,26 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 		return fmt.Errorf("group reference is required")
 	}
 
+	return nil
+}
+
+func (*DefaultValidator) validateStaticBackends(backends []StaticBackendConfig) error {
+	for i, b := range backends {
+		// Validate type if specified
+		if b.Type != "" && b.Type != string(vmcp.BackendTypeEntry) {
+			return fmt.Errorf("backends[%d].type must be empty or %q, got %q", i, vmcp.BackendTypeEntry, b.Type)
+		}
+
+		// CABundlePath is only valid for entry backends
+		if b.CABundlePath != "" && b.Type != string(vmcp.BackendTypeEntry) {
+			return fmt.Errorf("backends[%d].caBundlePath is only valid when type is %q", i, vmcp.BackendTypeEntry)
+		}
+
+		// Reject path traversal in CA bundle path
+		if b.CABundlePath != "" && strings.Contains(b.CABundlePath, "..") {
+			return fmt.Errorf("backends[%d].caBundlePath must not contain path traversal (\"..\")", i)
+		}
+	}
 	return nil
 }
 

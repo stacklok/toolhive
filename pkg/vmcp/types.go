@@ -33,6 +33,11 @@ type BackendTarget struct {
 	// Supported: "stdio", "http", "sse", "streamable-http"
 	TransportType string
 
+	// CABundlePath is the file path to a custom CA certificate bundle for TLS verification.
+	// When set, the HTTP client uses this CA (appended to system roots) for backend connections.
+	// Only applicable to entry-type backends with self-signed or internal certificates.
+	CABundlePath string
+
 	// OriginalCapabilityName is the original name of the capability (tool/resource/prompt)
 	// as known by the backend. This is used when forwarding requests to the backend.
 	//
@@ -96,6 +101,20 @@ func (t *BackendTarget) GetBackendCapabilityName(resolvedName string) string {
 	}
 	return resolvedName
 }
+
+// BackendType represents the type of backend workload.
+type BackendType string
+
+const (
+	// BackendTypeContainer indicates a container-based backend managed by ToolHive.
+	BackendTypeContainer BackendType = "container"
+
+	// BackendTypeProxy indicates a proxy-based backend (MCPRemoteProxy).
+	BackendTypeProxy BackendType = "proxy"
+
+	// BackendTypeEntry indicates an external MCP server declared via MCPServerEntry.
+	BackendTypeEntry BackendType = "entry"
+)
 
 // BackendHealthStatus represents the health state of a backend.
 type BackendHealthStatus string
@@ -261,6 +280,14 @@ type Backend struct {
 
 	// TransportType is the MCP transport protocol.
 	TransportType string
+
+	// Type is the backend workload type (container, proxy, entry).
+	// Empty string is treated as container/proxy for backward compatibility.
+	Type BackendType
+
+	// CABundlePath is the file path to a custom CA certificate bundle for TLS verification.
+	// Only applicable to entry-type backends with self-signed or internal certificates.
+	CABundlePath string
 
 	// HealthStatus is the current health state.
 	HealthStatus BackendHealthStatus

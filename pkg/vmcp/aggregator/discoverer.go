@@ -269,6 +269,8 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 			Name:          staticBackend.Name,
 			BaseURL:       staticBackend.URL,
 			TransportType: staticBackend.Transport,
+			Type:          vmcp.BackendType(staticBackend.Type),
+			CABundlePath:  staticBackend.CABundlePath,
 			HealthStatus:  vmcp.BackendHealthy, // Assume healthy, actual health check happens later
 			Metadata:      staticBackend.Metadata,
 		}

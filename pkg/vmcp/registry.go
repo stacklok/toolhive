@@ -368,6 +368,7 @@ func BackendToTarget(backend *Backend) *BackendTarget {
 		WorkloadName:    backend.Name,
 		BaseURL:         backend.BaseURL,
 		TransportType:   backend.TransportType,
+		CABundlePath:    backend.CABundlePath,
 		AuthConfig:      backend.AuthConfig,
 		SessionAffinity: false, // TODO: Add session affinity support in future phases
 		HealthStatus:    backend.HealthStatus,

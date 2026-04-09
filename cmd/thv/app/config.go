@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -180,6 +181,19 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 	input := args[0]
 
+	cfg := &registry.UpdateRegistryConfig{
+		AllowPrivateIP: allowPrivateRegistryIp,
+		HasAuth:        registryAuthIssuer != "" && registryAuthClientID != "",
+	}
+	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+		cfg.URL = input
+	} else {
+		cfg.LocalPath = input
+	}
+	if err := registry.ActivePolicyGate().CheckUpdateRegistry(cmd.Context(), cfg); err != nil {
+		return err
+	}
+
 	// Always clear existing auth when changing registry (security: prevents
 	// tokens from being sent to the wrong server).
 	provider := config.NewDefaultProvider()
@@ -236,7 +250,13 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
+func unsetRegistryCmdFunc(cmd *cobra.Command, _ []string) error {
+	if err := registry.ActivePolicyGate().CheckDeleteRegistry(cmd.Context(), &registry.DeleteRegistryConfig{
+		Name: "default",
+	}); err != nil {
+		return err
+	}
+
 	service := registry.NewConfigurator()
 	err := service.UnsetRegistry()
 	if err != nil {

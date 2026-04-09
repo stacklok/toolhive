@@ -494,6 +494,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Param			body	body		UpdateRegistryRequest	true	"Registry configuration"
 //		@Success		200		{object}	UpdateRegistryResponse
 //		@Failure		400		{string}	string	"Bad Request"
+//		@Failure		403		{string}	string	"Forbidden - blocked by policy"
 //		@Failure		404		{string}	string	"Not Found"
 //		@Failure		502		{string}	string	"Bad Gateway - Registry validation failed"
 //		@Failure		504		{string}	string	"Gateway Timeout - Registry unreachable"
@@ -516,6 +517,11 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	// Validate that only one of URL, APIURL, or LocalPath is provided
 	if err := validateRegistryRequest(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := regpkg.ActivePolicyGate().CheckUpdateRegistry(r.Context(), updateRegistryConfigFromRequest(&req)); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -588,6 +594,27 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 	return nil
 }
 
+// updateRegistryConfigFromRequest builds an UpdateRegistryConfig from the
+// parsed API request for policy evaluation.
+func updateRegistryConfigFromRequest(req *UpdateRegistryRequest) *regpkg.UpdateRegistryConfig {
+	cfg := &regpkg.UpdateRegistryConfig{
+		HasAuth: req.Auth != nil,
+	}
+	if req.URL != nil {
+		cfg.URL = *req.URL
+	}
+	if req.APIURL != nil {
+		cfg.APIURL = *req.APIURL
+	}
+	if req.LocalPath != nil {
+		cfg.LocalPath = *req.LocalPath
+	}
+	if req.AllowPrivateIP != nil {
+		cfg.AllowPrivateIP = *req.AllowPrivateIP
+	}
+	return cfg
+}
+
 // processAuthUpdate validates and applies OAuth configuration for registry auth.
 func (rr *RegistryRoutes) processAuthUpdate(ctx context.Context, authReq *UpdateRegistryAuthRequest) error {
 	if authReq.Issuer == "" || authReq.ClientID == "" {
@@ -654,10 +681,18 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 //		@Produce		json
 //		@Param			name	path		string	true	"Registry name"
 //		@Success		204	{string}	string	"No Content"
+//		@Failure		403	{string}	string	"Forbidden - blocked by policy"
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [delete]
 func (*RegistryRoutes) removeRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+
+	if err := regpkg.ActivePolicyGate().CheckDeleteRegistry(r.Context(), &regpkg.DeleteRegistryConfig{
+		Name: name,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
 
 	// Cannot remove the default registry
 	if name == defaultRegistryName {

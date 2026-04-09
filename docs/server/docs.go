@@ -3948,6 +3948,16 @@ const docTemplate = `{
                         },
                         "description": "No Content"
                     },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden - blocked by policy"
+                    },
                     "404": {
                         "content": {
                             "application/json": {
@@ -4057,6 +4067,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden - blocked by policy"
                     },
                     "404": {
                         "content": {

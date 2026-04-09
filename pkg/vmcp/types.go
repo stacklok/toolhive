@@ -36,7 +36,13 @@ type BackendTarget struct {
 	// CABundlePath is the file path to a custom CA certificate bundle for TLS verification.
 	// When set, the HTTP client uses this CA (appended to system roots) for backend connections.
 	// Only applicable to entry-type backends with self-signed or internal certificates.
+	// Used in static mode where CA bundles are volume-mounted by the operator.
 	CABundlePath string
+
+	// CABundleData contains raw CA certificate PEM bytes for TLS verification.
+	// Used in dynamic mode where CA bundles are fetched from K8s ConfigMaps at
+	// discovery time (no volume mount available). Takes precedence over CABundlePath.
+	CABundleData []byte
 
 	// OriginalCapabilityName is the original name of the capability (tool/resource/prompt)
 	// as known by the backend. This is used when forwarding requests to the backend.
@@ -289,7 +295,13 @@ type Backend struct {
 
 	// CABundlePath is the file path to a custom CA certificate bundle for TLS verification.
 	// Only applicable to entry-type backends with self-signed or internal certificates.
+	// Used in static mode where CA bundles are volume-mounted by the operator.
 	CABundlePath string
+
+	// CABundleData contains raw CA certificate PEM bytes for TLS verification.
+	// Used in dynamic mode where CA bundles are fetched from K8s ConfigMaps at
+	// discovery time (no volume mount available). Takes precedence over CABundlePath.
+	CABundleData []byte
 
 	// HealthStatus is the current health state.
 	HealthStatus BackendHealthStatus

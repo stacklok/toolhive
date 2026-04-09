@@ -108,9 +108,9 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 func TestNewBackendTransport_IsolatesFromDefault(t *testing.T) {
 	t.Parallel()
 
-	t1, err1 := newBackendTransport("")
+	t1, err1 := newBackendTransport("", nil)
 	require.NoError(t, err1)
-	t2, err2 := newBackendTransport("")
+	t2, err2 := newBackendTransport("", nil)
 	require.NoError(t, err2)
 
 	// Each call must return a distinct transport — not the shared DefaultTransport.
@@ -147,6 +147,7 @@ func TestNewBackendTransport_CustomCA(t *testing.T) {
 	tests := []struct {
 		name          string
 		setupFile     func(t *testing.T) string
+		caBundleData  []byte
 		expectError   bool
 		errorContains string
 		checkResult   func(t *testing.T, tr *http.Transport)
@@ -207,6 +208,45 @@ func TestNewBackendTransport_CustomCA(t *testing.T) {
 			expectError:   true,
 			errorContains: "failed to parse CA certificate",
 		},
+		{
+			name: "valid CA data bytes applies custom TLS config",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				return "" // no file path
+			},
+			caBundleData: generateTestCACert(t),
+			expectError:  false,
+			checkResult: func(t *testing.T, tr *http.Transport) {
+				t.Helper()
+				require.NotNil(t, tr.TLSClientConfig)
+				assert.Equal(t, uint16(tls.VersionTLS12), tr.TLSClientConfig.MinVersion)
+				assert.NotNil(t, tr.TLSClientConfig.RootCAs)
+			},
+		},
+		{
+			name: "invalid CA data bytes returns error",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				return "" // no file path
+			},
+			caBundleData:  []byte("not-a-cert"),
+			expectError:   true,
+			errorContains: "failed to parse CA certificate data",
+		},
+		{
+			name: "CA data takes precedence over file path",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				return "/nonexistent/path.crt" // file doesn't exist but shouldn't be read
+			},
+			caBundleData: generateTestCACert(t),
+			expectError:  false,
+			checkResult: func(t *testing.T, tr *http.Transport) {
+				t.Helper()
+				require.NotNil(t, tr.TLSClientConfig)
+				assert.NotNil(t, tr.TLSClientConfig.RootCAs)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -214,7 +254,7 @@ func TestNewBackendTransport_CustomCA(t *testing.T) {
 			t.Parallel()
 
 			caPath := tt.setupFile(t)
-			tr, err := newBackendTransport(caPath)
+			tr, err := newBackendTransport(caPath, tt.caBundleData)
 
 			if tt.expectError {
 				require.Error(t, err)

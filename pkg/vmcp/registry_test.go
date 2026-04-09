@@ -531,6 +531,25 @@ func TestBackendToTarget(t *testing.T) {
 			},
 		},
 		{
+			name: "entry backend with CA bundle data",
+			backend: &Backend{
+				ID:            "dynamic-entry",
+				Name:          "Dynamic Entry",
+				BaseURL:       "https://mcp.internal:8443/mcp",
+				TransportType: "streamable-http",
+				Type:          BackendTypeEntry,
+				CABundleData:  []byte("test-ca-data"),
+				HealthStatus:  BackendHealthy,
+			},
+			wantNil: false,
+			validate: func(t *testing.T, target *BackendTarget) {
+				t.Helper()
+				assert.Equal(t, "dynamic-entry", target.WorkloadID)
+				assert.Equal(t, []byte("test-ca-data"), target.CABundleData)
+				assert.Empty(t, target.CABundlePath)
+			},
+		},
+		{
 			name: "minimal backend",
 			backend: &Backend{
 				ID: "minimal",

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -545,6 +546,7 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 		Name:          entry.Name,
 		BaseURL:       remoteURL,
 		TransportType: transportTypeStr,
+		Type:          vmcp.BackendTypeEntry,
 		HealthStatus:  healthStatus,
 		Metadata:      make(map[string]string),
 	}
@@ -559,6 +561,17 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 	backend.Metadata[metadataKeyRemoteURL] = entry.Spec.RemoteURL
 	if entry.Namespace != "" {
 		backend.Metadata[metadataKeyNamespace] = entry.Namespace
+	}
+
+	// Fetch CA bundle data from ConfigMap for dynamic mode TLS verification
+	if entry.Spec.CABundleRef != nil && entry.Spec.CABundleRef.ConfigMapRef != nil {
+		caData, err := d.fetchCABundleData(ctx, entry.Spec.CABundleRef)
+		if err != nil {
+			slog.Warn("failed to fetch CA bundle for MCPServerEntry, proceeding without custom CA",
+				"entry", entry.Name, "error", err)
+		} else {
+			backend.CABundleData = caData
+		}
 	}
 
 	// Discover and populate authentication configuration from MCPServerEntry
@@ -599,6 +612,33 @@ func (d *k8sDiscoverer) discoverServerEntryAuthConfig(
 		"MCPServerEntry",
 		backend,
 	)
+}
+
+// fetchCABundleData reads CA certificate PEM data from a ConfigMap referenced by CABundleRef.
+// Returns the raw PEM bytes for use in dynamic mode where volumes aren't mounted.
+func (d *k8sDiscoverer) fetchCABundleData(ctx context.Context, ref *mcpv1alpha1.CABundleSource) ([]byte, error) {
+	if ref.ConfigMapRef == nil {
+		return nil, fmt.Errorf("CABundleRef.configMapRef is nil")
+	}
+
+	cm := &corev1.ConfigMap{}
+	key := client.ObjectKey{Name: ref.ConfigMapRef.Name, Namespace: d.namespace}
+	if err := d.k8sClient.Get(ctx, key, cm); err != nil {
+		return nil, fmt.Errorf("failed to get CA bundle ConfigMap %s: %w", ref.ConfigMapRef.Name, err)
+	}
+
+	// Default key is "ca.crt" if not specified
+	dataKey := ref.ConfigMapRef.Key
+	if dataKey == "" {
+		dataKey = "ca.crt"
+	}
+
+	data, ok := cm.Data[dataKey]
+	if !ok {
+		return nil, fmt.Errorf("ConfigMap %s does not contain key %q", ref.ConfigMapRef.Name, dataKey)
+	}
+
+	return []byte(data), nil
 }
 
 // discoverRemoteProxyAuthConfig discovers and populates authentication configuration

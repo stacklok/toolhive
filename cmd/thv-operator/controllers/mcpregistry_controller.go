@@ -377,16 +377,20 @@ func validatePathExclusivity(spec *mcpv1alpha1.MCPRegistrySpec) error {
 		}
 	}
 
-	// Validate pgpassSecretRef has required fields when set
-	if spec.PGPassSecretRef != nil {
-		if spec.PGPassSecretRef.Name == "" {
-			return fmt.Errorf("pgpassSecretRef.name is required")
-		}
-		if spec.PGPassSecretRef.Key == "" {
-			return fmt.Errorf("pgpassSecretRef.key is required")
-		}
-	}
+	return validatePGPassSecretRef(spec.PGPassSecretRef)
+}
 
+// validatePGPassSecretRef checks that pgpassSecretRef has required name and key when set.
+func validatePGPassSecretRef(ref *corev1.SecretKeySelector) error {
+	if ref == nil {
+		return nil
+	}
+	if ref.Name == "" {
+		return fmt.Errorf("pgpassSecretRef.name is required")
+	}
+	if ref.Key == "" {
+		return fmt.Errorf("pgpassSecretRef.key is required")
+	}
 	return nil
 }
 

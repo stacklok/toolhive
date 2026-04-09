@@ -981,3 +981,587 @@ func TestDiscoverAuth_MCPRemoteProxy_TokenExchange(t *testing.T) {
 	assert.Equal(t, "test-client", backend.AuthConfig.TokenExchange.ClientID)
 	assert.Equal(t, "my-secret-value", backend.AuthConfig.TokenExchange.ClientSecret)
 }
+
+func TestListWorkloadsInGroup_MCPServerEntries(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry1 := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry1",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp1.example.com",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+	}
+
+	entry2 := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry2",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp2.example.com",
+			Transport: "sse",
+			GroupRef:  "group-a",
+		},
+	}
+
+	entry3 := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry3",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp3.example.com",
+			Transport: "streamable-http",
+			GroupRef:  "group-b",
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry1, entry2, entry3)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	workloadList, err := discoverer.ListWorkloadsInGroup(t.Context(), "group-a")
+
+	require.NoError(t, err)
+	assert.Len(t, workloadList, 2)
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "entry1",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "entry2",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+	assert.NotContains(t, workloadList, TypedWorkload{
+		Name: "entry3",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+}
+
+func TestListWorkloadsInGroup_AllWorkloadTypes(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	server := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server1",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+	}
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy1",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			GroupRef: "group-a",
+		},
+	}
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry1",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+	}
+
+	k8sClient := setupTestClient(t, server, proxy, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	workloadList, err := discoverer.ListWorkloadsInGroup(t.Context(), "group-a")
+
+	require.NoError(t, err)
+	assert.Len(t, workloadList, 3)
+	assert.Contains(t, workloadList, TypedWorkload{Name: "server1", Type: WorkloadTypeMCPServer})
+	assert.Contains(t, workloadList, TypedWorkload{Name: "proxy1", Type: WorkloadTypeMCPRemoteProxy})
+	assert.Contains(t, workloadList, TypedWorkload{Name: "entry1", Type: WorkloadTypeMCPServerEntry})
+}
+
+func TestGetWorkloadAsVMCPBackend_MCPServerEntry(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com/v1",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+		Name: "test-entry",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, backend)
+
+	assert.Equal(t, "test-entry", backend.ID)
+	assert.Equal(t, "https://mcp.example.com/v1", backend.BaseURL)
+}
+
+func TestGetWorkloadAsVMCPBackend_MCPServerEntry_NotFound(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	k8sClient := setupTestClient(t)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	_, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+		Name: "non-existent-entry",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestMCPServerEntryToBackend_BasicFields(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com/v1",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+	require.NotNil(t, backend)
+
+	// Key difference from MCPServer/MCPRemoteProxy: BaseURL comes from Spec.RemoteURL, not Status.URL
+	assert.Equal(t, "test-entry", backend.ID)
+	assert.Equal(t, "test-entry", backend.Name)
+	assert.Equal(t, "https://mcp.example.com/v1", backend.BaseURL)
+	assert.Equal(t, "streamable-http", backend.TransportType)
+	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
+	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
+	assert.Equal(t, "server_entry", backend.Metadata["workload_type"])
+	assert.Equal(t, string(mcpv1alpha1.MCPServerEntryPhaseValid), backend.Metadata["workload_status"])
+	assert.Equal(t, "https://mcp.example.com/v1", backend.Metadata["remote_url"])
+	assert.Equal(t, namespace, backend.Metadata["namespace"])
+}
+
+func TestMCPServerEntryToBackend_SSETransport(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sse-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com/sse",
+			Transport: "sse",
+			GroupRef:  "group-a",
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+	require.NotNil(t, backend)
+	assert.Equal(t, "sse", backend.TransportType)
+}
+
+func TestMCPServerEntryToBackend_WithAnnotations(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "annotated-entry",
+			Namespace: namespace,
+			Annotations: map[string]string{
+				"custom-annotation":         "custom-value",
+				"kubectl.kubernetes.io/foo": "should-be-filtered",
+			},
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com/v1",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+	require.NotNil(t, backend)
+	assert.Equal(t, "custom-value", backend.Metadata["custom-annotation"])
+	assert.NotContains(t, backend.Metadata, "kubectl.kubernetes.io/foo")
+}
+
+func TestMCPServerEntryToBackend_EmptyRemoteURL(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "empty-url-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+		Name: "empty-url-entry",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+
+	// Backend should be skipped (nil) because RemoteURL is empty
+	require.NoError(t, err)
+	require.Nil(t, backend, "should return nil backend when RemoteURL is empty")
+}
+
+func TestGetWorkloadAsVMCPBackend_MCPServerEntry_NonValidPhaseSkipped(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	tests := []struct {
+		name  string
+		phase mcpv1alpha1.MCPServerEntryPhase
+	}{
+		{name: "Pending phase is skipped", phase: mcpv1alpha1.MCPServerEntryPhasePending},
+		{name: "Failed phase is skipped", phase: mcpv1alpha1.MCPServerEntryPhaseFailed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			entry := &mcpv1alpha1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "phase-test-entry",
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerEntrySpec{
+					RemoteURL: "https://mcp.example.com/v1",
+					Transport: "streamable-http",
+					GroupRef:  "group-a",
+				},
+				Status: mcpv1alpha1.MCPServerEntryStatus{
+					Phase: tt.phase,
+				},
+			}
+
+			k8sClient := setupTestClient(t, entry)
+			discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+			backend, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+				Name: "phase-test-entry",
+				Type: WorkloadTypeMCPServerEntry,
+			})
+
+			require.NoError(t, err)
+			require.Nil(t, backend, "should skip MCPServerEntry with %s phase", tt.phase)
+		})
+	}
+}
+
+func TestMCPServerEntryPhaseToHealth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		phase          mcpv1alpha1.MCPServerEntryPhase
+		expectedHealth vmcp.BackendHealthStatus
+	}{
+		{
+			name:           "Valid phase maps to Healthy",
+			phase:          mcpv1alpha1.MCPServerEntryPhaseValid,
+			expectedHealth: vmcp.BackendHealthy,
+		},
+		{
+			name:           "Failed phase maps to Unhealthy",
+			phase:          mcpv1alpha1.MCPServerEntryPhaseFailed,
+			expectedHealth: vmcp.BackendUnhealthy,
+		},
+		{
+			name:           "Pending phase maps to Unknown",
+			phase:          mcpv1alpha1.MCPServerEntryPhasePending,
+			expectedHealth: vmcp.BackendUnknown,
+		},
+		{
+			name:           "Unknown phase maps to Unknown",
+			phase:          mcpv1alpha1.MCPServerEntryPhase("SomeUnknownPhase"),
+			expectedHealth: vmcp.BackendUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expectedHealth, mapMCPServerEntryPhaseToHealth(tt.phase))
+		})
+	}
+}
+
+func TestMCPServerEntryToBackend_HealthStatusMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		phase          mcpv1alpha1.MCPServerEntryPhase
+		expectedHealth vmcp.BackendHealthStatus
+	}{
+		{
+			name:           "Valid phase maps to Healthy",
+			phase:          mcpv1alpha1.MCPServerEntryPhaseValid,
+			expectedHealth: vmcp.BackendHealthy,
+		},
+		{
+			name:           "Failed phase maps to Unhealthy",
+			phase:          mcpv1alpha1.MCPServerEntryPhaseFailed,
+			expectedHealth: vmcp.BackendUnhealthy,
+		},
+		{
+			name:           "Pending phase maps to Unknown",
+			phase:          mcpv1alpha1.MCPServerEntryPhasePending,
+			expectedHealth: vmcp.BackendUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			namespace := testNamespace
+
+			entry := &mcpv1alpha1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-entry",
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerEntrySpec{
+					RemoteURL: "https://mcp.example.com",
+					Transport: "streamable-http",
+					GroupRef:  "group-a",
+				},
+				Status: mcpv1alpha1.MCPServerEntryStatus{
+					Phase: tt.phase,
+				},
+			}
+
+			k8sClient := setupTestClient(t, entry)
+			discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+			backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+			require.NotNil(t, backend)
+			assert.Equal(t, tt.expectedHealth, backend.HealthStatus)
+		})
+	}
+}
+
+func TestDiscoverAuth_MCPServerEntry_NoAuthConfig(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-auth-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+		Name: "no-auth-entry",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, backend)
+	assert.Nil(t, backend.AuthConfig)
+}
+
+func TestDiscoverAuth_MCPServerEntry_AuthConfigNotFound(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "auth-missing-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "non-existent-auth-config",
+			},
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+		Name: "auth-missing-entry",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+
+	// Should return nil backend when auth config is referenced but not found
+	// Security-critical: fail closed rather than allowing unauthorized access
+	require.NoError(t, err)
+	require.Nil(t, backend, "Should return nil backend when auth config is missing")
+}
+
+func TestDiscoverAuth_MCPServerEntry_TokenExchange(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry-client-secret",
+			Namespace: namespace,
+		},
+		Data: map[string][]byte{
+			"client-secret": []byte("entry-secret-value"),
+		},
+	}
+
+	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry-token-exchange",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://auth.example.com/token",
+				ClientID: "entry-client",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "entry-client-secret",
+					Key:  "client-secret",
+				},
+				Audience:         "https://api.example.com",
+				Scopes:           []string{"read"},
+				SubjectTokenType: "access_token",
+			},
+		},
+	}
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "auth-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "entry-token-exchange",
+			},
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, secret, authConfig, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+		Name: "auth-entry",
+		Type: WorkloadTypeMCPServerEntry,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, backend)
+
+	assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
+	assert.NotNil(t, backend.AuthConfig.TokenExchange)
+	assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
+	assert.Equal(t, "entry-client", backend.AuthConfig.TokenExchange.ClientID)
+	assert.Equal(t, "entry-secret-value", backend.AuthConfig.TokenExchange.ClientSecret)
+}

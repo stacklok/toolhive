@@ -539,6 +539,7 @@ _Appears in:_
 | `url` _string_ | URL is the backend's MCP server base URL. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `transport` _string_ | Transport is the MCP transport protocol: "sse" or "streamable-http"<br />Only network transports supported by vMCP client are allowed. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `caBundlePath` _string_ | CABundlePath is the file path to the CA certificate bundle for TLS verification.<br />Set by the operator when an MCPServerEntry has a caBundleRef, pointing to the<br />mounted ConfigMap volume path (e.g., /etc/toolhive/ca-bundles/<entry-name>/ca.crt). |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.StepErrorHandling

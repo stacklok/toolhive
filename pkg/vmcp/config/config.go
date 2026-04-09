@@ -294,6 +294,12 @@ type StaticBackendConfig struct {
 	// Reserved keys: "group" is automatically set by vMCP and any user-provided value will be overridden.
 	// +optional
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+
+	// CABundlePath is the file path to the CA certificate bundle for TLS verification.
+	// Set by the operator when an MCPServerEntry has a caBundleRef, pointing to the
+	// mounted ConfigMap volume path (e.g., /etc/toolhive/ca-bundles/<entry-name>/ca.crt).
+	// +optional
+	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
 }
 
 // OutgoingAuthConfig configures backend authentication.

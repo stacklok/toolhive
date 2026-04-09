@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 const (
@@ -63,6 +64,8 @@ func (r *MCPServerEntryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Validate all referenced resources. Transient errors are returned directly
 	// to force a requeue rather than persisting a misleading condition.
 	allValid := true
+
+	allValid = r.validateRemoteURL(entry) && allValid
 
 	valid, err := r.validateGroupRef(ctx, entry)
 	if err != nil {
@@ -294,6 +297,32 @@ func (r *MCPServerEntryReconciler) validateCABundleRef(
 		ObservedGeneration: entry.Generation,
 	})
 	return true, nil
+}
+
+// validateRemoteURL checks that the RemoteURL is well-formed and does not target
+// a blocked internal or metadata endpoint (SSRF protection).
+func (*MCPServerEntryReconciler) validateRemoteURL(
+	entry *mcpv1alpha1.MCPServerEntry,
+) bool {
+	if err := validation.ValidateRemoteURL(entry.Spec.RemoteURL); err != nil {
+		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid,
+			Message:            err.Error(),
+			ObservedGeneration: entry.Generation,
+		})
+		return false
+	}
+
+	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLValid,
+		Message:            "Remote URL is valid",
+		ObservedGeneration: entry.Generation,
+	})
+	return true
 }
 
 // updateOverallStatus sets the phase and Valid condition based on validation results.

@@ -114,12 +114,13 @@ func GetRunConfigFromConfigMap(
 }
 
 // ExpectMCPServerConditionMessage waits for an MCPServer to have a condition
-// whose message contains the given substring.
+// whose message contains the given substring and whose Status matches expectedStatus.
 func ExpectMCPServerConditionMessage(
 	ctx context.Context,
 	c client.Client,
 	name, namespace string,
 	conditionType string,
+	expectedStatus metav1.ConditionStatus,
 	messageSubstring string,
 	timeout, pollingInterval time.Duration,
 ) {
@@ -133,6 +134,10 @@ func ExpectMCPServerConditionMessage(
 		}
 		for _, cond := range server.Status.Conditions {
 			if cond.Type == conditionType {
+				if cond.Status != expectedStatus {
+					return fmt.Errorf("condition %s status is %s, expected %s (message: %s)",
+						conditionType, cond.Status, expectedStatus, cond.Message)
+				}
 				if strings.Contains(cond.Message, messageSubstring) {
 					return nil
 				}
@@ -145,12 +150,13 @@ func ExpectMCPServerConditionMessage(
 }
 
 // ExpectMCPRemoteProxyConditionMessage waits for an MCPRemoteProxy to have a condition
-// whose message contains the given substring.
+// whose message contains the given substring and whose Status matches expectedStatus.
 func ExpectMCPRemoteProxyConditionMessage(
 	ctx context.Context,
 	c client.Client,
 	name, namespace string,
 	conditionType string,
+	expectedStatus metav1.ConditionStatus,
 	messageSubstring string,
 	timeout, pollingInterval time.Duration,
 ) {
@@ -164,6 +170,10 @@ func ExpectMCPRemoteProxyConditionMessage(
 		}
 		for _, cond := range proxy.Status.Conditions {
 			if cond.Type == conditionType {
+				if cond.Status != expectedStatus {
+					return fmt.Errorf("condition %s status is %s, expected %s (message: %s)",
+						conditionType, cond.Status, expectedStatus, cond.Message)
+				}
 				if strings.Contains(cond.Message, messageSubstring) {
 					return nil
 				}
@@ -220,6 +230,30 @@ func newUnauthenticatedConfig(name, namespace string) *mcpv1alpha1.MCPExternalAu
 		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
 			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
 		},
+	}
+}
+
+// newMCPOIDCConfig creates an MCPOIDCConfig with inline OIDC configuration.
+func newMCPOIDCConfig(name, namespace string) *mcpv1alpha1.MCPOIDCConfig {
+	return &mcpv1alpha1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Issuer: "http://localhost:9090",
+			},
+		},
+	}
+}
+
+// newOIDCConfigRef creates an MCPOIDCConfigReference for use on MCPServer/MCPRemoteProxy specs.
+func newOIDCConfigRef(oidcConfigName string) *mcpv1alpha1.MCPOIDCConfigReference {
+	return &mcpv1alpha1.MCPOIDCConfigReference{
+		Name:     oidcConfigName,
+		Audience: "https://test-resource.example.com",
 	}
 }
 

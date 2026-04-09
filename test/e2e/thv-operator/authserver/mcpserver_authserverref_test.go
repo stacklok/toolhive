@@ -25,11 +25,16 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 		embeddedAuthConflict = "mcpsrv-embedded-auth-conflict"
 		unauthenticatedName  = "mcpsrv-unauth-config"
 		legacyEmbeddedName   = "mcpsrv-legacy-embedded"
+
+		// Shared MCPOIDCConfig name for tests that require OIDC
+		oidcConfigName = "mcpsrv-oidc-config"
 	)
 
 	BeforeAll(func() {
-		By("Creating MCPExternalAuthConfig resources for MCPServer tests")
+		By("Creating MCPOIDCConfig for embedded auth server tests")
+		Expect(k8sClient.Create(ctx, newMCPOIDCConfig(oidcConfigName, testNamespace))).To(Succeed())
 
+		By("Creating MCPExternalAuthConfig resources for MCPServer tests")
 		Expect(k8sClient.Create(ctx, newEmbeddedAuthConfig(embeddedAuthName, testNamespace))).To(Succeed())
 		Expect(k8sClient.Create(ctx, newEmbeddedAuthConfig(embeddedAuthConflict, testNamespace))).To(Succeed())
 		Expect(k8sClient.Create(ctx, newUnauthenticatedConfig(unauthenticatedName, testNamespace))).To(Succeed())
@@ -50,6 +55,11 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 		deleteIgnoreNotFound(ctx, k8sClient, &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: legacyEmbeddedName, Namespace: testNamespace},
 		})
+
+		By("Cleaning up MCPOIDCConfig")
+		deleteIgnoreNotFound(ctx, k8sClient, &mcpv1alpha1.MCPOIDCConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: oidcConfigName, Namespace: testNamespace},
+		})
 	})
 
 	Context("happy path: authServerRef pointing to embeddedAuthServer", func() {
@@ -69,6 +79,7 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 						Kind: "MCPExternalAuthConfig",
 						Name: embeddedAuthName,
 					},
+					OIDCConfigRef: newOIDCConfigRef(oidcConfigName),
 				},
 			}
 			Expect(k8sClient.Create(ctx, server)).To(Succeed())
@@ -93,7 +104,8 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 
 		It("should set AuthServerRefValidated condition to True", func() {
 			ExpectMCPServerConditionMessage(ctx, k8sClient, serverName, testNamespace,
-				mcpv1alpha1.ConditionTypeAuthServerRefValidated, "",
+				mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+				metav1.ConditionTrue, "is valid",
 				timeout, pollingInterval)
 		})
 	})
@@ -133,6 +145,14 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 			WaitForMCPServerPhase(ctx, k8sClient, serverName, testNamespace,
 				mcpv1alpha1.MCPServerPhaseFailed, timeout, pollingInterval)
 		})
+
+		It("should report conflict in AuthServerRefValidated condition", func() {
+			ExpectMCPServerConditionMessage(ctx, k8sClient, serverName, testNamespace,
+				mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+				metav1.ConditionFalse,
+				"both authServerRef and externalAuthConfigRef reference an embedded auth server",
+				timeout, pollingInterval)
+		})
 	})
 
 	Context("type mismatch: authServerRef pointing to non-embeddedAuthServer type", func() {
@@ -171,6 +191,7 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 		It("should report type mismatch in AuthServerRefValidated condition", func() {
 			ExpectMCPServerConditionMessage(ctx, k8sClient, serverName, testNamespace,
 				mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+				metav1.ConditionFalse,
 				"only embeddedAuthServer is supported",
 				timeout, pollingInterval)
 		})
@@ -192,6 +213,7 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: legacyEmbeddedName,
 					},
+					OIDCConfigRef: newOIDCConfigRef(oidcConfigName),
 				},
 			}
 			Expect(k8sClient.Create(ctx, server)).To(Succeed())
@@ -206,6 +228,12 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 		It("should reach Ready phase", func() {
 			WaitForMCPServerPhase(ctx, k8sClient, serverName, testNamespace,
 				mcpv1alpha1.MCPServerPhaseReady, timeout, pollingInterval)
+		})
+
+		It("should have embedded_auth_server_config in the runconfig ConfigMap", func() {
+			runConfig, err := GetRunConfigFromConfigMap(ctx, k8sClient, serverName, testNamespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runConfig).To(HaveKey("embedded_auth_server_config"))
 		})
 	})
 })

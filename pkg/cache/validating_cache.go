@@ -70,7 +70,10 @@ type cacheEntry[K comparable, V any] struct {
 // Negative values panic.
 //
 // load is called on a cache miss to restore the value; it must not be nil.
-// check is called on every cache hit to confirm liveness; it must not be nil.
+// check is called on every cache hit to confirm liveness. It receives both the
+// key and the cached value so callers can inspect the value without a separate
+// read. Returning ErrExpired evicts the entry; any other error is transient
+// (cached value returned unchanged). It must not be nil.
 // onEvict is called after any eviction (LRU or expiry); it may be nil.
 func New[K comparable, V any](
 	capacity int,

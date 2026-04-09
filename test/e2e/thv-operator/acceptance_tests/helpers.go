@@ -127,3 +127,55 @@ func SendToolCall(httpClient *http.Client, port int32, toolName string, requestI
 
 	return resp.StatusCode, respBody
 }
+
+// SendAuthenticatedToolCall sends a JSON-RPC tools/call request with a Bearer token.
+func SendAuthenticatedToolCall(
+	httpClient *http.Client, port int32, toolName string, requestID int, bearerToken string,
+) (int, []byte) {
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      requestID,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      toolName,
+			"arguments": map[string]any{"input": "test"},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	url := fmt.Sprintf("http://localhost:%d/mcp", port)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+bearerToken)
+
+	resp, err := httpClient.Do(req)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	return resp.StatusCode, respBody
+}
+
+// GetOIDCToken fetches a JWT from the mock OIDC server for the given subject.
+func GetOIDCToken(httpClient *http.Client, oidcNodePort int32, subject string) string {
+	url := fmt.Sprintf("http://localhost:%d/token?subject=%s", oidcNodePort, subject)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, nil)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	resp, err := httpClient.Do(req)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	defer func() { _ = resp.Body.Close() }()
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+	}
+	gomega.Expect(json.NewDecoder(resp.Body).Decode(&tokenResp)).To(gomega.Succeed())
+	gomega.Expect(tokenResp.AccessToken).ToNot(gomega.BeEmpty(), "OIDC server should return a token")
+
+	return tokenResp.AccessToken
+}

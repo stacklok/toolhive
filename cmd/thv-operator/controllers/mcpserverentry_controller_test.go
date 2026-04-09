@@ -253,6 +253,60 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
+			name: "SSRF - loopback IP rejected",
+			entry: func() *mcpv1alpha1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.RemoteURL = "http://127.0.0.1:8080/"
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid},
+				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
+		{
+			name: "SSRF - metadata endpoint rejected",
+			entry: func() *mcpv1alpha1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.RemoteURL = "http://169.254.169.254/latest/meta-data/"
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid},
+				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
+		{
+			name: "SSRF - kubernetes.default.svc rejected",
+			entry: func() *mcpv1alpha1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.RemoteURL = "http://kubernetes.default.svc/"
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid},
+				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
+		{
 			name:      "entry not found returns no error and no requeue",
 			entry:     nil, // no entry seeded
 			wantPhase: "",  // not checked

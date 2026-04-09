@@ -98,6 +98,10 @@ const (
 	// ConditionTypeMCPServerEntryCABundleRefValidated indicates whether the referenced
 	// CA bundle ConfigMap exists (when configured).
 	ConditionTypeMCPServerEntryCABundleRefValidated = ConditionCABundleRefValidated
+
+	// ConditionTypeMCPServerEntryRemoteURLValidated indicates whether the RemoteURL passes
+	// format and SSRF safety checks.
+	ConditionTypeMCPServerEntryRemoteURLValidated = "RemoteURLValidated"
 )
 
 // Condition reasons for MCPServerEntry.
@@ -136,6 +140,13 @@ const (
 
 	// ConditionReasonMCPServerEntryCABundleRefNotConfigured indicates no CA bundle ref is set.
 	ConditionReasonMCPServerEntryCABundleRefNotConfigured = "CABundleRefNotConfigured"
+
+	// ConditionReasonMCPServerEntryRemoteURLValid indicates the RemoteURL passed all checks.
+	ConditionReasonMCPServerEntryRemoteURLValid = "RemoteURLValid"
+
+	// ConditionReasonMCPServerEntryRemoteURLInvalid indicates the RemoteURL is malformed or
+	// targets a blocked internal/metadata endpoint.
+	ConditionReasonMCPServerEntryRemoteURLInvalid = ConditionReasonRemoteURLInvalid
 )
 
 //+kubebuilder:object:root=true

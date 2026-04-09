@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -104,11 +105,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				return k8sHelper.DeploymentExists(apiResourceName)
 			}).Should(BeTrue(), "Registry API Deployment should exist")
 
-			// By("waiting for finalizer to be added")
-			// timingHelper.WaitForControllerReconciliation(func() interface{} {
-			// 	return containsFinalizer(registry.Finalizers, registryFinalizerName)
-			// }).Should(BeTrue(), "Registry should have finalizer")
-
 			service, err := k8sHelper.GetService(apiResourceName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(service.Name).To(Equal(apiResourceName))
@@ -119,7 +115,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			// Verify the Deployment has correct configuration
 			By("verifying the deployment is created")
 			deployment := testHelpers.getDeploymentForRegistry(registry.Name)
-			Expect(err).NotTo(HaveOccurred())
 			Expect(deployment.Name).To(Equal(apiResourceName))
 			Expect(deployment.Namespace).To(Equal(testNamespace))
 			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
@@ -155,17 +150,18 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			// Verify basic properties
 			testHelpers.verifyConfigMapBasics(serverConfigMap)
 
-			// Verify source-specific content
+			// Verify source-specific content: In the new model, the ConfigMap contains
+			// the verbatim configYAML, so we verify expected content strings are present
 			configYAML := serverConfigMap.Data["config.yaml"]
 			testHelpers.verifyConfigMapContent(configYAML, registry.Name, expectedConfigContent)
 
 			// Verify the appropriate source type field is present (file, git, or api)
-			// This is determined by which source is configured in the registry
-			if registry.Spec.Sources[0].ConfigMapRef != nil {
+			// based on the configYAML content
+			if strings.Contains(registry.Spec.ConfigYAML, "file:") {
 				Expect(configYAML).To(ContainSubstring("file:"), "ConfigMap source should have file field")
-			} else if registry.Spec.Sources[0].Git != nil {
+			} else if strings.Contains(registry.Spec.ConfigYAML, "git:") {
 				Expect(configYAML).To(ContainSubstring("git:"), "Git source should have git field")
-			} else if registry.Spec.Sources[0].API != nil {
+			} else if strings.Contains(registry.Spec.ConfigYAML, "api:") {
 				Expect(configYAML).To(ContainSubstring("api:"), "API source should have api field")
 			}
 
@@ -197,7 +193,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Create(registryHelper)
 			},
 			map[string]string{
-				"path":     filepath.Join(config.RegistryJSONFilePath, "default", config.RegistryJSONFileName),
+				"path":     "/config/registry/default/registry.json",
 				"interval": "1h",
 			},
 			func(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
@@ -315,60 +311,81 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			}
 			Expect(k8sClient.Create(ctx, configMap3)).Should(Succeed())
 
-			By("creating MCPRegistry with multiple ConfigMap sources")
+			By("creating MCPRegistry with multiple ConfigMap sources via configYAML")
+			configYAML := buildConfigYAMLForMultipleSources([]map[string]string{
+				{
+					"name":       "alpha",
+					"sourceType": "file",
+					"filePath":   "/config/registry/alpha/registry.json",
+					"interval":   "10m",
+				},
+				{
+					"name":       "beta",
+					"sourceType": "file",
+					"filePath":   "/config/registry/beta/registry.json",
+					"interval":   "15m",
+				},
+				{
+					"name":       "gamma",
+					"sourceType": "file",
+					"filePath":   "/config/registry/gamma/registry.json",
+					"interval":   "20m",
+				},
+			})
+
+			// Build volumes for all three ConfigMap sources
+			volumes := []apiextensionsv1.JSON{
+				{Raw: mustMarshalJSON(corev1.Volume{
+					Name: "registry-data-source-alpha",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: configMap1.Name},
+							Items:                []corev1.KeyToPath{{Key: "servers.json", Path: "registry.json"}},
+						},
+					},
+				})},
+				{Raw: mustMarshalJSON(corev1.Volume{
+					Name: "registry-data-source-beta",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: configMap2.Name},
+							Items:                []corev1.KeyToPath{{Key: "data.json", Path: "registry.json"}},
+						},
+					},
+				})},
+				{Raw: mustMarshalJSON(corev1.Volume{
+					Name: "registry-data-source-gamma",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: configMap3.Name},
+							Items:                []corev1.KeyToPath{{Key: "registry.json", Path: "registry.json"}},
+						},
+					},
+				})},
+			}
+
+			// Build volume mounts for all three sources
+			volumeMounts := []apiextensionsv1.JSON{
+				{Raw: mustMarshalJSON(corev1.VolumeMount{
+					Name: "registry-data-source-alpha", MountPath: "/config/registry/alpha", ReadOnly: true,
+				})},
+				{Raw: mustMarshalJSON(corev1.VolumeMount{
+					Name: "registry-data-source-beta", MountPath: "/config/registry/beta", ReadOnly: true,
+				})},
+				{Raw: mustMarshalJSON(corev1.VolumeMount{
+					Name: "registry-data-source-gamma", MountPath: "/config/registry/gamma", ReadOnly: true,
+				})},
+			}
+
 			registry := &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-cm-volumes-test",
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "alpha",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap1.Name,
-								},
-								Key: "servers.json",
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "10m",
-							},
-						},
-						{
-							Name:   "beta",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap2.Name,
-								},
-								Key: "data.json",
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "15m",
-							},
-						},
-						{
-							Name:   "gamma",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap3.Name,
-								},
-								Key: "registry.json",
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "20m",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"alpha", "beta", "gamma"},
-						},
-					},
+					ConfigYAML:   configYAML,
+					Volumes:      volumes,
+					VolumeMounts: volumeMounts,
 				},
 			}
 			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
@@ -455,23 +472,23 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				}, serverConfig)
 			}, QuickTimeout, DefaultPollingInterval).Should(Succeed())
 
-			configYAML := serverConfig.Data["config.yaml"]
-			Expect(configYAML).NotTo(BeEmpty())
+			serverConfigYAML := serverConfig.Data["config.yaml"]
+			Expect(serverConfigYAML).NotTo(BeEmpty())
 
 			// Verify all three sources are in the config with correct file paths
-			Expect(configYAML).To(ContainSubstring("name: alpha"))
-			Expect(configYAML).To(ContainSubstring("name: beta"))
-			Expect(configYAML).To(ContainSubstring("name: gamma"))
+			Expect(serverConfigYAML).To(ContainSubstring("name: alpha"))
+			Expect(serverConfigYAML).To(ContainSubstring("name: beta"))
+			Expect(serverConfigYAML).To(ContainSubstring("name: gamma"))
 
 			// Verify file paths are correct
-			Expect(configYAML).To(ContainSubstring("path: /config/registry/alpha/registry.json"))
-			Expect(configYAML).To(ContainSubstring("path: /config/registry/beta/registry.json"))
-			Expect(configYAML).To(ContainSubstring("path: /config/registry/gamma/registry.json"))
+			Expect(serverConfigYAML).To(ContainSubstring("path: /config/registry/alpha/registry.json"))
+			Expect(serverConfigYAML).To(ContainSubstring("path: /config/registry/beta/registry.json"))
+			Expect(serverConfigYAML).To(ContainSubstring("path: /config/registry/gamma/registry.json"))
 
 			// Verify sync intervals
-			Expect(configYAML).To(ContainSubstring("interval: 10m"))
-			Expect(configYAML).To(ContainSubstring("interval: 15m"))
-			Expect(configYAML).To(ContainSubstring("interval: 20m"))
+			Expect(serverConfigYAML).To(ContainSubstring("interval: 10m"))
+			Expect(serverConfigYAML).To(ContainSubstring("interval: 15m"))
+			Expect(serverConfigYAML).To(ContainSubstring("interval: 20m"))
 
 			By("cleaning up")
 			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
@@ -499,16 +516,49 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			}
 			Expect(k8sClient.Create(ctx, gitSecret)).Should(Succeed())
 
-			By("creating MCPRegistry with Git source and authentication")
-			registry := registryHelper.NewRegistryBuilder("git-auth-test").
-				WithGitSource(
-					"https://github.com/example/private-repo.git",
-					"main",
-					"registry.json",
-				).
-				WithGitAuth("git", "git-auth-secret", "token").
-				WithSyncPolicy("1h").
-				Create(registryHelper)
+			By("creating MCPRegistry with Git source and authentication via configYAML")
+			// Build configYAML with git auth
+			gitConfigYAML := buildConfigYAMLForMultipleSources([]map[string]string{
+				{
+					"name":             "default",
+					"sourceType":       "git",
+					"repository":       "https://github.com/example/private-repo.git",
+					"branch":           "main",
+					"path":             "registry.json",
+					"authUsername":     "git",
+					"authPasswordFile": "/secrets/git-auth-secret/token",
+					"interval":         "1h",
+				},
+			})
+
+			// Build secret volume and mount for git auth
+			secretVol := corev1.Volume{
+				Name: "git-auth-git-auth-secret",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: "git-auth-secret",
+						Items:      []corev1.KeyToPath{{Key: "token", Path: "token"}},
+					},
+				},
+			}
+			secretMount := corev1.VolumeMount{
+				Name:      "git-auth-git-auth-secret",
+				MountPath: "/secrets/git-auth-secret",
+				ReadOnly:  true,
+			}
+
+			registry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "git-auth-test",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML:   gitConfigYAML,
+					Volumes:      []apiextensionsv1.JSON{{Raw: mustMarshalJSON(secretVol)}},
+					VolumeMounts: []apiextensionsv1.JSON{{Raw: mustMarshalJSON(secretMount)}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
 
 			By("waiting for deployment to be created")
 			deployment := &appsv1.Deployment{}
@@ -532,10 +582,10 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				}, serverConfig)
 			}, QuickTimeout, DefaultPollingInterval).Should(Succeed())
 
-			configYAML := serverConfig.Data["config.yaml"]
-			Expect(configYAML).To(ContainSubstring("auth:"))
-			Expect(configYAML).To(ContainSubstring("username: git"))
-			Expect(configYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-secret/token"))
+			serverConfigYAML := serverConfig.Data["config.yaml"]
+			Expect(serverConfigYAML).To(ContainSubstring("auth:"))
+			Expect(serverConfigYAML).To(ContainSubstring("username: git"))
+			Expect(serverConfigYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-secret/token"))
 
 			By("cleaning up")
 			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
@@ -571,62 +621,69 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			Expect(k8sClient.Create(ctx, gitSecret2)).Should(Succeed())
 
 			By("creating MCPRegistry with multiple Git sources with different auth")
+			multiGitConfigYAML := buildConfigYAMLForMultipleSources([]map[string]string{
+				{
+					"name":             "private-repo-1",
+					"sourceType":       "git",
+					"repository":       "https://github.com/org/repo1.git",
+					"branch":           "main",
+					"path":             "registry.json",
+					"authUsername":     "user1",
+					"authPasswordFile": "/secrets/git-auth-1/password",
+					"interval":         "30m",
+				},
+				{
+					"name":             "private-repo-2",
+					"sourceType":       "git",
+					"repository":       "https://github.com/org/repo2.git",
+					"branch":           "develop",
+					"path":             "servers.json",
+					"authUsername":     "user2",
+					"authPasswordFile": "/secrets/git-auth-2/token",
+					"interval":         "1h",
+				},
+			})
+
+			// Build volumes and mounts for both auth secrets
+			volumes := []apiextensionsv1.JSON{
+				{Raw: mustMarshalJSON(corev1.Volume{
+					Name: "git-auth-git-auth-1",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: "git-auth-1",
+							Items:      []corev1.KeyToPath{{Key: "password", Path: "password"}},
+						},
+					},
+				})},
+				{Raw: mustMarshalJSON(corev1.Volume{
+					Name: "git-auth-git-auth-2",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: "git-auth-2",
+							Items:      []corev1.KeyToPath{{Key: "token", Path: "token"}},
+						},
+					},
+				})},
+			}
+
+			volumeMounts := []apiextensionsv1.JSON{
+				{Raw: mustMarshalJSON(corev1.VolumeMount{
+					Name: "git-auth-git-auth-1", MountPath: "/secrets/git-auth-1", ReadOnly: true,
+				})},
+				{Raw: mustMarshalJSON(corev1.VolumeMount{
+					Name: "git-auth-git-auth-2", MountPath: "/secrets/git-auth-2", ReadOnly: true,
+				})},
+			}
+
 			registry := &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-git-auth-test",
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "private-repo-1",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							Git: &mcpv1alpha1.GitSource{
-								Repository: "https://github.com/org/repo1.git",
-								Branch:     "main",
-								Path:       "registry.json",
-								Auth: &mcpv1alpha1.GitAuthConfig{
-									Username: "user1",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-auth-1",
-										},
-										Key: "password",
-									},
-								},
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "30m",
-							},
-						},
-						{
-							Name:   "private-repo-2",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							Git: &mcpv1alpha1.GitSource{
-								Repository: "https://github.com/org/repo2.git",
-								Branch:     "develop",
-								Path:       "servers.json",
-								Auth: &mcpv1alpha1.GitAuthConfig{
-									Username: "user2",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-auth-2",
-										},
-										Key: "token",
-									},
-								},
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "1h",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"private-repo-1", "private-repo-2"},
-						},
-					},
+					ConfigYAML:   multiGitConfigYAML,
+					Volumes:      volumes,
+					VolumeMounts: volumeMounts,
 				},
 			}
 			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
@@ -654,17 +711,17 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				}, serverConfig)
 			}, QuickTimeout, DefaultPollingInterval).Should(Succeed())
 
-			configYAML := serverConfig.Data["config.yaml"]
+			serverConfigYAML := serverConfig.Data["config.yaml"]
 
 			// Verify first registry auth
-			Expect(configYAML).To(ContainSubstring("name: private-repo-1"))
-			Expect(configYAML).To(ContainSubstring("username: user1"))
-			Expect(configYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-1/password"))
+			Expect(serverConfigYAML).To(ContainSubstring("name: private-repo-1"))
+			Expect(serverConfigYAML).To(ContainSubstring("username: user1"))
+			Expect(serverConfigYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-1/password"))
 
 			// Verify second registry auth
-			Expect(configYAML).To(ContainSubstring("name: private-repo-2"))
-			Expect(configYAML).To(ContainSubstring("username: user2"))
-			Expect(configYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-2/token"))
+			Expect(serverConfigYAML).To(ContainSubstring("name: private-repo-2"))
+			Expect(serverConfigYAML).To(ContainSubstring("username: user2"))
+			Expect(serverConfigYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-2/token"))
 
 			By("cleaning up")
 			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
@@ -683,45 +740,21 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			configMap := configMapHelper.CreateSampleToolHiveRegistry("podspec-sa-test")
 
 			By("creating MCPRegistry with custom service account in PodTemplateSpec")
-			registry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "podspec-sa-test",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap.Name,
-								},
-								Key: "registry.json",
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "1h",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"default"},
-						},
-					},
-					PodTemplateSpec: &runtime.RawExtension{
-						Raw: []byte(`{"spec":{"serviceAccountName":"custom-integration-test-sa"}}`),
-					},
-				},
+			registryObj := registryHelper.NewRegistryBuilder("podspec-sa-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.PodTemplateSpec = &runtime.RawExtension{
+				Raw: []byte(`{"spec":{"serviceAccountName":"custom-integration-test-sa"}}`),
 			}
-			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
+
+			Expect(k8sClient.Create(ctx, registryObj)).Should(Succeed())
 
 			By("waiting for deployment to be created")
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, client.ObjectKey{
-					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Name:      fmt.Sprintf("%s-api", registryObj.Name),
 					Namespace: testNamespace,
 				}, deployment)
 			}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
@@ -734,7 +767,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			testHelpers.verifyPodTemplateValidCondition("podspec-sa-test", true)
 
 			By("cleaning up")
-			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, registryObj)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, configMap)).Should(Succeed())
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
 				_, err := registryHelper.GetRegistry("podspec-sa-test")
@@ -747,45 +780,21 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			configMap := configMapHelper.CreateSampleToolHiveRegistry("podspec-tolerations-test")
 
 			By("creating MCPRegistry with custom tolerations in PodTemplateSpec")
-			registry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "podspec-tolerations-test",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap.Name,
-								},
-								Key: "registry.json",
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "1h",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"default"},
-						},
-					},
-					PodTemplateSpec: &runtime.RawExtension{
-						Raw: []byte(`{"spec":{"tolerations":[{"key":"special-node","operator":"Equal","value":"true","effect":"NoSchedule"}]}}`),
-					},
-				},
+			registryObj := registryHelper.NewRegistryBuilder("podspec-tolerations-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.PodTemplateSpec = &runtime.RawExtension{
+				Raw: []byte(`{"spec":{"tolerations":[{"key":"special-node","operator":"Equal","value":"true","effect":"NoSchedule"}]}}`),
 			}
-			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
+
+			Expect(k8sClient.Create(ctx, registryObj)).Should(Succeed())
 
 			By("waiting for deployment to be created")
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, client.ObjectKey{
-					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Name:      fmt.Sprintf("%s-api", registryObj.Name),
 					Namespace: testNamespace,
 				}, deployment)
 			}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
@@ -805,7 +814,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			testHelpers.verifyPodTemplateValidCondition("podspec-tolerations-test", true)
 
 			By("cleaning up")
-			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, registryObj)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, configMap)).Should(Succeed())
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
 				_, err := registryHelper.GetRegistry("podspec-tolerations-test")
@@ -818,39 +827,15 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			configMap := configMapHelper.CreateSampleToolHiveRegistry("podspec-invalid-test")
 
 			By("creating MCPRegistry with invalid JSON in PodTemplateSpec")
-			registry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "podspec-invalid-test",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap.Name,
-								},
-								Key: "registry.json",
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{
-								Interval: "1h",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"default"},
-						},
-					},
-					PodTemplateSpec: &runtime.RawExtension{
-						Raw: []byte(`{"spec": "invalid"}`),
-					},
-				},
+			registryObj := registryHelper.NewRegistryBuilder("podspec-invalid-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.PodTemplateSpec = &runtime.RawExtension{
+				Raw: []byte(`{"spec": "invalid"}`),
 			}
-			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
+
+			Expect(k8sClient.Create(ctx, registryObj)).Should(Succeed())
 
 			By("waiting for registry status to be updated with failure")
 			testHelpers.verifyRegistryFailedWithInvalidPodTemplate("podspec-invalid-test")
@@ -862,14 +847,14 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			deployment := &appsv1.Deployment{}
 			Consistently(func() bool {
 				err := k8sClient.Get(ctx, client.ObjectKey{
-					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Name:      fmt.Sprintf("%s-api", registryObj.Name),
 					Namespace: testNamespace,
 				}, deployment)
 				return errors.IsNotFound(err)
 			}, QuickTimeout, DefaultPollingInterval).Should(BeTrue(), "Deployment should NOT be created when PodTemplateSpec is invalid")
 
 			By("cleaning up")
-			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, registryObj)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, configMap)).Should(Succeed())
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
 				_, err := registryHelper.GetRegistry("podspec-invalid-test")
@@ -972,43 +957,50 @@ func (*serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.Depl
 }
 
 // verifySourceDataVolume verifies the source data ConfigMap volume for ConfigMap sources
+// by checking the user-provided Volumes/VolumeMounts on the registry spec.
 func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
-	// With multiple source support, we need to check each ConfigMap source
-	for _, sourceConfig := range registry.Spec.Sources {
-		if sourceConfig.ConfigMapRef != nil {
-			expectedSourceConfigMapName := sourceConfig.ConfigMapRef.Name
-			expectedVolumeName := fmt.Sprintf("registry-data-source-%s", sourceConfig.Name)
-			expectedMountPath := filepath.Join(config.RegistryJSONFilePath, sourceConfig.Name)
+	// Parse volumes from the registry spec to understand expected volume configuration
+	userVolumes, err := registry.Spec.ParseVolumes()
+	Expect(err).NotTo(HaveOccurred())
 
-			// Check volume
-			sourceDataVolumeFound := false
-			for _, volume := range deployment.Spec.Template.Spec.Volumes {
-				if volume.Name == expectedVolumeName && volume.ConfigMap != nil {
-					Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(expectedSourceConfigMapName))
-					// Check that it mounts the correct key as registry.json
-					Expect(volume.ConfigMap.Items).To(HaveLen(1))
-					Expect(volume.ConfigMap.Items[0].Key).To(Equal(sourceConfig.ConfigMapRef.Key))
-					Expect(volume.ConfigMap.Items[0].Path).To(Equal("registry.json"))
-					sourceDataVolumeFound = true
-					break
-				}
-			}
-			Expect(sourceDataVolumeFound).To(BeTrue(),
-				fmt.Sprintf("Deployment should have a volume for ConfigMap source %s", sourceConfig.Name))
-
-			// Check mount
-			sourceDataMountFound := false
-			for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
-				if mount.Name == expectedVolumeName {
-					Expect(mount.MountPath).To(Equal(expectedMountPath))
-					Expect(mount.ReadOnly).To(BeTrue())
-					sourceDataMountFound = true
-					break
-				}
-			}
-			Expect(sourceDataMountFound).To(BeTrue(),
-				fmt.Sprintf("Deployment should have a volume mount for ConfigMap source %s", sourceConfig.Name))
+	for _, userVol := range userVolumes {
+		if !strings.HasPrefix(userVol.Name, "registry-data-source-") {
+			continue
 		}
+
+		// Check that the volume exists in the deployment
+		sourceDataVolumeFound := false
+		for _, volume := range deployment.Spec.Template.Spec.Volumes {
+			if volume.Name == userVol.Name && volume.ConfigMap != nil {
+				Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(userVol.ConfigMap.Name))
+				sourceDataVolumeFound = true
+				break
+			}
+		}
+		Expect(sourceDataVolumeFound).To(BeTrue(),
+			fmt.Sprintf("Deployment should have volume %s", userVol.Name))
+	}
+
+	// Also check that user-provided mounts exist
+	userMounts, err := registry.Spec.ParseVolumeMounts()
+	Expect(err).NotTo(HaveOccurred())
+
+	for _, userMount := range userMounts {
+		if !strings.HasPrefix(userMount.Name, "registry-data-source-") {
+			continue
+		}
+
+		sourceDataMountFound := false
+		for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+			if mount.Name == userMount.Name {
+				Expect(mount.MountPath).To(Equal(userMount.MountPath))
+				Expect(mount.ReadOnly).To(BeTrue())
+				sourceDataMountFound = true
+				break
+			}
+		}
+		Expect(sourceDataMountFound).To(BeTrue(),
+			fmt.Sprintf("Deployment should have volume mount %s", userMount.Name))
 	}
 }
 
@@ -1041,10 +1033,8 @@ func (*serverConfigTestHelpers) verifyConfigMapBasics(configMap *corev1.ConfigMa
 
 // verifyConfigMapContent verifies source-specific content in the config.yaml
 func (*serverConfigTestHelpers) verifyConfigMapContent(configYAML string, _ string, expectedContent map[string]string) {
-	Expect(configYAML).To(ContainSubstring("sources:"))
-	Expect(configYAML).To(ContainSubstring("registries:"))
-	Expect(configYAML).To(ContainSubstring("format: toolhive"))
-
+	// In the new model, the server config ConfigMap contains the verbatim configYAML.
+	// Verify expected key-value pairs are present in the content.
 	for key, value := range expectedContent {
 		Expect(configYAML).To(ContainSubstring(fmt.Sprintf("%s: %s", key, value)))
 	}

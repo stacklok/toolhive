@@ -19,7 +19,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
@@ -80,22 +79,6 @@ func (*manager) CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deploy
 		"readyReplicas", deployment.Status.ReadyReplicas)
 
 	return false
-}
-
-// ensureDeployment creates or updates the registry-api Deployment for the MCPRegistry.
-// This function builds the deployment via buildRegistryAPIDeployment and delegates
-// the create-or-update logic to upsertDeployment.
-func (m *manager) ensureDeployment(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	configManager config.ConfigManager,
-) (*appsv1.Deployment, error) {
-	deployment := m.buildRegistryAPIDeployment(ctx, mcpRegistry, configManager)
-	if deployment == nil {
-		return nil, fmt.Errorf("failed to build registry-api deployment for %s", mcpRegistry.Name)
-	}
-
-	return m.upsertDeployment(ctx, mcpRegistry, deployment)
 }
 
 // upsertDeployment creates or updates a registry-api Deployment for the given MCPRegistry.
@@ -170,106 +153,15 @@ func (m *manager) upsertDeployment(
 	return existing, nil
 }
 
-// buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
-// This function handles all deployment configuration including labels, container specs, probes,
-// and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
-func (*manager) buildRegistryAPIDeployment(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	configManager config.ConfigManager,
-) *appsv1.Deployment {
-	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
-	// Generate deployment name using the established pattern
-	deploymentName := mcpRegistry.GetAPIResourceName()
-
-	// Define labels using common function
-	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)
-
-	// Parse user-provided PodTemplateSpec if present
-	var userPTS *corev1.PodTemplateSpec
-	if mcpRegistry.HasPodTemplateSpec() {
-		var err error
-		userPTS, err = ParsePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
-		if err != nil {
-			ctxLogger.Error(err, "Failed to parse PodTemplateSpec")
-			return nil
-		}
-	}
-
-	// Compute config hash from the full MCPRegistry spec to detect any spec changes
-	configHash := ctrlutil.CalculateConfigHash(mcpRegistry.Spec)
-
-	// Build list of options for PodTemplateSpec
-	opts := []PodTemplateSpecOption{
-		WithLabels(labels),
-		WithAnnotations(map[string]string{
-			configHashAnnotation: configHash,
-		}),
-		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
-		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
-		WithRegistryServerConfigMount(RegistryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
-		WithRegistrySourceMounts(RegistryAPIContainerName, mcpRegistry.Spec.Sources),
-		WithRegistryStorageMount(RegistryAPIContainerName),
-	}
-
-	// Add pgpass mount if databaseConfig is specified
-	if mcpRegistry.HasDatabaseConfig() {
-		secretName := mcpRegistry.BuildPGPassSecretName()
-		opts = append(opts, WithPGPassMount(RegistryAPIContainerName, secretName))
-	}
-
-	// Add git auth mounts for sources that have authentication configured
-	for _, source := range mcpRegistry.Spec.Sources {
-		if source.Git != nil && source.Git.Auth != nil {
-			opts = append(opts, WithGitAuthMount(RegistryAPIContainerName, source.Git.Auth.PasswordSecretRef))
-		}
-	}
-
-	// Build PodTemplateSpec with defaults and user customizations merged
-	builder := NewPodTemplateSpecBuilderFrom(userPTS)
-	podTemplateSpec := builder.Apply(opts...).Build()
-
-	// Build deployment-level annotations with PodTemplateSpec hash for change detection
-	deploymentAnnotations := make(map[string]string)
-	if mcpRegistry.HasPodTemplateSpec() && mcpRegistry.Spec.PodTemplateSpec.Raw != nil {
-		hash, err := checksum.HashRawJSON(mcpRegistry.Spec.PodTemplateSpec.Raw)
-		if err == nil {
-			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
-		}
-	}
-
-	// Create basic deployment specification with named container
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        deploymentName,
-			Namespace:   mcpRegistry.Namespace,
-			Labels:      labels,
-			Annotations: deploymentAnnotations,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &[]int32{DefaultReplicas}[0], // Single replica for registry API
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app.kubernetes.io/name":      deploymentName,
-					"app.kubernetes.io/component": "registry-api",
-				},
-			},
-			Template: podTemplateSpec,
-		},
-	}
-
-	return deployment
-}
-
-// ensureDeploymentNewPath creates or updates the registry-api Deployment for the new
-// decoupled config path. It builds the deployment via buildRegistryAPIDeploymentNewPath
-// and delegates the create-or-update logic to upsertDeployment.
-func (m *manager) ensureDeploymentNewPath(
+// ensureDeployment creates or updates the registry-api Deployment for the MCPRegistry.
+// It builds the deployment via buildRegistryAPIDeployment and delegates the create-or-update
+// logic to upsertDeployment.
+func (m *manager) ensureDeployment(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	configMapName string,
 ) (*appsv1.Deployment, error) {
-	deployment, err := m.buildRegistryAPIDeploymentNewPath(ctx, mcpRegistry, configMapName)
+	deployment, err := m.buildRegistryAPIDeployment(ctx, mcpRegistry, configMapName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build deployment: %w", err)
 	}
@@ -277,12 +169,10 @@ func (m *manager) ensureDeploymentNewPath(
 	return m.upsertDeployment(ctx, mcpRegistry, deployment)
 }
 
-// buildRegistryAPIDeploymentNewPath creates a Deployment for the decoupled config path.
-// Unlike buildRegistryAPIDeployment which uses a ConfigManager to generate config, this
-// function mounts a ConfigMap created from the raw ConfigYAML string. It supports
-// user-provided Volumes, VolumeMounts, and PGPassSecretRef instead of the legacy
-// Sources, DatabaseConfig, and auto-generated pgpass secret.
-func (*manager) buildRegistryAPIDeploymentNewPath(
+// buildRegistryAPIDeployment creates a Deployment for the registry API. It mounts a ConfigMap
+// created from the raw ConfigYAML string and supports user-provided Volumes, VolumeMounts,
+// and PGPassSecretRef.
+func (*manager) buildRegistryAPIDeployment(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	configMapName string,

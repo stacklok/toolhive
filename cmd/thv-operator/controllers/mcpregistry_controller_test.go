@@ -54,7 +54,7 @@ func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
 }
 
 // newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer
-// and a minimal valid spec (one source) so it passes reconciler validation.
+// and a minimal valid spec (configYAML) so it passes reconciler validation.
 func newMCPRegistryWithFinalizer(name, namespace string) *mcpv1alpha1.MCPRegistry { //nolint:unparam
 	return &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
@@ -63,12 +63,7 @@ func newMCPRegistryWithFinalizer(name, namespace string) *mcpv1alpha1.MCPRegistr
 			Finalizers: []string{"mcpregistry.toolhive.stacklok.dev/finalizer"},
 		},
 		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-				{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-					Key:                  "registry.json",
-				}},
-			},
+			ConfigYAML: "sources:\n  - name: k8s\n    format: upstream\n    kubernetes: {}\nregistries:\n  - name: default\n    sources: [\"k8s\"]\ndatabase:\n  host: postgres\n  port: 5432\n  user: db_app\n  database: registry\nauth:\n  mode: anonymous\n",
 		},
 	}
 }
@@ -111,12 +106,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				mcpRegistry := &mcpv1alpha1.MCPRegistry{
 					ObjectMeta: metav1.ObjectMeta{Name: registryName, Namespace: registryNamespace},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-								Key:                  "registry.json",
-							}},
-						},
+						ConfigYAML: "sources:\n  - name: k8s\n    kubernetes: {}\n",
 					},
 				}
 				builder := fake.NewClientBuilder().
@@ -156,12 +146,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						DeletionTimestamp: &now,
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-								Key:                  "registry.json",
-							}},
-						},
+						ConfigYAML: "sources:\n  - name: k8s\n    kubernetes: {}\n",
 					},
 				}
 				builder := fake.NewClientBuilder().
@@ -199,12 +184,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						DeletionTimestamp: &now,
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-								Key:                  "registry.json",
-							}},
-						},
+						ConfigYAML: "sources:\n  - name: k8s\n    kubernetes: {}\n",
 					},
 				}
 				builder := fake.NewClientBuilder().
@@ -465,7 +445,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 	}
 }
 
-func TestValidateNewPathSpec(t *testing.T) {
+func TestValidateSpec(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -474,101 +454,10 @@ func TestValidateNewPathSpec(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "valid new path with configYAML and no legacy fields",
+			name: "valid configYAML with no extra fields",
 			spec: mcpv1alpha1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n",
 			},
-		},
-		{
-			name: "valid legacy path with sources and no configYAML",
-			spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-						Key:                  "registry.json",
-					}},
-				},
-			},
-		},
-		{
-			name: "mutual exclusivity configYAML plus sources",
-			spec: mcpv1alpha1.MCPRegistrySpec{
-				ConfigYAML: "sources:\n  - name: default\n",
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-						Key:                  "registry.json",
-					}},
-				},
-			},
-			wantErr: "mutually exclusive",
-		},
-		{
-			name: "mutual exclusivity configYAML plus databaseConfig",
-			spec: mcpv1alpha1.MCPRegistrySpec{
-				ConfigYAML:     "sources:\n  - name: default\n",
-				DatabaseConfig: &mcpv1alpha1.MCPRegistryDatabaseConfig{Host: "pg"},
-			},
-			wantErr: "mutually exclusive",
-		},
-		{
-			name: "mutual exclusivity configYAML plus authConfig",
-			spec: mcpv1alpha1.MCPRegistrySpec{
-				ConfigYAML: "sources:\n  - name: default\n",
-				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{Mode: mcpv1alpha1.MCPRegistryAuthModeAnonymous},
-			},
-			wantErr: "mutually exclusive",
-		},
-		{
-			name:    "neither path specified",
-			spec:    mcpv1alpha1.MCPRegistrySpec{},
-			wantErr: "either configYAML or sources must be specified",
-		},
-		{
-			name: "volumes without configYAML",
-			spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-						Key:                  "registry.json",
-					}},
-				},
-				Volumes: toRawJSONSlice(t, []corev1.Volume{
-					{Name: "extra", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				}),
-			},
-			wantErr: "volumes and volumeMounts require configYAML",
-		},
-		{
-			name: "volumeMounts without configYAML",
-			spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-						Key:                  "registry.json",
-					}},
-				},
-				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
-					{Name: "extra", MountPath: "/extra"},
-				}),
-			},
-			wantErr: "volumes and volumeMounts require configYAML",
-		},
-		{
-			name: "pgpassSecretRef without configYAML",
-			spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
-						Key:                  "registry.json",
-					}},
-				},
-				PGPassSecretRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "pgpass"},
-					Key:                  ".pgpass",
-				},
-			},
-			wantErr: "pgpassSecretRef requires configYAML",
 		},
 		{
 			name: "pgpassSecretRef with empty name",
@@ -744,7 +633,7 @@ func TestValidateNewPathSpec(t *testing.T) {
 				Spec: tt.spec,
 			}
 
-			err := validateNewPathSpec(mcpRegistry)
+			err := validateSpec(mcpRegistry)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

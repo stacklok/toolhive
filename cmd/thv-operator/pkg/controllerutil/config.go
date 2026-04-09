@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/dump"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -189,6 +190,34 @@ func GetExternalAuthConfigForMCPRemoteProxy(
 	}
 
 	return externalAuthConfig, nil
+}
+
+// GetTelemetryConfigForMCPRemoteProxy fetches the MCPTelemetryConfig referenced by the proxy.
+// Returns (nil, nil) when TelemetryConfigRef is nil or the resource is not found.
+// Returns (nil, err) only for transient API errors so callers can distinguish
+// "config missing" from "API unavailable".
+func GetTelemetryConfigForMCPRemoteProxy(
+	ctx context.Context,
+	c client.Client,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	if proxy.Spec.TelemetryConfigRef == nil {
+		return nil, nil
+	}
+
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      proxy.Spec.TelemetryConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}, telemetryConfig)
+	if errors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPTelemetryConfig %s: %w", proxy.Spec.TelemetryConfigRef.Name, err)
+	}
+
+	return telemetryConfig, nil
 }
 
 // GetExternalAuthConfigByName is a generic helper for fetching MCPExternalAuthConfig by name

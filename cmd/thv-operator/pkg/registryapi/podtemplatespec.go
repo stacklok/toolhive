@@ -228,145 +228,60 @@ func WithEnvVar(containerName string, envVar corev1.EnvVar) PodTemplateSpecOptio
 	}
 }
 
-// WithPGPassMount configures the pgpass secret mounting for PostgreSQL authentication.
-// Kubernetes secret volumes don't allow changing file permissions after mounting, so this
-// function uses an init container to copy the file and set proper permissions.
-//
-// This function adds:
-// 1. A volume from the secret containing the pgpass file (mounted in init container)
-// 2. An emptyDir volume for the prepared pgpass file (mounted in app container)
-// 3. An init container that copies the file and sets permissions (600) and ownership (65532:65532)
-// 4. A volume mount in the registry-api container for the pgpass file from the emptyDir
-// 5. The PGPASSFILE environment variable pointing to the mounted file
+// WithPGPassMount configures the pgpass secret mounting for PostgreSQL authentication
+// using an operator-generated secret. It constructs the secret volume from the given
+// secret name and operator-defined key, then delegates to withPGPassMountFromVolume.
 func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
-	return func(pts *corev1.PodTemplateSpec) {
-		// Add the secret volume with the pgpass file (for init container)
-		WithVolume(corev1.Volume{
-			Name: PGPassSecretVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: secretName,
-					Items: []corev1.KeyToPath{
-						{
-							Key:  GetPGPassSecretKey(),
-							Path: pgpassFileName,
-						},
-					},
+	secretVolume := corev1.Volume{
+		Name: PGPassSecretVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretName,
+				Items: []corev1.KeyToPath{
+					{Key: GetPGPassSecretKey(), Path: pgpassFileName},
 				},
 			},
-		})(pts)
-
-		// Add the emptyDir volume for the prepared pgpass file (for app container)
-		WithVolume(corev1.Volume{
-			Name: PGPassVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})(pts)
-
-		// Add init container to copy pgpass file and set permissions.
-		// Using Chainguard's busybox which runs as nonroot (65532) by default,
-		// so no chown is needed - the file will be owned by the same user as the app container.
-		WithInitContainer(corev1.Container{
-			Name:  PGPassInitContainerName,
-			Image: pgpassInitContainerImage,
-			Command: []string{
-				"sh",
-				"-c",
-				fmt.Sprintf(
-					"cp %s/%s %s/%s && chmod 0600 %s/%s",
-					pgpassSecretMountPath, pgpassFileName,
-					pgpassEmptyDirMountPath, pgpassFileName,
-					pgpassEmptyDirMountPath, pgpassFileName,
-				),
-			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      PGPassSecretVolumeName,
-					MountPath: pgpassSecretMountPath,
-					ReadOnly:  true,
-				},
-				{
-					Name:      PGPassVolumeName,
-					MountPath: pgpassEmptyDirMountPath,
-					ReadOnly:  false,
-				},
-			},
-			SecurityContext: &corev1.SecurityContext{
-				RunAsNonRoot:             ptr.To(true),
-				AllowPrivilegeEscalation: ptr.To(false),
-				ReadOnlyRootFilesystem:   ptr.To(true),
-				Capabilities: &corev1.Capabilities{
-					Drop: []corev1.Capability{"ALL"},
-				},
-			},
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("10m"),
-					corev1.ResourceMemory: resource.MustParse("16Mi"),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("50m"),
-					corev1.ResourceMemory: resource.MustParse("32Mi"),
-				},
-			},
-		})(pts)
-
-		// Add the volume mount to the registry-api container
-		// Uses subPath to mount just the .pgpass file at the expected location
-		WithVolumeMount(containerName, corev1.VolumeMount{
-			Name:      PGPassVolumeName,
-			MountPath: PGPassAppUserMountPath,
-			SubPath:   pgpassFileName,
-			ReadOnly:  true,
-		})(pts)
-
-		// Add the PGPASSFILE environment variable
-		WithEnvVar(containerName, corev1.EnvVar{
-			Name:  "PGPASSFILE",
-			Value: PGPassAppUserMountPath,
-		})(pts)
+		},
 	}
+	return withPGPassMountFromVolume(containerName, secretVolume)
 }
 
 // WithPGPassSecretRefMount configures pgpass secret mounting for PostgreSQL authentication
-// using a user-provided SecretKeySelector. This is the new-path variant used when the
-// MCPRegistry CRD specifies a pre-built pgpass secret directly, rather than having the
-// operator generate one from individual database credential secrets.
-//
-// The mounting pattern is identical to WithPGPassMount: an init container copies the
-// pgpass file from a secret volume to an emptyDir volume with chmod 0600, then the
-// app container mounts the prepared file via subPath. The only difference is the source:
-// WithPGPassMount takes a generated secret name, while this function takes a
-// SecretKeySelector referencing a user-provided secret and key.
-//
-// This function adds:
-//  1. A volume from the secret containing the pgpass file (mounted in init container)
-//  2. An emptyDir volume for the prepared pgpass file (mounted in app container)
-//  3. An init container that copies the file and sets permissions (600)
-//  4. A volume mount in the app container for the pgpass file from the emptyDir
-//  5. The PGPASSFILE environment variable pointing to the mounted file
+// using a user-provided SecretKeySelector. If the secret reference is incomplete (empty
+// name or key), a no-op option is returned. Otherwise it constructs the secret volume
+// from the selector and delegates to withPGPassMountFromVolume.
 func WithPGPassSecretRefMount(containerName string, secretRef corev1.SecretKeySelector) PodTemplateSpecOption {
-	return func(pts *corev1.PodTemplateSpec) {
-		if secretRef.Name == "" || secretRef.Key == "" {
-			return
-		}
-
-		// Add the secret volume with the pgpass file (for init container)
-		WithVolume(corev1.Volume{
-			Name: PGPassSecretVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: secretRef.Name,
-					Items: []corev1.KeyToPath{
-						{
-							Key:  secretRef.Key,
-							Path: pgpassFileName,
-						},
-					},
+	if secretRef.Name == "" || secretRef.Key == "" {
+		return func(*corev1.PodTemplateSpec) {} // no-op for incomplete references
+	}
+	secretVolume := corev1.Volume{
+		Name: PGPassSecretVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretRef.Name,
+				Items: []corev1.KeyToPath{
+					{Key: secretRef.Key, Path: pgpassFileName},
 				},
 			},
-		})(pts)
+		},
+	}
+	return withPGPassMountFromVolume(containerName, secretVolume)
+}
+
+// withPGPassMountFromVolume is the shared implementation for pgpass secret mounting.
+// Kubernetes secret volumes don't allow changing file permissions after mounting, so this
+// function uses an init container to copy the file and set proper permissions.
+//
+// It adds:
+//  1. The caller-provided secret volume (mounted in init container)
+//  2. An emptyDir volume for the prepared pgpass file (mounted in app container)
+//  3. An init container that copies the file and sets permissions (chmod 0600)
+//  4. A volume mount in the app container for the pgpass file from the emptyDir
+//  5. The PGPASSFILE environment variable pointing to the mounted file
+func withPGPassMountFromVolume(containerName string, secretVolume corev1.Volume) PodTemplateSpecOption {
+	return func(pts *corev1.PodTemplateSpec) {
+		// Add the secret volume with the pgpass file (for init container)
+		WithVolume(secretVolume)(pts)
 
 		// Add the emptyDir volume for the prepared pgpass file (for app container)
 		WithVolume(corev1.Volume{
@@ -435,7 +350,7 @@ func WithPGPassSecretRefMount(containerName string, secretRef corev1.SecretKeySe
 
 		// Add the PGPASSFILE environment variable
 		WithEnvVar(containerName, corev1.EnvVar{
-			Name:  "PGPASSFILE",
+			Name:  pgpassEnvVar,
 			Value: PGPassAppUserMountPath,
 		})(pts)
 	}

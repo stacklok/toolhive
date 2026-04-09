@@ -84,6 +84,8 @@ const (
 	PGPassAppUserMountPath = "/home/appuser/.pgpass"
 	// pgpassFileName is the name of the pgpass file
 	pgpassFileName = ".pgpass"
+	// pgpassEnvVar is the environment variable name for the pgpass file path
+	pgpassEnvVar = "PGPASSFILE"
 
 	// Git auth volume and path constants
 	// gitAuthSecretsBasePath is the base path where git auth secrets are mounted

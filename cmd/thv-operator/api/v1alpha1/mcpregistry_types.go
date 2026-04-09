@@ -38,6 +38,7 @@ type MCPRegistrySpec struct {
 	// via the Volumes and VolumeMounts fields below.
 	//
 	// +optional
+	// +kubebuilder:validation:MaxLength=131072
 	ConfigYAML string `json:"configYAML,omitempty"`
 
 	// Volumes defines additional volumes to add to the registry API pod.
@@ -53,6 +54,7 @@ type MCPRegistrySpec struct {
 	//
 	// +optional
 	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Volumes []apiextensionsv1.JSON `json:"volumes,omitempty"`
 
@@ -67,6 +69,7 @@ type MCPRegistrySpec struct {
 	//
 	// +optional
 	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:pruning:PreserveUnknownFields
 	VolumeMounts []apiextensionsv1.JSON `json:"volumeMounts,omitempty"`
 
@@ -860,7 +863,7 @@ const (
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
 //+kubebuilder:validation:XValidation:rule="size(self.spec.configYAML) > 0 || size(self.spec.sources) > 0",message="either configYAML or sources must be specified"
-//+kubebuilder:validation:XValidation:rule="!(size(self.spec.configYAML) > 0 && size(self.spec.sources) > 0)",message="configYAML and sources/registries are mutually exclusive"
+//+kubebuilder:validation:XValidation:rule="!(size(self.spec.configYAML) > 0 && (size(self.spec.sources) > 0 || size(self.spec.registries) > 0 || has(self.spec.databaseConfig) || has(self.spec.authConfig) || has(self.spec.telemetryConfig)))",message="configYAML is mutually exclusive with sources, registries, databaseConfig, authConfig, and telemetryConfig"
 //+kubebuilder:validation:XValidation:rule="self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
 
 // MCPRegistry is the Schema for the mcpregistries API

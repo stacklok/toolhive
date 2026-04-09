@@ -14,11 +14,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -612,6 +612,80 @@ func TestValidateNewPathSpec(t *testing.T) {
 				}),
 			},
 			// pgpass-secret is only reserved when pgpassSecretRef is set
+		},
+		{
+			name: "reserved volume name registry-server-config in PodTemplateSpec",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Volumes: []corev1.Volume{
+							{
+								Name: registryapi.RegistryServerConfigVolumeName,
+								VolumeSource: corev1.VolumeSource{
+									EmptyDir: &corev1.EmptyDirVolumeSource{},
+								},
+							},
+						},
+						Containers: []corev1.Container{
+							{Name: "registry-api"},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML:      "sources:\n  - name: default\n",
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "init container setup-pgpass in PodTemplateSpec when pgpassSecretRef is set",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						InitContainers: []corev1.Container{
+							{Name: registryapi.PGPassInitContainerName, Image: "busybox"},
+						},
+						Containers: []corev1.Container{
+							{Name: "registry-api"},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML: "sources:\n  - name: default\n",
+					PGPassSecretRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+						Key:                  ".pgpass",
+					},
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "reserved by the operator when pgpassSecretRef is set",
+		},
+		{
+			name: "mount path collision from PodTemplateSpec container mounts",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name: "registry-api",
+								VolumeMounts: []corev1.VolumeMount{
+									{Name: "user-vol", MountPath: "/config"},
+								},
+							},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML:      "sources:\n  - name: default\n",
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "duplicate mount path '/config'",
 		},
 		{
 			name: "duplicate mount path in spec volumeMounts",

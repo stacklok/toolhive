@@ -355,7 +355,7 @@ func validateNewPathSpec(mcpRegistry *mcpv1alpha1.MCPRegistry) error {
 func validatePathExclusivity(spec *mcpv1alpha1.MCPRegistrySpec) error {
 	hasNewPath := spec.ConfigYAML != ""
 	hasLegacySources := len(spec.Sources) > 0 || len(spec.Registries) > 0
-	hasLegacyConfig := spec.DatabaseConfig != nil || spec.AuthConfig != nil
+	hasLegacyConfig := spec.DatabaseConfig != nil || spec.AuthConfig != nil || spec.TelemetryConfig != nil
 
 	if hasNewPath && (hasLegacySources || hasLegacyConfig) {
 		return fmt.Errorf(

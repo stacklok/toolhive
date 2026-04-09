@@ -322,6 +322,7 @@ spec:
                   DatabaseConfig, AuthConfig, TelemetryConfig). When set, the operator
                   uses the decoupled code path — volumes and mounts must be provided
                   via the Volumes and VolumeMounts fields below.
+                maxLength: 131072
                 type: string
               databaseConfig:
                 description: |-
@@ -931,6 +932,7 @@ spec:
                   a corresponding volume mount must exist with mountPath: /secrets/git-creds.
                 items:
                   x-kubernetes-preserve-unknown-fields: true
+                maxItems: 50
                 type: array
                 x-kubernetes-list-type: atomic
                 x-kubernetes-preserve-unknown-fields: true
@@ -948,6 +950,7 @@ spec:
                     - Any other volume type the registry server needs
                 items:
                   x-kubernetes-preserve-unknown-fields: true
+                maxItems: 50
                 type: array
                 x-kubernetes-list-type: atomic
                 x-kubernetes-preserve-unknown-fields: true
@@ -1045,8 +1048,11 @@ spec:
         x-kubernetes-validations:
         - message: either configYAML or sources must be specified
           rule: size(self.spec.configYAML) > 0 || size(self.spec.sources) > 0
-        - message: configYAML and sources/registries are mutually exclusive
-          rule: '!(size(self.spec.configYAML) > 0 && size(self.spec.sources) > 0)'
+        - message: configYAML is mutually exclusive with sources, registries, databaseConfig,
+            authConfig, and telemetryConfig
+          rule: '!(size(self.spec.configYAML) > 0 && (size(self.spec.sources) > 0
+            || size(self.spec.registries) > 0 || has(self.spec.databaseConfig) ||
+            has(self.spec.authConfig) || has(self.spec.telemetryConfig)))'
         - message: at most one managed source is allowed
           rule: self.spec.sources.filter(s, has(s.managed)).size() <= 1
     served: true

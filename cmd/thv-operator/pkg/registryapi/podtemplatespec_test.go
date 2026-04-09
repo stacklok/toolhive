@@ -955,7 +955,7 @@ func TestWithPGPassMount(t *testing.T) {
 
 		var pgpassfileEnv *corev1.EnvVar
 		for i := range container.Env {
-			if container.Env[i].Name == "PGPASSFILE" {
+			if container.Env[i].Name == pgpassEnvVar {
 				pgpassfileEnv = &container.Env[i]
 				break
 			}
@@ -998,7 +998,7 @@ func TestWithPGPassMount(t *testing.T) {
 		// Env vars are idempotent - should only have 1 PGPASSFILE env var
 		pgpassCount := 0
 		for _, env := range pts.Spec.Containers[0].Env {
-			if env.Name == "PGPASSFILE" {
+			if env.Name == pgpassEnvVar {
 				pgpassCount++
 			}
 		}
@@ -1306,7 +1306,7 @@ func TestWithPGPassSecretRefMount(t *testing.T) {
 
 				var pgpassEnv *corev1.EnvVar
 				for i := range container.Env {
-					if container.Env[i].Name == "PGPASSFILE" {
+					if container.Env[i].Name == pgpassEnvVar {
 						pgpassEnv = &container.Env[i]
 						break
 					}

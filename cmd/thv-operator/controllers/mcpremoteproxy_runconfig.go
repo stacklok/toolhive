@@ -25,7 +25,7 @@ import (
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date for MCPRemoteProxy
 func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	runConfig, err := r.createRunConfigFromMCPRemoteProxy(proxy)
+	runConfig, err := r.createRunConfigFromMCPRemoteProxy(ctx, proxy)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig from MCPRemoteProxy: %w", err)
 	}
@@ -71,6 +71,7 @@ func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context,
 // createRunConfigFromMCPRemoteProxy converts MCPRemoteProxy spec to RunConfig
 // Key difference from MCPServer: Sets RemoteURL instead of Image, and Deployer remains nil
 func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
+	ctx context.Context,
 	proxy *mcpv1alpha1.MCPRemoteProxy,
 ) (*runner.RunConfig, error) {
 	proxyHost := defaultProxyHost
@@ -131,8 +132,19 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	// Add telemetry configuration if specified
-	runconfig.AddTelemetryConfigOptions(ctx, &options, proxy.Spec.Telemetry, proxy.Name)
+	// Add telemetry configuration: prefer TelemetryConfigRef over deprecated inline Telemetry
+	if proxy.Spec.TelemetryConfigRef != nil {
+		telCfg, err := ctrlutil.GetTelemetryConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPTelemetryConfig: %w", err)
+		}
+		if telCfg != nil {
+			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
+			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, proxy.Spec.TelemetryConfigRef.ServiceName, proxy.Name, caPath)
+		}
+	} else {
+		runconfig.AddTelemetryConfigOptions(ctx, &options, proxy.Spec.Telemetry, proxy.Name)
+	}
 
 	// Add authorization configuration if specified
 

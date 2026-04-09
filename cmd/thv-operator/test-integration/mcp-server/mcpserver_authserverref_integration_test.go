@@ -412,15 +412,13 @@ var _ = Describe("MCPServer AuthServerRef Integration Tests", func() {
 		})
 
 		It("should not be in Failed phase", func() {
-			Eventually(func() bool {
-				server := &mcpv1alpha1.MCPServer{}
-				if err := k8sClient.Get(ctx, types.NamespacedName{
-					Name: serverName, Namespace: namespace,
-				}, server); err != nil {
-					return false
-				}
-				return server.Status.Phase != mcpv1alpha1.MCPServerPhaseFailed
-			}, timeout, interval).Should(BeTrue())
+			// The prior It already synchronized on ConfigMap creation,
+			// so reconciliation has completed. A point-in-time check suffices.
+			server := &mcpv1alpha1.MCPServer{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, server)).To(Succeed())
+			Expect(server.Status.Phase).NotTo(Equal(mcpv1alpha1.MCPServerPhaseFailed))
 		})
 	})
 })

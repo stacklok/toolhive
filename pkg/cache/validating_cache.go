@@ -121,13 +121,23 @@ func (c *ValidatingCache[K, V]) Get(key K) (V, bool) {
 			return nil, loadErr
 		}
 
-		// Guard against a concurrent Set/Delete that occurred while load() was
+		// Guard against a concurrent Set or Remove that occurred while load() was
 		// running. ContainsOrAdd stores only if absent; if another writer got
 		// in first, their value wins and we discard ours via onEvict.
 		ok, _ := c.lruCache.ContainsOrAdd(key, v)
 		if ok {
-			// Another writer stored a value first; retrieve the winner's value.
-			winner, _ := c.lruCache.Get(key)
+			// Another writer stored a value first; discard our loaded value and
+			// return the winner's. ContainsOrAdd and Get are separate lock
+			// acquisitions, so the winner may itself have been evicted by LRU
+			// pressure between the two calls — fall back to our freshly loaded
+			// value in that case rather than returning a zero value.
+			winner, found := c.lruCache.Get(key)
+			if !found {
+				// Winner was evicted between ContainsOrAdd and Get; keep our
+				// freshly loaded value rather than returning a zero value.
+				return result{v: v}, nil
+			}
+			// Discard our loaded value in favour of the winner.
 			if c.onEvict != nil {
 				c.onEvict(key, v)
 			}
@@ -149,6 +159,12 @@ func (c *ValidatingCache[K, V]) Get(key K) (V, bool) {
 // onEvict is called for it.
 func (c *ValidatingCache[K, V]) Set(key K, value V) {
 	c.lruCache.Add(key, value)
+}
+
+// Remove evicts the entry for key, calling onEvict if the key was present.
+// It is a no-op if the key is not in the cache.
+func (c *ValidatingCache[K, V]) Remove(key K) {
+	c.lruCache.Remove(key)
 }
 
 // Len returns the number of entries currently in the cache.

@@ -32,6 +32,11 @@ import (
 
 const instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 
+// defaultCacheCapacity is the fallback used when FactoryConfig.CacheCapacity is
+// zero (the Go zero value). This ensures the cache is always bounded; omitting
+// CacheCapacity from a config does not silently enable unbounded growth.
+const defaultCacheCapacity = 1000
+
 // FactoryConfig holds the session factory construction parameters that the
 // session manager needs to build its decorating factory. It is separate from
 // server.Config to avoid a circular import between the server and sessionmanager
@@ -65,8 +70,9 @@ type FactoryConfig struct {
 
 	// CacheCapacity is the maximum number of live MultiSession entries held in
 	// the node-local ValidatingCache. When the cache is full the least-recently-used
-	// session is evicted (its backend connections are closed via onEvict).
-	// Must be >= 1; sessionmanager.New returns an error if this is zero or negative.
+	// session is evicted (its backend connections are closed via onEvict). A value of
+	// 0 uses defaultCacheCapacity (1000). Negative values are rejected by
+	// sessionmanager.New.
 	CacheCapacity int
 }
 

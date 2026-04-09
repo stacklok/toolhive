@@ -102,8 +102,12 @@ func New(
 	if cfg == nil || cfg.Base == nil {
 		return nil, nil, fmt.Errorf("sessionmanager.New: FactoryConfig.Base (SessionFactory) is required")
 	}
-	if cfg.CacheCapacity < 1 {
-		return nil, nil, fmt.Errorf("sessionmanager.New: CacheCapacity must be >= 1 (got %d)", cfg.CacheCapacity)
+	if cfg.CacheCapacity < 0 {
+		return nil, nil, fmt.Errorf("sessionmanager.New: CacheCapacity must be >= 0 (got %d)", cfg.CacheCapacity)
+	}
+	capacity := cfg.CacheCapacity
+	if capacity == 0 {
+		capacity = defaultCacheCapacity
 	}
 	if len(cfg.WorkflowDefs) > 0 && cfg.ComposerFactory == nil {
 		return nil, nil, fmt.Errorf("sessionmanager.New: ComposerFactory is required when WorkflowDefs are provided")
@@ -139,7 +143,7 @@ func New(
 	}
 
 	sm.sessions = cache.New(
-		cfg.CacheCapacity,
+		capacity,
 		sm.loadSession,
 		sm.checkSession,
 		func(id string, sess vmcpsession.MultiSession) {
@@ -389,10 +393,15 @@ func (sm *Manager) CreateSession(
 // Cleanup is best-effort: errors are logged but not returned, since the caller
 // already has an error to report.
 func (sm *Manager) cleanupFailedPlaceholder(sessionID string, metadata map[string]string) {
-	metadata[MetadataKeyTerminated] = MetadataValTrue
+	// Copy before mutating so the caller's map is not modified.
+	terminated := make(map[string]string, len(metadata)+1)
+	for k, v := range metadata {
+		terminated[k] = v
+	}
+	terminated[MetadataKeyTerminated] = MetadataValTrue
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), createSessionStorageTimeout)
 	defer cancel()
-	if _, err := sm.storage.Update(cleanupCtx, sessionID, metadata); err != nil {
+	if _, err := sm.storage.Update(cleanupCtx, sessionID, terminated); err != nil {
 		slog.Warn("Manager.CreateSession: failed to mark failed placeholder as terminated; it will linger until TTL expires",
 			"session_id", sessionID, "error", err)
 	}
@@ -469,20 +478,25 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	}
 
 	if _, isFullSession := metadata[sessiontypes.MetadataKeyTokenHash]; isFullSession {
-		// Phase 2 (full MultiSession): delete from storage. The node-local
-		// cache self-heals on the next Get: checkSession detects ErrSessionNotFound,
-		// evicts the entry, and onEvict closes backend connections.
+		// Phase 2 (full MultiSession): delete from storage, then evict from the
+		// node-local cache so onEvict closes backend connections immediately rather
+		// than waiting for the next Get or an LRU eviction.
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
+		sm.sessions.Remove(sessionID)
 		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 		return false, nil
 	}
 
 	// Phase 1 (placeholder): mark terminated so CreateSession fast-fails and
 	// Validate returns isTerminated=true during the TTL window.
+	// Use Update (SET XX) rather than Upsert so we never resurrect a key that
+	// was concurrently deleted or expired between the Load above and this write.
+	// (false, nil) means already gone — treat as success.
 	metadata[MetadataKeyTerminated] = MetadataValTrue
-	if storeErr := sm.storage.Upsert(ctx, sessionID, metadata); storeErr != nil {
+	updated, storeErr := sm.storage.Update(ctx, sessionID, metadata)
+	if storeErr != nil {
 		slog.Warn("Manager.Terminate: failed to persist terminated flag for placeholder; attempting delete fallback",
 			"session_id", sessionID, "error", storeErr)
 		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), terminateTimeout)
@@ -493,6 +507,9 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 				storeErr, deleteErr)
 		}
 		deleteCancel()
+	} else if !updated {
+		// Session expired or was concurrently deleted between Load and Update — already gone.
+		slog.Debug("Manager.Terminate: placeholder already gone before terminated flag could be set", "session_id", sessionID)
 	}
 
 	slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
@@ -714,14 +731,10 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 		return fmt.Errorf("DecorateSession: decorator changed session ID from %q to %q", sessionID, decorated.ID())
 	}
 
-	// Store the decorated session in the node-local cache.
-	// If storage.Update below fails or returns (false, nil) because Terminate
-	// deleted the storage key, the decorated entry remains in cache briefly;
-	// the next Gets checkSession detects the absent key, evicts the entry,
-	// and onEvict closes connections.
-	sm.sessions.Set(sessionID, decorated)
-
-	// Persist metadata to storage via conditional Update (SET XX).
+	// Persist metadata to storage first via conditional Update (SET XX).
+	// Only update the node-local cache after a successful write so that a
+	// storage error or a concurrent delete never leaves a decorated (but
+	// unpersisted) value in the cache where retries could stack decorations.
 	decorateCtx, decorateCancel := context.WithTimeout(context.Background(), decorateTimeout)
 	defer decorateCancel()
 	updated, err := sm.storage.Update(decorateCtx, sessionID, decorated.GetMetadata())
@@ -729,8 +742,12 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 		return fmt.Errorf("DecorateSession: failed to store decorated session metadata: %w", err)
 	}
 	if !updated {
+		// Session was deleted (by Terminate or TTL) between Get and Update.
+		// Evict the stale cache entry so onEvict closes backend connections.
+		sm.sessions.Remove(sessionID)
 		return fmt.Errorf("DecorateSession: session %q was deleted during decoration", sessionID)
 	}
+	sm.sessions.Set(sessionID, decorated)
 	return nil
 }
 

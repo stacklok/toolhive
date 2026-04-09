@@ -577,8 +577,8 @@ func TestSessionManager_Terminate(t *testing.T) {
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 				createdSess = newMockSession(t, ctrl, id, tools)
-				// Close() is called lazily by onEvict when checkSession evicts
-				// the terminated session on the next GetMultiSession call.
+				// Close() is called eagerly by onEvict when Terminate removes
+				// the entry from the node-local cache after storage.Delete.
 				createdSess.EXPECT().Close().Return(nil).Times(1)
 				return createdSess, nil
 			}).Times(1)
@@ -594,14 +594,10 @@ func TestSessionManager_Terminate(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, createdSess)
 
-		// Terminate marks the session terminated in storage (lazy eviction).
+		// Terminate deletes from storage and removes from cache; onEvict fires Close().
 		isNotAllowed, err := sm.Terminate(sessionID)
 		require.NoError(t, err)
 		assert.False(t, isNotAllowed)
-
-		// Trigger the lazy eviction: GetMultiSession calls checkSession, which
-		// detects the terminated flag and evicts the entry, calling Close().
-		_, _ = sm.GetMultiSession(sessionID)
 		// gomock verifies Close() was called exactly once via Times(1)
 	})
 
@@ -614,7 +610,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 				sess := newMockSession(t, ctrl, id, nil)
-				// Close is called lazily by onEvict, not by Terminate directly.
+				// Close is called by onEvict when Terminate removes the cache entry.
 				sess.EXPECT().Close().Return(nil).AnyTimes()
 				return sess, nil
 			}).Times(1)

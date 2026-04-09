@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package config provides management for the registry server configuration
+// Package config provides constants and helpers for registry server config file management.
 package config
 
 const (

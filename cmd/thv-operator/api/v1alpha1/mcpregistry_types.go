@@ -18,7 +18,14 @@ type MCPRegistrySpec struct {
 	// ConfigYAML is the complete registry server config.yaml content.
 	// The operator creates a ConfigMap from this string and mounts it
 	// at /config/config.yaml in the registry-api container.
-	// The operator does NOT parse, validate, or transform this content.
+	// The operator does NOT parse, validate, or transform this content —
+	// configuration validation is the registry server's responsibility.
+	//
+	// Security note: this content is stored in a ConfigMap, not a Secret.
+	// Do not inline credentials (passwords, tokens, client secrets) in this
+	// field. Instead, reference credentials via file paths and mount the
+	// actual secrets using the Volumes and VolumeMounts fields. For database
+	// passwords, use PGPassSecretRef.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1

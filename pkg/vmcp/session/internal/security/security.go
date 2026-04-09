@@ -202,16 +202,18 @@ func (d hijackPreventionDecorator) GetPrompt(
 // reconstructing a MultiSession after a pod restart or cross-pod failover where the
 // original bearer token is no longer available but the stored hash and salt are.
 //
-// If storedHash is empty the session is treated as anonymous (allowAnonymous=true).
+// If tokenHash is empty the session is treated as anonymous (allowAnonymous=true).
 // The hmacSecret must be the same server-managed secret used at creation time.
 func RestoreHijackPrevention(
 	session sessiontypes.MultiSession,
+	tokenHash string,
+	tokenSaltHex string,
 	hmacSecret []byte,
-	storedHash, storedSaltHex string,
 ) (sessiontypes.MultiSession, error) {
 	if session == nil {
 		return nil, fmt.Errorf("session must not be nil")
 	}
+
 	// Both fields must be either both present or both absent. Any other
 	// combination indicates corrupted or incomplete metadata and must be
 	// rejected to fail closed:
@@ -219,31 +221,31 @@ func RestoreHijackPrevention(
 	//     producing a silently broken (always-rejecting) decorator.
 	//   - hash absent, salt present: session would be treated as anonymous,
 	//     silently downgrading a bound session and bypassing token validation.
-	if storedHash != "" && storedSaltHex == "" {
+	if tokenHash != "" && tokenSaltHex == "" {
 		return nil, fmt.Errorf("RestoreHijackPrevention: stored token hash is present but salt is missing " +
 			"(incomplete session metadata)")
 	}
-	if storedHash == "" && storedSaltHex != "" {
+	if tokenHash == "" && tokenSaltHex != "" {
 		return nil, fmt.Errorf("RestoreHijackPrevention: stored token salt is present but hash is missing " +
 			"(incomplete session metadata)")
 	}
 
+	allowAnonymous := tokenHash == ""
+
 	var tokenSalt []byte
-	if storedSaltHex != "" {
+	if tokenSaltHex != "" {
 		var decErr error
-		tokenSalt, decErr = hex.DecodeString(storedSaltHex)
+		tokenSalt, decErr = hex.DecodeString(tokenSaltHex)
 		if decErr != nil {
 			return nil, fmt.Errorf("failed to decode stored token salt: %w", decErr)
 		}
 	}
 
-	allowAnonymous := storedHash == ""
-
-	var hmacSecretCopy []byte
+	// Make defensive copies to prevent external mutation after construction.
+	var hmacSecretCopy, tokenSaltCopy []byte
 	if len(hmacSecret) > 0 {
 		hmacSecretCopy = append([]byte(nil), hmacSecret...)
 	}
-	var tokenSaltCopy []byte
 	if len(tokenSalt) > 0 {
 		tokenSaltCopy = append([]byte(nil), tokenSalt...)
 	}
@@ -252,7 +254,7 @@ func RestoreHijackPrevention(
 		MultiSession:   session,
 		allowAnonymous: allowAnonymous,
 		hmacSecret:     hmacSecretCopy,
-		boundTokenHash: storedHash,
+		boundTokenHash: tokenHash,
 		tokenSalt:      tokenSaltCopy,
 	}, nil
 }

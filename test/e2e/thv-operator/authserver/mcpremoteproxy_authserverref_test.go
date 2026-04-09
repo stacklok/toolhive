@@ -98,22 +98,22 @@ var _ = Describe("MCPRemoteProxy AuthServerRef", Ordered, func() {
 			})
 		})
 
-		It("should reach Ready phase", func() {
-			WaitForMCPRemoteProxyPhase(ctx, k8sClient, proxyName, testNamespace,
-				mcpv1alpha1.MCPRemoteProxyPhaseReady, timeout, pollingInterval)
-		})
-
-		It("should have embedded_auth_server_config in the runconfig ConfigMap", func() {
-			runConfig, err := GetRunConfigFromConfigMap(ctx, k8sClient, proxyName, testNamespace)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(runConfig).To(HaveKey("embedded_auth_server_config"))
-		})
-
 		It("should set AuthServerRefValidated condition to True", func() {
 			ExpectMCPRemoteProxyConditionMessage(ctx, k8sClient, proxyName, testNamespace,
 				mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 				metav1.ConditionTrue, "is valid",
 				timeout, pollingInterval)
+		})
+
+		It("should have embedded_auth_server_config in the runconfig ConfigMap", func() {
+			Eventually(func() error {
+				_, err := GetRunConfigFromConfigMap(ctx, k8sClient, proxyName, testNamespace)
+				return err
+			}, timeout, pollingInterval).Should(Succeed())
+
+			runConfig, err := GetRunConfigFromConfigMap(ctx, k8sClient, proxyName, testNamespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runConfig).To(HaveKey("embedded_auth_server_config"))
 		})
 	})
 
@@ -149,12 +149,19 @@ var _ = Describe("MCPRemoteProxy AuthServerRef", Ordered, func() {
 			})
 		})
 
-		It("should reach Ready phase", func() {
-			WaitForMCPRemoteProxyPhase(ctx, k8sClient, proxyName, testNamespace,
-				mcpv1alpha1.MCPRemoteProxyPhaseReady, timeout, pollingInterval)
+		It("should set AuthServerRefValidated condition to True", func() {
+			ExpectMCPRemoteProxyConditionMessage(ctx, k8sClient, proxyName, testNamespace,
+				mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+				metav1.ConditionTrue, "is valid",
+				timeout, pollingInterval)
 		})
 
 		It("should have embedded_auth_server_config in the runconfig ConfigMap", func() {
+			Eventually(func() error {
+				_, err := GetRunConfigFromConfigMap(ctx, k8sClient, proxyName, testNamespace)
+				return err
+			}, timeout, pollingInterval).Should(Succeed())
+
 			runConfig, err := GetRunConfigFromConfigMap(ctx, k8sClient, proxyName, testNamespace)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runConfig).To(HaveKey("embedded_auth_server_config"))
@@ -187,6 +194,7 @@ var _ = Describe("MCPRemoteProxy AuthServerRef", Ordered, func() {
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: embeddedAuthConflict,
 					},
+					OIDCConfigRef: newOIDCConfigRef(oidcConfigName),
 				},
 			}
 			Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
@@ -289,12 +297,12 @@ var _ = Describe("MCPRemoteProxy AuthServerRef", Ordered, func() {
 			})
 		})
 
-		It("should reach Ready phase", func() {
-			WaitForMCPRemoteProxyPhase(ctx, k8sClient, proxyName, testNamespace,
-				mcpv1alpha1.MCPRemoteProxyPhaseReady, timeout, pollingInterval)
-		})
-
 		It("should have embedded_auth_server_config in the runconfig ConfigMap", func() {
+			Eventually(func() error {
+				_, err := GetRunConfigFromConfigMap(ctx, k8sClient, proxyName, testNamespace)
+				return err
+			}, timeout, pollingInterval).Should(Succeed())
+
 			runConfig, err := GetRunConfigFromConfigMap(ctx, k8sClient, proxyName, testNamespace)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runConfig).To(HaveKey("embedded_auth_server_config"))

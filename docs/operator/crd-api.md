@@ -744,6 +744,8 @@ _Appears in:_
 - [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
 - [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
 - [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
+- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
+- [api.v1alpha1.MCPServerEntryList](#apiv1alpha1mcpserverentrylist)
 - [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
 - [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
 - [api.v1alpha1.MCPTelemetryConfigList](#apiv1alpha1mcptelemetryconfiglist)
@@ -916,6 +918,7 @@ _Appears in:_
 - [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
+- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 - [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
 
 | Field | Description | Default | Validation |
@@ -1179,6 +1182,7 @@ The referenced MCPExternalAuthConfig must be in the same namespace as the MCPSer
 _Appears in:_
 - [api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig)
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
+- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -1259,6 +1263,7 @@ HeaderForwardConfig defines header forward configuration for remote servers.
 
 _Appears in:_
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
+- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

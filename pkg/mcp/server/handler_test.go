@@ -311,7 +311,7 @@ func TestBuildServerConfig(t *testing.T) {
 			expectError: false, // Actually succeeds and tests the type assertion line
 		},
 		{
-			name:     "registry source URLs are recorded on config",
+			name:     "registry source URLs and server name are recorded on config",
 			imageURL: "test/image:latest",
 			imageMetadata: &regtypes.ImageMetadata{
 				BaseServerMetadata: regtypes.BaseServerMetadata{
@@ -321,12 +321,14 @@ func TestBuildServerConfig(t *testing.T) {
 			},
 			extraOpts: []runner.RunConfigBuilderOption{
 				runner.WithRegistrySourceURLs("https://api.example.com", "https://registry.example.com"),
+				runner.WithRegistryServerName("fetch"),
 			},
 			expectError: false,
 			checkConfig: func(t *testing.T, rc *runner.RunConfig) {
 				t.Helper()
 				assert.Equal(t, "https://api.example.com", rc.RegistryAPIURL)
 				assert.Equal(t, "https://registry.example.com", rc.RegistryURL)
+				assert.Equal(t, "fetch", rc.RegistryServerName)
 			},
 		},
 	}

@@ -104,7 +104,6 @@ rules:
   - mcpoidcconfigs
   - mcpregistries
   - mcpremoteproxies
-  - mcpserverentries
   - mcpservers
   - mcptoolconfigs
   - virtualmcpservers
@@ -150,18 +149,19 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - mcpserverentries
+  - virtualmcpcompositetooldefinitions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
   - mcptelemetryconfigs
   verbs:
   - get
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - virtualmcpcompositetooldefinitions
-  verbs:
-  - get
-  - list
   - watch

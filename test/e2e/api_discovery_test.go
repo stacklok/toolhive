@@ -311,6 +311,8 @@ var _ = Describe("Discovery API", Label("api", "api-misc", "discovery", "e2e"), 
 						"Client at index %d missing 'installed'", i)
 					Expect(clientObj).To(HaveKey("registered"),
 						"Client at index %d missing 'registered'", i)
+					Expect(clientObj).To(HaveKey("supports_skills"),
+						"Client at index %d missing 'supports_skills'", i)
 
 					// Verify types
 					Expect(clientObj["client_type"]).To(BeAssignableToTypeOf(""),
@@ -319,6 +321,8 @@ var _ = Describe("Discovery API", Label("api", "api-misc", "discovery", "e2e"), 
 						"installed should be boolean")
 					Expect(clientObj["registered"]).To(BeAssignableToTypeOf(false),
 						"registered should be boolean")
+					Expect(clientObj["supports_skills"]).To(BeAssignableToTypeOf(false),
+						"supports_skills should be boolean")
 				}
 			})
 		})

@@ -25,6 +25,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -572,4 +574,259 @@ func TestServiceNeedsUpdate(t *testing.T) {
 		},
 	}
 	assert.True(t, r.serviceNeedsUpdate(service, vmcp))
+}
+
+// TestCABundleMountPath tests the CA bundle mount path generation helper
+func TestCABundleMountPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		entryName    string
+		caBundleRef  *mcpv1alpha1.CABundleSource
+		expectedPath string
+	}{
+		{
+			name:      "default key (no key specified)",
+			entryName: "my-entry",
+			caBundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "ca-configmap"},
+				},
+			},
+			expectedPath: "/etc/toolhive/ca-bundles/my-entry/ca.crt",
+		},
+		{
+			name:      "custom key specified",
+			entryName: "my-entry",
+			caBundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "ca-configmap"},
+					Key:                  "custom-ca.pem",
+				},
+			},
+			expectedPath: "/etc/toolhive/ca-bundles/my-entry/custom-ca.pem",
+		},
+		{
+			name:      "nil configMapRef uses default key",
+			entryName: "another-entry",
+			caBundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: nil,
+			},
+			expectedPath: "/etc/toolhive/ca-bundles/another-entry/ca.crt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := caBundleMountPath(tt.entryName, tt.caBundleRef)
+			assert.Equal(t, tt.expectedPath, result)
+		})
+	}
+}
+
+// TestCABundleVolumeName tests the CA bundle volume name generation helper
+func TestCABundleVolumeName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		entryName    string
+		expectedName string
+	}{
+		{
+			name:         "simple entry name",
+			entryName:    "my-entry",
+			expectedName: "ca-bundle-my-entry",
+		},
+		{
+			name:         "entry with dashes",
+			entryName:    "some-long-entry-name",
+			expectedName: "ca-bundle-some-long-entry-name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := caBundleVolumeName(tt.entryName)
+			assert.Equal(t, tt.expectedName, result)
+		})
+	}
+}
+
+// TestBuildCABundleVolumesForEntries tests volume and mount generation for MCPServerEntry CA bundles
+func TestBuildCABundleVolumesForEntries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		entries         []mcpv1alpha1.MCPServerEntry
+		workloads       []workloads.TypedWorkload
+		expectedVolumes int
+		expectedMounts  int
+		validateVolumes func(t *testing.T, volumes []corev1.Volume, mounts []corev1.VolumeMount)
+	}{
+		{
+			name:    "no MCPServerEntry workloads yields no volumes",
+			entries: nil,
+			workloads: []workloads.TypedWorkload{
+				{Name: "server1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			expectedVolumes: 0,
+			expectedMounts:  0,
+		},
+		{
+			name: "entry without caBundleRef yields no volumes",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-no-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-no-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 0,
+			expectedMounts:  0,
+		},
+		{
+			name: "entry with caBundleRef produces volume and mount",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-configmap"},
+								Key:                  "ca.crt",
+							},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-with-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 1,
+			expectedMounts:  1,
+			validateVolumes: func(t *testing.T, volumes []corev1.Volume, mounts []corev1.VolumeMount) {
+				t.Helper()
+				assert.Equal(t, "ca-bundle-entry-with-ca", volumes[0].Name)
+				require.NotNil(t, volumes[0].ConfigMap)
+				assert.Equal(t, "my-ca-configmap", volumes[0].ConfigMap.Name)
+				require.Len(t, volumes[0].ConfigMap.Items, 1)
+				assert.Equal(t, "ca.crt", volumes[0].ConfigMap.Items[0].Key)
+
+				assert.Equal(t, "ca-bundle-entry-with-ca", mounts[0].Name)
+				assert.Equal(t, "/etc/toolhive/ca-bundles/entry-with-ca", mounts[0].MountPath)
+				assert.True(t, mounts[0].ReadOnly)
+			},
+		},
+		{
+			name: "entry with custom key in caBundleRef",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "custom-key-entry", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "custom-ca"},
+								Key:                  "custom-cert.pem",
+							},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "custom-key-entry", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 1,
+			expectedMounts:  1,
+			validateVolumes: func(t *testing.T, volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				t.Helper()
+				require.Len(t, volumes[0].ConfigMap.Items, 1)
+				assert.Equal(t, "custom-cert.pem", volumes[0].ConfigMap.Items[0].Key)
+				assert.Equal(t, "custom-cert.pem", volumes[0].ConfigMap.Items[0].Path)
+			},
+		},
+		{
+			name: "mixed workload types only produces volumes for entries with CA bundles",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-without-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp2.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "server1", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "entry-with-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+				{Name: "entry-without-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 1,
+			expectedMounts:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			objs := make([]client.Object, 0, len(tt.entries))
+			for i := range tt.entries {
+				objs = append(objs, &tt.entries[i])
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			volumes, mounts := r.buildCABundleVolumesForEntries(t.Context(), "default", tt.workloads)
+
+			assert.Len(t, volumes, tt.expectedVolumes)
+			assert.Len(t, mounts, tt.expectedMounts)
+
+			if tt.validateVolumes != nil {
+				tt.validateVolumes(t, volumes, mounts)
+			}
+		})
+	}
 }

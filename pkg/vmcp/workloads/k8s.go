@@ -23,6 +23,16 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
+const (
+	metadataToolTypeMCP     = "mcp"
+	transportTypeUnknown    = "unknown"
+	metadataKeyToolType     = "tool_type"
+	metadataKeyWorkloadType = "workload_type"
+	metadataKeyWorkloadStat = "workload_status"
+	metadataKeyNamespace    = "namespace"
+	metadataKeyRemoteURL    = "remote_url"
+)
+
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
 // It uses the Kubernetes client directly to query MCPServer CRDs instead of going through k8s.BackendWatcher.
 type k8sDiscoverer struct {
@@ -110,6 +120,22 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 		}
 	}
 
+	// List MCPServerEntries in the group
+	mcpServerEntryList := &mcpv1alpha1.MCPServerEntryList{}
+	if err := d.k8sClient.List(ctx, mcpServerEntryList, listOpts...); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
+	for i := range mcpServerEntryList.Items {
+		mcpServerEntry := &mcpServerEntryList.Items[i]
+		if mcpServerEntry.Spec.GroupRef == groupName {
+			groupWorkloads = append(groupWorkloads, TypedWorkload{
+				Name: mcpServerEntry.Name,
+				Type: WorkloadTypeMCPServerEntry,
+			})
+		}
+	}
+
 	return groupWorkloads, nil
 }
 
@@ -119,6 +145,8 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workload T
 	switch workload.Type {
 	case WorkloadTypeMCPRemoteProxy:
 		return d.getMCPRemoteProxyAsBackend(ctx, workload.Name)
+	case WorkloadTypeMCPServerEntry:
+		return d.getMCPServerEntryAsBackend(ctx, workload.Name)
 	case WorkloadTypeMCPServer:
 		return d.getMCPServerAsBackend(ctx, workload.Name)
 	default:
@@ -220,7 +248,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 		// Fallback to TransportType if ProxyMode is not set (for direct transports)
 		transportTypeStr = transportType.String()
 		if transportTypeStr == "" {
-			transportTypeStr = "unknown"
+			transportTypeStr = transportTypeUnknown
 		}
 	}
 
@@ -248,11 +276,11 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	maps.Copy(backend.Metadata, userLabels)
 
 	// Set system metadata (these override user labels to prevent conflicts)
-	backend.Metadata["tool_type"] = "mcp"
-	backend.Metadata["workload_type"] = "mcp_server"
-	backend.Metadata["workload_status"] = string(mcpServer.Status.Phase)
+	backend.Metadata[metadataKeyToolType] = metadataToolTypeMCP
+	backend.Metadata[metadataKeyWorkloadType] = "mcp_server"
+	backend.Metadata[metadataKeyWorkloadStat] = string(mcpServer.Status.Phase)
 	if mcpServer.Namespace != "" {
-		backend.Metadata["namespace"] = mcpServer.Namespace
+		backend.Metadata[metadataKeyNamespace] = mcpServer.Namespace
 	}
 
 	// Discover and populate authentication configuration from MCPServer
@@ -388,7 +416,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	// Transport type string
 	transportTypeStr := transportType.String()
 	if transportTypeStr == "" {
-		transportTypeStr = "unknown"
+		transportTypeStr = transportTypeUnknown
 	}
 
 	// Extract user labels from annotations
@@ -411,17 +439,15 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	}
 
 	// Copy user labels to metadata first
-	for k, v := range userLabels {
-		backend.Metadata[k] = v
-	}
+	maps.Copy(backend.Metadata, userLabels)
 
 	// Set system metadata (these override user labels to prevent conflicts)
-	backend.Metadata["tool_type"] = "mcp"
-	backend.Metadata["workload_type"] = "remote_proxy"
-	backend.Metadata["workload_status"] = string(proxy.Status.Phase)
-	backend.Metadata["remote_url"] = proxy.Spec.RemoteURL
+	backend.Metadata[metadataKeyToolType] = metadataToolTypeMCP
+	backend.Metadata[metadataKeyWorkloadType] = "remote_proxy"
+	backend.Metadata[metadataKeyWorkloadStat] = string(proxy.Status.Phase)
+	backend.Metadata[metadataKeyRemoteURL] = proxy.Spec.RemoteURL
 	if proxy.Namespace != "" {
-		backend.Metadata["namespace"] = proxy.Namespace
+		backend.Metadata[metadataKeyNamespace] = proxy.Namespace
 	}
 
 	// Discover and populate authentication configuration from MCPRemoteProxy
@@ -432,6 +458,129 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	}
 
 	return backend
+}
+
+// getMCPServerEntryAsBackend retrieves an MCPServerEntry and converts it to a vmcp.Backend.
+// MCPServerEntry is a zero-infrastructure catalog entry that directly points to a remote URL.
+func (d *k8sDiscoverer) getMCPServerEntryAsBackend(ctx context.Context, entryName string) (*vmcp.Backend, error) {
+	mcpServerEntry := &mcpv1alpha1.MCPServerEntry{}
+	key := client.ObjectKey{Name: entryName, Namespace: d.namespace}
+	if err := d.k8sClient.Get(ctx, key, mcpServerEntry); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, fmt.Errorf("MCPServerEntry %s not found", entryName)
+		}
+		return nil, fmt.Errorf("failed to get MCPServerEntry: %w", err)
+	}
+
+	backend := d.mcpServerEntryToBackend(ctx, mcpServerEntry)
+	if backend == nil {
+		slog.Warn("skipping server entry due to conversion failure", "entry", entryName)
+		return nil, nil
+	}
+
+	if backend.BaseURL == "" {
+		slog.Debug("skipping server entry without URL", "entry", entryName)
+		return nil, nil
+	}
+
+	return backend, nil
+}
+
+// mcpServerEntryToBackend converts an MCPServerEntry CRD to a vmcp.Backend.
+// Unlike MCPServer and MCPRemoteProxy, MCPServerEntry uses the remote URL directly
+// from the spec (no K8s Service needed since it's a zero-infrastructure entry).
+func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv1alpha1.MCPServerEntry) *vmcp.Backend {
+	transportType, err := transporttypes.ParseTransportType(entry.Spec.Transport)
+	if err != nil {
+		slog.Warn("failed to parse transport type for MCPServerEntry",
+			"transport", entry.Spec.Transport,
+			"entry", entry.Name,
+			"error", err)
+		transportType = transporttypes.TransportTypeStreamableHTTP
+	}
+
+	// MCPServerEntry uses the remote URL directly from the spec, not from status.
+	// This is the key difference from MCPServer/MCPRemoteProxy which use status.URL
+	// (set after K8s Service creation).
+	url := entry.Spec.RemoteURL
+
+	// Map entry phase to backend health status
+	healthStatus := mapMCPServerEntryPhaseToHealth(entry.Status.Phase)
+
+	transportTypeStr := transportType.String()
+	if transportTypeStr == "" {
+		transportTypeStr = transportTypeUnknown
+	}
+
+	// Extract user labels from annotations
+	userLabels := make(map[string]string)
+	if entry.Annotations != nil {
+		for key, value := range entry.Annotations {
+			if !isStandardK8sAnnotation(key) {
+				userLabels[key] = value
+			}
+		}
+	}
+
+	backend := &vmcp.Backend{
+		ID:            entry.Name,
+		Name:          entry.Name,
+		BaseURL:       url,
+		TransportType: transportTypeStr,
+		HealthStatus:  healthStatus,
+		Metadata:      make(map[string]string),
+	}
+
+	// Copy user labels to metadata first
+	maps.Copy(backend.Metadata, userLabels)
+
+	// Set system metadata (these override user labels to prevent conflicts)
+	backend.Metadata[metadataKeyToolType] = metadataToolTypeMCP
+	backend.Metadata[metadataKeyWorkloadType] = "server_entry"
+	backend.Metadata[metadataKeyWorkloadStat] = string(entry.Status.Phase)
+	backend.Metadata[metadataKeyRemoteURL] = entry.Spec.RemoteURL
+	if entry.Namespace != "" {
+		backend.Metadata[metadataKeyNamespace] = entry.Namespace
+	}
+
+	// Discover and populate authentication configuration from MCPServerEntry
+	if err := d.discoverServerEntryAuthConfig(ctx, entry, backend); err != nil {
+		slog.Error("failed to discover auth config for MCPServerEntry", "entry", entry.Name, "error", err)
+		return nil
+	}
+
+	return backend
+}
+
+// mapMCPServerEntryPhaseToHealth converts a MCPServerEntryPhase to a backend health status.
+func mapMCPServerEntryPhaseToHealth(phase mcpv1alpha1.MCPServerEntryPhase) vmcp.BackendHealthStatus {
+	switch phase {
+	case mcpv1alpha1.MCPServerEntryPhaseValid:
+		return vmcp.BackendHealthy
+	case mcpv1alpha1.MCPServerEntryPhaseFailed:
+		return vmcp.BackendUnhealthy
+	case mcpv1alpha1.MCPServerEntryPhasePending:
+		return vmcp.BackendUnknown
+	default:
+		return vmcp.BackendUnknown
+	}
+}
+
+// discoverServerEntryAuthConfig discovers and populates authentication configuration
+// from the MCPServerEntry's ExternalAuthConfigRef.
+func (d *k8sDiscoverer) discoverServerEntryAuthConfig(
+	ctx context.Context,
+	entry *mcpv1alpha1.MCPServerEntry,
+	backend *vmcp.Backend,
+) error {
+	return d.discoverAuthConfigFromRef(
+		ctx,
+		entry.Spec.ExternalAuthConfigRef,
+		entry.Namespace,
+		entry.Name,
+		"MCPServerEntry",
+		backend,
+	)
 }
 
 // discoverRemoteProxyAuthConfig discovers and populates authentication configuration

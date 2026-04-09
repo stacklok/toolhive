@@ -98,8 +98,11 @@ var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
-		Verbs:     []string{"get", "list", "watch"},
+		Resources: []string{
+			"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpserverentries",
+			"mcpexternalauthconfigs", "mcptoolconfigs",
+		},
+		Verbs: []string{"get", "list", "watch"},
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
@@ -134,6 +137,11 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		log.FromContext(ctx).Error(err, "Failed to build env vars for VirtualMCPServer")
 		return nil
 	}
+
+	// Add CA bundle volumes for MCPServerEntry backends with caBundleRef
+	caVolumes, caMounts := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	volumes = append(volumes, caVolumes...)
+	volumeMounts = append(volumeMounts, caMounts...)
 
 	// Add embedded auth server volumes and env vars if configured (inline config)
 	if vmcp.Spec.AuthServerConfig != nil {
@@ -494,10 +502,16 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 		return envVars
 	}
 
-	// Discover ExternalAuthConfigs from workloads (MCPServers and MCPRemoteProxies)
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServerEntries")
+		return envVars
+	}
+
+	// Discover ExternalAuthConfigs from workloads (MCPServers, MCPRemoteProxies, and MCPServerEntries)
 	for _, workloadInfo := range typedWorkloads {
 		configName := r.getExternalAuthConfigNameFromWorkload(
-			workloadInfo, mcpServerMap, mcpRemoteProxyMap)
+			workloadInfo, mcpServerMap, mcpRemoteProxyMap, mcpServerEntryMap)
 		if configName == "" {
 			continue
 		}
@@ -956,4 +970,102 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 		"namespace", vmcp.Namespace)
 
 	return nil
+}
+
+const (
+	// caBundleBasePath is the base path where CA bundle ConfigMaps are mounted in the vMCP pod.
+	caBundleBasePath = "/etc/toolhive/ca-bundles"
+)
+
+// caBundleMountPath returns the mount path for a CA bundle ConfigMap for a given entry name.
+// The key defaults to "ca.crt" if not specified in the CABundleSource.
+func caBundleMountPath(entryName string, caBundleRef *mcpv1alpha1.CABundleSource) string {
+	key := "ca.crt"
+	if caBundleRef.ConfigMapRef != nil && caBundleRef.ConfigMapRef.Key != "" {
+		key = caBundleRef.ConfigMapRef.Key
+	}
+	return fmt.Sprintf("%s/%s/%s", caBundleBasePath, entryName, key)
+}
+
+// caBundleVolumeName returns a deterministic volume name for a CA bundle.
+// Kubernetes volume names are limited to 63 characters. The "ca-bundle-" prefix
+// (10 chars) leaves 53 chars for the entry name, which is sufficient for typical
+// names. Long names are truncated to fit the limit.
+func caBundleVolumeName(entryName string) string {
+	name := fmt.Sprintf("ca-bundle-%s", entryName)
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return name
+}
+
+// buildCABundleVolumesForEntries builds volumes and volume mounts for MCPServerEntry CA bundles.
+func (r *VirtualMCPServerReconciler) buildCABundleVolumesForEntries(
+	ctx context.Context,
+	namespace string,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.Volume, []corev1.VolumeMount) {
+	var volumes []corev1.Volume
+	var mounts []corev1.VolumeMount
+
+	// Early return if no MCPServerEntry workloads to avoid unnecessary API calls
+	hasEntries := false
+	for _, workload := range typedWorkloads {
+		if workload.Type == workloads.WorkloadTypeMCPServerEntry {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return volumes, mounts
+	}
+
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServerEntries for CA bundle volumes")
+		return volumes, mounts
+	}
+
+	for _, workload := range typedWorkloads {
+		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
+			continue
+		}
+		entry, found := mcpServerEntryMap[workload.Name]
+		if !found || entry.Spec.CABundleRef == nil || entry.Spec.CABundleRef.ConfigMapRef == nil {
+			continue
+		}
+
+		volName := caBundleVolumeName(workload.Name)
+		mountPath := fmt.Sprintf("%s/%s", caBundleBasePath, workload.Name)
+
+		key := "ca.crt"
+		if entry.Spec.CABundleRef.ConfigMapRef.Key != "" {
+			key = entry.Spec.CABundleRef.ConfigMapRef.Key
+		}
+
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: entry.Spec.CABundleRef.ConfigMapRef.Name,
+					},
+					Items: []corev1.KeyToPath{
+						{
+							Key:  key,
+							Path: key,
+						},
+					},
+				},
+			},
+		})
+
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: mountPath,
+			ReadOnly:  true,
+		})
+	}
+
+	return volumes, mounts
 }

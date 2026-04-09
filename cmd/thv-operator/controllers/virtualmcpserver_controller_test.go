@@ -272,6 +272,7 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	assert.Contains(t, toolhiveRule.Resources, "mcpgroups", "Role should allow listing mcpgroups")
 	assert.Contains(t, toolhiveRule.Resources, "mcpservers", "Role should allow listing mcpservers")
 	assert.Contains(t, toolhiveRule.Resources, "mcpremoteproxies", "Role should allow listing mcpremoteproxies")
+	assert.Contains(t, toolhiveRule.Resources, "mcpserverentries", "Role should allow listing mcpserverentries")
 	assert.Contains(t, toolhiveRule.Resources, "mcpexternalauthconfigs", "Role should allow listing mcpexternalauthconfigs")
 
 	// Verify RoleBinding was created
@@ -3316,4 +3317,151 @@ func mustBuildEnvVarsForVmcp(r *VirtualMCPServerReconciler, vmcp *mcpv1alpha1.Vi
 		panic("mustBuildEnvVarsForVmcp: " + err.Error())
 	}
 	return env
+}
+
+// TestGetExternalAuthConfigNameFromWorkload tests auth config ref extraction from all workload types
+func TestGetExternalAuthConfigNameFromWorkload(t *testing.T) {
+	t.Parallel()
+
+	mcpServerMap := map[string]*mcpv1alpha1.MCPServer{
+		"server-with-auth": {
+			Spec: mcpv1alpha1.MCPServerSpec{
+				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					Name: "server-auth-config",
+				},
+			},
+		},
+		"server-no-auth": {
+			Spec: mcpv1alpha1.MCPServerSpec{},
+		},
+	}
+
+	mcpRemoteProxyMap := map[string]*mcpv1alpha1.MCPRemoteProxy{
+		"proxy-with-auth": {
+			Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					Name: "proxy-auth-config",
+				},
+			},
+		},
+	}
+
+	mcpServerEntryMap := map[string]*mcpv1alpha1.MCPServerEntry{
+		"entry-with-auth": {
+			Spec: mcpv1alpha1.MCPServerEntrySpec{
+				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					Name: "entry-auth-config",
+				},
+			},
+		},
+		"entry-no-auth": {
+			Spec: mcpv1alpha1.MCPServerEntrySpec{},
+		},
+	}
+
+	tests := []struct {
+		name         string
+		workload     workloads.TypedWorkload
+		expectedName string
+	}{
+		{
+			name: "MCPServer with auth config ref",
+			workload: workloads.TypedWorkload{
+				Name: "server-with-auth",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+			expectedName: "server-auth-config",
+		},
+		{
+			name: "MCPServer without auth config ref",
+			workload: workloads.TypedWorkload{
+				Name: "server-no-auth",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+			expectedName: "",
+		},
+		{
+			name: "MCPServer not found in map",
+			workload: workloads.TypedWorkload{
+				Name: "non-existent",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+			expectedName: "",
+		},
+		{
+			name: "MCPRemoteProxy with auth config ref",
+			workload: workloads.TypedWorkload{
+				Name: "proxy-with-auth",
+				Type: workloads.WorkloadTypeMCPRemoteProxy,
+			},
+			expectedName: "proxy-auth-config",
+		},
+		{
+			name: "MCPServerEntry with auth config ref",
+			workload: workloads.TypedWorkload{
+				Name: "entry-with-auth",
+				Type: workloads.WorkloadTypeMCPServerEntry,
+			},
+			expectedName: "entry-auth-config",
+		},
+		{
+			name: "MCPServerEntry without auth config ref",
+			workload: workloads.TypedWorkload{
+				Name: "entry-no-auth",
+				Type: workloads.WorkloadTypeMCPServerEntry,
+			},
+			expectedName: "",
+		},
+		{
+			name: "MCPServerEntry not found in map",
+			workload: workloads.TypedWorkload{
+				Name: "non-existent-entry",
+				Type: workloads.WorkloadTypeMCPServerEntry,
+			},
+			expectedName: "",
+		},
+		{
+			name: "unknown workload type",
+			workload: workloads.TypedWorkload{
+				Name: "unknown",
+				Type: workloads.WorkloadType("UnknownType"),
+			},
+			expectedName: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &VirtualMCPServerReconciler{}
+			result := r.getExternalAuthConfigNameFromWorkload(
+				tt.workload,
+				mcpServerMap,
+				mcpRemoteProxyMap,
+				mcpServerEntryMap,
+			)
+			assert.Equal(t, tt.expectedName, result)
+		})
+	}
+}
+
+// TestDiscoveredRBACRulesIncludeMCPServerEntries verifies that the RBAC rules
+// for discovered mode include mcpserverentries as an allowed resource
+func TestDiscoveredRBACRulesIncludeMCPServerEntries(t *testing.T) {
+	t.Parallel()
+
+	foundMCPServerEntries := false
+	for _, rule := range vmcpDiscoveredRBACRules {
+		for _, apiGroup := range rule.APIGroups {
+			if apiGroup == "toolhive.stacklok.dev" {
+				for _, resource := range rule.Resources {
+					if resource == "mcpserverentries" {
+						foundMCPServerEntries = true
+					}
+				}
+			}
+		}
+	}
+	assert.True(t, foundMCPServerEntries, "vmcpDiscoveredRBACRules should include mcpserverentries")
 }

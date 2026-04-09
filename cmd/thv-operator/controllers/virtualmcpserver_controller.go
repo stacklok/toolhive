@@ -109,6 +109,8 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpserverentries,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpcompositetooldefinitions,verbs=get;list;watch
@@ -1837,6 +1839,22 @@ func (r *VirtualMCPServerReconciler) listMCPRemoteProxiesAsMap(
 	return mcpRemoteProxyMap, nil
 }
 
+// listMCPServerEntriesAsMap lists all MCPServerEntries in the namespace and returns a map by name.
+func (r *VirtualMCPServerReconciler) listMCPServerEntriesAsMap(
+	ctx context.Context,
+	namespace string,
+) (map[string]*mcpv1alpha1.MCPServerEntry, error) {
+	mcpServerEntryList := &mcpv1alpha1.MCPServerEntryList{}
+	if err := r.List(ctx, mcpServerEntryList, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	mcpServerEntryMap := make(map[string]*mcpv1alpha1.MCPServerEntry, len(mcpServerEntryList.Items))
+	for i := range mcpServerEntryList.Items {
+		mcpServerEntryMap[mcpServerEntryList.Items[i].Name] = &mcpServerEntryList.Items[i]
+	}
+	return mcpServerEntryMap, nil
+}
+
 // discoverExternalAuthConfigs discovers ExternalAuthConfig from workloads and adds them to the outgoing config.
 // Returns a list of non-fatal errors that should be reported via status conditions.
 // The controller should continue in degraded mode even if some auth configs fail.
@@ -1862,9 +1880,15 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 		return backendsWithAuthConfig, authErrors
 	}
 
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServerEntries")
+		return backendsWithAuthConfig, authErrors
+	}
+
 	for _, workloadInfo := range typedWorkloads {
 		externalAuthConfigName := r.getExternalAuthConfigNameFromWorkload(
-			workloadInfo, mcpServerMap, mcpRemoteProxyMap)
+			workloadInfo, mcpServerMap, mcpRemoteProxyMap, mcpServerEntryMap)
 		if externalAuthConfigName == "" {
 			continue
 		}
@@ -1920,6 +1944,7 @@ func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 	workloadInfo workloads.TypedWorkload,
 	mcpServerMap map[string]*mcpv1alpha1.MCPServer,
 	mcpRemoteProxyMap map[string]*mcpv1alpha1.MCPRemoteProxy,
+	mcpServerEntryMap map[string]*mcpv1alpha1.MCPServerEntry,
 ) string {
 	switch workloadInfo.Type {
 	case workloads.WorkloadTypeMCPServer:
@@ -1935,6 +1960,13 @@ func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 			return ""
 		}
 		return mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
+
+	case workloads.WorkloadTypeMCPServerEntry:
+		mcpServerEntry, found := mcpServerEntryMap[workloadInfo.Name]
+		if !found || mcpServerEntry.Spec.ExternalAuthConfigRef == nil {
+			return ""
+		}
+		return mcpServerEntry.Spec.ExternalAuthConfigRef.Name
 
 	default:
 		return ""
@@ -2048,10 +2080,12 @@ func injectSubjectProviderIfNeeded(
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
 // Preserves metadata and uses transport types from workload Specs.
 // Logs warnings when backends are skipped due to missing URL or transport information.
+// caBundlePathMap maps backend names to their CA bundle mount paths (populated for MCPServerEntry backends).
 func convertBackendsToStaticBackends(
 	ctx context.Context,
 	backends []vmcptypes.Backend,
 	transportMap map[string]string,
+	caBundlePathMap map[string]string,
 ) []vmcpconfig.StaticBackendConfig {
 	logger := log.FromContext(ctx)
 	static := make([]vmcpconfig.StaticBackendConfig, 0, len(backends))
@@ -2069,12 +2103,18 @@ func convertBackendsToStaticBackends(
 			continue
 		}
 
-		static = append(static, vmcpconfig.StaticBackendConfig{
+		cfg := vmcpconfig.StaticBackendConfig{
 			Name:      backend.Name,
 			URL:       backend.BaseURL,
 			Transport: transport,
 			Metadata:  backend.Metadata,
-		})
+		}
+
+		if caBundlePath, ok := caBundlePathMap[backend.Name]; ok {
+			cfg.CABundlePath = caBundlePath
+		}
+
+		static = append(static, cfg)
 	}
 	return static
 }
@@ -2168,6 +2208,7 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1alpha1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer)).
+		Watches(&mcpv1alpha1.MCPServerEntry{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerEntryToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
 		Watches(
@@ -2372,6 +2413,82 @@ func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
 
 	ctxLogger.V(1).Info("Mapped MCPRemoteProxy to VirtualMCPServers",
 		"mcpRemoteProxy", mcpRemoteProxy.Name,
+		"affectedGroups", len(affectedGroups),
+		"virtualMCPServers", len(requests))
+
+	return requests
+}
+
+// mapMCPServerEntryToVirtualMCPServer maps MCPServerEntry changes to VirtualMCPServer reconciliation requests.
+// This function implements the same optimization as mapMCPServerToVirtualMCPServer to only reconcile
+// VirtualMCPServers that are actually affected by the MCPServerEntry change.
+//
+// The optimization works by:
+// 1. Finding all MCPGroups that include the changed MCPServerEntry (via Status.Entries)
+// 2. Finding all VirtualMCPServers that reference those MCPGroups
+// 3. Only reconciling those specific VirtualMCPServers
+func (r *VirtualMCPServerReconciler) mapMCPServerEntryToVirtualMCPServer(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	mcpServerEntry, ok := obj.(*mcpv1alpha1.MCPServerEntry)
+	if !ok {
+		return nil
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Step 1: Find all MCPGroups that include this MCPServerEntry
+	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	if err := r.List(ctx, mcpGroupList, client.InNamespace(mcpServerEntry.Namespace)); err != nil {
+		ctxLogger.Error(err, "Failed to list MCPGroups for MCPServerEntry watch")
+		return nil
+	}
+
+	affectedGroups := make(map[string]bool)
+	for _, group := range mcpGroupList.Items {
+		for _, entryName := range group.Status.Entries {
+			if entryName == mcpServerEntry.Name {
+				affectedGroups[group.Name] = true
+				ctxLogger.V(1).Info("MCPServerEntry is member of MCPGroup",
+					"mcpServerEntry", mcpServerEntry.Name,
+					"mcpGroup", group.Name)
+				break
+			}
+		}
+	}
+
+	if len(affectedGroups) == 0 {
+		ctxLogger.V(1).Info("MCPServerEntry not a member of any MCPGroup, skipping VirtualMCPServer reconciliation",
+			"mcpServerEntry", mcpServerEntry.Name)
+		return nil
+	}
+
+	// Step 2: Find VirtualMCPServers that reference the affected MCPGroups
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(mcpServerEntry.Namespace)); err != nil {
+		ctxLogger.Error(err, "Failed to list VirtualMCPServers for MCPServerEntry watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		if affectedGroups[vmcp.Spec.Config.Group] {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+			ctxLogger.V(1).Info("Queuing VirtualMCPServer for reconciliation due to MCPServerEntry change",
+				"virtualMCPServer", vmcp.Name,
+				"mcpGroup", vmcp.Spec.Config.Group,
+				"mcpServerEntry", mcpServerEntry.Name)
+		}
+	}
+
+	ctxLogger.V(1).Info("Mapped MCPServerEntry to VirtualMCPServers",
+		"mcpServerEntry", mcpServerEntry.Name,
 		"affectedGroups", len(affectedGroups),
 		"virtualMCPServers", len(requests))
 

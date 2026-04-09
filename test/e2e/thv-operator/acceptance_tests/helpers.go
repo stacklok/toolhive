@@ -16,6 +16,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -24,9 +25,9 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-// DeployRedis creates a Redis Deployment and Service in the given namespace.
-// No password is configured — matches the default empty THV_SESSION_REDIS_PASSWORD.
-func DeployRedis(ctx context.Context, c client.Client, namespace string, timeout, pollingInterval time.Duration) {
+// EnsureRedis creates a Redis Deployment and Service if they don't already exist,
+// then waits for Redis to be ready. Safe to call concurrently from multiple test blocks.
+func EnsureRedis(ctx context.Context, c client.Client, namespace string, timeout, pollingInterval time.Duration) {
 	labels := map[string]string{"app": "redis"}
 
 	deployment := &appsv1.Deployment{
@@ -51,7 +52,9 @@ func DeployRedis(ctx context.Context, c client.Client, namespace string, timeout
 			},
 		},
 	}
-	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
+	if err := c.Create(ctx, deployment); err != nil && !apierrors.IsAlreadyExists(err) {
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	}
 
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -65,7 +68,9 @@ func DeployRedis(ctx context.Context, c client.Client, namespace string, timeout
 			},
 		},
 	}
-	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
+	if err := c.Create(ctx, service); err != nil && !apierrors.IsAlreadyExists(err) {
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	}
 
 	ginkgo.By("Waiting for Redis to be ready")
 	gomega.Eventually(func() error {
@@ -73,38 +78,6 @@ func DeployRedis(ctx context.Context, c client.Client, namespace string, timeout
 		if err := c.List(ctx, podList,
 			client.InNamespace(namespace),
 			client.MatchingLabels(labels)); err != nil {
-			return err
-		}
-		for _, pod := range podList.Items {
-			if pod.Status.Phase == corev1.PodRunning {
-				for _, cond := range pod.Status.Conditions {
-					if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-						return nil
-					}
-				}
-			}
-		}
-		return fmt.Errorf("redis pod not ready")
-	}, timeout, pollingInterval).Should(gomega.Succeed())
-}
-
-// EnsureRedis deploys Redis if it doesn't already exist, then waits for it to be ready.
-// Safe to call from multiple test blocks that share the same namespace.
-func EnsureRedis(ctx context.Context, c client.Client, namespace string, timeout, pollingInterval time.Duration) {
-	dep := &appsv1.Deployment{}
-	err := c.Get(ctx, client.ObjectKey{Name: "redis", Namespace: namespace}, dep)
-	if err == nil {
-		// Already exists — just wait for readiness.
-		ginkgo.By("Redis already deployed, waiting for readiness")
-	} else {
-		DeployRedis(ctx, c, namespace, timeout, pollingInterval)
-		return
-	}
-	gomega.Eventually(func() error {
-		podList := &corev1.PodList{}
-		if err := c.List(ctx, podList,
-			client.InNamespace(namespace),
-			client.MatchingLabels(map[string]string{"app": "redis"})); err != nil {
 			return err
 		}
 		for _, pod := range podList.Items {

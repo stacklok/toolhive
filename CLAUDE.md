@@ -23,6 +23,8 @@ task build-image      # Build container image
 task build-all-images # Build all container images
 ```
 
+**IMPORTANT**: Always use `task` commands. Never run `go test`, `go build`, or `golangci-lint` directly -- the Taskfile has correct flags, exclusions, and environment setup that direct commands miss.
+
 **Testing**: Ginkgo/Gomega for BDD-style tests. Unit tests for `pkg/` business logic; E2E tests for CLI commands.
 
 ## Available Subagents
@@ -83,6 +85,11 @@ Detailed rules are in `.claude/rules/` (loaded automatically when matching files
 ## Architecture Documentation
 
 When making changes that affect architecture, update relevant docs in `docs/arch/`. See `docs/arch/README.md` for structure.
+
+## Things That Will Bite You
+
+- Running `go test ./...` or `golangci-lint run` directly skips Taskfile configuration (exclusions, flags, formatting). Always use `task test`, `task lint-fix`, etc.
+- After modifying API handlers or CLI commands, run `task docs` to regenerate CLI documentation.
 
 ## Evolving Conventions
 

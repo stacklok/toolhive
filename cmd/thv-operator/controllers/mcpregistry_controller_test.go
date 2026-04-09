@@ -571,6 +571,28 @@ func TestValidateNewPathSpec(t *testing.T) {
 			wantErr: "pgpassSecretRef requires configYAML",
 		},
 		{
+			name: "pgpassSecretRef with empty name",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+					Key:                  ".pgpass",
+				},
+			},
+			wantErr: "pgpassSecretRef.name is required",
+		},
+		{
+			name: "pgpassSecretRef with empty key",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+					Key:                  "",
+				},
+			},
+			wantErr: "pgpassSecretRef.key is required",
+		},
+		{
 			name: "reserved volume name registry-server-config in spec volumes",
 			spec: mcpv1alpha1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n",

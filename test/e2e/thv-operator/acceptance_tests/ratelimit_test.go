@@ -192,8 +192,8 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 	BeforeAll(func() {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 
-		By("Deploying Redis for session storage and rate limiting")
-		DeployRedis(ctx, k8sClient, testNamespace, timeout, pollingInterval)
+		By("Ensuring Redis is available for session storage and rate limiting")
+		EnsureRedis(ctx, k8sClient, testNamespace, timeout, pollingInterval)
 
 		By("Deploying mock OIDC server for per-user identity")
 		var issuerURL string
@@ -277,9 +277,6 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 		if oidcCleanup != nil {
 			oidcCleanup()
 		}
-
-		By("Cleaning up Redis")
-		CleanupRedis(ctx, k8sClient, testNamespace)
 	})
 
 	It("should reject user after per-user limit exceeded and allow independent user (AC11, AC12)", func() {

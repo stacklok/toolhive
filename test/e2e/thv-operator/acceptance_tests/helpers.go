@@ -88,6 +88,38 @@ func DeployRedis(ctx context.Context, c client.Client, namespace string, timeout
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
+// EnsureRedis deploys Redis if it doesn't already exist, then waits for it to be ready.
+// Safe to call from multiple test blocks that share the same namespace.
+func EnsureRedis(ctx context.Context, c client.Client, namespace string, timeout, pollingInterval time.Duration) {
+	dep := &appsv1.Deployment{}
+	err := c.Get(ctx, client.ObjectKey{Name: "redis", Namespace: namespace}, dep)
+	if err == nil {
+		// Already exists — just wait for readiness.
+		ginkgo.By("Redis already deployed, waiting for readiness")
+	} else {
+		DeployRedis(ctx, c, namespace, timeout, pollingInterval)
+		return
+	}
+	gomega.Eventually(func() error {
+		podList := &corev1.PodList{}
+		if err := c.List(ctx, podList,
+			client.InNamespace(namespace),
+			client.MatchingLabels(map[string]string{"app": "redis"})); err != nil {
+			return err
+		}
+		for _, pod := range podList.Items {
+			if pod.Status.Phase == corev1.PodRunning {
+				for _, cond := range pod.Status.Conditions {
+					if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+						return nil
+					}
+				}
+			}
+		}
+		return fmt.Errorf("redis pod not ready")
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+}
+
 // CleanupRedis deletes the Redis Deployment and Service.
 func CleanupRedis(ctx context.Context, c client.Client, namespace string) {
 	_ = c.Delete(ctx, &appsv1.Deployment{

@@ -37,6 +37,35 @@ spec:
     groupRef: engineering-team
 ```
 
+### Backend Types
+
+A `VirtualMCPServer` aggregates three types of backends from the referenced `MCPGroup`:
+
+| Type | CRD | Infrastructure | Use Case |
+|------|-----|----------------|----------|
+| **Container** | `MCPServer` | Pod + Service | MCP servers running as containers in the cluster |
+| **Proxy** | `MCPRemoteProxy` | Proxy Pod + Service | Remote servers requiring a proxy with its own auth/audit layer |
+| **Entry** | `MCPServerEntry` | None (config only) | Remote servers where VirtualMCPServer connects directly |
+
+**When to use MCPServerEntry vs MCPRemoteProxy:**
+
+- Use `MCPServerEntry` when VirtualMCPServer can connect directly to the remote server. This is simpler (zero infrastructure) and eliminates the dual auth boundary problem where both the proxy and vMCP need separate auth configs.
+- Use `MCPRemoteProxy` when you need the proxy's own authentication middleware, audit logging, or observability for standalone (non-vMCP) access to the remote server.
+
+**Example: MCPServerEntry backend**
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: context7
+spec:
+  remoteURL: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef: engineering-team
+  # No externalAuthConfigRef — public endpoint, no auth needed
+```
+
 ### `.spec.incomingAuth` (optional)
 
 Configures authentication for clients connecting to the Virtual MCP server. Reuses MCPServer OIDC and authorization patterns.

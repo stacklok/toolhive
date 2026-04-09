@@ -229,7 +229,7 @@ A **Virtual MCP Server** aggregates multiple MCP servers from a group into a sin
 **Key capabilities:**
 
 1. **Backend Aggregation**:
-   - Automatically discovers MCPServers from an MCPGroup
+   - Automatically discovers MCPServers, MCPRemoteProxies, and MCPServerEntries from an MCPGroup
    - Aggregates tools, resources, and prompts from all backends
    - Tracks backend health status
    - Handles backend failures gracefully
@@ -255,6 +255,11 @@ A **Virtual MCP Server** aggregates multiple MCP servers from a group into a sin
    - Outgoing: Automatic token exchange for backend authentication
    - Token caching with configurable TTL and capacity
    - Cedar authorization policies
+
+6. **Backend Types**:
+   - `MCPServer` — Container-based: runs as a pod in the cluster
+   - `MCPRemoteProxy` — Proxy-based: deploys a proxy pod that forwards to a remote server
+   - `MCPServerEntry` — Zero-infrastructure: declares a remote endpoint that VirtualMCPServer connects to directly (no pods, services, or deployments)
 
 **Example use case:**
 ```yaml

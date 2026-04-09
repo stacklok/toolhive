@@ -230,7 +230,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Auto-Sync MCP Server Registry"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -247,3 +247,7 @@ spec:
             - "experimental"  # Exclude experimental servers
             - "deprecated"    # Exclude deprecated servers
             - "beta"          # Exclude beta versions
+  registries:
+    - name: default
+      sources:
+        - default

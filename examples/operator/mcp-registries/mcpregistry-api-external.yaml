@@ -5,7 +5,7 @@ metadata:
   namespace: default
 spec:
   displayName: "External ToolHive Registry via HTTPS"
-  registries:
+  sources:
     - name: default
       format: toolhive
       api:
@@ -14,5 +14,9 @@ spec:
         endpoint: "https://registry.example.com"
       syncPolicy:
         interval: "2h"
+  registries:
+    - name: default
+      sources:
+        - default
   # Note: This example shows connecting to an external registry over HTTPS
   # Authentication support will be added in Phase 2

@@ -252,6 +252,9 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 	}
 
+	// Resolve registry source URLs when the server was discovered via registry lookup.
+	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, s.appConfig)
+
 	options := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(s.containerRuntime),
 		runner.WithCmdArgs(req.CmdArguments),
@@ -279,6 +282,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
 		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil, false),
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 	}
 
 	// Add header forward configuration if specified

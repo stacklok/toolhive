@@ -1525,7 +1525,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 			Transport: "sse", // Required for backend discovery
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://test-backend.default.svc.cluster.local:8080",
 		},
 	}
@@ -1645,7 +1645,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://discovered-backend.default.svc.cluster.local:8080",
 		},
 	}
@@ -1901,7 +1901,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 						Port:  tt.esPort,
 					},
 					Status: mcpv1alpha1.EmbeddingServerStatus{
-						Phase:         mcpv1alpha1.EmbeddingServerPhaseRunning,
+						Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
 						ReadyReplicas: 1,
 						URL: fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
 							tt.esName, testNamespace, tt.esPort),

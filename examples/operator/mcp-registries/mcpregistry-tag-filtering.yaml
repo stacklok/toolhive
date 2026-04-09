@@ -221,7 +221,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Security & Compliance Tools"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -237,6 +237,10 @@ spec:
             - "encryption"    # Encryption services
           exclude:
             - "experimental"  # No experimental security tools
+  registries:
+    - name: default
+      sources:
+        - default
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -245,7 +249,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Utility & Support Tools"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -261,6 +265,10 @@ spec:
           exclude:
             - "security"      # Exclude security tools (handled by other registry)
             - "experimental"  # No experimental utilities
+  registries:
+    - name: default
+      sources:
+        - default
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -269,7 +277,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "AI & Machine Learning Tools"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -283,3 +291,7 @@ spec:
             - "inference"        # Inference engines
             - "models"           # Model management
           # Note: No exclude filters - include all AI/ML tools even if experimental
+  registries:
+    - name: default
+      sources:
+        - default

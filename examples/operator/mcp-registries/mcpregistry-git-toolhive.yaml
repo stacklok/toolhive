@@ -5,7 +5,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "ToolHive Official Registry (Git)"
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
@@ -22,3 +22,7 @@ spec:
             - "api"
           exclude:
             - "experimental"
+  registries:
+    - name: default
+      sources:
+        - default

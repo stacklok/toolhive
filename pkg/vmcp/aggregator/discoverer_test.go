@@ -504,7 +504,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 			HealthStatus:  vmcp.BackendHealthy,
 			Metadata: map[string]string{
 				"tool_type":       "github",
-				"workload_status": "Running",
+				"workload_status": "Ready",
 			},
 		}
 		proxy := &vmcp.Backend{

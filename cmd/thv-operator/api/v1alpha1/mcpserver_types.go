@@ -154,6 +154,7 @@ const SessionStorageProviderRedis = "redis"
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
 // +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
@@ -331,6 +332,11 @@ type MCPServerSpec struct {
 	// When nil, no session storage is configured.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
+
+	// RateLimiting defines rate limiting configuration for the MCP server.
+	// Requires Redis session storage to be configured for distributed rate limiting.
+	// +optional
+	RateLimiting *RateLimitConfig `json:"rateLimiting,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -479,6 +485,54 @@ type SessionStorageConfig struct {
 	// PasswordRef is a reference to a Secret key containing the Redis password
 	// +optional
 	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
+}
+
+// RateLimitConfig defines rate limiting configuration for an MCP server.
+// At least one of shared or tools must be configured.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared or tools must be configured"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type RateLimitConfig struct {
+	// Shared defines a token bucket shared across all users for the entire server.
+	// +optional
+	Shared *RateLimitBucket `json:"shared,omitempty"`
+
+	// Tools defines per-tool rate limit overrides.
+	// Each entry applies additional rate limits to calls targeting a specific tool name.
+	// A request must pass both the server-level limit and the per-tool limit.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Tools []ToolRateLimitConfig `json:"tools,omitempty"`
+}
+
+// RateLimitBucket defines a token bucket configuration.
+type RateLimitBucket struct {
+	// MaxTokens is the maximum number of tokens (bucket capacity).
+	// This is also the burst size: the maximum number of requests that can be served
+	// instantaneously before the bucket is depleted.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	MaxTokens int32 `json:"maxTokens"`
+
+	// RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+	// The effective refill rate is maxTokens / refillPeriod tokens per second.
+	// Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+	// +kubebuilder:validation:Required
+	RefillPeriod metav1.Duration `json:"refillPeriod"`
+}
+
+// ToolRateLimitConfig defines rate limits for a specific tool.
+type ToolRateLimitConfig struct {
+	// Name is the MCP tool name this limit applies to.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Shared defines a token bucket shared across all users for this specific tool.
+	// +kubebuilder:validation:Required
+	Shared *RateLimitBucket `json:"shared"`
 }
 
 // Permission profile types
@@ -943,15 +997,15 @@ type MCPServerStatus struct {
 }
 
 // MCPServerPhase is the phase of the MCPServer
-// +kubebuilder:validation:Enum=Pending;Running;Failed;Terminating;Stopped
+// +kubebuilder:validation:Enum=Pending;Ready;Failed;Terminating;Stopped
 type MCPServerPhase string
 
 const (
 	// MCPServerPhasePending means the MCPServer is being created
 	MCPServerPhasePending MCPServerPhase = "Pending"
 
-	// MCPServerPhaseRunning means the MCPServer is running
-	MCPServerPhaseRunning MCPServerPhase = "Running"
+	// MCPServerPhaseReady means the MCPServer is ready
+	MCPServerPhaseReady MCPServerPhase = "Ready"
 
 	// MCPServerPhaseFailed means the MCPServer failed to start
 	MCPServerPhaseFailed MCPServerPhase = "Failed"

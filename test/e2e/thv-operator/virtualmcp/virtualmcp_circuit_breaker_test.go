@@ -92,7 +92,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}, server1); err != nil {
 				return err
 			}
-			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend1 not running, phase: %s", server1.Status.Phase)
 			}
 
@@ -103,7 +103,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}, server2); err != nil {
 				return err
 			}
-			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend2 not running, phase: %s", server2.Status.Phase)
 			}
 
@@ -487,7 +487,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}, server); err != nil {
 				return err
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not running yet, phase: %s", server.Status.Phase)
 			}
 			return nil

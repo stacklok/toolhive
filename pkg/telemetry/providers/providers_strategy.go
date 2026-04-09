@@ -63,6 +63,7 @@ func (*OTLPTracerStrategy) CreateTracerProvider(
 		Headers:      config.Headers,
 		Insecure:     config.Insecure,
 		SamplingRate: config.SamplingRate,
+		CACertPath:   config.CACertPath,
 	}
 
 	provider, shutdown, err := otlp.NewTracerProviderWithShutdown(ctx, otlpConfig, res, config.ExtraSpanProcessors...)
@@ -129,6 +130,7 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 			Headers:      config.Headers,
 			Insecure:     config.Insecure,
 			SamplingRate: config.SamplingRate,
+			CACertPath:   config.CACertPath,
 		}
 
 		reader, err := otlp.NewMetricReader(ctx, otlpConfig)

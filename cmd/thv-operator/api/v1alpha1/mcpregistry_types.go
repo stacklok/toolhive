@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -15,6 +16,7 @@ import (
 const (
 	// RegistryFormatToolHive is the native ToolHive registry format
 	RegistryFormatToolHive = "toolhive"
+	// RegistryFormatUpstream is the standard MCP registry format
 	RegistryFormatUpstream = "upstream"
 )
 
@@ -24,12 +26,23 @@ type MCPRegistrySpec struct {
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
 
-	// Registries defines the configuration for the registry data sources
+	// Sources defines the data source configurations for the registry.
+	// Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
 	// +listType=map
 	// +listMapKey=name
-	Registries []MCPRegistryConfig `json:"registries"`
+	Sources []MCPRegistrySourceConfig `json:"sources"`
+
+	// Registries defines lightweight registry views that aggregate one or more sources.
+	// Each registry references sources by name and can optionally gate access via claims.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=map
+	// +listMapKey=name
+	Registries []MCPRegistryViewConfig `json:"registries"`
 
 	// EnforceServers indicates whether MCPServers in this namespace must have their images
 	// present in at least one registry in the namespace. When any registry in the namespace
@@ -68,11 +81,21 @@ type MCPRegistrySpec struct {
 	// If not specified, defaults to anonymous authentication.
 	// +optional
 	AuthConfig *MCPRegistryAuthConfig `json:"authConfig,omitempty"`
+
+	// TelemetryConfig defines OpenTelemetry configuration for the registry API server.
+	// When enabled, the server exports traces and metrics via OTLP.
+	// +optional
+	TelemetryConfig *MCPRegistryTelemetryConfig `json:"telemetryConfig,omitempty"`
 }
 
-// MCPRegistryConfig defines the configuration for a registry data source
-type MCPRegistryConfig struct {
-	// Name is a unique identifier for this registry configuration within the MCPRegistry
+// MCPRegistrySourceConfig defines a data source configuration for the registry.
+// Exactly one source type must be specified (ConfigMapRef, Git, API, URL, Managed, or Kubernetes).
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.configMapRef) ? 1 : 0) + (has(self.git) ? 1 : 0) + (has(self.api) ? 1 : 0) + (has(self.url) ? 1 : 0) + (has(self.managed) ? 1 : 0) + (has(self.kubernetes) ? 1 : 0) == 1",message="exactly one source type must be specified"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type MCPRegistrySourceConfig struct {
+	// Name is a unique identifier for this source within the MCPRegistry
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
@@ -82,36 +105,113 @@ type MCPRegistryConfig struct {
 	// +kubebuilder:default=toolhive
 	Format string `json:"format,omitempty"`
 
+	// Claims are key-value pairs attached to this source for authorization purposes.
+	// All entries from this source inherit these claims. Values must be string or []string.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Claims *apiextensionsv1.JSON `json:"claims,omitempty"`
+
 	// ConfigMapRef defines the ConfigMap source configuration
-	// Mutually exclusive with Git, API, and PVCRef
+	// Mutually exclusive with Git, API, URL, Managed, and Kubernetes
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 
 	// Git defines the Git repository source configuration
-	// Mutually exclusive with ConfigMapRef, API, and PVCRef
+	// Mutually exclusive with ConfigMapRef, API, URL, Managed, and Kubernetes
 	// +optional
 	Git *GitSource `json:"git,omitempty"`
 
 	// API defines the API source configuration
-	// Mutually exclusive with ConfigMapRef, Git, and PVCRef
+	// Mutually exclusive with ConfigMapRef, Git, URL, Managed, and Kubernetes
 	// +optional
 	API *APISource `json:"api,omitempty"`
 
-	// PVCRef defines the PersistentVolumeClaim source configuration
-	// Mutually exclusive with ConfigMapRef, Git, and API
+	// URL defines a URL-hosted file source configuration.
+	// The registry server fetches the registry data from the specified HTTP/HTTPS URL.
+	// Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes
 	// +optional
-	PVCRef *PVCSource `json:"pvcRef,omitempty"`
+	URL *URLSource `json:"url,omitempty"`
 
-	// SyncPolicy defines the automatic synchronization behavior for this registry.
+	// Managed defines a managed source that is directly manipulated via the registry API.
+	// Managed sources do not sync from external sources.
+	// At most one managed source is allowed per MCPRegistry.
+	// Mutually exclusive with ConfigMapRef, Git, API, URL, and Kubernetes
+	// +optional
+	Managed *ManagedSource `json:"managed,omitempty"`
+
+	// Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.
+	// Mutually exclusive with ConfigMapRef, Git, API, URL, and Managed
+	// +optional
+	Kubernetes *KubernetesSource `json:"kubernetes,omitempty"`
+
+	// SyncPolicy defines the automatic synchronization behavior for this source.
 	// If specified, enables automatic synchronization at the given interval.
 	// Manual synchronization is always supported via annotation-based triggers
 	// regardless of this setting.
+	// Not applicable for Managed and Kubernetes sources (will be ignored).
 	// +optional
 	SyncPolicy *SyncPolicy `json:"syncPolicy,omitempty"`
 
-	// Filter defines include/exclude patterns for registry content
+	// Filter defines include/exclude patterns for registry content.
+	// Not applicable for Managed and Kubernetes sources (will be ignored).
 	// +optional
 	Filter *RegistryFilter `json:"filter,omitempty"`
+}
+
+// MCPRegistryViewConfig defines a lightweight registry view that aggregates one or more sources.
+type MCPRegistryViewConfig struct {
+	// Name is a unique identifier for this registry view
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Sources is an ordered list of source names that feed this registry.
+	// Each name must reference a source defined in spec.sources.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Sources []string `json:"sources"`
+
+	// Claims are key-value pairs that gate access to this registry view.
+	// Only requests with matching claims can access this registry. Values must be string or []string.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Claims *apiextensionsv1.JSON `json:"claims,omitempty"`
+}
+
+// URLSource defines a URL-hosted file source configuration.
+// The registry server fetches registry data from the specified HTTP/HTTPS URL.
+type URLSource struct {
+	// Endpoint is the HTTP/HTTPS URL to fetch the registry file from.
+	// HTTPS is required unless the host is localhost.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^https?://.*"
+	Endpoint string `json:"endpoint"`
+
+	// Timeout is the timeout for HTTP requests (Go duration format).
+	// Defaults to "30s" if not specified.
+	// +kubebuilder:validation:Pattern=^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+	// +optional
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// ManagedSource defines a managed source that is directly manipulated via the registry API.
+// Managed sources do not sync from external sources.
+type ManagedSource struct {
+	// Empty — presence indicates this is a managed (internal) source for publishing
+}
+
+// KubernetesSource defines a source that discovers MCP servers from running Kubernetes resources.
+// Per-entry claims can be set on CRDs via the toolhive.stacklok.dev/authz-claims JSON annotation.
+type KubernetesSource struct {
+	// Namespaces is a list of Kubernetes namespaces to watch for MCP servers.
+	// If empty, watches the operator's configured namespace.
+	// +listType=atomic
+	// +optional
+	Namespaces []string `json:"namespaces,omitempty"`
 }
 
 // GitSource defines Git repository source configuration
@@ -198,43 +298,6 @@ type APISource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern="^https?://.*"
 	Endpoint string `json:"endpoint"`
-}
-
-// PVCSource defines PersistentVolumeClaim source configuration
-type PVCSource struct {
-	// ClaimName is the name of the PersistentVolumeClaim
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	ClaimName string `json:"claimName"`
-
-	// Path is the relative path to the registry file within the PVC.
-	// The PVC is mounted at /config/registry/{registryName}/.
-	// The full file path becomes: /config/registry/{registryName}/{path}
-	//
-	// This design:
-	// - Each registry gets its own mount point (consistent with ConfigMap sources)
-	// - Multiple registries can share the same PVC by mounting it at different paths
-	// - Users control PVC organization freely via the path field
-	//
-	// Examples:
-	//   Registry "production" using PVC "shared-data" with path "prod/registry.json":
-	//     PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json
-	//
-	//   Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":
-	//     PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json
-	//     (Same PVC, different mount path)
-	//
-	//   Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":
-	//     PVC contains /registry.json → accessed at /config/registry/staging/registry.json
-	//     (Different PVC, independent mount)
-	//
-	//   Registry "team-a" with path "v1/servers.json":
-	//     PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json
-	//     (Subdirectories allowed in path)
-	// +kubebuilder:validation:Pattern=^.*\.json$
-	// +kubebuilder:default=registry.json
-	// +optional
-	Path string `json:"path,omitempty"`
 }
 
 // SyncPolicy defines automatic synchronization behavior.
@@ -345,6 +408,19 @@ type MCPRegistryDatabaseConfig struct {
 	// +optional
 	ConnMaxLifetime string `json:"connMaxLifetime,omitempty"`
 
+	// MaxMetaSize is the maximum allowed size in bytes for publisher-provided
+	// metadata extensions (_meta). Must be greater than zero.
+	// Defaults to 262144 (256KB) if not specified.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxMetaSize *int32 `json:"maxMetaSize,omitempty"`
+
+	// DynamicAuth defines dynamic database authentication configuration.
+	// When set, the registry server authenticates to the database using
+	// short-lived credentials instead of static passwords.
+	// +optional
+	DynamicAuth *MCPRegistryDynamicAuthConfig `json:"dynamicAuth,omitempty"`
+
 	// DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.
 	// The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file
 	// that is mounted to the registry API container.
@@ -360,6 +436,22 @@ type MCPRegistryDatabaseConfig struct {
 	DBMigrationUserPasswordSecretRef corev1.SecretKeySelector `json:"dbMigrationUserPasswordSecretRef"`
 }
 
+// MCPRegistryDynamicAuthConfig defines dynamic database authentication configuration.
+type MCPRegistryDynamicAuthConfig struct {
+	// AWSRDSIAM enables AWS RDS IAM authentication for database connections.
+	// +optional
+	AWSRDSIAM *MCPRegistryAWSRDSIAMConfig `json:"awsRdsIam,omitempty"`
+}
+
+// MCPRegistryAWSRDSIAMConfig defines AWS RDS IAM authentication configuration.
+type MCPRegistryAWSRDSIAMConfig struct {
+	// Region is the AWS region for RDS IAM authentication.
+	// Use "detect" to automatically detect the region from instance metadata.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Region string `json:"region,omitempty"`
+}
+
 // MCPRegistryAuthMode represents the authentication mode for the registry API server
 type MCPRegistryAuthMode string
 
@@ -372,6 +464,10 @@ const (
 )
 
 // MCPRegistryAuthConfig defines authentication configuration for the registry API server.
+//
+// +kubebuilder:validation:XValidation:rule="self.mode != 'anonymous' || !has(self.authz)",message="authz configuration has no effect when auth mode is anonymous"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRegistryAuthConfig struct {
 	// Mode specifies the authentication mode (anonymous or oauth)
 	// Defaults to "anonymous" if not specified.
@@ -381,10 +477,56 @@ type MCPRegistryAuthConfig struct {
 	// +optional
 	Mode MCPRegistryAuthMode `json:"mode,omitempty"`
 
+	// PublicPaths defines additional paths that bypass authentication.
+	// These extend the default public paths (health, docs, swagger, well-known).
+	// Each path must start with "/". Do not add API data paths here.
+	// Example: ["/custom/public", "/metrics"]
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern="^/"
+	// +listType=atomic
+	// +optional
+	PublicPaths []string `json:"publicPaths,omitempty"`
+
 	// OAuth defines OAuth/OIDC specific authentication settings
 	// Only used when Mode is "oauth"
 	// +optional
 	OAuth *MCPRegistryOAuthConfig `json:"oauth,omitempty"`
+
+	// Authz defines authorization configuration for role-based access control.
+	// +optional
+	Authz *MCPRegistryAuthzConfig `json:"authz,omitempty"`
+}
+
+// MCPRegistryAuthzConfig defines authorization configuration for role-based access control
+type MCPRegistryAuthzConfig struct {
+	// Roles defines the role-based authorization rules.
+	// Each role is a list of claim matchers (JSON objects with string or []string values).
+	// +optional
+	Roles MCPRegistryRolesConfig `json:"roles,omitempty"`
+}
+
+// MCPRegistryRolesConfig defines role-based authorization rules.
+// Each role is a list of claim matchers — a request matching any entry in the list is granted the role.
+type MCPRegistryRolesConfig struct {
+	// SuperAdmin grants full administrative access to the registry.
+	// +optional
+	// +listType=atomic
+	SuperAdmin []apiextensionsv1.JSON `json:"superAdmin,omitempty"`
+
+	// ManageSources grants permission to create, update, and delete sources.
+	// +optional
+	// +listType=atomic
+	ManageSources []apiextensionsv1.JSON `json:"manageSources,omitempty"`
+
+	// ManageRegistries grants permission to create, update, and delete registries.
+	// +optional
+	// +listType=atomic
+	ManageRegistries []apiextensionsv1.JSON `json:"manageRegistries,omitempty"`
+
+	// ManageEntries grants permission to create, update, and delete registry entries.
+	// +optional
+	// +listType=atomic
+	ManageEntries []apiextensionsv1.JSON `json:"manageEntries,omitempty"`
 }
 
 // MCPRegistryOAuthConfig defines OAuth/OIDC specific authentication settings
@@ -490,14 +632,78 @@ type MCPRegistryOAuthProviderConfig struct {
 	AllowPrivateIP bool `json:"allowPrivateIP,omitempty"`
 }
 
+// MCPRegistryTelemetryConfig defines OpenTelemetry configuration for the registry API server.
+type MCPRegistryTelemetryConfig struct {
+	// Enabled controls whether telemetry is enabled globally.
+	// When false, no telemetry providers are initialized.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ServiceName is the name of the service for telemetry identification.
+	// Defaults to "thv-registry-api" if not specified.
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+
+	// ServiceVersion is the version of the service for telemetry identification.
+	// +optional
+	ServiceVersion string `json:"serviceVersion,omitempty"`
+
+	// Endpoint is the OTLP collector endpoint (host:port).
+	// Defaults to "localhost:4318" if not specified.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Insecure allows HTTP connections instead of HTTPS to the OTLP endpoint.
+	// Should only be true for development/testing environments.
+	// +kubebuilder:default=false
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+
+	// Tracing defines tracing-specific configuration.
+	// +optional
+	Tracing *MCPRegistryTracingConfig `json:"tracing,omitempty"`
+
+	// Metrics defines metrics-specific configuration.
+	// +optional
+	Metrics *MCPRegistryMetricsConfig `json:"metrics,omitempty"`
+}
+
+// MCPRegistryTracingConfig defines tracing-specific configuration.
+type MCPRegistryTracingConfig struct {
+	// Enabled controls whether tracing is enabled.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Sampling controls the trace sampling rate (0.0 to 1.0, exclusive of 0.0).
+	// 1.0 means sample all traces, 0.5 means sample 50%.
+	// Defaults to 0.05 (5%) if not specified.
+	// +optional
+	Sampling *string `json:"sampling,omitempty"`
+}
+
+// MCPRegistryMetricsConfig defines metrics-specific configuration.
+type MCPRegistryMetricsConfig struct {
+	// Enabled controls whether metrics collection is enabled.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
 // MCPRegistryStatus defines the observed state of MCPRegistry
 type MCPRegistryStatus struct {
+	// Conditions represent the latest available observations of the MCPRegistry's state
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
 	// ObservedGeneration reflects the generation most recently observed by the controller
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Phase represents the current overall phase of the MCPRegistry
-	// Derived from sync and API status
 	// +optional
 	Phase MCPRegistryPhase `json:"phase,omitempty"`
 
@@ -505,137 +711,17 @@ type MCPRegistryStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
-	// SyncStatus provides detailed information about data synchronization
+	// URL is the URL where the registry API can be accessed
 	// +optional
-	SyncStatus *SyncStatus `json:"syncStatus,omitempty"`
+	URL string `json:"url,omitempty"`
 
-	// APIStatus provides detailed information about the API service
+	// ReadyReplicas is the number of ready registry API replicas
 	// +optional
-	APIStatus *APIStatus `json:"apiStatus,omitempty"`
-
-	// LastAppliedFilterHash is the hash of the last applied filter
-	// +optional
-	LastAppliedFilterHash string `json:"lastAppliedFilterHash,omitempty"`
-
-	// StorageRef is a reference to the internal storage location
-	// +optional
-	StorageRef *StorageReference `json:"storageRef,omitempty"`
-
-	// LastManualSyncTrigger tracks the last processed manual sync annotation value
-	// Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
-	// +optional
-	LastManualSyncTrigger string `json:"lastManualSyncTrigger,omitempty"`
-
-	// Conditions represent the latest available observations of the MCPRegistry's state
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// SyncStatus provides detailed information about data synchronization
-type SyncStatus struct {
-	// Phase represents the current synchronization phase
-	// +kubebuilder:validation:Enum=Syncing;Complete;Failed
-	Phase SyncPhase `json:"phase"`
-
-	// Message provides additional information about the sync status
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// LastAttempt is the timestamp of the last sync attempt
-	// +optional
-	LastAttempt *metav1.Time `json:"lastAttempt,omitempty"`
-
-	// AttemptCount is the number of sync attempts since last success
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	AttemptCount int32 `json:"attemptCount,omitempty"`
-
-	// LastSyncTime is the timestamp of the last successful sync
-	// +optional
-	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
-
-	// LastSyncHash is the hash of the last successfully synced data
-	// Used to detect changes in source data
-	// +optional
-	LastSyncHash string `json:"lastSyncHash,omitempty"`
-
-	// ServerCount is the total number of servers in the registry
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	ServerCount int32 `json:"serverCount,omitempty"`
-}
-
-// APIStatus provides detailed information about the API service
-type APIStatus struct {
-	// Phase represents the current API service phase
-	// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
-	Phase APIPhase `json:"phase"`
-
-	// Message provides additional information about the API status
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// Endpoint is the URL where the API is accessible
-	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
-
-	// ReadySince is the timestamp when the API became ready
-	// +optional
-	ReadySince *metav1.Time `json:"readySince,omitempty"`
-}
-
-// SyncPhase represents the data synchronization state
-// +kubebuilder:validation:Enum=Syncing;Complete;Failed
-type SyncPhase string
-
-const (
-	// SyncPhaseSyncing means sync is currently in progress
-	SyncPhaseSyncing SyncPhase = "Syncing"
-
-	// SyncPhaseComplete means sync completed successfully
-	SyncPhaseComplete SyncPhase = "Complete"
-
-	// SyncPhaseFailed means sync failed
-	SyncPhaseFailed SyncPhase = "Failed"
-)
-
-// APIPhase represents the API service state
-// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
-type APIPhase string
-
-const (
-	// APIPhaseNotStarted means API deployment has not been created
-	APIPhaseNotStarted APIPhase = "NotStarted"
-
-	// APIPhaseDeploying means API is being deployed
-	APIPhaseDeploying APIPhase = "Deploying"
-
-	// APIPhaseReady means API is ready to serve requests
-	APIPhaseReady APIPhase = "Ready"
-
-	// APIPhaseUnhealthy means API is deployed but not healthy
-	APIPhaseUnhealthy APIPhase = "Unhealthy"
-
-	// APIPhaseError means API deployment failed
-	APIPhaseError APIPhase = "Error"
-)
-
-// StorageReference defines a reference to internal storage
-type StorageReference struct {
-	// Type is the storage type (configmap)
-	// +kubebuilder:validation:Enum=configmap
-	Type string `json:"type"`
-
-	// ConfigMapRef is a reference to a ConfigMap storage
-	// Only used when Type is "configmap"
-	// +optional
-	ConfigMapRef *corev1.LocalObjectReference `json:"configMapRef,omitempty"`
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 }
 
 // MCPRegistryPhase represents the phase of the MCPRegistry
-// +kubebuilder:validation:Enum=Pending;Ready;Failed;Syncing;Terminating
+// +kubebuilder:validation:Enum=Pending;Ready;Failed;Terminating
 type MCPRegistryPhase string
 
 const (
@@ -648,51 +734,29 @@ const (
 	// MCPRegistryPhaseFailed means the MCPRegistry has failed
 	MCPRegistryPhaseFailed MCPRegistryPhase = "Failed"
 
-	// MCPRegistryPhaseSyncing means the MCPRegistry is currently syncing data
-	MCPRegistryPhaseSyncing MCPRegistryPhase = "Syncing"
-
 	// MCPRegistryPhaseTerminating means the MCPRegistry is being deleted
 	MCPRegistryPhaseTerminating MCPRegistryPhase = "Terminating"
 )
 
-// Condition types for MCPRegistry
+// Condition reasons for MCPRegistry
 const (
-	// ConditionSourceAvailable indicates whether the source is available and accessible
-	ConditionSourceAvailable = "SourceAvailable"
+	// ConditionReasonRegistryReady indicates the MCPRegistry is ready
+	ConditionReasonRegistryReady = "Ready"
 
-	// ConditionDataValid indicates whether the registry data is valid
-	ConditionDataValid = "DataValid"
-
-	// ConditionSyncSuccessful indicates whether the last sync was successful
-	ConditionSyncSuccessful = "SyncSuccessful"
-
-	// ConditionAPIReady indicates whether the registry API is ready
-	ConditionAPIReady = "APIReady"
-
-	// ConditionRegistryPodTemplateValid indicates whether the PodTemplateSpec is valid
-	ConditionRegistryPodTemplateValid = "PodTemplateValid"
-)
-
-// Condition reasons for MCPRegistry PodTemplateSpec validation
-const (
-	// ConditionReasonRegistryPodTemplateValid indicates PodTemplateSpec validation succeeded
-	ConditionReasonRegistryPodTemplateValid = "ValidPodTemplateSpec"
-
-	// ConditionReasonRegistryPodTemplateInvalid indicates PodTemplateSpec validation failed
-	ConditionReasonRegistryPodTemplateInvalid = "InvalidPodTemplateSpec"
+	// ConditionReasonRegistryNotReady indicates the MCPRegistry is not ready
+	ConditionReasonRegistryNotReady = "NotReady"
 )
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Sync",type="string",JSONPath=".status.syncStatus.phase"
-//+kubebuilder:printcolumn:name="API",type="string",JSONPath=".status.apiStatus.phase"
-//+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.syncStatus.serverCount"
-//+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.syncStatus.lastSyncTime"
+//+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+//+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
+//+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="size(self.spec.registries) > 0",message="at least one registry must be specified"
+//+kubebuilder:validation:XValidation:rule="self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
 
 // MCPRegistry is the Schema for the mcpregistries API
 type MCPRegistry struct {
@@ -720,48 +784,6 @@ func (r *MCPRegistry) GetStorageName() string {
 // GetAPIResourceName returns the base name for registry API resources (deployment, service)
 func (r *MCPRegistry) GetAPIResourceName() string {
 	return fmt.Sprintf("%s-api", r.Name)
-}
-
-// DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status
-func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
-	syncStatus := r.Status.SyncStatus
-	apiStatus := r.Status.APIStatus
-
-	// Default phases if status not set
-	var syncPhase SyncPhase
-	if syncStatus != nil {
-		syncPhase = syncStatus.Phase
-	}
-
-	apiPhase := APIPhaseNotStarted
-	if apiStatus != nil {
-		apiPhase = apiStatus.Phase
-	}
-
-	// If sync failed, overall is Failed
-	if syncPhase == SyncPhaseFailed {
-		return MCPRegistryPhaseFailed
-	}
-
-	// If sync in progress, overall is Syncing
-	if syncPhase == SyncPhaseSyncing {
-		return MCPRegistryPhaseSyncing
-	}
-
-	// If sync is complete (no sync needed), check API status
-	if syncPhase == SyncPhaseComplete {
-		switch apiPhase {
-		case APIPhaseReady:
-			return MCPRegistryPhaseReady
-		case APIPhaseError:
-			return MCPRegistryPhaseFailed
-		case APIPhaseNotStarted, APIPhaseDeploying, APIPhaseUnhealthy:
-			return MCPRegistryPhasePending // API still starting/not healthy
-		}
-	}
-
-	// Default to pending for initial states
-	return MCPRegistryPhasePending
 }
 
 func init() {

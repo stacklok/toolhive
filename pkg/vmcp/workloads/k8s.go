@@ -334,7 +334,7 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 // mapK8SWorkloadPhaseToHealth converts a MCPServerPhase to a backend health status.
 func mapK8SWorkloadPhaseToHealth(phase mcpv1alpha1.MCPServerPhase) vmcp.BackendHealthStatus {
 	switch phase {
-	case mcpv1alpha1.MCPServerPhaseRunning:
+	case mcpv1alpha1.MCPServerPhaseReady:
 		return vmcp.BackendHealthy
 	case mcpv1alpha1.MCPServerPhaseFailed:
 		return vmcp.BackendUnhealthy

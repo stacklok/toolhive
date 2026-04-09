@@ -34,6 +34,8 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 	r.Post("/validate", apierrors.ErrorHandler(routes.validateSkill))
 	r.Post("/build", apierrors.ErrorHandler(routes.buildSkill))
 	r.Post("/push", apierrors.ErrorHandler(routes.pushSkill))
+	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
+	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
 
 	return r
 }
@@ -275,6 +277,48 @@ func (s *SkillsRoutes) pushSkill(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// listBuilds returns a list of locally-built OCI skill artifacts.
+//
+//	@Summary		List locally-built skill artifacts
+//	@Description	Get a list of all locally-built OCI skill artifacts in the local store
+//	@Tags			skills
+//	@Produce		json
+//	@Success		200		{object}	buildListResponse
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Router			/api/v1beta/skills/builds [get]
+func (s *SkillsRoutes) listBuilds(w http.ResponseWriter, r *http.Request) error {
+	builds, err := s.skillService.ListBuilds(r.Context())
+	if err != nil {
+		return err
+	}
+
+	if builds == nil {
+		builds = []skills.LocalBuild{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(buildListResponse{Builds: builds})
+}
+
+// deleteBuild removes a locally-built OCI skill artifact from the local store.
+//
+//	@Summary		Delete a locally-built skill artifact
+//	@Description	Remove a locally-built OCI skill artifact and its blobs from the local store
+//	@Tags			skills
+//	@Param			tag	path		string	true	"Artifact tag"
+//	@Success		204	{string}	string	"No Content"
+//	@Failure		404	{string}	string	"Not Found"
+//	@Failure		500	{string}	string	"Internal Server Error"
+//	@Router			/api/v1beta/skills/builds/{tag} [delete]
+func (s *SkillsRoutes) deleteBuild(w http.ResponseWriter, r *http.Request) error {
+	tag := chi.URLParam(r, "tag")
+	if err := s.skillService.DeleteBuild(r.Context(), tag); err != nil {
+		return err
+	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

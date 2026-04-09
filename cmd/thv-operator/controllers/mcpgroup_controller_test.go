@@ -56,7 +56,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -69,7 +69,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 			},
@@ -96,7 +96,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -136,7 +136,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{

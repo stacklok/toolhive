@@ -10,7 +10,7 @@ import (
 // Condition types for MCPToolConfig
 const (
 	// ConditionToolConfigValid indicates whether the MCPToolConfig spec is valid.
-	ConditionToolConfigValid = "Valid"
+	ConditionToolConfigValid = ConditionTypeValid
 )
 
 const (

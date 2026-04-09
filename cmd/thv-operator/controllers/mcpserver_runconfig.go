@@ -192,7 +192,8 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 			return nil, fmt.Errorf("failed to get MCPTelemetryConfig: %w", err)
 		}
 		if telCfg != nil {
-			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, m.Spec.TelemetryConfigRef.ServiceName, m.Name)
+			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
+			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, m.Spec.TelemetryConfigRef.ServiceName, m.Name, caPath)
 		}
 	} else {
 		runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
@@ -263,6 +264,11 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, m.Spec.Audit)
 
+	// Add rate limit configuration if specified
+	if m.Spec.RateLimiting != nil {
+		options = append(options, runner.WithRateLimitConfig(m.Namespace, m.Spec.RateLimiting))
+	}
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
 		context.Background(),
@@ -275,15 +281,16 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, err
 	}
 
+	// Populate scaling config (BackendReplicas and Redis session storage).
+	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
+	// Must run before PopulateMiddlewareConfigs because rate limiting reads SessionRedis.
+	populateScalingConfig(runConfig, m)
+
 	// Populate middleware configs from the configuration fields
 	// This ensures that middleware_configs is properly set for serialization
 	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
 		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
 	}
-
-	// Populate scaling config (BackendReplicas and Redis session storage).
-	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
-	populateScalingConfig(runConfig, m)
 
 	return runConfig, nil
 }

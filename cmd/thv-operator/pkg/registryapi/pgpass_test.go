@@ -265,8 +265,11 @@ func baseMCPRegistry(t *testing.T, opts ...func(*mcpv1alpha1.MCPRegistry)) *mcpv
 					Key:                  "password",
 				},
 			},
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 				{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
+			},
+			Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+				{Name: "default", Sources: []string{"default"}},
 			},
 		},
 	}

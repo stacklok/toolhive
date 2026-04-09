@@ -27,6 +27,14 @@ func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExpor
 		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 
+	if config.CACertPath != "" {
+		tlsCfg, err := newTLSConfigFromCA(config.CACertPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure TLS for trace exporter: %w", err)
+		}
+		opts = append(opts, otlptracehttp.WithTLSClientConfig(tlsCfg))
+	}
+
 	exporter, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create trace exporter: %w", err)

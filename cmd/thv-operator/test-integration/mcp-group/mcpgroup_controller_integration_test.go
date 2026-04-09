@@ -87,7 +87,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -96,7 +96,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -106,7 +106,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return false
 				}
-				return freshServer.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning
+				return freshServer.Status.Phase == mcpv1alpha1.MCPServerPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
 			Eventually(func() bool {
@@ -114,7 +114,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return false
 				}
-				return freshServer.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning
+				return freshServer.Status.Phase == mcpv1alpha1.MCPServerPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
 			// Now create the MCPGroup
@@ -273,7 +273,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: newServer.Name, Namespace: namespace}, newServer); err != nil {
 					return err
 				}
-				newServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				newServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, newServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -355,7 +355,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -364,7 +364,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -499,7 +499,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -508,7 +508,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -659,7 +659,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: serverA.Name, Namespace: namespaceA}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -668,7 +668,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: serverB.Name, Namespace: namespaceB}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 

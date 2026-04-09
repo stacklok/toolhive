@@ -283,15 +283,18 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 		By("Getting JWT for user-a")
 		tokenA := GetOIDCToken(httpClient, oidcNodePort, "user-a")
 
+		By("Initializing MCP session for user-a")
+		sessionA := SendInitialize(httpClient, nodePort, tokenA)
+
 		By("Sending 2 requests as user-a — all should succeed")
 		for i := range 2 {
-			status, body, _ := SendAuthenticatedToolCall(httpClient, nodePort, "echo", i+1, tokenA)
+			status, body, _ := SendAuthenticatedToolCallWithSession(httpClient, nodePort, "echo", i+1, tokenA, sessionA)
 			Expect(status).To(Equal(http.StatusOK),
 				"user-a request %d should succeed, got status %d: %s", i+1, status, string(body))
 		}
 
 		By("Sending a 3rd request as user-a — should be rate limited with HTTP 429")
-		status, body, retryAfter := SendAuthenticatedToolCall(httpClient, nodePort, "echo", 3, tokenA)
+		status, body, retryAfter := SendAuthenticatedToolCallWithSession(httpClient, nodePort, "echo", 3, tokenA, sessionA)
 		Expect(status).To(Equal(http.StatusTooManyRequests),
 			"user-a 3rd request should be rate limited, body: %s", string(body))
 
@@ -313,8 +316,11 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 		By("Getting JWT for user-b")
 		tokenB := GetOIDCToken(httpClient, oidcNodePort, "user-b")
 
+		By("Initializing MCP session for user-b")
+		sessionB := SendInitialize(httpClient, nodePort, tokenB)
+
 		By("Sending request as user-b — should succeed (independent bucket)")
-		status, body, _ = SendAuthenticatedToolCall(httpClient, nodePort, "echo", 4, tokenB)
+		status, body, _ = SendAuthenticatedToolCallWithSession(httpClient, nodePort, "echo", 4, tokenB, sessionB)
 		Expect(status).To(Equal(http.StatusOK),
 			"user-b should not be blocked by user-a's limit, got status %d: %s", status, string(body))
 	})

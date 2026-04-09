@@ -169,6 +169,88 @@ func SendAuthenticatedToolCall(
 	return resp.StatusCode, respBody, retryAfter
 }
 
+// SendInitialize sends a JSON-RPC initialize request and returns the session ID
+// from the Mcp-Session header. This must be called before tools/call when auth is enabled.
+func SendInitialize(
+	httpClient *http.Client, port int32, bearerToken string,
+) (sessionID string) {
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      0,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]any{
+				"name":    "e2e-test",
+				"version": "1.0.0",
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	url := fmt.Sprintf("http://localhost:%d/mcp", port)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+
+	resp, err := httpClient.Do(req)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	defer func() { _ = resp.Body.Close() }()
+
+	gomega.Expect(resp.StatusCode).To(gomega.Equal(http.StatusOK),
+		"initialize should succeed")
+
+	sessionID = resp.Header.Get("Mcp-Session-Id")
+	gomega.Expect(sessionID).ToNot(gomega.BeEmpty(),
+		"initialize response should include Mcp-Session-Id header")
+
+	return sessionID
+}
+
+// SendAuthenticatedToolCallWithSession sends a JSON-RPC tools/call with Bearer token and session ID.
+func SendAuthenticatedToolCallWithSession(
+	httpClient *http.Client, port int32, toolName string, requestID int, bearerToken, sessionID string,
+) (int, []byte, string) {
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      requestID,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      toolName,
+			"arguments": map[string]any{"input": "test"},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	url := fmt.Sprintf("http://localhost:%d/mcp", port)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+bearerToken)
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+
+	resp, err := httpClient.Do(req)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	defer func() { _ = resp.Body.Close() }()
+
+	retryAfter := resp.Header.Get("Retry-After")
+
+	respBody, err := io.ReadAll(resp.Body)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	return resp.StatusCode, respBody, retryAfter
+}
+
 // GetOIDCToken fetches a JWT from the mock OIDC server for the given subject.
 func GetOIDCToken(httpClient *http.Client, oidcNodePort int32, subject string) string {
 	url := fmt.Sprintf("http://localhost:%d/token?subject=%s", oidcNodePort, subject)

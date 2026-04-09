@@ -1,6 +1,6 @@
 module github.com/stacklok/toolhive
 
-go 1.26.2
+go 1.26
 
 require (
 	dario.cat/mergo v1.0.2
@@ -24,13 +24,13 @@ require (
 	github.com/go-jose/go-jose/v3 v3.0.5
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/gofrs/flock v0.13.0
-	github.com/google/cel-go v0.27.0
+	github.com/google/cel-go v0.28.0
 	github.com/google/go-cmp v0.7.0
-	github.com/google/go-containerregistry v0.21.3
+	github.com/google/go-containerregistry v0.21.4
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.5
 	github.com/lestrrat-go/jwx/v3 v3.0.13
-	github.com/mark3labs/mcp-go v0.47.0
+	github.com/mark3labs/mcp-go v0.47.1
 	github.com/moby/moby/client v0.3.0
 	github.com/modelcontextprotocol/registry v1.5.0
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
@@ -46,7 +46,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.2
 	github.com/spf13/viper v1.21.0
 	github.com/stacklok/toolhive-catalog v0.20260406.0
-	github.com/stacklok/toolhive-core v0.0.14
+	github.com/stacklok/toolhive-core v0.0.15
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd
@@ -124,8 +124,7 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/digitorus/pkcs7 v0.0.0-20230818184609-3a137a874352 // indirect
 	github.com/digitorus/timestamp v0.0.0-20231217203849-220c5c2851b7 // indirect
-	github.com/docker/cli v29.3.0+incompatible // indirect
-	github.com/docker/distribution v2.8.3+incompatible // indirect
+	github.com/docker/cli v29.3.1+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/dylibso/observe-sdk/go v0.0.0-20240819160327-2d926c5d788a // indirect
@@ -185,7 +184,7 @@ require (
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
@@ -239,7 +238,7 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
-	github.com/sigstore/protobuf-specs v0.5.0 // indirect
+	github.com/sigstore/protobuf-specs v0.5.1 // indirect
 	github.com/sigstore/rekor v1.5.0 // indirect
 	github.com/sigstore/rekor-tiles/v2 v2.0.1 // indirect
 	github.com/sigstore/sigstore v1.10.4 // indirect
@@ -298,7 +297,7 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
-	k8s.io/apiextensions-apiserver v0.35.0 // indirect
+	k8s.io/apiextensions-apiserver v0.35.0
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	modernc.org/libc v1.70.0 // indirect

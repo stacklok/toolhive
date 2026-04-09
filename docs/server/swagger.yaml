@@ -3237,6 +3237,12 @@ paths:
               schema:
                 type: string
           description: No Content
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden - blocked by policy
         "404":
           content:
             application/json:
@@ -3304,6 +3310,12 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden - blocked by policy
         "404":
           content:
             application/json:

@@ -34,7 +34,7 @@ type allowAllGate struct {
 }
 
 var (
-	policyGateMu sync.Mutex
+	policyGateMu sync.RWMutex
 	policyGate   PolicyGate = allowAllGate{}
 )
 
@@ -50,7 +50,7 @@ func RegisterPolicyGate(g PolicyGate) {
 // activePolicyGate returns the currently registered policy gate under the
 // package-level mutex.
 func activePolicyGate() PolicyGate {
-	policyGateMu.Lock()
-	defer policyGateMu.Unlock()
+	policyGateMu.RLock()
+	defer policyGateMu.RUnlock()
 	return policyGate
 }

@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	// registryAPIContainerName is the name of the registry-api container in deployments
-	registryAPIContainerName = "registry-api"
+	// RegistryAPIContainerName is the name of the registry-api container in deployments
+	RegistryAPIContainerName = "registry-api"
 
 	// RegistryAPIPort is the port number used by the registry API container
 	RegistryAPIPort = 8080
@@ -61,12 +61,13 @@ const (
 	DefaultReplicas = 1
 
 	// PGPass volume and path constants
-	// pgpassSecretVolumeName is the name of the volume for the pgpass secret
-	pgpassSecretVolumeName = "pgpass-secret"
-	// pgpassVolumeName is the name of the emptyDir volume for the prepared pgpass file
-	pgpassVolumeName = "pgpass"
-	// pgpassInitContainerName is the name of the init container that sets up the pgpass file
-	pgpassInitContainerName = "setup-pgpass"
+
+	// PGPassSecretVolumeName is the name of the volume for the pgpass secret
+	PGPassSecretVolumeName = "pgpass-secret"
+	// PGPassVolumeName is the name of the emptyDir volume for the prepared pgpass file
+	PGPassVolumeName = "pgpass"
+	// PGPassInitContainerName is the name of the init container that sets up the pgpass file
+	PGPassInitContainerName = "setup-pgpass"
 	// pgpassInitContainerImage is the image used by the init container.
 	// Using Chainguard's busybox which runs as nonroot (65532) by default,
 	// matching the typical app user so no chown is needed.
@@ -78,11 +79,13 @@ const (
 	// pgpassEmptyDirMountPath is the path where the emptyDir is mounted
 	// nolint:gosec // G101: This is a file path, not a credential
 	pgpassEmptyDirMountPath = "/pgpass"
-	// pgpassAppUserMountPath is the path where the pgpass file is mounted in the app container
+	// PGPassAppUserMountPath is the path where the pgpass file is mounted in the app container
 	// nolint:gosec // G101: This is a file path, not a credential
-	pgpassAppUserMountPath = "/home/appuser/.pgpass"
+	PGPassAppUserMountPath = "/home/appuser/.pgpass"
 	// pgpassFileName is the name of the pgpass file
 	pgpassFileName = ".pgpass"
+	// pgpassEnvVar is the environment variable name for the pgpass file path
+	pgpassEnvVar = "PGPASSFILE"
 
 	// Git auth volume and path constants
 	// gitAuthSecretsBasePath is the base path where git auth secrets are mounted

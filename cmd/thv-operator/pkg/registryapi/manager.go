@@ -40,9 +40,95 @@ func NewManager(
 // ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API.
 // This method coordinates all aspects of API service including creating/updating the deployment and service,
 // checking readiness, and updating the MCPRegistry status with deployment references and endpoint information.
+//
+// When ConfigYAML is set on the MCPRegistry spec, the decoupled reconciliation path is used.
+// Otherwise, the legacy path is used for backward compatibility.
 func (m *manager) ReconcileAPIService(
 	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
 ) *Error {
+	if mcpRegistry.Spec.ConfigYAML != "" {
+		return m.reconcileNewPath(ctx, mcpRegistry)
+	}
+	return m.reconcileLegacyPath(ctx, mcpRegistry)
+}
+
+// reconcileNewPath handles reconciliation for MCPRegistry resources that use the
+// decoupled ConfigYAML field. It creates a ConfigMap from the raw YAML string and
+// mounts user-provided volumes directly, without parsing or transforming config.
+func (m *manager) reconcileNewPath(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *Error {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+	ctxLogger.Info("Reconciling API service (new config path)")
+
+	// Create config ConfigMap from raw YAML
+	configMap, err := config.RawConfigToConfigMap(mcpRegistry.Name, mcpRegistry.Namespace, mcpRegistry.Spec.ConfigYAML)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to create config map from raw YAML")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to create config map from raw YAML: %v", err),
+			ConditionReason: "ConfigMapFailed",
+		}
+	}
+
+	// Upsert the ConfigMap with owner reference
+	configMapsClient := configmaps.NewClient(m.client, m.scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to upsert registry server config config map")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to upsert registry server config config map: %v", err),
+			ConditionReason: "ConfigMapFailed",
+		}
+	}
+
+	configMapName := configMap.Name
+
+	// Ensure RBAC resources (ServiceAccount, Role, RoleBinding) before deployment
+	if err := m.ensureRBACResources(ctx, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to ensure RBAC resources")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure RBAC resources: %v", err),
+			ConditionReason: "RBACFailed",
+		}
+	}
+
+	// Ensure deployment exists and is configured correctly
+	deployment, err := m.ensureDeploymentNewPath(ctx, mcpRegistry, configMapName)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to ensure deployment")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure deployment: %v", err),
+			ConditionReason: "DeploymentFailed",
+		}
+	}
+
+	// Ensure service exists and is configured correctly
+	if err := m.ensureService(ctx, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to ensure service")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure service: %v", err),
+			ConditionReason: "ServiceFailed",
+		}
+	}
+
+	// Check API readiness
+	isReady := m.CheckAPIReadiness(ctx, deployment)
+
+	if isReady {
+		ctxLogger.Info("API service reconciliation completed successfully - API is ready")
+	} else {
+		ctxLogger.Info("API service reconciliation completed - API is not ready yet")
+	}
+
+	return nil
+}
+
+// reconcileLegacyPath handles reconciliation for MCPRegistry resources that use
+// the legacy typed fields (Sources, Registries, DatabaseConfig, etc.).
+func (m *manager) reconcileLegacyPath(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *Error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Reconciling API service")
 
@@ -96,7 +182,7 @@ func (m *manager) ReconcileAPIService(
 	}
 
 	// Step 2: Ensure service exists and is configured correctly
-	_, err = m.ensureService(ctx, mcpRegistry)
+	err = m.ensureService(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure service")
 		return &Error{

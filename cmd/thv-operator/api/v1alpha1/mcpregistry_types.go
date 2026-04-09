@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,27 +23,99 @@ const (
 
 // MCPRegistrySpec defines the desired state of MCPRegistry
 type MCPRegistrySpec struct {
-	// DisplayName is a human-readable name for the registry
+	// ============================================================
+	// New decoupled config fields
+	// ============================================================
+
+	// ConfigYAML is the complete registry server config.yaml content.
+	// The operator creates a ConfigMap from this string and mounts it
+	// at /config/config.yaml in the registry-api container.
+	// The operator does NOT parse, validate, or transform this content.
+	//
+	// Mutually exclusive with the legacy typed fields (Sources, Registries,
+	// DatabaseConfig, AuthConfig, TelemetryConfig). When set, the operator
+	// uses the decoupled code path — volumes and mounts must be provided
+	// via the Volumes and VolumeMounts fields below.
+	//
+	// +optional
+	ConfigYAML string `json:"configYAML,omitempty"`
+
+	// Volumes defines additional volumes to add to the registry API pod.
+	// Each entry is a standard Kubernetes Volume object (JSON/YAML).
+	// The operator appends them to the pod spec alongside its own config volume.
+	// Only used when configYAML is set.
+	//
+	// Use these to mount:
+	//   - Secrets (git auth tokens, OAuth client secrets, CA certs)
+	//   - ConfigMaps (registry data files)
+	//   - PersistentVolumeClaims (registry data on persistent storage)
+	//   - Any other volume type the registry server needs
+	//
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Volumes []apiextensionsv1.JSON `json:"volumes,omitempty"`
+
+	// VolumeMounts defines additional volume mounts for the registry-api container.
+	// Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).
+	// The operator appends them to the container's volume mounts alongside the config mount.
+	// Only used when configYAML is set.
+	//
+	// Mount paths must match the file paths referenced in configYAML.
+	// For example, if configYAML references passwordFile: /secrets/git-creds/token,
+	// a corresponding volume mount must exist with mountPath: /secrets/git-creds.
+	//
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:pruning:PreserveUnknownFields
+	VolumeMounts []apiextensionsv1.JSON `json:"volumeMounts,omitempty"`
+
+	// PGPassSecretRef references a Secret containing a pre-created pgpass file.
+	// Only used when configYAML is set. Mutually exclusive with DatabaseConfig.
+	//
+	// Why this is a dedicated field instead of a regular volume/volumeMount:
+	// PostgreSQL's libpq rejects pgpass files that aren't mode 0600. Kubernetes
+	// secret volumes mount files as root-owned, and the registry-api container
+	// runs as non-root (UID 65532). A root-owned 0600 file is unreadable by
+	// UID 65532, and using fsGroup changes permissions to 0640 which libpq also
+	// rejects. The only solution is an init container that copies the file to an
+	// emptyDir as the app user and runs chmod 0600. This cannot be expressed
+	// through volumes/volumeMounts alone — it requires an init container, two
+	// extra volumes (secret + emptyDir), a subPath mount, and an environment
+	// variable, all wired together correctly.
+	//
+	// When specified, the operator generates all of that plumbing invisibly.
+	// The user creates the Secret with pgpass-formatted content; the operator
+	// handles only the Kubernetes permission mechanics.
+	//
+	// Example Secret:
+	//
+	//	apiVersion: v1
+	//	kind: Secret
+	//	metadata:
+	//	  name: my-pgpass
+	//	stringData:
+	//	  .pgpass: |
+	//	    postgres:5432:registry:db_app:mypassword
+	//	    postgres:5432:registry:db_migrator:otherpassword
+	//
+	// Then reference it:
+	//
+	//	pgpassSecretRef:
+	//	  name: my-pgpass
+	//	  key: .pgpass
+	//
+	// +optional
+	PGPassSecretRef *corev1.SecretKeySelector `json:"pgpassSecretRef,omitempty"`
+
+	// ============================================================
+	// Shared fields — used by both config paths
+	// ============================================================
+
+	// DisplayName is a human-readable name for the registry.
+	// Works with both the new configYAML path and the legacy typed path.
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
-
-	// Sources defines the data source configurations for the registry.
-	// Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes).
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=20
-	// +listType=map
-	// +listMapKey=name
-	Sources []MCPRegistrySourceConfig `json:"sources"`
-
-	// Registries defines lightweight registry views that aggregate one or more sources.
-	// Each registry references sources by name and can optionally gate access via claims.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=20
-	// +listType=map
-	// +listMapKey=name
-	Registries []MCPRegistryViewConfig `json:"registries"`
 
 	// EnforceServers indicates whether MCPServers in this namespace must have their images
 	// present in at least one registry in the namespace. When any registry in the namespace
@@ -53,15 +126,41 @@ type MCPRegistrySpec struct {
 	// +optional
 	EnforceServers bool `json:"enforceServers,omitempty"`
 
-	// PodTemplateSpec defines the pod template to use for the registry API server
+	// PodTemplateSpec defines the pod template to use for the registry API server.
 	// This allows for customizing the pod configuration beyond what is provided by the other fields.
 	// Note that to modify the specific container the registry API server runs in, you must specify
 	// the `registry-api` container name in the PodTemplateSpec.
 	// This field accepts a PodTemplateSpec object as JSON/YAML.
+	// Works with both the new configYAML path and the legacy typed path.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
+	// ============================================================
+	// Deprecated legacy fields
+	// Deprecated: Use configYAML, volumes, volumeMounts, and
+	// pgpassSecretRef instead. These fields will be removed in a
+	// future release.
+	// ============================================================
+
+	// Sources defines the data source configurations for the registry.
+	// Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes).
+	// Deprecated: Use configYAML with volumes/volumeMounts instead.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=map
+	// +listMapKey=name
+	Sources []MCPRegistrySourceConfig `json:"sources,omitempty"`
+
+	// Registries defines lightweight registry views that aggregate one or more sources.
+	// Each registry references sources by name and can optionally gate access via claims.
+	// Deprecated: Use configYAML with volumes/volumeMounts instead.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=map
+	// +listMapKey=name
+	Registries []MCPRegistryViewConfig `json:"registries,omitempty"`
 
 	// DatabaseConfig defines the PostgreSQL database configuration for the registry API server.
 	// If not specified, defaults will be used:
@@ -74,16 +173,20 @@ type MCPRegistrySpec struct {
 	//   - MaxOpenConns: 10
 	//   - MaxIdleConns: 2
 	//   - ConnMaxLifetime: "30m"
+	//
+	// Deprecated: Put database config in configYAML and use pgpassSecretRef.
 	// +optional
 	DatabaseConfig *MCPRegistryDatabaseConfig `json:"databaseConfig,omitempty"`
 
 	// AuthConfig defines the authentication configuration for the registry API server.
 	// If not specified, defaults to anonymous authentication.
+	// Deprecated: Put auth config in configYAML instead.
 	// +optional
 	AuthConfig *MCPRegistryAuthConfig `json:"authConfig,omitempty"`
 
 	// TelemetryConfig defines OpenTelemetry configuration for the registry API server.
 	// When enabled, the server exports traces and metrics via OTLP.
+	// Deprecated: Put telemetry config in configYAML instead.
 	// +optional
 	TelemetryConfig *MCPRegistryTelemetryConfig `json:"telemetryConfig,omitempty"`
 }
@@ -756,7 +859,8 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
+//+kubebuilder:validation:XValidation:rule="size(self.spec.configYAML) > 0 || (has(self.spec.sources) && size(self.spec.sources) > 0)",message="either configYAML or sources must be specified"
+//+kubebuilder:validation:XValidation:rule="!has(self.spec.sources) || self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
 
 // MCPRegistry is the Schema for the mcpregistries API
 type MCPRegistry struct {
@@ -859,4 +963,32 @@ func (r *MCPRegistry) GetDatabasePort() int32 {
 		return 5432
 	}
 	return r.Spec.DatabaseConfig.Port
+}
+
+// ParseVolumes deserializes the raw JSON Volumes into typed corev1.Volume objects.
+// Returns an empty slice if Volumes is nil or empty.
+func (s *MCPRegistrySpec) ParseVolumes() ([]corev1.Volume, error) {
+	volumes := make([]corev1.Volume, 0, len(s.Volumes))
+	for i, raw := range s.Volumes {
+		var vol corev1.Volume
+		if err := json.Unmarshal(raw.Raw, &vol); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal volumes[%d]: %w", i, err)
+		}
+		volumes = append(volumes, vol)
+	}
+	return volumes, nil
+}
+
+// ParseVolumeMounts deserializes the raw JSON VolumeMounts into typed corev1.VolumeMount objects.
+// Returns an empty slice if VolumeMounts is nil or empty.
+func (s *MCPRegistrySpec) ParseVolumeMounts() ([]corev1.VolumeMount, error) {
+	mounts := make([]corev1.VolumeMount, 0, len(s.VolumeMounts))
+	for i, raw := range s.VolumeMounts {
+		var mount corev1.VolumeMount
+		if err := json.Unmarshal(raw.Raw, &mount); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal volumeMounts[%d]: %w", i, err)
+		}
+		mounts = append(mounts, mount)
+	}
+	return mounts, nil
 }

@@ -279,22 +279,27 @@ func baseMCPRegistry(t *testing.T, opts ...func(*mcpv1alpha1.MCPRegistry)) *mcpv
 	return reg
 }
 
+//nolint:staticcheck // Legacy test helpers intentionally use deprecated fields
 func withPort(port int32) func(*mcpv1alpha1.MCPRegistry) {
 	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.Port = port }
 }
 
+//nolint:staticcheck // Legacy test helpers intentionally use deprecated fields
 func withHost(host string) func(*mcpv1alpha1.MCPRegistry) {
 	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.Host = host }
 }
 
+//nolint:staticcheck // Legacy test helpers intentionally use deprecated fields
 func withDatabase(db string) func(*mcpv1alpha1.MCPRegistry) {
 	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.Database = db }
 }
 
+//nolint:staticcheck // Legacy test helpers intentionally use deprecated fields
 func withUser(user string) func(*mcpv1alpha1.MCPRegistry) {
 	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.User = user }
 }
 
+//nolint:staticcheck // Legacy test helpers intentionally use deprecated fields
 func withMigrationUser(user string) func(*mcpv1alpha1.MCPRegistry) {
 	return func(r *mcpv1alpha1.MCPRegistry) { r.Spec.DatabaseConfig.MigrationUser = user }
 }

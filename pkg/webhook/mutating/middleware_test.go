@@ -207,6 +207,47 @@ func TestMutatingMiddleware_WebhookError_IgnorePolicy(t *testing.T) {
 	assert.JSONEq(t, reqBody, string(capturedBody))
 }
 
+//nolint:paralleltest // Uses httptest server.
+func TestMutatingMiddleware_HTTP422AlwaysDenies(t *testing.T) {
+	tests := []struct {
+		name          string
+		failurePolicy webhook.FailurePolicy
+	}{
+		{
+			name:          "fail policy",
+			failurePolicy: webhook.FailurePolicyFail,
+		},
+		{
+			name:          "ignore policy",
+			failurePolicy: webhook.FailurePolicyIgnore,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte("unprocessable request"))
+			}))
+			defer server.Close()
+
+			cfg := makeConfig(server.URL, tt.failurePolicy)
+			mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+			var nextCalled bool
+			nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+
+			rr := httptest.NewRecorder()
+			mw(nextHandler).ServeHTTP(rr, makeMCPRequest(t, []byte(`{"jsonrpc":"2.0","id":1}`)))
+
+			assert.False(t, nextCalled)
+			assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
+			assert.Contains(t, rr.Body.String(), "Request denied by webhook policy")
+		})
+	}
+}
+
 func TestMutatingMiddleware_ScopeViolation_FailPolicy(t *testing.T) {
 	t.Parallel()
 	// Webhook tries to patch /principal/email — security violation.

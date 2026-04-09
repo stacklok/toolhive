@@ -3,7 +3,11 @@
 
 package webhook
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"net/http"
+)
 
 // WebhookError is the base error type for all webhook-related errors.
 //
@@ -91,4 +95,11 @@ func NewInvalidResponseError(webhookName string, err error, statusCode int) *Inv
 		},
 		StatusCode: statusCode,
 	}
+}
+
+// IsAlwaysDenyError reports whether the webhook error should deny the request
+// regardless of the configured failure policy.
+func IsAlwaysDenyError(err error) bool {
+	var invalidRespErr *InvalidResponseError
+	return errors.As(err, &invalidRespErr) && invalidRespErr.StatusCode == http.StatusUnprocessableEntity
 }

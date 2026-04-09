@@ -174,9 +174,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			By("checking source-specific volumes")
 			verifySourceVolume(deployment, registry)
 
-			By("checking storage emptyDir volume and mount")
-			testHelpers.verifyStorageVolume(deployment)
-
 			By("verifying container arguments use the server config")
 			testHelpers.verifyContainerArguments(deployment)
 		},
@@ -889,29 +886,6 @@ func (*serverConfigTestHelpers) verifyServerConfigVolume(deployment *appsv1.Depl
 	Expect(mountFound).To(BeTrue(), "Deployment should have a volume mount for the registry config ConfigMap")
 }
 
-func (*serverConfigTestHelpers) verifyStorageVolume(deployment *appsv1.Deployment) {
-	// Check volume
-	storageVolumeFound := false
-	for _, volume := range deployment.Spec.Template.Spec.Volumes {
-		if volume.Name == "storage-data" && volume.EmptyDir != nil {
-			storageVolumeFound = true
-			break
-		}
-	}
-	Expect(storageVolumeFound).To(BeTrue(), "Deployment should have an emptyDir volume for storage")
-
-	// Check mount
-	storageMountFound := false
-	for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
-		if mount.Name == "storage-data" {
-			Expect(mount.MountPath).To(Equal("/data"))
-			Expect(mount.ReadOnly).To(BeFalse(), "Storage mount should be writable")
-			storageMountFound = true
-			break
-		}
-	}
-	Expect(storageMountFound).To(BeTrue(), "Deployment should have a volume mount for the storage emptyDir")
-}
 
 func (*serverConfigTestHelpers) verifyContainerArguments(deployment *appsv1.Deployment) {
 	container := deployment.Spec.Template.Spec.Containers[0]

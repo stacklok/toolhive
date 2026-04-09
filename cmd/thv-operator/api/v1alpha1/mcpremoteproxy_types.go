@@ -76,6 +76,12 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 
+	// AuthServerRef optionally references a resource that configures an embedded
+	// OAuth 2.0/OIDC authorization server to authenticate MCP clients.
+	// Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
+	// +optional
+	AuthServerRef *AuthServerRef `json:"authServerRef,omitempty"`
+
 	// HeaderForward configures headers to inject into requests to the remote MCP server.
 	// Use this to add custom headers like X-Tenant-ID or correlation IDs.
 	// +optional
@@ -172,6 +178,11 @@ type MCPRemoteProxyStatus struct {
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
 
+	// AuthServerConfigHash is the hash of the referenced authServerRef spec,
+	// used to detect configuration changes and trigger reconciliation.
+	// +optional
+	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
+
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
@@ -218,6 +229,9 @@ const (
 
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+
+	// ConditionTypeMCPRemoteProxyAuthServerRefValidated indicates whether the AuthServerRef is valid
+	ConditionTypeMCPRemoteProxyAuthServerRefValidated = "AuthServerRefValidated"
 
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
@@ -276,6 +290,24 @@ const (
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream indicates multi-upstream is not supported
 	// for MCPRemoteProxy (use VirtualMCPServer for multi-upstream).
 	ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefValid indicates the AuthServerRef is valid
+	ConditionReasonMCPRemoteProxyAuthServerRefValid = "AuthServerRefValid"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefNotFound indicates the referenced auth server config was not found
+	ConditionReasonMCPRemoteProxyAuthServerRefNotFound = "AuthServerRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefFetchError indicates an error occurred fetching the auth server config
+	ConditionReasonMCPRemoteProxyAuthServerRefFetchError = "AuthServerRefFetchError"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind indicates the authServerRef kind is not supported
+	ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind = "AuthServerRefInvalidKind"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
+	ConditionReasonMCPRemoteProxyAuthServerRefInvalidType = "AuthServerRefInvalidType"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream indicates multi-upstream is not supported
+	ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"

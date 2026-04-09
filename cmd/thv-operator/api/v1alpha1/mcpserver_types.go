@@ -108,6 +108,31 @@ const (
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 )
 
+const (
+	// ConditionTypeAuthServerRefValidated indicates whether the AuthServerRef is valid
+	ConditionTypeAuthServerRefValidated = "AuthServerRefValidated"
+)
+
+const (
+	// ConditionReasonAuthServerRefValid indicates the referenced auth server config is valid
+	ConditionReasonAuthServerRefValid = "AuthServerRefValid"
+
+	// ConditionReasonAuthServerRefNotFound indicates the referenced auth server config was not found
+	ConditionReasonAuthServerRefNotFound = "AuthServerRefNotFound"
+
+	// ConditionReasonAuthServerRefFetchError indicates an error occurred fetching the auth server config
+	ConditionReasonAuthServerRefFetchError = "AuthServerRefFetchError"
+
+	// ConditionReasonAuthServerRefInvalidKind indicates the authServerRef kind is not supported
+	ConditionReasonAuthServerRefInvalidKind = "AuthServerRefInvalidKind"
+
+	// ConditionReasonAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
+	ConditionReasonAuthServerRefInvalidType = "AuthServerRefInvalidType"
+
+	// ConditionReasonAuthServerRefMultiUpstream indicates multi-upstream is not supported
+	ConditionReasonAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
+)
+
 // ConditionTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
 const ConditionTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
 
@@ -269,6 +294,12 @@ type MCPServerSpec struct {
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
+	// AuthServerRef optionally references a resource that configures an embedded
+	// OAuth 2.0/OIDC authorization server to authenticate MCP clients.
+	// Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
+	// +optional
+	AuthServerRef *AuthServerRef `json:"authServerRef,omitempty"`
 
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
@@ -836,6 +867,21 @@ type ExternalAuthConfigRef struct {
 	Name string `json:"name"`
 }
 
+// AuthServerRef defines a reference to a resource that configures an embedded
+// OAuth 2.0/OIDC authorization server. Currently only MCPExternalAuthConfig is supported;
+// the enum will be extended when a dedicated auth server CRD is introduced.
+type AuthServerRef struct {
+	// Kind identifies the type of the referenced resource.
+	// +kubebuilder:validation:Enum=MCPExternalAuthConfig
+	// +kubebuilder:default=MCPExternalAuthConfig
+	Kind string `json:"kind"`
+
+	// Name is the name of the referenced resource in the same namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
 // ToolConfigRef defines a reference to a MCPToolConfig resource.
 // The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 type ToolConfigRef struct {
@@ -970,6 +1016,11 @@ type MCPServerStatus struct {
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
+	// AuthServerConfigHash is the hash of the referenced authServerRef spec,
+	// used to detect configuration changes and trigger reconciliation.
+	// +optional
+	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
 
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional

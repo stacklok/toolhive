@@ -75,6 +75,27 @@ spec:
                       When true, enables audit logging with default configuration
                     type: boolean
                 type: object
+              authServerRef:
+                description: |-
+                  AuthServerRef optionally references a resource that configures an embedded
+                  OAuth 2.0/OIDC authorization server to authenticate MCP clients.
+                  Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
+                properties:
+                  kind:
+                    default: MCPExternalAuthConfig
+                    description: Kind identifies the type of the referenced resource.
+                    enum:
+                    - MCPExternalAuthConfig
+                    type: string
+                  name:
+                    description: Name is the name of the referenced resource in the
+                      same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               authzConfig:
                 description: AuthzConfig defines authorization policy configuration
                   for the proxy
@@ -719,6 +740,11 @@ spec:
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:
+              authServerConfigHash:
+                description: |-
+                  AuthServerConfigHash is the hash of the referenced authServerRef spec,
+                  used to detect configuration changes and trigger reconciliation.
+                type: string
               conditions:
                 description: Conditions represent the latest available observations
                   of the MCPRemoteProxy's state

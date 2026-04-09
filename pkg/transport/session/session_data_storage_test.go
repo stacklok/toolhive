@@ -162,6 +162,48 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		assert.Error(t, err)
 	})
 
+	t.Run("Update on missing key returns false without creating it", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		updated, err := s.Update(ctx, "nonexistent", map[string]string{"k": "v"})
+		require.NoError(t, err)
+		assert.False(t, updated, "Update on absent key must return false")
+
+		_, loadErr := s.Load(ctx, "nonexistent")
+		assert.ErrorIs(t, loadErr, ErrSessionNotFound, "Update must not create the key")
+	})
+
+	t.Run("Update on existing key overwrites metadata", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Upsert(ctx, "sess-update", map[string]string{"v": "original"}))
+
+		updated, err := s.Update(ctx, "sess-update", map[string]string{"v": "updated"})
+		require.NoError(t, err)
+		assert.True(t, updated, "Update on present key must return true")
+
+		loaded, loadErr := s.Load(ctx, "sess-update")
+		require.NoError(t, loadErr)
+		assert.Equal(t, "updated", loaded["v"])
+	})
+
+	t.Run("Update after Delete returns false", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Upsert(ctx, "sess-del", map[string]string{"v": "1"}))
+		require.NoError(t, s.Delete(ctx, "sess-del"))
+
+		updated, err := s.Update(ctx, "sess-del", map[string]string{"v": "2"})
+		require.NoError(t, err)
+		assert.False(t, updated, "Update after Delete must return false")
+	})
+
 	t.Run("Delete removes entry; subsequent Load returns ErrSessionNotFound", func(t *testing.T) {
 		t.Parallel()
 		s := newStorage(t)
@@ -322,9 +364,11 @@ func TestLocalSessionDataStorage(t *testing.T) {
 // simulating an entry that has been idle for that duration.
 func backdateLocalEntry(t *testing.T, s *LocalSessionDataStorage, id string, age time.Duration) {
 	t.Helper()
-	val, ok := s.sessions.Load(id)
+	s.mu.Lock()
+	entry, ok := s.sessions[id]
+	s.mu.Unlock()
 	require.True(t, ok, "entry %q not found for backdating", id)
-	val.(*localDataEntry).lastAccessNano.Store(time.Now().Add(-age).UnixNano())
+	entry.lastAccessNano.Store(time.Now().Add(-age).UnixNano())
 }
 
 // ---------------------------------------------------------------------------

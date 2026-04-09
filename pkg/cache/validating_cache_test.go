@@ -20,11 +20,29 @@ func newStringCache(
 	check func(string, string) error,
 	evict func(string, string),
 ) *ValidatingCache[string, string] {
-	return New(0, load, check, evict)
+	return New(1000, load, check, evict)
 }
 
 // alwaysAliveCheck returns a check function that always reports the entry as alive.
 func alwaysAliveCheck(_ string, _ string) error { return nil }
+
+// ---------------------------------------------------------------------------
+// Construction invariants
+// ---------------------------------------------------------------------------
+
+func TestValidatingCache_New_PanicsOnZeroCapacity(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		New(0, func(_ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
+	})
+}
+
+func TestValidatingCache_New_PanicsOnNegativeCapacity(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		New(-1, func(_ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
+	})
+}
 
 // ---------------------------------------------------------------------------
 // Cache miss / restore
@@ -168,7 +186,7 @@ func TestValidatingCache_CacheHit_TransientCheckError_ReturnsCached(t *testing.T
 }
 
 // ---------------------------------------------------------------------------
-// Set / Delete / Peek / CompareAndSwap
+// Set
 // ---------------------------------------------------------------------------
 
 func TestValidatingCache_Set_StoresValue(t *testing.T) {
@@ -319,11 +337,11 @@ func TestValidatingCache_LRU_CapacityOne(t *testing.T) {
 	assert.Equal(t, []string{"a", "b"}, evictedKeys)
 }
 
-func TestValidatingCache_LRU_UnlimitedCapacity(t *testing.T) {
+func TestValidatingCache_LRU_LargeCapacityNoEviction(t *testing.T) {
 	t.Parallel()
 
 	const n = 100
-	c := New(0, // 0 = unlimited
+	c := New(n+1,
 		func(key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
@@ -334,7 +352,7 @@ func TestValidatingCache_LRU_UnlimitedCapacity(t *testing.T) {
 	for i := range n {
 		c.Get(fmt.Sprintf("k%d", i)) //nolint:errcheck
 	}
-	assert.Equal(t, n, c.Len(), "all entries should be present with unlimited capacity")
+	assert.Equal(t, n, c.Len(), "no entries should be evicted when under capacity")
 }
 
 func TestValidatingCache_LRU_Len(t *testing.T) {
@@ -382,11 +400,9 @@ func TestValidatingCache_Singleflight_ReCheckReturnsPreStoredValue(t *testing.T)
 		result string
 		ok     bool
 	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		result, ok = c.Get("k")
-	}()
+	})
 
 	// Set the value externally to simulate a concurrent writer, then release
 	// the load function. The re-check at the top of the singleflight function
@@ -398,6 +414,56 @@ func TestValidatingCache_Singleflight_ReCheckReturnsPreStoredValue(t *testing.T)
 	require.True(t, ok)
 	assert.Equal(t, "external-value", result)
 	assert.Equal(t, int32(0), loadCount.Load(), "re-check should short-circuit before load is called")
+}
+
+// TestValidatingCache_Singleflight_EvictsLoserWhenLoadRacesWriter covers the
+// path where load() runs to completion but loses the ContainsOrAdd race to a
+// concurrent Set. The loaded-but-discarded value must be passed to onEvict so
+// any resources it holds (e.g. connections) can be cleaned up.
+func TestValidatingCache_Singleflight_EvictsLoserWhenLoadRacesWriter(t *testing.T) {
+	t.Parallel()
+
+	// loadReached is closed when load() is about to return, giving us a hook to
+	// race a Set before ContainsOrAdd is called.
+	loadReached := make(chan struct{})
+	// allowReturn lets the test control exactly when load() returns.
+	allowReturn := make(chan struct{})
+
+	var evictedKey, evictedVal string
+	c := newStringCache(
+		func(_ string) (string, error) {
+			close(loadReached) // signal: load has run
+			<-allowReturn      // wait until test injects the concurrent Set
+			return "from-load", nil
+		},
+		alwaysAliveCheck,
+		func(key, val string) {
+			evictedKey = key
+			evictedVal = val
+		},
+	)
+
+	var wg sync.WaitGroup
+	var gotVal string
+	var gotOk bool
+	wg.Go(func() {
+		gotVal, gotOk = c.Get("k")
+	})
+
+	// Wait until load() is running, then inject a concurrent Set so that
+	// ContainsOrAdd finds the key already present and discards the loaded value.
+	<-loadReached
+	c.Set("k", "from-set")
+	close(allowReturn) // let load() return "from-load"
+	wg.Wait()
+
+	// The concurrent Set wins: caller receives the Set value.
+	require.True(t, gotOk)
+	assert.Equal(t, "from-set", gotVal, "concurrent Set value should win")
+
+	// The loaded-but-discarded value must be passed to onEvict.
+	assert.Equal(t, "k", evictedKey, "onEvict must be called for the discarded loaded value")
+	assert.Equal(t, "from-load", evictedVal, "onEvict must receive the discarded loaded value")
 }
 
 // ---------------------------------------------------------------------------

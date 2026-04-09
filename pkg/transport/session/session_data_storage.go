@@ -75,8 +75,9 @@ func NewLocalSessionDataStorage(ttl time.Duration) (*LocalSessionDataStorage, er
 		return nil, fmt.Errorf("ttl must be a positive duration")
 	}
 	s := &LocalSessionDataStorage{
-		ttl:    ttl,
-		stopCh: make(chan struct{}),
+		sessions: make(map[string]*localDataEntry),
+		ttl:      ttl,
+		stopCh:   make(chan struct{}),
 	}
 	go s.cleanupRoutine()
 	return s, nil

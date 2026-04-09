@@ -32,8 +32,8 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 	BeforeAll(func() {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 
-		By("Deploying Redis for session storage and rate limiting")
-		DeployRedis(ctx, k8sClient, testNamespace, timeout, pollingInterval)
+		By("Ensuring Redis is available for session storage and rate limiting")
+		EnsureRedis(ctx, k8sClient, testNamespace, timeout, pollingInterval)
 
 		By("Creating MCPServer with shared rate limit (maxTokens=3, refillPeriod=1m)")
 		server := &mcpv1alpha1.MCPServer{

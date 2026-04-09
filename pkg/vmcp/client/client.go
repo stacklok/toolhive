@@ -93,8 +93,12 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 //
 // If caBundlePath is non-empty, a custom TLS configuration is applied that trusts both
 // the system root CAs and the certificate(s) in the specified file. This is used for
-// entry-type backends with self-signed or internal CA certificates.
-func newBackendTransport(caBundlePath string) (*http.Transport, error) {
+// entry-type backends with self-signed or internal CA certificates (static mode).
+//
+// If caBundleData is non-empty, the raw PEM bytes are used directly instead of reading
+// from a file. This is used in dynamic mode where CA bundles are fetched from K8s
+// ConfigMaps at discovery time. caBundleData takes precedence over caBundlePath.
+func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transport, error) {
 	var t *http.Transport
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 		t = dt.Clone()
@@ -116,20 +120,32 @@ func newBackendTransport(caBundlePath string) (*http.Transport, error) {
 		}
 	}
 
-	if caBundlePath != "" {
-		caCert, err := os.ReadFile(caBundlePath) //nolint:gosec // CA bundle path is validated by config validator (no path traversal)
+	// Resolve CA certificate PEM data: caBundleData takes precedence over caBundlePath
+	var caPEM []byte
+	switch {
+	case len(caBundleData) > 0:
+		caPEM = caBundleData
+	case caBundlePath != "":
+		var err error
+		caPEM, err = os.ReadFile(caBundlePath) //nolint:gosec // CA bundle path is validated by config validator (no path traversal)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA bundle from %s: %w", caBundlePath, err)
 		}
+	}
 
+	if len(caPEM) > 0 {
 		caCertPool, err := x509.SystemCertPool()
 		if err != nil {
 			// Fall back to empty pool if system certs can't be loaded
 			caCertPool = x509.NewCertPool()
 		}
 
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA certificate from %s", caBundlePath)
+		if !caCertPool.AppendCertsFromPEM(caPEM) {
+			source := "inline data"
+			if len(caBundleData) == 0 && caBundlePath != "" {
+				source = caBundlePath
+			}
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", source)
 		}
 
 		if t.TLSClientConfig == nil {
@@ -238,7 +254,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	//
 	// Clone DefaultTransport per call so each client gets an isolated connection pool,
 	// preventing stale keep-alive connections from one backend affecting others.
-	httpTransport, err := newBackendTransport(target.CABundlePath)
+	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for backend %s: %w", target.WorkloadID, err)
 	}

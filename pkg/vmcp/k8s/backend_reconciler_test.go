@@ -410,3 +410,241 @@ func TestSetupWithManager_RegistersWatches(t *testing.T) {
 	assert.NotNil(t, reconciler.Registry)
 	assert.NotNil(t, reconciler.Discoverer)
 }
+
+// TestReconcile_MCPServerEntry_Success tests successful MCPServerEntry reconciliation
+func TestReconcile_MCPServerEntry_Success(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	mcpServerEntry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "remote-mcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com/mcp",
+			Transport: "streamable-http",
+			GroupRef:  "test-group",
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpServerEntry).
+		Build()
+
+	mockBackend := &vmcp.Backend{
+		ID:      "remote-mcp",
+		Name:    "remote-mcp",
+		BaseURL: "https://mcp.example.com/mcp",
+		Type:    vmcp.BackendTypeEntry,
+	}
+
+	mockDisc := &mockDiscoverer{backend: mockBackend}
+	mockReg := &mockRegistry{}
+
+	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "remote-mcp",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Len(t, mockReg.upsertedBackends, 1)
+	assert.Equal(t, "remote-mcp", mockReg.upsertedBackends[0].ID)
+	assert.Equal(t, vmcp.BackendTypeEntry, mockReg.upsertedBackends[0].Type)
+}
+
+// TestReconcile_MCPServerEntry_GroupRefMismatch tests that MCPServerEntry with non-matching groupRef is removed
+func TestReconcile_MCPServerEntry_GroupRefMismatch(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	mcpServerEntry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "remote-mcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com/mcp",
+			Transport: "streamable-http",
+			GroupRef:  "other-group",
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpServerEntry).
+		Build()
+
+	mockDisc := &mockDiscoverer{}
+	mockReg := &mockRegistry{}
+
+	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "remote-mcp",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Empty(t, mockReg.upsertedBackends)
+	assert.Contains(t, mockReg.removedIDs, "remote-mcp")
+}
+
+// TestReconcile_MCPServerEntry_Deleted tests that deleted MCPServerEntry is removed from registry
+func TestReconcile_MCPServerEntry_Deleted(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	// No MCPServerEntry created — simulates deletion
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	mockDisc := &mockDiscoverer{}
+	mockReg := &mockRegistry{}
+
+	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "deleted-entry",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Empty(t, mockReg.upsertedBackends)
+	assert.Contains(t, mockReg.removedIDs, "deleted-entry")
+}
+
+// TestMapAuthConfigToEntries tests that MapAuthConfigToEntries returns reconcile requests
+// for MCPServerEntries that reference the given ExternalAuthConfig name.
+func TestMapAuthConfigToEntries(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	tests := []struct {
+		name           string
+		authConfigName string
+		entries        []mcpv1alpha1.MCPServerEntry
+		groupRef       string
+		wantNames      []string
+	}{
+		{
+			name:           "matches entry referencing auth config",
+			authConfigName: "my-auth",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						GroupRef:              "test-group",
+						RemoteURL:             "https://example.com",
+						Transport:             "streamable-http",
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "my-auth"},
+					},
+				},
+			},
+			groupRef:  "test-group",
+			wantNames: []string{"entry-1"},
+		},
+		{
+			name:           "skips entry with different group",
+			authConfigName: "my-auth",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						GroupRef:              "other-group",
+						RemoteURL:             "https://example.com",
+						Transport:             "streamable-http",
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "my-auth"},
+					},
+				},
+			},
+			groupRef:  "test-group",
+			wantNames: nil,
+		},
+		{
+			name:           "skips entry referencing different auth config",
+			authConfigName: "my-auth",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						GroupRef:              "test-group",
+						RemoteURL:             "https://example.com",
+						Transport:             "streamable-http",
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "other-auth"},
+					},
+				},
+			},
+			groupRef:  "test-group",
+			wantNames: nil,
+		},
+		{
+			name:           "skips entry with no auth config ref",
+			authConfigName: "my-auth",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						GroupRef:  "test-group",
+						RemoteURL: "https://example.com",
+						Transport: "streamable-http",
+					},
+				},
+			},
+			groupRef:  "test-group",
+			wantNames: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			objs := make([]client.Object, len(tt.entries))
+			for i := range tt.entries {
+				objs[i] = &tt.entries[i]
+			}
+
+			k8sClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			reconciler := newTestReconciler(k8sClient, "default", tt.groupRef, &mockRegistry{}, &mockDiscoverer{})
+			requests := reconciler.MapAuthConfigToEntries(context.Background(), tt.authConfigName)
+
+			var gotNames []string
+			for _, req := range requests {
+				gotNames = append(gotNames, req.Name)
+			}
+			assert.Equal(t, tt.wantNames, gotNames)
+		})
+	}
+}

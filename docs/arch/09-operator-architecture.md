@@ -57,6 +57,7 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
                     │  │  │  │      CORE         │  │  │  │
                     │  │  │  │    MCPServer      │  │  │  │
                     │  │  │  │  MCPRemoteProxy   │  │  │  │
+                    │  │  │  │  MCPServerEntry   │  │  │  │
                     │  │  │  └───────────────────┘  │  │  │
                     │  │  └─────────────────────────┘  │  │
                     │  └───────────────────────────────┘  │
@@ -71,7 +72,7 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 
 | Layer | CRDs | Purpose |
 |-------|------|---------|
-| **Core** | MCPServer, MCPRemoteProxy | Run or proxy MCP servers |
+| **Core** | MCPServer, MCPRemoteProxy, MCPServerEntry | Run, proxy, or declare MCP servers |
 | **Organization** | MCPGroup | Group related servers together |
 | **Aggregation** | VirtualMCPServer, VirtualMCPCompositeToolDefinition | Combine multiple servers into one endpoint |
 | **Discovery** | MCPRegistry | Help clients find available servers |
@@ -90,6 +91,7 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 
 | CRD | Purpose |
 |-----|---------|
+| **MCPServerEntry** | Zero-infrastructure declaration of a remote MCP endpoint |
 | **MCPGroup** | Logical grouping of workloads (status tracking only) |
 | **ToolConfig** | Tool filtering and renaming configuration |
 | **MCPExternalAuthConfig** | Token exchange / header injection configuration |
@@ -106,6 +108,10 @@ graph TB
         Server[MCPServer<br/>Deployment + StatefulSet]
         Proxy[MCPRemoteProxy<br/>Deployment: proxy]
         Registry[MCPRegistry<br/>Deployment: API server]
+    end
+
+    subgraph "Zero-Infrastructure"
+        Entry[MCPServerEntry<br/>No resources]
     end
 
     subgraph "Logical Grouping"
@@ -134,6 +140,10 @@ graph TB
     Proxy -.->|externalAuthConfigRef| ExtAuth
     Proxy -.->|toolConfigRef| ToolCfg
     Proxy -.->|oidcConfigRef| OIDCCfg
+
+    Entry -->|groupRef| Group
+    Entry -.->|externalAuthConfigRef| ExtAuth
+    Entry -.->|caBundleRef| ConfigMap[ConfigMap<br/>CA bundle]
 ```
 
 ### MCPServer
@@ -256,6 +266,24 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpremoteproxy_types.go`
 
 **Controller**: `cmd/thv-operator/controllers/mcpremoteproxy_controller.go`
+
+### MCPServerEntry
+
+Declares a remote MCP endpoint as a zero-infrastructure catalog entry. Unlike MCPServer and MCPRemoteProxy, MCPServerEntry never creates a Deployment, Service, or Pod. vMCP connects directly to the declared remote URL.
+
+**Key fields:**
+- `remoteURL` - URL of the remote MCP server (required)
+- `groupRef` - MCPGroup membership for discovery by VirtualMCPServer
+- `externalAuthConfigRef` - Token exchange for remote service authentication
+- `caBundleRef` - Reference to a ConfigMap containing CA certificate data for TLS verification
+
+The MCPServerEntry controller is validation-only: it validates that referenced resources (groupRef, externalAuthConfigRef, caBundleRef ConfigMap) exist and updates status conditions accordingly. It never probes the remote URL or creates infrastructure.
+
+MCPServerEntry backends are discovered by vMCP in both static mode (listed at startup) and dynamic mode (watched by the BackendReconciler). In dynamic mode, ConfigMap changes trigger re-reconciliation of affected MCPServerEntry backends via a field-indexed watch on `spec.caBundleRef.configMapRef.name`.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpserverentry_types.go`
+
+**Controller**: `cmd/thv-operator/controllers/mcpserverentry_controller.go`
 
 ### MCPGroup
 

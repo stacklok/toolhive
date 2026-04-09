@@ -1,0 +1,235 @@
+# Script middleware demo — 8 dummy MCP servers + VirtualMCPServer
+# Adapted from infra/flux/apps/anthropic-dogfood/mcp-resources.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: script-demo
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: demo-group
+  namespace: script-demo
+spec:
+  description: Demo MCP servers for script middleware prototype
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: slack
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"slack_list_channels","description":"List Slack channels in the workspace","return_value":"#general — Company-wide announcements (1,247 members)\n#engineering — Engineering discussion (342 members)\n#incidents — Active incident coordination (198 members)\n#random — Water cooler (1,102 members)"},{"name":"slack_read_messages","description":"Read recent messages from a channel","input_schema":{"channel":{"type":"string","description":"Channel name or ID"}},"return_value":"[10:32 AM] alice: Deployed v2.4.1 to staging, running smoke tests now\n[10:45 AM] bob: Smoke tests passed, promoting to prod\n[11:02 AM] carol: Prod deploy complete, monitoring dashboards look clean\n[11:15 AM] alice: Seeing elevated p99 on web-app after deploy, investigating\n[11:18 AM] bob: Confirmed — /checkout endpoint latency spiked, rolling back"},{"name":"slack_find_people","description":"Search for people in the workspace","input_schema":{"name":{"type":"string","description":"Person name or username"}},"return_value":"Alice Chen — Senior Engineer, Platform (alice@company.com)\nAlice Wong — Product Manager (awong@company.com)"},{"name":"slack_list_teams","description":"List Slack user groups and teams","return_value":"@engineering — Engineering team (45 members)\n@platform — Platform team (12 members)\n@oncall-primary — Current primary oncall (1 member)\n@product — Product team (18 members)"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: jira
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"jira_list_projects","description":"List Jira projects and boards","return_value":"ID: ENG | Name: Engineering\nID: PROD | Name: Product\nID: INFRA | Name: Infrastructure\nID: SEC | Name: Security"},{"name":"jira_search_issues","description":"Search issues by project, status, or assignee","input_schema":{"query":{"type":"string","description":"Search query or JQL expression"},"project":{"type":"string","description":"Project key to filter by"}},"return_value":"ENG-142: Upgrade auth middleware [In Progress] @alice — priority: High\nENG-157: Fix rate limiter edge case [Open] @bob — priority: Critical\nENG-163: Add retry logic to webhook handler [In Review] @carol — priority: Medium\nINFRA-89: web-app p99 latency regression [Open] @alice — priority: Critical"},{"name":"jira_create_issue","description":"Create a new Jira issue with summary and description","input_schema":{"project":{"type":"string","description":"Project key (e.g. ENG)"},"summary":{"type":"string","description":"Issue summary"},"description":{"type":"string","description":"Detailed description"}},"return_value":"Created ENG-201: Issue created successfully"},{"name":"jira_find_assignee","description":"Find a team member to assign an issue to","input_schema":{"name":{"type":"string","description":"Person name or username"}},"return_value":"Alice Chen (alice@company.com) — Engineering, 3 active issues\nBob Martinez (bob@company.com) — Engineering, 5 active issues\nCarol Park (carol@company.com) — Platform, 2 active issues"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: confluence
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"confluence_list_spaces","description":"List Confluence spaces and knowledge bases","return_value":"ENG — Engineering Wiki\nPROD — Product Specs\nOPS — Operations Runbooks\nHR — People & Culture"},{"name":"confluence_search_pages","description":"Search pages and documentation by keyword","input_schema":{"query":{"type":"string","description":"Search keyword or phrase"}},"return_value":"[OPS] Incident Response Playbook — Updated 3 days ago\n[OPS] web-app Runbook: Latency Escalation — Updated 1 week ago\n[ENG] Deployment Checklist — Updated 1 week ago\n[ENG] API Authentication Guide — Updated 2 days ago"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"github_list_repos","description":"List repositories in the organization","return_value":"acme/api-gateway — API gateway service (Go) ★ 142\nacme/web-app — Customer-facing web application (TypeScript) ★ 89\nacme/auth-service — Authentication and authorization (Rust) ★ 203\nacme/infra — Infrastructure as code (Terraform) ★ 56"},{"name":"github_search_prs","description":"Search pull requests by status, author, or repo","input_schema":{"query":{"type":"string","description":"Search query"},"repo":{"type":"string","description":"Repository name"}},"return_value":"#847 [open] Add rate limiting to /api/v2 endpoints — @alice (2 approvals, CI passing)\n#842 [open] Fix memory leak in connection pool — @bob (needs review)\n#839 [merged 2h ago] Upgrade TLS certificates — @carol\n#835 [merged 6h ago] Bump checkout-service dependency to v2.4.1 — @alice"},{"name":"github_create_issue","description":"Create a GitHub issue with labels and assignees","input_schema":{"repo":{"type":"string","description":"Repository (org/repo)"},"title":{"type":"string","description":"Issue title"},"body":{"type":"string","description":"Issue body in markdown"},"labels":{"type":"string","description":"Comma-separated labels"}},"return_value":"Created issue #312 in acme/api-gateway"},{"name":"github_search_code","description":"Search code across repositories","input_schema":{"query":{"type":"string","description":"Code search query"},"repo":{"type":"string","description":"Optional repository filter"}},"return_value":"acme/web-app/src/checkout/handler.ts:42 — async function processCheckout(cart: Cart)\nacme/web-app/src/middleware/timeout.ts:15 — const CHECKOUT_TIMEOUT_MS = 5000\nacme/api-gateway/src/routes/checkout.go:28 — func ProxyCheckout(w http.ResponseWriter, r *http.Request)"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: pagerduty
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"pagerduty_list_services","description":"List monitored services and their status","return_value":"api-gateway — Operational ✓\nauth-service — Operational ✓\nweb-app — Degraded Performance ⚠\ndatabase-primary — Operational ✓\ncheckout-service — Degraded Performance ⚠\ncache-redis — Operational ✓"},{"name":"pagerduty_list_incidents","description":"List active incidents by service and severity","input_schema":{"service":{"type":"string","description":"Service name to filter"},"status":{"type":"string","description":"Incident status (triggered, acknowledged, resolved)"}},"return_value":"INC-4521 [triggered] web-app: Elevated p99 latency (>2s) — SEV2 — 23 min ago\nINC-4522 [triggered] checkout-service: Timeout errors on payment flow — SEV1 — 18 min ago\nINC-4519 [acknowledged] web-app: Increased error rate on /checkout — SEV2 — 45 min ago\nINC-4515 [resolved] api-gateway: Certificate expiry warning — SEV3 — 2h ago"},{"name":"pagerduty_ack_incident","description":"Acknowledge or resolve an incident","input_schema":{"incident_id":{"type":"string","description":"Incident ID (e.g. INC-4521)"},"action":{"type":"string","description":"Action: acknowledge or resolve"}},"return_value":"Acknowledged INC-4521 — assigned to current oncall (alice@company.com)"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: datadog
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"datadog_list_dashboards","description":"List monitoring dashboards","return_value":"API Gateway Overview — Last viewed 2h ago\nService Health Matrix — Last viewed 30m ago\nDatabase Performance — Last viewed 1h ago\nDeployment Tracker — Last viewed 4h ago"},{"name":"datadog_query_metrics","description":"Query metrics, traces, and service health","input_schema":{"query":{"type":"string","description":"Metric query (e.g. avg:system.cpu.user)"},"timeframe":{"type":"string","description":"Time range (e.g. last_1h, last_24h)"}},"return_value":"avg:http.request.duration{service:web-app} [last_1h]\n  p50: 145ms | p95: 1230ms | p99: 2890ms ⚠ (SLO breach)\n  Request rate: 8,421 req/min (↓ 15% from baseline)\n  Error rate: 4.7% ⚠ (baseline: 0.3%)\n  Top error: 504 Gateway Timeout on /checkout — 312 occurrences"},{"name":"datadog_search_logs","description":"Search application logs by service or keyword","input_schema":{"query":{"type":"string","description":"Log search query"},"service":{"type":"string","description":"Service name filter"}},"return_value":"[11:18:42] ERROR web-app: Timeout connecting to checkout-service timeout=5s path=/checkout\n[11:18:38] ERROR checkout-service: upstream dependency timeout service=payment-gateway\n[11:17:55] WARN web-app: Retry exhausted for /checkout attempts=3 last_error=504\n[11:15:02] INFO web-app: Deployment v2.4.1 rollout complete replicas=5/5\n[11:02:33] INFO web-app: Starting deployment v2.4.1 initiated_by=alice"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: google-drive
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"gdrive_list_files","description":"List files and folders in shared drives","return_value":"Engineering Shared Drive\n  Q1 Architecture Review.docx — Modified 3 days ago\n  Service Dependencies.xlsx — Modified 1 week ago\n  Incident Postmortem Template.docx — Modified 2 weeks ago"},{"name":"gdrive_search","description":"Search for documents, spreadsheets, and presentations","input_schema":{"query":{"type":"string","description":"Search query"}},"return_value":"Q4 Planning Doc.docx — Product Shared Drive — Modified Dec 15\nAPI Migration Tracker.xlsx — Engineering Shared Drive — Modified Jan 10\nCheckout Service Postmortem (Dec).docx — Engineering Shared Drive — Modified Dec 22"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: linear
+  namespace: script-demo
+spec:
+  image: ghcr.io/stackloklabs/dummy-mcp:0.1.3
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8100
+  groupRef: demo-group
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: TOOLS_CONFIG
+              value: '{"tools":[{"name":"linear_list_projects","description":"List Linear projects and cycles","return_value":"Q1 Platform Hardening — 67% complete (ends Mar 31)\nAuth Service Rewrite — 45% complete (ends Feb 28)\nAPI v2 Migration — Complete\nQ2 Planning — Not started"},{"name":"linear_search_issues","description":"Search issues by project, assignee, or priority","input_schema":{"query":{"type":"string","description":"Search query"},"project":{"type":"string","description":"Project name filter"}},"return_value":"PLAT-234 [In Progress] Implement connection pooling — P1 @alice\nPLAT-241 [Todo] Add circuit breaker to external calls — P2 @bob\nPLAT-245 [In Review] Update health check endpoints — P1 @carol"}]}'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: demo-vmcp
+  namespace: script-demo
+spec:
+  config:
+    groupRef: demo-group
+  incomingAuth:
+    type: anonymous
+  serviceType: NodePort

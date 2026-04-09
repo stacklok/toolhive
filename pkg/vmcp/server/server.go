@@ -122,6 +122,11 @@ type Config struct {
 	// If nil, no authorization is performed.
 	AuthzMiddleware func(http.Handler) http.Handler
 
+	// ScriptMiddleware is the optional Starlark script execution middleware.
+	// Sits above (outer to) authz so scripts only see/call authorized tools.
+	// If nil, the execute_tool_script virtual tool is not available.
+	ScriptMiddleware func(http.Handler) http.Handler
+
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
@@ -554,10 +559,10 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
 	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
-	//   authz → backend-enrichment → MCP-parsing → telemetry
+	//   authz → script → backend-enrichment → MCP-parsing → telemetry
 	// Execution order: recovery → header-val → auth+parser → audit →
-	//   discovery → annotation-enrichment → authz → backend-enrichment →
-	//   MCP-parsing → telemetry → handler
+	//   discovery → annotation-enrichment → authz → script →
+	//   backend-enrichment → MCP-parsing → telemetry → handler
 
 	var mcpHandler http.Handler = streamableServer
 
@@ -587,6 +592,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.AuthzMiddleware != nil {
 		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
 		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
+	}
+
+	// Apply script middleware if configured (runs AFTER authz in execution).
+	// Wrapping after authz makes it outer: intercepts execute_tool_script calls
+	// before they reach authz, but inner tool calls from scripts flow through authz.
+	if s.config.ScriptMiddleware != nil {
+		mcpHandler = s.config.ScriptMiddleware(mcpHandler)
+		slog.Info("script middleware enabled for MCP endpoints")
 	}
 
 	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).

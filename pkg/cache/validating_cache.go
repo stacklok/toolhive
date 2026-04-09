@@ -46,7 +46,7 @@ type ValidatingCache[K comparable, V any] struct {
 	// means the entry is alive. Returning ErrExpired means it has definitively
 	// expired (the entry is evicted and onEvict is called). Any other error is
 	// treated as a transient failure and the cached value is returned unchanged.
-	check func(key K) error
+	check func(key K, val V) error
 
 	// onEvict is called after a confirmed-expired or LRU-evicted entry has been
 	// removed from the cache. It is always called outside the internal mutex.
@@ -75,7 +75,7 @@ type cacheEntry[K comparable, V any] struct {
 func New[K comparable, V any](
 	capacity int,
 	load func(K) (V, error),
-	check func(K) error,
+	check func(K, V) error,
 	onEvict func(K, V),
 ) *ValidatingCache[K, V] {
 	if capacity < 0 {
@@ -102,7 +102,7 @@ func New[K comparable, V any](
 // returned. Transient check errors leave the entry in place and return the
 // cached value.
 func (c *ValidatingCache[K, V]) getHit(key K, e *cacheEntry[K, V]) (V, bool) {
-	if err := c.check(key); err != nil {
+	if err := c.check(key, e.val); err != nil {
 		if errors.Is(err, ErrExpired) {
 			var evicted bool
 			c.mu.Lock()
@@ -206,58 +206,6 @@ func (c *ValidatingCache[K, V]) Set(key K, value V) {
 	if evicted != nil && c.onEvict != nil {
 		c.onEvict(evicted.key, evicted.val)
 	}
-}
-
-// Delete removes key from the cache.
-func (c *ValidatingCache[K, V]) Delete(key K) {
-	c.mu.Lock()
-	if e, ok := c.entries[key]; ok {
-		c.evictEntryLocked(e)
-	}
-	c.mu.Unlock()
-}
-
-// Peek returns the cached V value for key without updating the LRU order,
-// running a liveness check, or triggering a restore on a cache miss.
-// Used by callers that need to read the current in-memory value without
-// side effects (e.g. reading metadata for comparison inside a liveness check).
-func (c *ValidatingCache[K, V]) Peek(key K) (V, bool) {
-	c.mu.Lock()
-	e, ok := c.entries[key]
-	c.mu.Unlock()
-	if !ok {
-		var zero V
-		return zero, false
-	}
-	return e.val, true
-}
-
-// CompareAndSwap atomically replaces the value stored under key from old to
-// replacement. The comparison uses == semantics: for interface types this
-// means pointer equality when the dynamic value is a pointer. Returns true if
-// the swap was performed. Returns false (without panicking) if V's dynamic
-// type is not comparable (e.g. slices, maps, funcs).
-func (c *ValidatingCache[K, V]) CompareAndSwap(key K, old, replacement V) (swapped bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e, ok := c.entries[key]
-	if !ok {
-		return false
-	}
-	// Compare via any to use interface == semantics (pointer equality for
-	// pointer-backed types, which is correct for the session manager use case).
-	// Guard with recover in case V's dynamic type is not comparable.
-	defer func() {
-		if recover() != nil {
-			swapped = false
-		}
-	}()
-	if any(e.val) != any(old) {
-		return false
-	}
-	e.val = replacement
-	c.lru.MoveToFront(e.elem)
-	return true
 }
 
 // Len returns the number of entries currently in the cache.

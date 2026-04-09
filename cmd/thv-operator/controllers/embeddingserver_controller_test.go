@@ -147,28 +147,28 @@ func TestEmbeddingServer_GetImagePullPolicy(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		imagePullPolicy string
-		expected        string
+		imagePullPolicy corev1.PullPolicy
+		expected        corev1.PullPolicy
 	}{
 		{
 			name:            "default pull policy",
 			imagePullPolicy: "",
-			expected:        "IfNotPresent",
+			expected:        corev1.PullIfNotPresent,
 		},
 		{
 			name:            "Never pull policy",
-			imagePullPolicy: "Never",
-			expected:        "Never",
+			imagePullPolicy: corev1.PullNever,
+			expected:        corev1.PullNever,
 		},
 		{
 			name:            "Always pull policy",
-			imagePullPolicy: "Always",
-			expected:        "Always",
+			imagePullPolicy: corev1.PullAlways,
+			expected:        corev1.PullAlways,
 		},
 		{
 			name:            "IfNotPresent pull policy",
-			imagePullPolicy: "IfNotPresent",
-			expected:        "IfNotPresent",
+			imagePullPolicy: corev1.PullIfNotPresent,
+			expected:        corev1.PullIfNotPresent,
 		},
 	}
 

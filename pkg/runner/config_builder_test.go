@@ -990,9 +990,8 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This test uses dynamically selected ports and must run serially to avoid port races.
 func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
-	t.Parallel()
-
 	mockValidator := &mockEnvVarValidator{}
 
 	// Find available ports dynamically to avoid flaky failures when a
@@ -1052,9 +1051,9 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
+		//nolint:paralleltest // Keep the subtests serial for stable port validation.
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			ctx := context.Background()
 			envVars := make(map[string]string)
 

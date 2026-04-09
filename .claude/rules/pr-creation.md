@@ -16,6 +16,10 @@ Do NOT leave optional sections empty or with only placeholder/template text. Eit
 - **Does this introduce a user-facing change?**: Describe the change from the user's perspective. Write "No" if not applicable.
 - **Special notes for reviewers**: Non-obvious design decisions, known limitations, areas wanting extra scrutiny, or planned follow-up work.
 
+## PR Scope
+
+Each PR must contain only related changes. If a bug fix, refactor, or unrelated cleanup is discovered while working on a feature, open a separate PR for it. Mixed-scope PRs are harder to review and harder to revert cleanly.
+
 ## Style guidelines
 
 - Keep the PR title under 70 characters, imperative mood, no trailing period.

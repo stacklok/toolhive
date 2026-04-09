@@ -56,7 +56,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -69,7 +69,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 			},
@@ -96,7 +96,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -136,7 +136,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						GroupRef: testGroupName,
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -204,6 +204,13 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 						return nil
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
 				}).
 				Build()
 
@@ -348,6 +355,13 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 						return nil
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
 				}).
 				Build()
 
@@ -529,6 +543,13 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
 				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
+				}).
 				Build()
 
 			r := &MCPGroupReconciler{
@@ -570,6 +591,13 @@ func TestMCPGroupReconciler_GroupNotFound(t *testing.T) {
 				return nil
 			}
 			return []string{mcpRemoteProxy.Spec.GroupRef}
+		}).
+		WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			if mcpServerEntry.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpServerEntry.Spec.GroupRef}
 		}).
 		Build()
 
@@ -673,6 +701,13 @@ func TestMCPGroupReconciler_Conditions(t *testing.T) {
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
 				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
+				}).
 				Build()
 
 			r := &MCPGroupReconciler{
@@ -753,6 +788,13 @@ func TestMCPGroupReconciler_Finalizer(t *testing.T) {
 				return nil
 			}
 			return []string{mcpRemoteProxy.Spec.GroupRef}
+		}).
+		WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			if mcpServerEntry.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpServerEntry.Spec.GroupRef}
 		}).
 		Build()
 
@@ -881,6 +923,13 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 						return nil
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
 				}).
 				Build()
 
@@ -1042,6 +1091,13 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
 				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
+				}).
 				Build()
 
 			r := &MCPGroupReconciler{
@@ -1173,6 +1229,13 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 						return nil
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
 				}).
 				Build()
 
@@ -1338,6 +1401,13 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
 				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
+				}).
 				Build()
 
 			r := &MCPGroupReconciler{
@@ -1429,6 +1499,13 @@ func TestMCPGroupReconciler_updateReferencingRemoteProxiesOnDeletion(t *testing.
 						return nil
 					}
 					return []string{mcpRemoteProxy.Spec.GroupRef}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef}
 				}).
 				Build()
 

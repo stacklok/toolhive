@@ -161,7 +161,7 @@ var _ = Describe("VirtualMCPServer Global ExcludeAllTools", Ordered, func() {
 
 			// Verify each backend is running
 			for _, backend := range backends {
-				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning),
+				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseReady),
 					fmt.Sprintf("Backend %s should be running", backend.Name))
 			}
 

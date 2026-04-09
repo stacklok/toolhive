@@ -634,24 +634,24 @@ curl http://localhost:8080/api/v1/registry
 ```yaml
 status:
   phase: Ready
-  syncStatus:
-    phase: Complete
-    message: "Successfully synced registry"
-    lastSyncTime: "2025-10-13T12:00:00Z"
-    lastSyncHash: "abc123def456"
-  apiStatus:
-    phase: Ready
-    endpoint: "http://company-registry-api.default.svc.cluster.local:8080"
+  message: "Registry API is ready and serving requests"
+  url: "http://company-registry-api.default.svc.cluster.local:8080"
+  readyReplicas: 1
+  observedGeneration: 1
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Ready
+      message: "Registry API is ready and serving requests"
 ```
 
 **Phases:**
-- `Pending` - Initial state
-- `Syncing` - Fetching registry data
-- `Ready` - Registry available
-- `Failed` - Sync failed
+- `Pending` - Initial state, deployment not ready yet
+- `Ready` - Registry API is ready and serving requests
+- `Failed` - Deployment or reconciliation failed
 - `Terminating` - Registry being deleted
 
-**Implementation**: `cmd/thv-operator/pkg/mcpregistrystatus/`
+**Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
 ### Storage
 

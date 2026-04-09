@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	appconfig "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -989,9 +990,8 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This test uses dynamically selected ports and must run serially to avoid port races.
 func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
-	t.Parallel()
-
 	mockValidator := &mockEnvVarValidator{}
 
 	// Find available ports dynamically to avoid flaky failures when a
@@ -1051,9 +1051,9 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
+		//nolint:paralleltest // Keep the subtests serial for stable port validation.
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			ctx := context.Background()
 			envVars := make(map[string]string)
 
@@ -1290,6 +1290,131 @@ func TestProcessVolumeMounts_SourcePathValidation(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestWithRegistrySourceURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		apiURL              string
+		registryURL         string
+		expectedAPIURL      string
+		expectedRegistryURL string
+	}{
+		{
+			name:                "both URLs set",
+			apiURL:              "https://api.example.com",
+			registryURL:         "https://registry.example.com",
+			expectedAPIURL:      "https://api.example.com",
+			expectedRegistryURL: "https://registry.example.com",
+		},
+		{
+			name:                "both empty",
+			apiURL:              "",
+			registryURL:         "",
+			expectedAPIURL:      "",
+			expectedRegistryURL: "",
+		},
+		{
+			name:                "only apiURL set",
+			apiURL:              "https://api.example.com",
+			registryURL:         "",
+			expectedAPIURL:      "https://api.example.com",
+			expectedRegistryURL: "",
+		},
+		{
+			name:                "only registryURL set",
+			apiURL:              "",
+			registryURL:         "https://registry.example.com",
+			expectedAPIURL:      "",
+			expectedRegistryURL: "https://registry.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			opt := WithRegistrySourceURLs(tt.apiURL, tt.registryURL)
+			err := opt(builder)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedAPIURL, builder.config.RegistryAPIURL)
+			assert.Equal(t, tt.expectedRegistryURL, builder.config.RegistryURL)
+		})
+	}
+}
+
+func TestResolveRegistrySourceURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		serverMetadata regtypes.ServerMetadata
+		appConfig      *appconfig.Config
+		expectedAPI    string
+		expectedReg    string
+	}{
+		{
+			name:           "nil metadata returns empty strings",
+			serverMetadata: nil,
+			appConfig: &appconfig.Config{
+				RegistryApiUrl: "https://api.example.com",
+				RegistryUrl:    "https://registry.example.com",
+			},
+			expectedAPI: "",
+			expectedReg: "",
+		},
+		{
+			name:           "nil appConfig returns empty strings",
+			serverMetadata: &regtypes.ImageMetadata{},
+			appConfig:      nil,
+			expectedAPI:    "",
+			expectedReg:    "",
+		},
+		{
+			name:           "non-nil metadata with both config URLs set",
+			serverMetadata: &regtypes.ImageMetadata{},
+			appConfig: &appconfig.Config{
+				RegistryApiUrl: "https://api.example.com",
+				RegistryUrl:    "https://registry.example.com",
+			},
+			expectedAPI: "https://api.example.com",
+			expectedReg: "https://registry.example.com",
+		},
+		{
+			name:           "non-nil metadata with only RegistryApiUrl set",
+			serverMetadata: &regtypes.ImageMetadata{},
+			appConfig: &appconfig.Config{
+				RegistryApiUrl: "https://api.example.com",
+				RegistryUrl:    "",
+			},
+			expectedAPI: "https://api.example.com",
+			expectedReg: "",
+		},
+		{
+			name:           "non-nil metadata with only RegistryUrl set",
+			serverMetadata: &regtypes.ImageMetadata{},
+			appConfig: &appconfig.Config{
+				RegistryApiUrl: "",
+				RegistryUrl:    "https://registry.example.com",
+			},
+			expectedAPI: "",
+			expectedReg: "https://registry.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiURL, registryURL := ResolveRegistrySourceURLs(tt.serverMetadata, tt.appConfig)
+			assert.Equal(t, tt.expectedAPI, apiURL)
+			assert.Equal(t, tt.expectedReg, registryURL)
 		})
 	}
 }

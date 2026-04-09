@@ -175,7 +175,7 @@ func TestValidatingMiddleware(t *testing.T) {
 		assert.Equal(t, "Request denied by policy", errObj["message"])
 	})
 
-	t.Run("Denied Request - Out-of-Range Code Defaults to 403", func(t *testing.T) {
+	t.Run("Denied Request - Ignores Webhook Code Field", func(t *testing.T) {
 		mockResponse.Allowed = false
 		mockResponse.Message = "blocked"
 		mockResponse.Code = 200 // out-of-range (not 4xx-5xx) should default to 403
@@ -194,7 +194,7 @@ func TestValidatingMiddleware(t *testing.T) {
 		mw(nextHandler).ServeHTTP(rr, req)
 
 		assert.False(t, nextCalled)
-		assert.Equal(t, http.StatusForbidden, rr.Code, "Out-of-range webhook code should be normalized to 403")
+		assert.Equal(t, http.StatusForbidden, rr.Code, "Webhook code should be ignored and default to 403")
 	})
 
 	t.Run("Webhook Error - Fail Policy", func(t *testing.T) {

@@ -42,7 +42,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "default",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -52,6 +52,12 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 								},
 								Key: "registry.json",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"default"},
 						},
 					},
 				},
@@ -139,7 +145,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "default",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -149,6 +155,12 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 								},
 								Key: "registry.json",
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"default"},
 						},
 					},
 					PodTemplateSpec: &runtime.RawExtension{
@@ -180,7 +192,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "private-git",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -198,6 +210,12 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 									},
 								},
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "private-git",
+							Sources: []string{"private-git"},
 						},
 					},
 				},
@@ -250,7 +268,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "private-git-1",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -286,6 +304,16 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 									},
 								},
 							},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "private-git-1",
+							Sources: []string{"private-git-1"},
+						},
+						{
+							Name:    "private-git-2",
+							Sources: []string{"private-git-2"},
 						},
 					},
 				},
@@ -853,8 +881,11 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 					{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
+				},
+				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+					{Name: "default", Sources: []string{"default"}},
 				},
 			},
 		}
@@ -875,8 +906,11 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 					{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
+				},
+				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+					{Name: "default", Sources: []string{"default"}},
 				},
 				PodTemplateSpec: &runtime.RawExtension{
 					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"registry-creds"}]}}`),
@@ -895,23 +929,26 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 	t.Run("different podtemplatespec produces different hash", func(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
-		base := mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
-				{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
-			},
+		baseSources := []mcpv1alpha1.MCPRegistrySourceConfig{
+			{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
+		}
+		baseRegistries := []mcpv1alpha1.MCPRegistryViewConfig{
+			{Name: "default", Sources: []string{"default"}},
 		}
 
 		registry1 := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries:      base.Registries,
+				Sources:         baseSources,
+				Registries:      baseRegistries,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-a"}]}}`)},
 			},
 		}
 		registry2 := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries:      base.Registries,
+				Sources:         baseSources,
+				Registries:      baseRegistries,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-b"}]}}`)},
 			},
 		}
@@ -944,7 +981,7 @@ func TestEnsureDeployment(t *testing.T) {
 				UID:       types.UID("test-uid"),
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 					{
 						Name:   "default",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -954,6 +991,12 @@ func TestEnsureDeployment(t *testing.T) {
 							},
 							Key: "registry.json",
 						},
+					},
+				},
+				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+					{
+						Name:    "default",
+						Sources: []string{"default"},
 					},
 				},
 			},
@@ -1023,14 +1066,18 @@ func TestEnsureDeployment(t *testing.T) {
 		require.NoError(t, err)
 		originalHash := original.Spec.Template.Annotations[configHashAnnotation]
 
-		// Modify the spec by adding a registry entry
-		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryConfig{
+		// Modify the spec by adding a source entry
+		mcpRegistry.Spec.Sources = append(mcpRegistry.Spec.Sources, mcpv1alpha1.MCPRegistrySourceConfig{
 			Name:   "extra",
 			Format: mcpv1alpha1.RegistryFormatToolHive,
 			ConfigMapRef: &corev1.ConfigMapKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
 				Key:                  "extra.json",
 			},
+		})
+		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryViewConfig{
+			Name:    "extra",
+			Sources: []string{"extra"},
 		})
 		configManager = config.NewConfigManager(mcpRegistry)
 
@@ -1211,13 +1258,17 @@ func TestEnsureDeployment(t *testing.T) {
 		require.NoError(t, err)
 
 		// Modify the MCPRegistry spec to trigger an update
-		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryConfig{
+		mcpRegistry.Spec.Sources = append(mcpRegistry.Spec.Sources, mcpv1alpha1.MCPRegistrySourceConfig{
 			Name:   "extra",
 			Format: mcpv1alpha1.RegistryFormatToolHive,
 			ConfigMapRef: &corev1.ConfigMapKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
 				Key:                  "extra.json",
 			},
+		})
+		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryViewConfig{
+			Name:    "extra",
+			Sources: []string{"extra"},
 		})
 		configManager = config.NewConfigManager(mcpRegistry)
 

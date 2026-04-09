@@ -40,11 +40,15 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "My MCP Registry"
-  registries:
-    - name: configmap-registry
+  sources:
+    - name: configmap-source
       configMapRef:
         name: my-registry-data
         key: registry.json
+  registries:
+    - name: default
+      sources:
+        - configmap-source
 ```
 
 Apply with:
@@ -60,7 +64,7 @@ Configure automatic synchronization with interval-based policies per registry:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -68,6 +72,10 @@ spec:
         key: registry.json
       syncPolicy:
         interval: "1h"  # Sync every hour
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 Supported intervals:
@@ -110,12 +118,16 @@ Store registry data in Kubernetes ConfigMaps:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive  # or "upstream"
       configMapRef:
         name: registry-data
         key: registry.json  # required
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 ### Git Source
@@ -124,13 +136,17 @@ Synchronize from Git repositories:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
         repository: "https://github.com/org/mcp-registry"
         branch: "main"
         path: "registry.json"  # optional, defaults to "registry.json"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 Supported repository URL formats:
@@ -162,7 +178,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Private MCP Registry"
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
@@ -176,6 +192,10 @@ spec:
             key: password
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 **Authentication notes:**
@@ -192,11 +212,15 @@ Synchronize from HTTP/HTTPS API endpoints compatible with
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       api:
         endpoint: "https://registry.example.com"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 The API source automatically detects the registry format by probing the endpoint:
@@ -218,25 +242,33 @@ Example configurations:
 **Internal ToolHive Registry API:**
 ```yaml
 spec:
-  registries:
-    - name: default
+  sources:
+    - name: internal-api
       format: toolhive
       api:
         endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
       syncPolicy:
         interval: "30m"
+  registries:
+    - name: default
+      sources:
+        - internal-api
 ```
 
 **External Registry API:**
 ```yaml
 spec:
-  registries:
-    - name: default
+  sources:
+    - name: upstream
       format: toolhive
       api:
         endpoint: "https://registry.modelcontextprotocol.io/"
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - upstream
 ```
 
 **Notes:**
@@ -244,89 +276,6 @@ spec:
 - Format detection is automatic (ToolHive vs Upstream)
 - HTTPS is recommended for production use
 - Authentication support planned for future release
-
-### PVC Source
-
-Store registry data in PersistentVolumeClaims for dynamic, persistent storage:
-
-```yaml
-spec:
-  registries:
-    - name: production
-      format: toolhive
-      pvcRef:
-        claimName: registry-data-pvc
-        path: production/registry.json  # Path within the PVC
-      syncPolicy:
-        interval: "1h"
-```
-
-**How PVC mounting works:**
-- Each registry gets its own volume mount at `/config/registry/{registryName}/`
-- File path becomes: `/config/registry/{registryName}/{path}`
-- Multiple registries can share the same PVC by mounting it at different paths
-- Consistent with ConfigMap source behavior (all sources use `{registryName}` pattern)
-
-**PVC Structure Examples:**
-
-Single PVC with multiple registries:
-```
-PVC "shared-data":
-  /prod-data/registry.json
-  /dev-data/registry.json
-
-Registry "production": pvcRef: {claimName: shared-data, path: prod-data/registry.json}
-→ Mounted at: /config/registry/production/
-→ File path: /config/registry/production/prod-data/registry.json
-
-Registry "development": pvcRef: {claimName: shared-data, path: dev-data/registry.json}
-→ Mounted at: /config/registry/development/
-→ File path: /config/registry/development/dev-data/registry.json
-
-Note: Same PVC mounted twice at different paths, allowing independent registry access
-```
-
-**Populating PVC Data:**
-
-The PVC can be populated using:
-- **Kubernetes Job** (recommended for initial setup)
-- **Init container** in a deployment
-- **Manual copy**: `kubectl cp registry.json pod:/path`
-- **CSI driver** that provides pre-populated data
-- **External sync process** that writes to the PVC
-
-Example populate Job:
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: populate-registry
-spec:
-  template:
-    spec:
-      containers:
-      - name: populate
-        image: busybox
-        command: ["/bin/sh", "-c"]
-        args:
-        - |
-          mkdir -p /data/production
-          cat > /data/production/registry.json <<EOF
-          {"version": "1.0.0", "servers": {...}}
-          EOF
-        volumeMounts:
-        - name: data
-          mountPath: /data
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: registry-data-pvc
-      restartPolicy: OnFailure
-```
-
-**See Also:**
-- Complete PVC example: [examples/operator/mcp-registries/mcpregistry-pvc.yaml](../../examples/operator/mcp-registries/mcpregistry-pvc.yaml)
-- Multi-source example: [examples/operator/mcp-registries/mcpregistry-multi-source.yaml](../../examples/operator/mcp-registries/mcpregistry-multi-source.yaml)
 
 ### Registry Formats
 
@@ -347,7 +296,7 @@ Each registry configuration can define its own filtering rules:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: production
       format: toolhive
       configMapRef:
@@ -365,9 +314,13 @@ spec:
           exclude:
             - "experimental"
             - "deprecated"
+  registries:
+    - name: default
+      sources:
+        - production
 ```
 
-Filtering is applied per-registry, allowing different filtering rules for different registry sources in the same MCPRegistry.
+Filtering is applied per-source, allowing different filtering rules for different data sources in the same MCPRegistry.
 
 ## Image Validation
 
@@ -632,14 +585,18 @@ metadata:
   name: production-registry
 spec:
   displayName: "Production MCP Servers"
-  registries:
-    - name: default
+  sources:
+    - name: prod-source
       format: toolhive
       configMapRef:
         name: prod-registry-data
         key: registry.json
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - prod-source
   enforceServers: true
 ```
 
@@ -651,14 +608,18 @@ metadata:
   name: dev-registry
 spec:
   displayName: "Development MCP Servers"
-  registries:
-    - name: default
+  sources:
+    - name: dev-source
       format: toolhive
       git:
         repository: "https://github.com/org/dev-mcp-registry"
         branch: "develop"
         path: "registry.json"
   # No sync policy = manual sync only
+  registries:
+    - name: default
+      sources:
+        - dev-source
 ```
 
 ### Private Git Repository Registry
@@ -679,8 +640,8 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Private Organization Registry"
-  registries:
-    - name: default
+  sources:
+    - name: private-source
       format: toolhive
       git:
         repository: "https://github.com/myorg/private-mcp-servers"
@@ -693,11 +654,15 @@ spec:
             key: token
       syncPolicy:
         interval: "30m"
+  registries:
+    - name: default
+      sources:
+        - private-source
 ```
 
-### Multiple Registries
+### Multiple Sources
 
-You can configure multiple registry sources in a single MCPRegistry:
+You can configure multiple data sources in a single MCPRegistry and aggregate them into registry views:
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -706,7 +671,7 @@ metadata:
   name: multi-source-registry
 spec:
   displayName: "Multi-Source Registry"
-  registries:
+  sources:
     - name: production
       format: toolhive
       git:
@@ -728,9 +693,14 @@ spec:
         tags:
           include:
             - "development"
+  registries:
+    - name: default
+      sources:
+        - production
+        - development
 ```
 
-Each registry configuration must have a unique `name` within the MCPRegistry.
+Each source must have a unique `name` within the MCPRegistry. Registry views reference sources by name.
 
 ## See Also
 

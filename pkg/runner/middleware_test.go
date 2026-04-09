@@ -8,10 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
@@ -19,9 +23,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
+	"github.com/stacklok/toolhive/pkg/webhook/mutating"
+	"github.com/stacklok/toolhive/pkg/webhook/validating"
 )
 
 // createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
@@ -735,4 +745,172 @@ func TestAddAuthzMiddleware_EmptyPath(t *testing.T) {
 	result, err := addAuthzMiddleware(nil, "", nil)
 	require.NoError(t, err)
 	assert.Empty(t, result, "empty path should produce no middleware")
+}
+
+func TestAddRateLimitMiddleware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		config       *RunConfig
+		wantAppended bool
+		wantErr      bool
+	}{
+		{
+			name:         "nil RateLimitConfig returns input unchanged",
+			config:       &RunConfig{},
+			wantAppended: false,
+		},
+		{
+			name: "rate limit without Redis returns error",
+			config: &RunConfig{
+				RateLimitConfig: &v1alpha1.RateLimitConfig{
+					Shared: &v1alpha1.RateLimitBucket{
+						MaxTokens:    10,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid config appends middleware",
+			config: &RunConfig{
+				Name:               "test-server",
+				RateLimitNamespace: "default",
+				RateLimitConfig: &v1alpha1.RateLimitConfig{
+					Shared: &v1alpha1.RateLimitBucket{
+						MaxTokens:    10,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+				ScalingConfig: &ScalingConfig{
+					SessionRedis: &SessionRedisConfig{
+						Address: "redis:6379",
+						DB:      0,
+					},
+				},
+			},
+			wantAppended: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			initial := []types.MiddlewareConfig{{Type: "existing"}}
+			got, err := addRateLimitMiddleware(initial, tt.config)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "sessionStorage")
+				return
+			}
+			require.NoError(t, err)
+
+			if !tt.wantAppended {
+				assert.Equal(t, initial, got)
+				return
+			}
+
+			require.Len(t, got, len(initial)+1)
+			added := got[len(got)-1]
+			assert.Equal(t, ratelimit.MiddlewareType, added.Type)
+
+			var params ratelimit.MiddlewareParams
+			require.NoError(t, json.Unmarshal(added.Parameters, &params))
+			assert.Equal(t, "default", params.Namespace)
+			assert.Equal(t, "test-server", params.ServerName)
+			assert.Equal(t, "redis:6379", params.RedisAddr)
+			assert.NotNil(t, params.Config)
+		})
+	}
+}
+
+func TestPopulateMiddlewareConfigs_RateLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		config        *RunConfig
+		wantRateLimit bool
+	}{
+		{
+			name: "rate limit config present includes middleware",
+			config: &RunConfig{
+				Name:               "test-server",
+				RateLimitNamespace: "default",
+				RateLimitConfig: &v1alpha1.RateLimitConfig{
+					Shared: &v1alpha1.RateLimitBucket{
+						MaxTokens:    5,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+				ScalingConfig: &ScalingConfig{
+					SessionRedis: &SessionRedisConfig{Address: "redis:6379"},
+				},
+			},
+			wantRateLimit: true,
+		},
+		{
+			name:          "nil rate limit config omits middleware",
+			config:        &RunConfig{},
+			wantRateLimit: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := PopulateMiddlewareConfigs(tt.config)
+			require.NoError(t, err)
+
+			found := false
+			for _, mw := range tt.config.MiddlewareConfigs {
+				if mw.Type == ratelimit.MiddlewareType {
+					found = true
+					break
+				}
+			}
+			assert.Equal(t, tt.wantRateLimit, found)
+		})
+	}
+}
+
+func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
+	t.Parallel()
+
+	config := NewRunConfig()
+	config.Name = "test-server"
+	config.Transport = types.TransportTypeStdio
+
+	// Setup options to hit all branches
+	config.MutatingWebhooks = []webhook.Config{{Name: "m-hook", URL: "http://example.com/m"}}
+	config.ValidatingWebhooks = []webhook.Config{{Name: "v-hook", URL: "http://example.com/v"}}
+
+	config.ToolsFilter = []string{"tool1"}
+	config.ToolsOverride = map[string]ToolOverride{"tool1": {Name: "newtool1"}}
+
+	config.TelemetryConfig = &telemetry.Config{}
+	config.AuthzConfig = &authz.Config{}
+
+	config.AuditConfig = &audit.Config{Component: "test-component"}
+
+	err := PopulateMiddlewareConfigs(config)
+	require.NoError(t, err)
+
+	// Ensure they are populated
+	typeIndex := make(map[string]bool)
+	for _, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = true
+	}
+
+	assert.True(t, typeIndex[mutating.MiddlewareType])
+	assert.True(t, typeIndex[validating.MiddlewareType])
+	assert.True(t, typeIndex[mcp.ToolFilterMiddlewareType])
+	assert.True(t, typeIndex[mcp.ToolCallFilterMiddlewareType])
+	assert.True(t, typeIndex[telemetry.MiddlewareType])
+	assert.True(t, typeIndex[authz.MiddlewareType])
+	assert.True(t, typeIndex[audit.MiddlewareType])
 }

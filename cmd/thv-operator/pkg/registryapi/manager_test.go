@@ -83,7 +83,7 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 					{
 						Name:   "default",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -96,6 +96,12 @@ func TestReconcileAPIService(t *testing.T) {
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "10m",
 						},
+					},
+				},
+				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+					{
+						Name:    "default",
+						Sources: []string{"default"},
 					},
 				},
 			},
@@ -133,7 +139,7 @@ func TestReconcileAPIService(t *testing.T) {
 		assert.NotEmpty(t, configYAML, "config.yaml should not be empty")
 
 		// Verify the content includes expected configuration
-		assert.Contains(t, configYAML, "registryName: test-registry")
+		assert.Contains(t, configYAML, "name: default")
 		assert.Contains(t, configYAML, "format: toolhive")
 		assert.Contains(t, configYAML, "interval: 10m")
 	})
@@ -168,7 +174,7 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 					{
 						Name:   "default",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -181,6 +187,12 @@ func TestReconcileAPIService(t *testing.T) {
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "10m",
 						},
+					},
+				},
+				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+					{
+						Name:    "default",
+						Sources: []string{"default"},
 					},
 				},
 			},

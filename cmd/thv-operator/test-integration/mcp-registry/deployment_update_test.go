@@ -170,7 +170,7 @@ var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "dep
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 						{
 							Name:   "default",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -179,6 +179,12 @@ var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "dep
 								Key:                  "registry.json",
 							},
 							SyncPolicy: &mcpv1alpha1.SyncPolicy{Interval: "1h"},
+						},
+					},
+					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+						{
+							Name:    "default",
+							Sources: []string{"default"},
 						},
 					},
 					PodTemplateSpec: &runtime.RawExtension{
@@ -250,7 +256,7 @@ var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "dep
 
 			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
 			Expect(err).NotTo(HaveOccurred())
-			updatedRegistry.Spec.Registries = append(updatedRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryConfig{
+			updatedRegistry.Spec.Sources = append(updatedRegistry.Spec.Sources, mcpv1alpha1.MCPRegistrySourceConfig{
 				Name:   "extra",
 				Format: mcpv1alpha1.RegistryFormatToolHive,
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
@@ -259,6 +265,8 @@ var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "dep
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{Interval: "30m"},
 			})
+			// Also add the new source to the registry view
+			updatedRegistry.Spec.Registries[0].Sources = append(updatedRegistry.Spec.Registries[0].Sources, "extra")
 			Expect(registryHelper.UpdateRegistry(updatedRegistry)).To(Succeed())
 
 			By("waiting for deployment config-hash to change")

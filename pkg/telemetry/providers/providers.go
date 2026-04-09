@@ -39,6 +39,9 @@ type Config struct {
 	// Prometheus configuration
 	EnablePrometheusMetricsPath bool // EnablePrometheusMetricsPath enables Prometheus /metrics endpoint
 
+	// TLS configuration
+	CACertPath string // CACertPath is the file path to a custom CA certificate bundle for the OTLP endpoint
+
 	// Custom attributes
 	// CustomAttributes are additional resource attributes to include (as map for JSON serialization)
 	CustomAttributes map[string]string
@@ -93,6 +96,14 @@ func WithHeaders(headers map[string]string) ProviderOption {
 func WithInsecure(insecure bool) ProviderOption {
 	return func(config *Config) error {
 		config.Insecure = insecure
+		return nil
+	}
+}
+
+// WithCACertPath sets the CA certificate path for the OTLP endpoint
+func WithCACertPath(path string) ProviderOption {
+	return func(config *Config) error {
+		config.CACertPath = path
 		return nil
 	}
 }

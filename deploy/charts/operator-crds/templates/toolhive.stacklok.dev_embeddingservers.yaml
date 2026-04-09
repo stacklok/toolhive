@@ -348,7 +348,7 @@ spec:
                 enum:
                 - Pending
                 - Downloading
-                - Running
+                - Ready
                 - Failed
                 - Terminating
                 type: string

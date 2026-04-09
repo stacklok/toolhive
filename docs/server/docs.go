@@ -44,6 +44,48 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket": {
+                "description": "Shared defines a token bucket shared across all users for this specific tool.\n+kubebuilder:validation:Required",
+                "properties": {
+                    "maxTokens": {
+                        "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
+                        "type": "integer"
+                    },
+                    "refillPeriod": {
+                        "$ref": "#/components/schemas/v1.Duration"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig": {
+                "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
+                "properties": {
+                    "shared": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    },
+                    "tools": {
+                        "description": "Tools defines per-tool rate limit overrides.\nEach entry applies additional rate limits to calls targeting a specific tool name.\nA request must pass both the server-level limit and the per-tool limit.\n+listType=map\n+listMapKey=name\n+optional",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig": {
+                "properties": {
+                    "name": {
+                        "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
+                        "type": "string"
+                    },
+                    "shared": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_audit.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
                 "properties": {
@@ -1153,6 +1195,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "mutating_webhooks": {
+                        "description": "MutatingWebhooks contains the configuration for mutating webhook middleware.\nMutating webhooks run before validating webhooks, per RFC THV-0017 ordering.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "name": {
                         "description": "Name is the name of the MCP server",
                         "type": "string"
@@ -1178,6 +1228,21 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "rate_limit_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig"
+                    },
+                    "rate_limit_namespace": {
+                        "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
+                        "type": "string"
+                    },
+                    "registry_api_url": {
+                        "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
+                    "registry_url": {
+                        "description": "RegistryURL is the registry URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
                     },
                     "remote_auth_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
@@ -1413,6 +1478,31 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.LocalBuild": {
+                "properties": {
+                    "description": {
+                        "description": "Description is the skill description extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest of the artifact (sha256:...).",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag or name used to reference the artifact.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the skill version extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_skills.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
@@ -1494,6 +1584,10 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_telemetry.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
                 "properties": {
+                    "caCertPath": {
+                        "description": "CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.\nWhen set, the OTLP exporters use this CA to verify the collector's TLS certificate\ninstead of relying solely on the system CA pool.\n+optional",
+                        "type": "string"
+                    },
                     "customAttributes": {
                         "additionalProperties": {
                             "type": "string"
@@ -1829,6 +1923,20 @@ const docTemplate = `{
                     "type": {
                         "description": "Registry type after update",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.buildListResponse": {
+                "description": "Response containing a list of locally-built OCI skill artifacts",
+                "properties": {
+                    "builds": {
+                        "description": "List of locally-built OCI skill artifacts",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.LocalBuild"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -3140,6 +3248,10 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "type": "object"
+            },
+            "v1.Duration": {
+                "description": "RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.\nThe effective refill rate is maxTokens / refillPeriod tokens per second.\nFormat: Go duration string (e.g., \"1m0s\", \"30s\", \"1h0m0s\").\n+kubebuilder:validation:Required",
                 "type": "object"
             }
         }
@@ -4664,6 +4776,89 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Build a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/builds": {
+            "get": {
+                "description": "Get a list of all locally-built OCI skill artifacts in the local store",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.buildListResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "List locally-built skill artifacts",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/builds/{tag}": {
+            "delete": {
+                "description": "Remove a locally-built OCI skill artifact and its blobs from the local store",
+                "parameters": [
+                    {
+                        "description": "Artifact tag",
+                        "in": "path",
+                        "name": "tag",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Delete a locally-built skill artifact",
                 "tags": [
                     "skills"
                 ]

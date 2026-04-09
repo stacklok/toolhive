@@ -150,7 +150,7 @@ MCPServer supports referencing shared configuration CRDs:
 
 Both ref fields are mutually exclusive with their inline counterparts (enforced by CEL validation).
 
-**Status fields** include phase (Running, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`) for change detection on referenced CRDs.
+**Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`) for change detection on referenced CRDs.
 
 For examples, see:
 - [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server
@@ -482,11 +482,11 @@ spec:
 
 ### Status Management
 
-**Pattern**: Batched updates via StatusCollector
+**Pattern**: Direct status update matching MCPServer workload pattern
 
-**Why**: Prevents race conditions, reduces API calls
+**Why**: Simple Phase + Ready condition + ReadyReplicas + URL, enables `kubectl wait --for=condition=Ready`
 
-**Implementation**: `cmd/thv-operator/pkg/mcpregistrystatus/`
+**Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
 ## MCPRegistry Controller
 
@@ -527,7 +527,7 @@ graph TB
 
 **Storage Manager**: `cmd/thv-operator/pkg/sources/storage_manager.go`
 - Creates ConfigMap with key `registry.json` containing full registry data
-- Sync metadata (timestamp, hash, attempt count) stored in MCPRegistry CRD status field `SyncStatus`
+- Sync operations are handled by the registry server itself
 
 **Interface**: `cmd/thv-operator/pkg/sources/types.go`
 
@@ -546,7 +546,7 @@ data:
     { full registry data }
 ```
 
-Sync metadata (timestamp, hash, attempt count) is stored in the MCPRegistry CRD status field `SyncStatus`, not in the ConfigMap.
+Sync operations are handled by the registry server, not the operator.
 
 ### Sync Policy
 

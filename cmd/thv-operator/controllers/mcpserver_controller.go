@@ -1207,6 +1207,21 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
+	// Add telemetry CA bundle volume if configured via MCPTelemetryConfig
+	if m.Spec.TelemetryConfigRef != nil {
+		telCfg, err := getTelemetryConfigForMCPServer(ctx, r.Client, m)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to fetch MCPTelemetryConfig for CA bundle volume")
+			return nil
+		}
+		if telCfg != nil {
+			caVolumes, caMounts := ctrlutil.AddTelemetryCABundleVolumes(telCfg)
+			volumes = append(volumes, caVolumes...)
+			volumeMounts = append(volumeMounts, caMounts...)
+		}
+	}
+
 	// Add embedded auth server volumes and env vars if configured
 	if m.Spec.ExternalAuthConfigRef != nil {
 		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
@@ -1464,6 +1479,12 @@ func areAllContainersReady(containerStatuses []corev1.ContainerStatus) bool {
 
 // categorizePodStatus categorizes a pod into running, pending, or failed and returns the failure reason.
 func categorizePodStatus(pod corev1.Pod) (running, pending, failed int, failureReason string) {
+	// Exclude terminating pods from status counts to avoid inflated ReadyReplicas
+	// during rolling updates (see https://github.com/stacklok/toolhive/issues/4498)
+	if pod.DeletionTimestamp != nil {
+		return 0, 0, 0, ""
+	}
+
 	// Check container statuses for failures (CrashLoopBackOff, CreateContainerError, etc.)
 	for _, containerStatus := range pod.Status.ContainerStatuses {
 		if hasError, reason := checkContainerError(containerStatus); hasError {
@@ -1551,7 +1572,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 
 	// Update the status based on pod health
 	if running > 0 {
-		m.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+		m.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
 	} else if failed > 0 {
 		m.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
@@ -1569,7 +1590,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	}
 
 	// Set the top-level Ready condition based on the determined phase
-	if m.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+	if m.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 		setReadyCondition(m, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonReady, "MCP server is running")
 	} else {
 		setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, m.Status.Message)

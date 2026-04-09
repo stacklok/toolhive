@@ -501,6 +501,70 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 	return nil
 }
 
+// ListBuilds returns all locally-built OCI skill artifacts in the local store.
+func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
+	if s.ociStore == nil {
+		return nil, httperr.WithCode(
+			errors.New("OCI packaging is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	tags, err := s.ociStore.ListTags(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing local OCI builds: %w", err)
+	}
+
+	builds := make([]skills.LocalBuild, 0, len(tags))
+	for _, tag := range tags {
+		d, resolveErr := s.ociStore.Resolve(ctx, tag)
+		if resolveErr != nil {
+			slog.Debug("failed to resolve tag in local OCI store", "tag", tag, "error", resolveErr)
+			continue
+		}
+
+		isSkill, typeErr := s.isSkillArtifact(ctx, d)
+		if typeErr != nil {
+			slog.Debug("failed to check artifact type in local OCI store", "tag", tag, "error", typeErr)
+			continue
+		}
+		if !isSkill {
+			continue
+		}
+
+		build := skills.LocalBuild{
+			Tag:    tag,
+			Digest: d.String(),
+		}
+
+		// Best-effort: enrich with skill metadata from the OCI config labels.
+		if _, cfg, extractErr := s.extractOCIContent(ctx, d); extractErr == nil && cfg != nil {
+			build.Name = cfg.Name
+			build.Description = cfg.Description
+			build.Version = cfg.Version
+		} else if extractErr != nil {
+			slog.Debug("failed to extract skill config from local build", "tag", tag, "error", extractErr)
+		}
+
+		builds = append(builds, build)
+	}
+
+	return builds, nil
+}
+
+// DeleteBuild removes a locally-built OCI skill artifact from the local store.
+// It deletes the tag and, when no other tag shares the same digest, also
+// garbage-collects all associated blobs.
+func (s *service) DeleteBuild(ctx context.Context, tag string) error {
+	if s.ociStore == nil {
+		return httperr.WithCode(
+			errors.New("OCI packaging is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	return s.ociStore.DeleteBuild(ctx, tag)
+}
+
 // ociPullTimeout is the maximum time allowed for pulling an OCI artifact.
 const ociPullTimeout = 5 * time.Minute
 
@@ -942,6 +1006,34 @@ func buildGitReferenceFromRegistryURL(rawURL string) (string, error) {
 		return "", err
 	}
 	return gitURL, nil
+}
+
+// isSkillArtifact reports whether the OCI descriptor at digest d carries
+// ArtifactType == ArtifactTypeSkill. It inspects the top-level index or
+// manifest without descending into layers, so it is cheap to call.
+func (s *service) isSkillArtifact(ctx context.Context, d digest.Digest) (bool, error) {
+	isIndex, err := s.ociStore.IsIndex(ctx, d)
+	if err != nil {
+		return false, fmt.Errorf("checking OCI content type: %w", err)
+	}
+
+	if isIndex {
+		index, indexErr := s.ociStore.GetIndex(ctx, d)
+		if indexErr != nil {
+			return false, fmt.Errorf("reading OCI index: %w", indexErr)
+		}
+		return index.ArtifactType == ociskills.ArtifactTypeSkill, nil
+	}
+
+	manifestBytes, err := s.ociStore.GetManifest(ctx, d)
+	if err != nil {
+		return false, fmt.Errorf("reading OCI manifest: %w", err)
+	}
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return false, fmt.Errorf("parsing OCI manifest: %w", err)
+	}
+	return manifest.ArtifactType == ociskills.ArtifactTypeSkill, nil
 }
 
 // extractOCIContent navigates the OCI content graph from a pulled digest,

@@ -5,6 +5,7 @@ package recovery
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -62,22 +63,36 @@ func TestRecoveryMiddleware_RecoverFromPanic(t *testing.T) {
 func TestRecoveryMiddleware_RePanicsErrAbortHandler(t *testing.T) {
 	t.Parallel()
 
-	// Create a handler that panics with http.ErrAbortHandler, as
-	// httputil.ReverseProxy does when a streaming response breaks.
-	testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		panic(http.ErrAbortHandler)
-	})
+	tests := []struct {
+		name       string
+		panicValue any
+	}{
+		{
+			name:       "exact pointer",
+			panicValue: http.ErrAbortHandler,
+		},
+		{
+			name:       "wrapped error",
+			panicValue: fmt.Errorf("upstream: %w", http.ErrAbortHandler),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	wrappedHandler := Middleware(testHandler)
+			handler := Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				panic(tt.panicValue)
+			}))
+			req := httptest.NewRequest("GET", "/test", nil)
+			rec := httptest.NewRecorder()
 
-	req := httptest.NewRequest("GET", "/test", nil)
-	rec := httptest.NewRecorder()
-
-	// The middleware must re-panic http.ErrAbortHandler so Go's HTTP
-	// server can handle it (silently close the connection).
-	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
-		wrappedHandler.ServeHTTP(rec, req)
-	})
+			// The middleware must re-panic http.ErrAbortHandler so Go's HTTP
+			// server can handle it (silently close the connection).
+			assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+				handler.ServeHTTP(rec, req)
+			})
+		})
+	}
 }
 
 func TestRecoveryMiddleware_PreservesRequestContext(t *testing.T) {

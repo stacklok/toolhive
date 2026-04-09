@@ -32,11 +32,13 @@ func AddTelemetryConfigOptions(
 
 // AddMCPTelemetryConfigRefOptions converts an MCPTelemetryConfig spec with per-server overrides
 // into a runner option. This is the preferred path for MCPServer.Spec.TelemetryConfigRef.
+// caBundleFilePath is the computed mount path for the CA bundle (empty if none configured).
 func AddMCPTelemetryConfigRefOptions(
 	options *[]runner.RunConfigBuilderOption,
 	telemetrySpec *mcpv1alpha1.MCPTelemetryConfigSpec,
 	serviceNameOverride string,
 	defaultServiceName string,
+	caBundleFilePath string,
 ) {
 	if telemetrySpec == nil || options == nil {
 		return
@@ -45,6 +47,10 @@ func AddMCPTelemetryConfigRefOptions(
 	config := spectoconfig.NormalizeMCPTelemetryConfig(telemetrySpec, serviceNameOverride, defaultServiceName)
 	if config == nil {
 		return
+	}
+
+	if caBundleFilePath != "" {
+		config.CACertPath = caBundleFilePath
 	}
 
 	*options = append(*options, runner.WithTelemetryConfig(config))

@@ -88,7 +88,7 @@ func TestDiscoverAuth_TokenExchange(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -168,7 +168,7 @@ func TestDiscoverAuth_HeaderInjection(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -214,7 +214,7 @@ func TestDiscoverAuth_NoAuthConfig(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -255,7 +255,7 @@ func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -314,7 +314,7 @@ func TestDiscoverAuth_SecretNotFound(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -350,7 +350,7 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -370,7 +370,7 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
 	assert.Equal(t, "mcp_server", backend.Metadata["workload_type"])
-	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseRunning), backend.Metadata["workload_status"])
+	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseReady), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
 
@@ -391,7 +391,7 @@ func TestMCPServerToBackend_StdioTransport(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -428,7 +428,7 @@ func TestMCPServerToBackend_WithAnnotations(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -670,7 +670,7 @@ func TestMCPServerToBackend_EmptyStatusURL(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			// URL intentionally empty — not yet assigned by the operator
 		},
 	}

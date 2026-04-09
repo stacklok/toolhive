@@ -86,7 +86,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, server1); err != nil {
 				return fmt.Errorf("backend1: failed to get server: %w", err)
 			}
-			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend1 not ready yet, phase: %s", server1.Status.Phase)
 			}
 
@@ -97,7 +97,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, server2); err != nil {
 				return fmt.Errorf("backend2: failed to get server: %w", err)
 			}
-			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend2 not ready yet, phase: %s", server2.Status.Phase)
 			}
 

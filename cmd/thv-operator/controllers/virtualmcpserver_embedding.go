@@ -36,7 +36,7 @@ func (r *VirtualMCPServerReconciler) isEmbeddingServerReady(
 		return nil, fmt.Errorf("failed to get EmbeddingServer %s: %w", name, err)
 	}
 
-	if es.Status.Phase == mcpv1alpha1.EmbeddingServerPhaseRunning && es.Status.ReadyReplicas > 0 {
+	if es.Status.Phase == mcpv1alpha1.EmbeddingServerPhaseReady && es.Status.ReadyReplicas > 0 {
 		url := es.Status.URL
 		return &url, nil
 	}

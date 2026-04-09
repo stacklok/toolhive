@@ -123,6 +123,21 @@ var _ = BeforeSuite(func() {
 		Expect(err).ToNot(HaveOccurred())
 	}
 
+	// Set up field indexing for MCPServerEntry.Spec.GroupRef
+	err = k8sManager.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPServerEntry{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			if mcpServerEntry.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpServerEntry.Spec.GroupRef}
+		},
+	)
+	Expect(err).ToNot(HaveOccurred())
+
 	// Register the MCPServer controller (needed because MCPOIDCConfig watches
 	// MCPServer changes and we test cross-resource interactions)
 	err = (&controllers.MCPServerReconciler{

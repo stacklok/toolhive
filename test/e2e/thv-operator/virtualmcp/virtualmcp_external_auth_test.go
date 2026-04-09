@@ -88,7 +88,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -259,7 +259,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -439,7 +439,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -658,7 +658,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -854,7 +854,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 			}, server); err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -1070,7 +1070,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 			}, server); err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)

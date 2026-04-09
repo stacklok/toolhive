@@ -1832,3 +1832,74 @@ func TestPopulateScalingConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spec    mcpv1alpha1.MCPServerSpec
+		wantNil bool
+		wantNs  string
+	}{
+		{
+			name: "rateLimiting nil produces nil config",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image: testImage,
+			},
+			wantNil: true,
+		},
+		{
+			name: "rateLimiting set flows to RunConfig",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image: testImage,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				},
+				RateLimiting: &mcpv1alpha1.RateLimitConfig{
+					Shared: &mcpv1alpha1.RateLimitBucket{
+						MaxTokens:    10,
+						RefillPeriod: metav1.Duration{Duration: 60_000_000_000}, // 1m
+					},
+				},
+			},
+			wantNil: false,
+			wantNs:  "test-ns",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			testScheme := createRunConfigTestScheme()
+			k8sClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
+
+			r := &MCPServerReconciler{
+				Client: k8sClient,
+			}
+
+			m := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: tt.spec,
+			}
+
+			runConfig, err := r.createRunConfigFromMCPServer(m)
+			require.NoError(t, err)
+
+			if tt.wantNil {
+				assert.Nil(t, runConfig.RateLimitConfig)
+				assert.Empty(t, runConfig.RateLimitNamespace)
+			} else {
+				require.NotNil(t, runConfig.RateLimitConfig)
+				assert.Equal(t, tt.wantNs, runConfig.RateLimitNamespace)
+				assert.NotNil(t, runConfig.RateLimitConfig.Shared)
+				assert.Equal(t, int32(10), runConfig.RateLimitConfig.Shared.MaxTokens)
+			}
+		})
+	}
+}

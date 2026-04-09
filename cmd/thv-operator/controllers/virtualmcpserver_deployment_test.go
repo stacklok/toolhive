@@ -654,7 +654,7 @@ func TestCABundleVolumeName(t *testing.T) {
 				t.Helper()
 				assert.LessOrEqual(t, len(result), 63)
 				assert.True(t, strings.HasPrefix(result, "ca-bundle-"))
-				assert.NotHasSuffix(t, result, "-")
+				assert.False(t, strings.HasSuffix(result, "-"), "volume name should not end with hyphen")
 			},
 		},
 		{
@@ -674,7 +674,7 @@ func TestCABundleVolumeName(t *testing.T) {
 			validate: func(t *testing.T, result string) {
 				t.Helper()
 				assert.LessOrEqual(t, len(result), 63)
-				assert.NotHasSuffix(t, result, "-")
+				assert.False(t, strings.HasSuffix(result, "-"), "volume name should not end with hyphen")
 			},
 		},
 	}

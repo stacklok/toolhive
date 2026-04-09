@@ -25,7 +25,7 @@ import (
 func (m *manager) ensureService(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
-) (*corev1.Service, error) {
+) error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	// Build the desired service configuration
@@ -35,7 +35,7 @@ func (m *manager) ensureService(
 	// Set owner reference for automatic garbage collection
 	if err := controllerutil.SetControllerReference(mcpRegistry, service, m.scheme); err != nil {
 		ctxLogger.Error(err, "Failed to set controller reference for service")
-		return nil, fmt.Errorf("failed to set controller reference for service: %w", err)
+		return fmt.Errorf("failed to set controller reference for service: %w", err)
 	}
 
 	// Check if service already exists
@@ -51,14 +51,14 @@ func (m *manager) ensureService(
 			ctxLogger.Info("Creating registry-api service", "service", serviceName)
 			if err := m.client.Create(ctx, service); err != nil {
 				ctxLogger.Error(err, "Failed to create service")
-				return nil, fmt.Errorf("failed to create service %s: %w", serviceName, err)
+				return fmt.Errorf("failed to create service %s: %w", serviceName, err)
 			}
 			ctxLogger.Info("Successfully created registry-api service", "service", serviceName)
-			return service, nil
+			return nil
 		}
 		// Unexpected error
 		ctxLogger.Error(err, "Failed to get service")
-		return nil, fmt.Errorf("failed to get service %s: %w", serviceName, err)
+		return fmt.Errorf("failed to get service %s: %w", serviceName, err)
 	}
 
 	// Service exists, check if update is needed
@@ -72,7 +72,7 @@ func (m *manager) ensureService(
 
 	if !needsUpdate {
 		ctxLogger.V(1).Info("Service already up-to-date, skipping update", "service", serviceName)
-		return existing, nil
+		return nil
 	}
 
 	// Update the existing service with our desired state
@@ -84,16 +84,16 @@ func (m *manager) ensureService(
 	// Ensure owner reference is set
 	if err := controllerutil.SetControllerReference(mcpRegistry, existing, m.scheme); err != nil {
 		ctxLogger.Error(err, "Failed to set controller reference for existing service")
-		return nil, fmt.Errorf("failed to set controller reference for existing service: %w", err)
+		return fmt.Errorf("failed to set controller reference for existing service: %w", err)
 	}
 
 	if err := m.client.Update(ctx, existing); err != nil {
 		ctxLogger.Error(err, "Failed to update service")
-		return nil, fmt.Errorf("failed to update service %s: %w", serviceName, err)
+		return fmt.Errorf("failed to update service %s: %w", serviceName, err)
 	}
 
 	ctxLogger.Info("Successfully updated registry-api service", "service", serviceName)
-	return existing, nil
+	return nil
 }
 
 // buildRegistryAPIService creates and configures a Service object for the registry API.

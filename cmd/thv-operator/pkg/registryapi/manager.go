@@ -105,7 +105,7 @@ func (m *manager) reconcileNewPath(ctx context.Context, mcpRegistry *mcpv1alpha1
 	}
 
 	// Ensure service exists and is configured correctly
-	if _, err := m.ensureService(ctx, mcpRegistry); err != nil {
+	if err := m.ensureService(ctx, mcpRegistry); err != nil {
 		ctxLogger.Error(err, "Failed to ensure service")
 		return &Error{
 			Err:             err,
@@ -182,7 +182,7 @@ func (m *manager) reconcileLegacyPath(ctx context.Context, mcpRegistry *mcpv1alp
 	}
 
 	// Step 2: Ensure service exists and is configured correctly
-	_, err = m.ensureService(ctx, mcpRegistry)
+	err = m.ensureService(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure service")
 		return &Error{

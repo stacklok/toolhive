@@ -446,9 +446,11 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 	config.Registries = registries
 
 	// Build database configuration from CRD spec or use defaults
+	//nolint:staticcheck // Legacy path intentionally uses deprecated field
 	config.Database = buildDatabaseConfig(mcpRegistry.Spec.DatabaseConfig)
 
 	// Build authentication configuration from CRD spec or use defaults
+	//nolint:staticcheck // Legacy path intentionally uses deprecated field
 	authConfig, err := buildAuthConfig(mcpRegistry.Spec.AuthConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build authentication configuration: %w", err)

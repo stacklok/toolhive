@@ -864,6 +864,10 @@ const docTemplate = `{
                     "registered": {
                         "description": "Registered indicates whether the client is registered in the ToolHive configuration",
                         "type": "boolean"
+                    },
+                    "supports_skills": {
+                        "description": "SupportsSkills indicates whether ToolHive can install skills for this client",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -3553,7 +3557,7 @@ const docTemplate = `{
         },
         "/api/v1beta/discovery/clients": {
             "get": {
-                "description": "List all clients compatible with ToolHive and their status",
+                "description": "List all clients compatible with ToolHive and their status.\nEach object includes supports_skills when ToolHive can install skills for that client.",
                 "responses": {
                     "200": {
                         "content": {

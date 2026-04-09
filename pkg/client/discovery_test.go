@@ -103,11 +103,12 @@ func TestGetClientStatus(t *testing.T) {
 	// Create explicit client integrations for this test to avoid race conditions with global variable
 	clientIntegrations := []clientAppConfig{
 		{
-			ClientType:   ClaudeCode,
-			Description:  "Claude Code CLI (Test)",
-			SettingsFile: ".claude.json",
-			RelPath:      []string{}, // Empty RelPath means check just the settings file
-			Extension:    JSON,
+			ClientType:     ClaudeCode,
+			Description:    "Claude Code CLI (Test)",
+			SettingsFile:   ".claude.json",
+			RelPath:        []string{}, // Empty RelPath means check just the settings file
+			Extension:      JSON,
+			SupportsSkills: true,
 		},
 		{
 			ClientType:   Cursor,
@@ -141,16 +142,19 @@ func TestGetClientStatus(t *testing.T) {
 	assert.True(t, exists)
 	assert.True(t, claudeStatus.Installed)
 	assert.True(t, claudeStatus.Registered)
+	assert.True(t, claudeStatus.SupportsSkills)
 
 	cursorStatus, exists := statusMap[Cursor]
 	assert.True(t, exists)
 	assert.True(t, cursorStatus.Installed)
 	assert.False(t, cursorStatus.Registered)
+	assert.False(t, cursorStatus.SupportsSkills)
 
 	vscodeStatus, exists := statusMap[VSCode]
 	assert.True(t, exists)
 	assert.False(t, vscodeStatus.Installed)
 	assert.False(t, vscodeStatus.Registered)
+	assert.False(t, vscodeStatus.SupportsSkills)
 }
 
 func TestGetClientStatus_Sorting(t *testing.T) {

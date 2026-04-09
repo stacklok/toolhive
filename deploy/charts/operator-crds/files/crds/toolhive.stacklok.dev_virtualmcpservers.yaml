@@ -840,6 +840,12 @@ spec:
                         This allows vMCP to operate without Kubernetes API access by embedding all backend
                         information directly in the configuration.
                       properties:
+                        caBundlePath:
+                          description: |-
+                            CABundlePath is the file path to the CA certificate bundle for TLS verification.
+                            Set by the operator when an MCPServerEntry has a caBundleRef, pointing to the
+                            mounted ConfigMap volume path (e.g., /etc/toolhive/ca-bundles/<entry-name>/ca.crt).
+                          type: string
                         metadata:
                           additionalProperties:
                             type: string

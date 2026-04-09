@@ -25,13 +25,13 @@ import (
 )
 
 const (
-	metadataToolTypeMCP     = "mcp"
-	transportTypeUnknown    = "unknown"
-	metadataKeyToolType     = "tool_type"
-	metadataKeyWorkloadType = "workload_type"
+	metadataToolTypeMCP       = "mcp"
+	transportTypeUnknown      = "unknown"
+	metadataKeyToolType       = "tool_type"
+	metadataKeyWorkloadType   = "workload_type"
 	metadataKeyWorkloadStatus = "workload_status"
-	metadataKeyNamespace    = "namespace"
-	metadataKeyRemoteURL    = "remote_url"
+	metadataKeyNamespace      = "namespace"
+	metadataKeyRemoteURL      = "remote_url"
 )
 
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
@@ -236,7 +236,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	// 127.0.0.1 inside the vMCP pod points to the vMCP itself (e.g. its metrics
 	// server on port 8080), not the backend. If Status.URL is empty, the backend
 	// will be skipped and added later by the reconciler once the URL is set.
-	url := mcpServer.Status.URL
+	serverURL := mcpServer.Status.URL
 
 	// Map workload phase to backend health status
 	healthStatus := mapK8SWorkloadPhaseToHealth(mcpServer.Status.Phase)
@@ -267,7 +267,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	backend := &vmcp.Backend{
 		ID:            mcpServer.Name,
 		Name:          mcpServer.Name,
-		BaseURL:       url,
+		BaseURL:       serverURL,
 		TransportType: transportTypeStr,
 		HealthStatus:  healthStatus,
 		Metadata:      make(map[string]string),
@@ -409,7 +409,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 
 	// Use the URL from status, which is set by the controller after creating the
 	// K8s Service. Do NOT fall back to localhost — see mcpServerToBackend comment.
-	url := proxy.Status.URL
+	proxyURL := proxy.Status.URL
 
 	// Map proxy phase to backend health status
 	healthStatus := mapMCPRemoteProxyPhaseToHealth(proxy.Status.Phase)
@@ -433,7 +433,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	backend := &vmcp.Backend{
 		ID:            proxy.Name,
 		Name:          proxy.Name,
-		BaseURL:       url,
+		BaseURL:       proxyURL,
 		TransportType: transportTypeStr,
 		HealthStatus:  healthStatus,
 		Metadata:      make(map[string]string),

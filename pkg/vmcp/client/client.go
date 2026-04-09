@@ -132,10 +132,13 @@ func newBackendTransport(caBundlePath string) (*http.Transport, error) {
 			return nil, fmt.Errorf("failed to parse CA certificate from %s", caBundlePath)
 		}
 
-		t.TLSClientConfig = &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS12,
+		if t.TLSClientConfig == nil {
+			t.TLSClientConfig = &tls.Config{}
+		} else {
+			t.TLSClientConfig = t.TLSClientConfig.Clone()
 		}
+		t.TLSClientConfig.RootCAs = caCertPool
+		t.TLSClientConfig.MinVersion = tls.VersionTLS12
 	}
 
 	return t, nil

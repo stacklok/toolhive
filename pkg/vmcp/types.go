@@ -107,9 +107,11 @@ type BackendType string
 
 const (
 	// BackendTypeContainer indicates a container-based backend managed by ToolHive.
+	// Currently represented by an empty Type field for backward compatibility.
 	BackendTypeContainer BackendType = "container"
 
 	// BackendTypeProxy indicates a proxy-based backend (MCPRemoteProxy).
+	// Currently represented by an empty Type field for backward compatibility.
 	BackendTypeProxy BackendType = "proxy"
 
 	// BackendTypeEntry indicates an external MCP server declared via MCPServerEntry.

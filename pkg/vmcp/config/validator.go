@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -117,9 +118,14 @@ func (*DefaultValidator) validateStaticBackends(backends []StaticBackendConfig) 
 			return fmt.Errorf("backends[%d].caBundlePath is only valid when type is %q", i, vmcp.BackendTypeEntry)
 		}
 
-		// Reject path traversal in CA bundle path
-		if b.CABundlePath != "" && strings.Contains(b.CABundlePath, "..") {
-			return fmt.Errorf("backends[%d].caBundlePath must not contain path traversal (\"..\")", i)
+		// Validate CA bundle path: reject null bytes, path traversal, and relative paths
+		if b.CABundlePath != "" {
+			if strings.ContainsRune(b.CABundlePath, 0) || strings.Contains(b.CABundlePath, "..") {
+				return fmt.Errorf("backends[%d].caBundlePath contains invalid path characters", i)
+			}
+			if !filepath.IsAbs(b.CABundlePath) {
+				return fmt.Errorf("backends[%d].caBundlePath must be an absolute path", i)
+			}
 		}
 	}
 	return nil

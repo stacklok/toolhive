@@ -1249,7 +1249,29 @@ func TestValidator_ValidateStaticBackends(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "must not contain path traversal",
+			errMsg:  "contains invalid path characters",
+		},
+		{
+			name: "null byte in CA bundle",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "entry",
+					CABundlePath: "/etc/ca\x00.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "contains invalid path characters",
+		},
+		{
+			name: "relative CA bundle path",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "entry",
+					CABundlePath: "relative/ca.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "must be an absolute path",
 		},
 		{
 			name: "second backend invalid",

@@ -256,6 +256,10 @@ The ConfigMap should contain a JSON permission profile.
 
 ### Creating an MCP Registry
 
+The MCPRegistry CRD uses a `configYAML` field that contains the complete
+registry server configuration. The operator passes this content through
+to the registry server verbatim.
+
 First, create a ConfigMap containing ToolHive registry data. The ConfigMap must be user-defined and is not managed by the operator:
 
 ```bash
@@ -266,7 +270,7 @@ kubectl create configmap my-registry-data --from-file registry.json=pkg/registry
 kubectl create configmap my-registry-data --from-file registry.json=/path/to/your/registry.json -n toolhive-system
 ```
 
-Then create the MCPRegistry resource that references the ConfigMap:
+Then create the MCPRegistry resource with `configYAML` and mount the ConfigMap:
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -276,16 +280,38 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: 'My MCP Registry'
-  source:
-    type: configmap
-    configMapRef:
-      name: my-registry-data # References the user-created ConfigMap
-      key: registry.json # Key in ConfigMap (required)
-  syncPolicy:
-    interval: '1h'
+  configYAML: |
+    sources:
+      - name: my-source
+        format: toolhive
+        file:
+          path: /config/registry/my-source/registry.json
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["my-source"]
+    database:
+      host: registry-db-rw
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous
+  volumes:
+    - name: my-source-data
+      configMap:
+        name: my-registry-data
+        items:
+          - key: registry.json
+            path: registry.json
+  volumeMounts:
+    - name: my-source-data
+      mountPath: /config/registry/my-source
+      readOnly: true
 ```
 
-For complete MCPRegistry examples and documentation, see [REGISTRY.md](REGISTRY.md).
+For complete MCPRegistry examples and documentation, see [REGISTRY.md](REGISTRY.md) and the `examples/operator/mcp-registries/` directory.
 
 ## Examples
 

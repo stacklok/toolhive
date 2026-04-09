@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -40,8 +41,8 @@ type MCPRegistrySpec struct {
 	ConfigYAML string `json:"configYAML,omitempty"`
 
 	// Volumes defines additional volumes to add to the registry API pod.
-	// These are standard Kubernetes volume definitions. The operator appends
-	// them to the pod spec alongside its own config volume.
+	// Each entry is a standard Kubernetes Volume object (JSON/YAML).
+	// The operator appends them to the pod spec alongside its own config volume.
 	// Only used when configYAML is set.
 	//
 	// Use these to mount:
@@ -51,13 +52,13 @@ type MCPRegistrySpec struct {
 	//   - Any other volume type the registry server needs
 	//
 	// +optional
-	// +listType=map
-	// +listMapKey=name
-	Volumes []corev1.Volume `json:"volumes,omitempty"`
+	// +listType=atomic
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Volumes []apiextensionsv1.JSON `json:"volumes,omitempty"`
 
 	// VolumeMounts defines additional volume mounts for the registry-api container.
-	// These are standard Kubernetes volume mount definitions. The operator appends
-	// them to the container's volume mounts alongside the config mount.
+	// Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).
+	// The operator appends them to the container's volume mounts alongside the config mount.
 	// Only used when configYAML is set.
 	//
 	// Mount paths must match the file paths referenced in configYAML.
@@ -65,9 +66,9 @@ type MCPRegistrySpec struct {
 	// a corresponding volume mount must exist with mountPath: /secrets/git-creds.
 	//
 	// +optional
-	// +listType=map
-	// +listMapKey=mountPath
-	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
+	// +listType=atomic
+	// +kubebuilder:pruning:PreserveUnknownFields
+	VolumeMounts []apiextensionsv1.JSON `json:"volumeMounts,omitempty"`
 
 	// PGPassSecretRef references a Secret containing a pre-created pgpass file.
 	// Only used when configYAML is set. Mutually exclusive with DatabaseConfig.
@@ -963,4 +964,32 @@ func (r *MCPRegistry) GetDatabasePort() int32 {
 		return 5432
 	}
 	return r.Spec.DatabaseConfig.Port
+}
+
+// ParseVolumes deserializes the raw JSON Volumes into typed corev1.Volume objects.
+// Returns an empty slice if Volumes is nil or empty.
+func (s *MCPRegistrySpec) ParseVolumes() ([]corev1.Volume, error) {
+	volumes := make([]corev1.Volume, 0, len(s.Volumes))
+	for i, raw := range s.Volumes {
+		var vol corev1.Volume
+		if err := json.Unmarshal(raw.Raw, &vol); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal volumes[%d]: %w", i, err)
+		}
+		volumes = append(volumes, vol)
+	}
+	return volumes, nil
+}
+
+// ParseVolumeMounts deserializes the raw JSON VolumeMounts into typed corev1.VolumeMount objects.
+// Returns an empty slice if VolumeMounts is nil or empty.
+func (s *MCPRegistrySpec) ParseVolumeMounts() ([]corev1.VolumeMount, error) {
+	mounts := make([]corev1.VolumeMount, 0, len(s.VolumeMounts))
+	for i, raw := range s.VolumeMounts {
+		var mount corev1.VolumeMount
+		if err := json.Unmarshal(raw.Raw, &mount); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal volumeMounts[%d]: %w", i, err)
+		}
+		mounts = append(mounts, mount)
+	}
+	return mounts, nil
 }

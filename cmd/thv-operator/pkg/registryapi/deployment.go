@@ -366,14 +366,22 @@ func (*manager) buildRegistryAPIDeploymentNewPath(
 		WithRegistryServerConfigMount(RegistryAPIContainerName, configMapName),
 	}
 
-	// Add user-provided volumes
-	for _, vol := range mcpRegistry.Spec.Volumes {
-		opts = append(opts, WithVolume(vol))
+	// Add user-provided volumes (deserialized from raw JSON)
+	if userVolumes, err := mcpRegistry.Spec.ParseVolumes(); err != nil {
+		ctxLogger.Error(err, "Failed to parse user-provided volumes")
+	} else {
+		for _, vol := range userVolumes {
+			opts = append(opts, WithVolume(vol))
+		}
 	}
 
-	// Add user-provided volume mounts
-	for _, mount := range mcpRegistry.Spec.VolumeMounts {
-		opts = append(opts, WithVolumeMount(RegistryAPIContainerName, mount))
+	// Add user-provided volume mounts (deserialized from raw JSON)
+	if userMounts, err := mcpRegistry.Spec.ParseVolumeMounts(); err != nil {
+		ctxLogger.Error(err, "Failed to parse user-provided volume mounts")
+	} else {
+		for _, mount := range userMounts {
+			opts = append(opts, WithVolumeMount(RegistryAPIContainerName, mount))
+		}
 	}
 
 	// Add pgpass mount if a pre-created pgpass secret reference is specified

@@ -391,7 +391,11 @@ func validateReservedNames(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.Po
 		reservedVolumeNames[registryapi.PGPassVolumeName] = true
 	}
 
-	for _, vol := range spec.Volumes {
+	volumes, err := spec.ParseVolumes()
+	if err != nil {
+		return fmt.Errorf("invalid volumes: %w", err)
+	}
+	for _, vol := range volumes {
 		if reservedVolumeNames[vol.Name] {
 			return fmt.Errorf("volume name '%s' is reserved by the operator", vol.Name)
 		}
@@ -429,7 +433,11 @@ func validateMountPathCollisions(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *cor
 		mountPaths[registryapi.PGPassAppUserMountPath] = struct{}{}
 	}
 
-	for _, mount := range spec.VolumeMounts {
+	mounts, err := spec.ParseVolumeMounts()
+	if err != nil {
+		return fmt.Errorf("invalid volumeMounts: %w", err)
+	}
+	for _, mount := range mounts {
 		if _, exists := mountPaths[mount.MountPath]; exists {
 			return fmt.Errorf("duplicate mount path '%s'", mount.MountPath)
 		}

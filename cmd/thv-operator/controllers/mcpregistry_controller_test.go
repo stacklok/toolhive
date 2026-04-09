@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -26,6 +28,19 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	registryapimocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/mocks"
 )
+
+// toRawJSONSlice marshals each item to JSON and wraps it in apiextensionsv1.JSON
+// so tests can construct []apiextensionsv1.JSON fields from typed Go structs.
+func toRawJSONSlice[T any](t *testing.T, items []T) []apiextensionsv1.JSON {
+	t.Helper()
+	result := make([]apiextensionsv1.JSON, len(items))
+	for i, item := range items {
+		data, err := json.Marshal(item)
+		require.NoError(t, err)
+		result[i] = apiextensionsv1.JSON{Raw: data}
+	}
+	return result
+}
 
 // newMCPRegistryTestScheme creates a runtime scheme with all required API groups registered.
 func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
@@ -518,9 +533,9 @@ func TestValidateNewPathSpec(t *testing.T) {
 						Key:                  "registry.json",
 					}},
 				},
-				Volumes: []corev1.Volume{
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
 					{Name: "extra", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				},
+				}),
 			},
 			wantErr: "volumes and volumeMounts require configYAML",
 		},
@@ -533,9 +548,9 @@ func TestValidateNewPathSpec(t *testing.T) {
 						Key:                  "registry.json",
 					}},
 				},
-				VolumeMounts: []corev1.VolumeMount{
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
 					{Name: "extra", MountPath: "/extra"},
-				},
+				}),
 			},
 			wantErr: "volumes and volumeMounts require configYAML",
 		},
@@ -559,9 +574,9 @@ func TestValidateNewPathSpec(t *testing.T) {
 			name: "reserved volume name registry-server-config in spec volumes",
 			spec: mcpv1alpha1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n",
-				Volumes: []corev1.Volume{
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
 					{Name: registryapi.RegistryServerConfigVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				},
+				}),
 			},
 			wantErr: "reserved by the operator",
 		},
@@ -573,9 +588,9 @@ func TestValidateNewPathSpec(t *testing.T) {
 					LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
 					Key:                  ".pgpass",
 				},
-				Volumes: []corev1.Volume{
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
 					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				},
+				}),
 			},
 			wantErr: "reserved by the operator",
 		},
@@ -583,18 +598,18 @@ func TestValidateNewPathSpec(t *testing.T) {
 			name: "non-reserved volume name passes",
 			spec: mcpv1alpha1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n",
-				Volumes: []corev1.Volume{
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
 					{Name: "my-custom-volume", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				},
+				}),
 			},
 		},
 		{
 			name: "reserved volume name pgpass-secret when pgpassSecretRef is NOT set passes",
 			spec: mcpv1alpha1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n",
-				Volumes: []corev1.Volume{
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
 					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				},
+				}),
 			},
 			// pgpass-secret is only reserved when pgpassSecretRef is set
 		},
@@ -602,10 +617,10 @@ func TestValidateNewPathSpec(t *testing.T) {
 			name: "duplicate mount path in spec volumeMounts",
 			spec: mcpv1alpha1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n",
-				VolumeMounts: []corev1.VolumeMount{
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
 					{Name: "vol-a", MountPath: "/data/files"},
 					{Name: "vol-b", MountPath: "/data/files"},
-				},
+				}),
 			},
 			wantErr: "duplicate mount path",
 		},
@@ -613,9 +628,9 @@ func TestValidateNewPathSpec(t *testing.T) {
 			name: "mount path collision with operator-reserved config path",
 			spec: mcpv1alpha1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n",
-				VolumeMounts: []corev1.VolumeMount{
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
 					{Name: "my-vol", MountPath: "/config"},
-				},
+				}),
 			},
 			wantErr: "duplicate mount path '/config'",
 		},

@@ -886,7 +886,6 @@ func (*serverConfigTestHelpers) verifyServerConfigVolume(deployment *appsv1.Depl
 	Expect(mountFound).To(BeTrue(), "Deployment should have a volume mount for the registry config ConfigMap")
 }
 
-
 func (*serverConfigTestHelpers) verifyContainerArguments(deployment *appsv1.Deployment) {
 	container := deployment.Spec.Template.Spec.Containers[0]
 	Expect(container.Args).To(ContainElement("serve"))

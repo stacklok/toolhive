@@ -146,10 +146,8 @@ var _ = Describe("MCPServer AuthServerRef", Ordered, func() {
 				mcpv1alpha1.MCPServerPhaseFailed, timeout, pollingInterval)
 		})
 
-		It("should report conflict in AuthServerRefValidated condition", func() {
-			ExpectMCPServerConditionMessage(ctx, k8sClient, serverName, testNamespace,
-				mcpv1alpha1.ConditionTypeAuthServerRefValidated,
-				metav1.ConditionFalse,
+		It("should report conflict error in Status.Message", func() {
+			ExpectMCPServerStatusMessage(ctx, k8sClient, serverName, testNamespace,
 				"both authServerRef and externalAuthConfigRef reference an embedded auth server",
 				timeout, pollingInterval)
 		})

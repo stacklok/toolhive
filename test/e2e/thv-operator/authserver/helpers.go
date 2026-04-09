@@ -185,6 +185,55 @@ func ExpectMCPRemoteProxyConditionMessage(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
+// ExpectMCPServerStatusMessage waits for an MCPServer to have a Status.Message
+// containing the given substring.
+func ExpectMCPServerStatusMessage(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	messageSubstring string,
+	timeout, pollingInterval time.Duration,
+) {
+	gomega.Eventually(func() error {
+		server := &mcpv1alpha1.MCPServer{}
+		if err := c.Get(ctx, types.NamespacedName{
+			Name:      name,
+			Namespace: namespace,
+		}, server); err != nil {
+			return err
+		}
+		if strings.Contains(server.Status.Message, messageSubstring) {
+			return nil
+		}
+		return fmt.Errorf("MCPServer %s Status.Message %q does not contain %q",
+			name, server.Status.Message, messageSubstring)
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+}
+
+// ExpectMCPRemoteProxyNotReady waits for a duration and verifies an MCPRemoteProxy
+// does NOT reach the Ready phase. This is useful when the controller keeps requeueing
+// with errors but does not set a terminal phase.
+func ExpectMCPRemoteProxyNotReady(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	duration, pollingInterval time.Duration,
+) {
+	gomega.Consistently(func() error {
+		proxy := &mcpv1alpha1.MCPRemoteProxy{}
+		if err := c.Get(ctx, types.NamespacedName{
+			Name:      name,
+			Namespace: namespace,
+		}, proxy); err != nil {
+			return err
+		}
+		if proxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseReady {
+			return fmt.Errorf("MCPRemoteProxy %s unexpectedly reached Ready phase", name)
+		}
+		return nil
+	}, duration, pollingInterval).Should(gomega.Succeed())
+}
+
 // deleteIgnoreNotFound deletes a resource and ignores NotFound errors.
 func deleteIgnoreNotFound(ctx context.Context, c client.Client, obj client.Object) {
 	err := c.Delete(ctx, obj)

@@ -9,13 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	k8serr "k8s.io/apimachinery/pkg/api/errors"
+	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
@@ -68,17 +70,21 @@ func (*AlwaysAllowValidator) ValidateImage(_ context.Context, _ string, _ metav1
 func NewImageValidator(k8sClient client.Client, namespace string, validation ImageValidation) ImageValidator {
 	if validation == ImageValidationRegistryEnforcing {
 		return &RegistryEnforcingValidator{
-			client:    k8sClient,
-			namespace: namespace,
+			client:     k8sClient,
+			namespace:  namespace,
+			httpClient: &http.Client{Timeout: 10 * time.Second},
 		}
 	}
 	return &AlwaysAllowValidator{}
 }
 
-// RegistryEnforcingValidator provides validation against MCPRegistry resources
+// RegistryEnforcingValidator provides validation against MCPRegistry resources.
+// It queries the registry API service (via HTTP) to check whether an image
+// exists in a registry's OCI packages.
 type RegistryEnforcingValidator struct {
-	client    client.Client
-	namespace string
+	client     client.Client
+	namespace  string
+	httpClient *http.Client
 }
 
 // ValidateImage checks if an image should be validated and if it exists in registries
@@ -191,7 +197,8 @@ func (*RegistryEnforcingValidator) getEnforcingRegistries(
 	return enforcingRegistries
 }
 
-// checkImageInRegistry checks if an image exists in a specific MCPRegistry
+// checkImageInRegistry checks if an image exists in a specific MCPRegistry by
+// querying the registry API service at the URL stored in the MCPRegistry status.
 func (v *RegistryEnforcingValidator) checkImageInRegistry(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
@@ -202,56 +209,101 @@ func (v *RegistryEnforcingValidator) checkImageInRegistry(
 		return false, nil
 	}
 
-	// Get the ConfigMap containing the registry data
-	configMapName := mcpRegistry.GetStorageName()
-	configMap := &corev1.ConfigMap{}
-	if err := v.client.Get(ctx, client.ObjectKey{
-		Name:      configMapName,
-		Namespace: v.namespace,
-	}, configMap); err != nil {
-		if k8serr.IsNotFound(err) {
-			// ConfigMap not found, registry data not available
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to get ConfigMap %s: %w", configMapName, err)
-	}
-
-	// Get the registry data from the ConfigMap
-	registryData, exists := configMap.Data["registry.json"]
-	if !exists {
-		// No registry data in ConfigMap
+	// Get the registry API URL from status
+	registryURL := mcpRegistry.Status.URL
+	if registryURL == "" {
 		return false, nil
 	}
 
-	// Parse the registry data
-	var reg regtypes.Registry
-	if err := json.Unmarshal([]byte(registryData), &reg); err != nil {
-		// Invalid registry data
-		return false, fmt.Errorf("failed to parse registry data: %w", err)
+	// Query the registry API for all servers
+	servers, err := v.listRegistryServers(ctx, registryURL)
+	if err != nil {
+		return false, fmt.Errorf("failed to query registry API at %s: %w", registryURL, err)
 	}
 
-	// Search for the image in this registry
-	return findImageInRegistry(&reg, image), nil
+	return findImageInServers(servers, image), nil
 }
 
-// findImageInRegistry searches for an image in a registry
-func findImageInRegistry(reg *regtypes.Registry, image string) bool {
-	// Check top-level servers
-	for _, server := range reg.Servers {
-		if server.Image == image {
-			return true
+// listRegistryServers queries the registry API to fetch all servers, handling pagination.
+func (v *RegistryEnforcingValidator) listRegistryServers(
+	ctx context.Context,
+	registryURL string,
+) ([]v0.ServerResponse, error) {
+	var allServers []v0.ServerResponse
+	cursor := ""
+
+	for {
+		servers, nextCursor, err := v.fetchRegistryPage(ctx, registryURL, cursor)
+		if err != nil {
+			return nil, err
+		}
+
+		allServers = append(allServers, servers...)
+
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+
+		// Safety limit to prevent infinite loops
+		if len(allServers) > 10000 {
+			return nil, fmt.Errorf("exceeded maximum server limit (10000)")
 		}
 	}
 
-	// Check servers in groups
-	// TODO: check with Rado or Ria, is this needed?
-	for _, group := range reg.Groups {
-		for _, server := range group.Servers {
-			if server.Image == image {
+	return allServers, nil
+}
+
+// fetchRegistryPage fetches a single page of servers from the registry API.
+func (v *RegistryEnforcingValidator) fetchRegistryPage(
+	ctx context.Context,
+	registryURL string,
+	cursor string,
+) ([]v0.ServerResponse, string, error) {
+	params := url.Values{}
+	params.Set("limit", "100")
+	if cursor != "" {
+		params.Set("cursor", cursor)
+	}
+
+	endpoint := fmt.Sprintf("%s/v0.1/servers?%s", registryURL, params.Encode())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := v.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to query registry: %w", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.FromContext(ctx).V(1).Info("Failed to close response body", "error", closeErr)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("registry API returned status %d", resp.StatusCode)
+	}
+
+	var listResp v0.ServerListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return nil, "", fmt.Errorf("failed to decode registry API response: %w", err)
+	}
+
+	return listResp.Servers, listResp.Metadata.NextCursor, nil
+}
+
+// findImageInServers searches for an OCI image in the servers returned by the registry API.
+func findImageInServers(servers []v0.ServerResponse, image string) bool {
+	for i := range servers {
+		for j := range servers[i].Server.Packages {
+			if servers[i].Server.Packages[j].RegistryType == "oci" &&
+				servers[i].Server.Packages[j].Identifier == image {
 				return true
 			}
 		}
 	}
-
 	return false
 }

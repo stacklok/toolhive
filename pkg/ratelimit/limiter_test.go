@@ -4,7 +4,6 @@
 package ratelimit
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -34,7 +33,7 @@ func TestNewLimiter_NilCRDReturnsNoop(t *testing.T) {
 	l, err := NewLimiter(client, "ns", "srv", nil)
 	require.NoError(t, err)
 
-	d, err := l.Allow(context.Background(), "anything", "user-a")
+	d, err := l.Allow(t.Context(), "anything", "user-a")
 	require.NoError(t, err)
 	assert.True(t, d.Allowed)
 }
@@ -74,7 +73,7 @@ func TestNewLimiter_ZeroDuration(t *testing.T) {
 func TestLimiter_ServerGlobalExhausted(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	crd := &v1alpha1.RateLimitConfig{
 		Shared: &v1alpha1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
@@ -97,7 +96,7 @@ func TestLimiter_ServerGlobalExhausted(t *testing.T) {
 func TestLimiter_PerToolIsolation(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	crd := &v1alpha1.RateLimitConfig{
 		Tools: []v1alpha1.ToolRateLimitConfig{
@@ -127,7 +126,7 @@ func TestLimiter_PerToolIsolation(t *testing.T) {
 func TestLimiter_ServerAndPerToolBothRequired(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	crd := &v1alpha1.RateLimitConfig{
 		Shared: &v1alpha1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: time.Minute}},
@@ -170,14 +169,14 @@ func TestLimiter_RedisUnavailableReturnsError(t *testing.T) {
 
 	mr.Close()
 
-	_, err = l.Allow(context.Background(), "", "")
+	_, err = l.Allow(t.Context(), "", "")
 	assert.Error(t, err)
 }
 
 func TestLimiter_PerUserServerLevel(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	crd := &v1alpha1.RateLimitConfig{
 		PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
@@ -205,7 +204,7 @@ func TestLimiter_PerUserServerLevel(t *testing.T) {
 func TestLimiter_PerToolPerUserIsolation(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	crd := &v1alpha1.RateLimitConfig{
 		Tools: []v1alpha1.ToolRateLimitConfig{
@@ -242,7 +241,7 @@ func TestLimiter_PerToolPerUserIsolation(t *testing.T) {
 func TestLimiter_ServerAndToolPerUserBothRequired(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	crd := &v1alpha1.RateLimitConfig{
 		PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: time.Minute}},
@@ -277,7 +276,7 @@ func TestLimiter_ServerAndToolPerUserBothRequired(t *testing.T) {
 func TestLimiter_PerUserRejectionDoesNotDrainShared(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Shared: 3 tokens, PerUser: 1 token.
 	// A noisy user hitting their per-user limit must not consume shared tokens.
@@ -325,7 +324,7 @@ func TestLimiter_RedisUnavailablePerUser(t *testing.T) {
 
 	mr.Close()
 
-	_, err = l.Allow(context.Background(), "", "user-a")
+	_, err = l.Allow(t.Context(), "", "user-a")
 	assert.Error(t, err)
 }
 

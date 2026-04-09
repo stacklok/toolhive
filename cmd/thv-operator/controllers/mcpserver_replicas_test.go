@@ -990,17 +990,17 @@ func TestRateLimitConfigValidation(t *testing.T) {
 		expectReason string
 	}{
 		{
-			name: "no rate limiting configured",
+			name: "no-rate-limiting",
 			spec: mcpv1alpha1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
 				ProxyPort: 8080,
 			},
-			expectStatus: metav1.ConditionFalse,
+			expectStatus: metav1.ConditionTrue,
 			expectReason: mcpv1alpha1.ConditionReasonRateLimitNotApplicable,
 		},
 		{
-			name: "perUser with auth",
+			name: "peruser-with-auth",
 			spec: mcpv1alpha1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
@@ -1021,7 +1021,7 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			expectReason: mcpv1alpha1.ConditionReasonRateLimitConfigValid,
 		},
 		{
-			name: "perUser without auth",
+			name: "peruser-without-auth",
 			spec: mcpv1alpha1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
@@ -1041,7 +1041,7 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			expectReason: mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
 		},
 		{
-			name: "per-tool perUser without auth",
+			name: "per-tool-peruser-without-auth",
 			spec: mcpv1alpha1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
@@ -1066,7 +1066,7 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			expectReason: mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
 		},
 		{
-			name: "shared only without auth is valid",
+			name: "shared-only-no-auth",
 			spec: mcpv1alpha1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",

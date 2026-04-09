@@ -504,8 +504,10 @@ spec:
                 properties:
                   perUser:
                     description: |-
-                      PerUser defines a token bucket applied independently to each authenticated user
+                      PerUser is a token bucket applied independently to each authenticated user
                       at the server level. Requires authentication to be enabled.
+                      Each unique userID creates Redis keys that expire after 2x refillPeriod.
+                      Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
                     properties:
                       maxTokens:
                         description: |-
@@ -526,7 +528,7 @@ spec:
                     - refillPeriod
                     type: object
                   shared:
-                    description: Shared defines a token bucket shared across all users
+                    description: Shared is a token bucket shared across all users
                       for the entire server.
                     properties:
                       maxTokens:
@@ -563,9 +565,8 @@ spec:
                           minLength: 1
                           type: string
                         perUser:
-                          description: |-
-                            PerUser defines a token bucket applied independently to each authenticated user
-                            for this specific tool. Requires authentication to be enabled.
+                          description: PerUser token bucket configuration for this
+                            tool.
                           properties:
                             maxTokens:
                               description: |-
@@ -586,8 +587,7 @@ spec:
                           - refillPeriod
                           type: object
                         shared:
-                          description: Shared defines a token bucket shared across
-                            all users for this specific tool.
+                          description: Shared token bucket for this specific tool.
                           properties:
                             maxTokens:
                               description: |-

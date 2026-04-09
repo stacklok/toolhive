@@ -45,7 +45,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket": {
-                "description": "PerUser defines a token bucket applied independently to each authenticated user\nfor this specific tool. Requires authentication to be enabled.\n+optional",
+                "description": "PerUser token bucket configuration for this tool.\n+optional",
                 "properties": {
                     "maxTokens": {
                         "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",

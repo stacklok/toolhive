@@ -122,7 +122,13 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	}
 
 	// Per-user buckets are created on the fly because userID is request-scoped.
-	// bucket.New only allocates a struct (no I/O), so this is cheap.
+	// bucket.New only allocates a struct — all state lives in Redis, so creating
+	// a new TokenBucket per request is safe (no local state to lose).
+	//
+	// Key prefixes deviate from RFC THV-0057 to prevent cross-type collisions:
+	// RFC uses "user:{userId}:tool:{toolName}" for both scopes, but a userID
+	// containing ":tool:" would collide with the per-tool key. Instead we use
+	// distinct prefixes: "user:" for server-level, "user-tool:" for tool-level.
 	if userID != "" {
 		if l.perUserSpec != nil {
 			s := l.perUserSpec

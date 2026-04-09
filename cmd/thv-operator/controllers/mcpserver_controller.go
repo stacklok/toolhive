@@ -2302,11 +2302,13 @@ func setRateLimitConfigCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1
 }
 
 // validateRateLimitConfig validates that per-user rate limiting has authentication enabled.
-// Sets the RateLimitConfigValid condition. This is defense-in-depth alongside CEL validation.
+// Sets the RateLimitConfigValid condition. This is defense-in-depth only; CEL admission
+// validation is the primary gate. Reconciliation continues even when the condition is False
+// because per-user buckets are silently skipped when userID is empty (graceful degradation).
 func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
 	rl := mcpServer.Spec.RateLimiting
 	if rl == nil {
-		setRateLimitConfigCondition(mcpServer, metav1.ConditionFalse,
+		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
 			mcpv1alpha1.ConditionReasonRateLimitNotApplicable,
 			"rate limiting is not configured")
 		if err := r.Status().Update(ctx, mcpServer); err != nil {

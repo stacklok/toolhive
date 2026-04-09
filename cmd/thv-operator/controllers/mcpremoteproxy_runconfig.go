@@ -80,28 +80,9 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	}
 
 	// Get tool configuration from MCPToolConfig if referenced
-	var toolsFilter []string
-	var toolsOverride map[string]runner.ToolOverride
-
-	if proxy.Spec.ToolConfigRef != nil {
-		toolConfig, err := ctrlutil.GetToolConfigForMCPRemoteProxy(context.Background(), r.Client, proxy)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
-		}
-
-		if toolConfig != nil {
-			toolsFilter = toolConfig.Spec.ToolsFilter
-
-			if len(toolConfig.Spec.ToolsOverride) > 0 {
-				toolsOverride = make(map[string]runner.ToolOverride)
-				for toolName, override := range toolConfig.Spec.ToolsOverride {
-					toolsOverride[toolName] = runner.ToolOverride{
-						Name:        override.Name,
-						Description: override.Description,
-					}
-				}
-			}
-		}
+	toolsFilter, toolsOverride, err := r.resolveToolConfig(proxy)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine transport type (default to streamable-http to match CLI)
@@ -128,33 +109,24 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
-	// Create context for API operations
-	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
-	defer cancel()
-
 	// Add telemetry configuration: prefer TelemetryConfigRef over deprecated inline Telemetry
-	if proxy.Spec.TelemetryConfigRef != nil {
-		telCfg, err := ctrlutil.GetTelemetryConfigForMCPRemoteProxy(ctx, r.Client, proxy)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get MCPTelemetryConfig: %w", err)
-		}
-		if telCfg != nil {
-			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
-			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, proxy.Spec.TelemetryConfigRef.ServiceName, proxy.Name, caPath)
-		}
-	} else {
-		runconfig.AddTelemetryConfigOptions(ctx, &options, proxy.Spec.Telemetry, proxy.Name)
+	if err := r.addTelemetryOptions(ctx, proxy, &options); err != nil {
+		return nil, err
 	}
+
+	// Create context for API operations
+	apiCtx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+	defer cancel()
 
 	// Add authorization configuration if specified
 
-	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
+	if err := ctrlutil.AddAuthzConfigOptions(apiCtx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
 	// Add OIDC configuration (required for proxy mode)
 	// Supports both legacy inline OIDCConfig and new MCPOIDCConfigRef paths
-	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(ctx, proxy, &options)
+	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(apiCtx, proxy, &options)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +134,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(
-		ctx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
+		apiCtx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
 		resolvedOIDCConfig, &options,
 	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
@@ -170,7 +142,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 
 	// Validate authServerRef/externalAuthConfigRef conflict and add authServerRef options
 	if err := ctrlutil.ValidateAndAddAuthServerRefOptions(
-		ctx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.AuthServerRef,
+		apiCtx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.AuthServerRef,
 		proxy.Spec.ExternalAuthConfigRef, resolvedOIDCConfig, &options,
 	); err != nil {
 		return nil, fmt.Errorf("failed to process authServerRef: %w", err)
@@ -331,4 +303,58 @@ func addHeaderForwardConfigOptions(proxy *mcpv1alpha1.MCPRemoteProxy, options *[
 		}
 		*options = append(*options, runner.WithHeaderForwardSecrets(headerSecrets))
 	}
+}
+
+// resolveToolConfig fetches the MCPToolConfig referenced by the proxy and
+// returns the tools filter and override map.
+func (r *MCPRemoteProxyReconciler) resolveToolConfig(
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) ([]string, map[string]runner.ToolOverride, error) {
+	if proxy.Spec.ToolConfigRef == nil {
+		return nil, nil, nil
+	}
+
+	toolConfig, err := ctrlutil.GetToolConfigForMCPRemoteProxy(context.Background(), r.Client, proxy)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
+	}
+	if toolConfig == nil {
+		return nil, nil, nil
+	}
+
+	var toolsOverride map[string]runner.ToolOverride
+	if len(toolConfig.Spec.ToolsOverride) > 0 {
+		toolsOverride = make(map[string]runner.ToolOverride)
+		for toolName, override := range toolConfig.Spec.ToolsOverride {
+			toolsOverride[toolName] = runner.ToolOverride{
+				Name:        override.Name,
+				Description: override.Description,
+			}
+		}
+	}
+
+	return toolConfig.Spec.ToolsFilter, toolsOverride, nil
+}
+
+// addTelemetryOptions resolves telemetry configuration for the RunConfig.
+// Prefers TelemetryConfigRef over the deprecated inline Telemetry field.
+func (r *MCPRemoteProxyReconciler) addTelemetryOptions(
+	ctx context.Context,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if proxy.Spec.TelemetryConfigRef != nil {
+		telCfg, err := ctrlutil.GetTelemetryConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+		if err != nil {
+			return fmt.Errorf("failed to get MCPTelemetryConfig: %w", err)
+		}
+		if telCfg != nil {
+			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
+			svcName := proxy.Spec.TelemetryConfigRef.ServiceName
+			runconfig.AddMCPTelemetryConfigRefOptions(options, &telCfg.Spec, svcName, proxy.Name, caPath)
+		}
+		return nil
+	}
+	runconfig.AddTelemetryConfigOptions(ctx, options, proxy.Spec.Telemetry, proxy.Name)
+	return nil
 }

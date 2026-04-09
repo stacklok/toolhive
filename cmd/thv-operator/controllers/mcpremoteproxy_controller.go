@@ -709,7 +709,8 @@ func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, pr
 	// Detect whether the condition is transitioning to True (e.g. recovering from
 	// a transient error). Without this check the status update is skipped when the
 	// hash is unchanged, leaving a stale False condition.
-	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated)
+	condType := mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
+	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, condType)
 	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
 
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{

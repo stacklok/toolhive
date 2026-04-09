@@ -23,16 +23,16 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 
 	tests := []struct {
-		name                string
-		proxy               *mcpv1alpha1.MCPRemoteProxy
-		telemetryConfig     *mcpv1alpha1.MCPTelemetryConfig
-		expectError         bool
-		expectedHash        string
-		expectedCondType    string
-		expectedCondStatus  metav1.ConditionStatus
-		expectedCondReason  string
-		expectNoCondition   bool
-		expectHashCleared   bool
+		name               string
+		proxy              *mcpv1alpha1.MCPRemoteProxy
+		telemetryConfig    *mcpv1alpha1.MCPTelemetryConfig
+		expectError        bool
+		expectedHash       string
+		expectedCondType   string
+		expectedCondStatus metav1.ConditionStatus
+		expectedCondReason string
+		expectNoCondition  bool
+		expectHashCleared  bool
 	}{
 		{
 			name: "nil ref clears hash and removes condition",
@@ -209,7 +209,7 @@ func TestMapTelemetryConfigToMCPRemoteProxy(t *testing.T) {
 	}
 	proxy3 := &mcpv1alpha1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{Name: "proxy3", Namespace: "default"},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{}, // no ref
+		Spec:       mcpv1alpha1.MCPRemoteProxySpec{}, // no ref
 	}
 
 	fakeClient := fake.NewClientBuilder().

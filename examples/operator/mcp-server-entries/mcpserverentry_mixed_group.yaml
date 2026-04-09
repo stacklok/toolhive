@@ -1,0 +1,57 @@
+# Mixed MCPGroup: local MCPServer + remote MCPServerEntry behind one VirtualMCPServer.
+#
+# This pattern combines container-based MCP servers running in-cluster with
+# zero-infrastructure remote entries. VirtualMCPServer aggregates tools from
+# both types transparently.
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: engineering-team
+  namespace: toolhive-system
+spec:
+  description: "Engineering team tools: local + remote"
+
+---
+# Local container-based MCP server
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/github/mcp-server:latest
+  transport: streamable-http
+  groupRef: engineering-team
+
+---
+# Remote MCP server (no pods deployed)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: context7
+  namespace: toolhive-system
+spec:
+  remoteURL: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef: engineering-team
+
+---
+# VirtualMCPServer aggregates both backends
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: eng-tools
+  namespace: toolhive-system
+spec:
+  incomingAuth:
+    type: anonymous
+  outgoingAuth:
+    source: inline
+  config:
+    groupRef: engineering-team
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"

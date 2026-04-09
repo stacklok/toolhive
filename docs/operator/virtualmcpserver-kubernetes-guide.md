@@ -430,6 +430,38 @@ kubectl apply -f resources.yaml
 6. **Plan Rollback**: Keep CLI configurations as backup until migration is stable
 7. **Use GitOps**: Store Kubernetes manifests in Git for versioning and rollback
 
+### Using MCPServerEntry for Remote Backends
+
+For remote MCP servers that don't need a dedicated proxy, use `MCPServerEntry` instead of `MCPRemoteProxy`. This avoids deploying unnecessary proxy pods.
+
+**Before (MCPRemoteProxy — deploys a proxy pod):**
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: context7
+spec:
+  remoteURL: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef: engineering-team
+  # Requires OIDC config, deploys proxy pod
+```
+
+**After (MCPServerEntry — zero infrastructure):**
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: context7
+spec:
+  remoteURL: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef: engineering-team
+  # No pods deployed, VirtualMCPServer connects directly
+```
+
+MCPServerEntry supports the same auth mechanisms as other backends via `externalAuthConfigRef`, and can use `caBundleRef` for internal CA certificates. See the [examples](../../examples/operator/mcp-server-entries/) for complete configurations.
+
 ## Troubleshooting
 
 ### Deployment Issues

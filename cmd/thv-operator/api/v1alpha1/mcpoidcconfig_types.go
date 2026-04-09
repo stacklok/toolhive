@@ -18,6 +18,18 @@ const (
 	MCPOIDCConfigTypeInline MCPOIDCConfigSourceType = "inline"
 )
 
+// Condition type and reasons for MCPOIDCConfig status (RFC-0023)
+const (
+	// ConditionTypeOIDCConfigValid indicates whether the MCPOIDCConfig configuration is valid
+	ConditionTypeOIDCConfigValid = ConditionTypeValid
+
+	// ConditionReasonOIDCConfigValid indicates spec validation passed
+	ConditionReasonOIDCConfigValid = "ConfigValid"
+
+	// ConditionReasonOIDCConfigInvalid indicates spec validation failed
+	ConditionReasonOIDCConfigInvalid = "ConfigInvalid"
+)
+
 // MCPOIDCConfigSourceType represents the type of OIDC configuration source for MCPOIDCConfig
 type MCPOIDCConfigSourceType string
 
@@ -132,9 +144,32 @@ type InlineOIDCSharedConfig struct {
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
 }
 
+// Well-known WorkloadReference Kind values.
+const (
+	WorkloadKindMCPServer        = "MCPServer"
+	WorkloadKindVirtualMCPServer = "VirtualMCPServer"
+	WorkloadKindMCPRemoteProxy   = "MCPRemoteProxy"
+)
+
+// WorkloadReference identifies a workload that references a shared configuration resource.
+// Namespace is implicit — cross-namespace references are not supported.
+type WorkloadReference struct {
+	// Kind is the type of workload resource
+	// +kubebuilder:validation:Enum=MCPServer;VirtualMCPServer;MCPRemoteProxy
+	// +kubebuilder:validation:Required
+	Kind string `json:"kind"`
+
+	// Name is the name of the workload resource
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
 // MCPOIDCConfigStatus defines the observed state of MCPOIDCConfig
 type MCPOIDCConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPOIDCConfig's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
@@ -146,15 +181,20 @@ type MCPOIDCConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
-	// ReferencingServers is a list of MCPServer resources that reference this MCPOIDCConfig
+	// ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
+	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
-	ReferencingServers []string `json:"referencingServers,omitempty"`
+	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=mcpoidc
-// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:resource:shortName=mcpoidc,categories=toolhive
+// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPOIDCConfig is the Schema for the mcpoidcconfigs API.
@@ -194,6 +234,7 @@ type MCPOIDCConfigReference struct {
 
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
 	// If empty, defaults to ["openid"].
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 }

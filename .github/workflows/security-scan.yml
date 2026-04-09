@@ -68,7 +68,18 @@ jobs:
           #   Indirect dependency via mcp-go, invopop/jsonschema, wk8/go-ordered-map.
           #   The vulnerability is in the Delete function which is not called by ToolHive
           #   or any of its dependencies. No fixed version exists yet (all versions affected).
-          IGNORED_VULNS="GO-2025-4192 GO-2026-4514"
+          # GO-2026-4883: Off-by-one error in Moby plugin privilege validation (CVE-2026-33997)
+          #   Affects the Docker daemon's plugin privilege handling code. ToolHive only uses
+          #   the Docker client SDK to manage containers, not the daemon plugin subsystem.
+          #   No fixed version exists for github.com/docker/docker; fix is only in
+          #   github.com/moby/moby/v2 v2.0.0-beta.8+ which is not yet available as a
+          #   docker/docker release.
+          # GO-2026-4887: AuthZ plugin bypass with oversized request bodies (CVE-2026-34040)
+          #   Affects the Docker daemon's AuthZ plugin mechanism. ToolHive only uses the
+          #   Docker client SDK and does not run or configure AuthZ plugins. No fixed version
+          #   exists for github.com/docker/docker; fix is only in github.com/moby/moby/v2
+          #   v2.0.0-beta.8+ which is not yet available as a docker/docker release.
+          IGNORED_VULNS="GO-2025-4192 GO-2026-4514 GO-2026-4883 GO-2026-4887"
 
           # Show the raw output for debugging
           echo "::group::govulncheck raw output"

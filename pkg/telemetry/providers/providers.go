@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
@@ -38,9 +39,16 @@ type Config struct {
 	// Prometheus configuration
 	EnablePrometheusMetricsPath bool // EnablePrometheusMetricsPath enables Prometheus /metrics endpoint
 
+	// TLS configuration
+	CACertPath string // CACertPath is the file path to a custom CA certificate bundle for the OTLP endpoint
+
 	// Custom attributes
 	// CustomAttributes are additional resource attributes to include (as map for JSON serialization)
 	CustomAttributes map[string]string
+
+	// ExtraSpanProcessors contains additional OTEL span processors to register alongside the
+	// default OTLP exporter (e.g. a Sentry bridge processor for dual export).
+	ExtraSpanProcessors []sdktrace.SpanProcessor
 }
 
 // ProviderOption is an option type used to configure the telemetry providers
@@ -92,6 +100,14 @@ func WithInsecure(insecure bool) ProviderOption {
 	}
 }
 
+// WithCACertPath sets the CA certificate path for the OTLP endpoint
+func WithCACertPath(path string) ProviderOption {
+	return func(config *Config) error {
+		config.CACertPath = path
+		return nil
+	}
+}
+
 // WithTracingEnabled sets the tracing enabled flag
 func WithTracingEnabled(tracingEnabled bool) ProviderOption {
 	return func(config *Config) error {
@@ -128,6 +144,14 @@ func WithEnablePrometheusMetricsPath(enablePrometheusMetricsPath bool) ProviderO
 func WithCustomAttributes(attributes map[string]string) ProviderOption {
 	return func(config *Config) error {
 		config.CustomAttributes = attributes
+		return nil
+	}
+}
+
+// WithExtraSpanProcessors appends additional OTEL span processors (e.g. a Sentry bridge).
+func WithExtraSpanProcessors(processors ...sdktrace.SpanProcessor) ProviderOption {
+	return func(config *Config) error {
+		config.ExtraSpanProcessors = append(config.ExtraSpanProcessors, processors...)
 		return nil
 	}
 }

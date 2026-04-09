@@ -256,6 +256,56 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 		"should not be an auth error (would indicate corrupted secret)")
 }
 
+// ---------------------------------------------------------------------------
+// RestoreSession fail-closed behaviour for absent token-hash key
+// ---------------------------------------------------------------------------
+
+// TestRestoreSession_AbsentTokenHashKey verifies that RestoreSession fails closed
+// when the stored metadata is missing MetadataKeyTokenHash entirely.
+//
+// Background: storedMetadata[key] returns "" for both an absent key and a
+// legitimately anonymous session (which stores "" as a sentinel). The factory
+// uses the two-value map lookup form to distinguish between the two cases and
+// rejects absent keys rather than silently downgrading to anonymous.
+func TestRestoreSession_AbsentTokenHashKey(t *testing.T) {
+	t.Parallel()
+
+	factory := newSessionFactoryWithConnector(nilBackendConnector())
+
+	t.Run("absent token-hash key is rejected (fail closed)", func(t *testing.T) {
+		t.Parallel()
+
+		// Metadata that deliberately omits MetadataKeyTokenHash (simulates
+		// corrupted or truncated session metadata). MetadataKeyBackendIDs is
+		// present (empty = zero backends) so the earlier backend-IDs guard
+		// passes and we reach the token-hash guard.
+		storedMetadata := map[string]string{
+			MetadataKeyIdentitySubject: "alice",
+			MetadataKeyBackendIDs:      "", // present, empty = zero backends
+			// MetadataKeyTokenHash intentionally absent
+		}
+
+		_, err := factory.RestoreSession(t.Context(), uuid.New().String(), storedMetadata, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token hash metadata key absent")
+	})
+
+	t.Run("empty token-hash key (anonymous sentinel) is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		// Metadata with MetadataKeyTokenHash present but empty — this is what
+		// PreventSessionHijacking writes for anonymous sessions.
+		storedMetadata := map[string]string{
+			MetadataKeyBackendIDs:             "", // present, empty = zero backends
+			sessiontypes.MetadataKeyTokenHash: "", // present, empty = anonymous
+		}
+
+		sess, err := factory.RestoreSession(t.Context(), uuid.New().String(), storedMetadata, nil)
+		require.NoError(t, err)
+		require.NotNil(t, sess)
+	})
+}
+
 // TestWithHMACSecret_RejectsEmptySecret verifies that WithHMACSecret rejects
 // nil or empty secrets to prevent silent security downgrades.
 func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {

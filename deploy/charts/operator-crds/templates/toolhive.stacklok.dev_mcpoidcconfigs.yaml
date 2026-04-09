@@ -11,6 +11,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPOIDCConfig
     listKind: MCPOIDCConfigList
     plural: mcpoidcconfigs
@@ -21,7 +23,13 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.type
-      name: Type
+      name: Source
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Valid
+      type: string
+    - jsonPath: .status.referencingWorkloads
+      name: References
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -259,6 +267,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               configHash:
                 description: ConfigHash is a hash of the current configuration for
                   change detection
@@ -268,12 +279,34 @@ spec:
                   for this MCPOIDCConfig.
                 format: int64
                 type: integer
-              referencingServers:
-                description: ReferencingServers is a list of MCPServer resources that
-                  reference this MCPOIDCConfig
+              referencingWorkloads:
+                description: |-
+                  ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
+                  Each entry identifies the workload by kind and name.
                 items:
-                  type: string
+                  description: |-
+                    WorkloadReference identifies a workload that references a shared configuration resource.
+                    Namespace is implicit — cross-namespace references are not supported.
+                  properties:
+                    kind:
+                      description: Kind is the type of workload resource
+                      enum:
+                      - MCPServer
+                      - VirtualMCPServer
+                      - MCPRemoteProxy
+                      type: string
+                    name:
+                      description: Name is the name of the workload resource
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

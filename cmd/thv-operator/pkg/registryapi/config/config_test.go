@@ -16,6 +16,19 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
+// helper to build a minimal valid MCPRegistry with one source and one registry view referencing it.
+func minimalRegistry(sources []mcpv1alpha1.MCPRegistrySourceConfig, views []mcpv1alpha1.MCPRegistryViewConfig) *mcpv1alpha1.MCPRegistry {
+	return &mcpv1alpha1.MCPRegistry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-registry",
+		},
+		Spec: mcpv1alpha1.MCPRegistrySpec{
+			Sources:    sources,
+			Registries: views,
+		},
+	}
+}
+
 func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 	t.Parallel()
 	// Test that an empty registry name returns the correct error
@@ -24,7 +37,7 @@ func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 			Name: "", // Empty name should cause an error
 		},
 		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 				{
 					Name:   "default",
 					Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -34,6 +47,12 @@ func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 						},
 						Key: "registry.json",
 					},
+				},
+			},
+			Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
 				},
 			},
 		},
@@ -55,7 +74,19 @@ func TestBuildConfig_NoRegistries(t *testing.T) {
 			Name: "test-registry",
 		},
 		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{}, // Empty registries should cause an error
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "some-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
+					},
+				},
+			},
+			Registries: []mcpv1alpha1.MCPRegistryViewConfig{}, // Empty registries should cause an error
 		},
 	}
 
@@ -69,21 +100,22 @@ func TestBuildConfig_NoRegistries(t *testing.T) {
 
 func TestBuildConfig_MissingSource(t *testing.T) {
 	t.Parallel()
-	// Test that a registry with no source type returns the correct error
-	mcpRegistry := &mcpv1alpha1.MCPRegistry{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-registry",
-		},
-		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
-				{
-					Name:   "default",
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					// No source type specified - should cause an error
-				},
+	// Test that a source with no source type returns the correct error
+	mcpRegistry := minimalRegistry(
+		[]mcpv1alpha1.MCPRegistrySourceConfig{
+			{
+				Name:   "default",
+				Format: mcpv1alpha1.RegistryFormatToolHive,
+				// No source type specified - should cause an error
 			},
 		},
-	}
+		[]mcpv1alpha1.MCPRegistryViewConfig{
+			{
+				Name:    "default-view",
+				Sources: []string{"default"},
+			},
+		},
+	)
 
 	manager := NewConfigManager(mcpRegistry)
 	config, err := manager.BuildConfig()
@@ -93,15 +125,15 @@ func TestBuildConfig_MissingSource(t *testing.T) {
 	assert.Nil(t, config)
 }
 
-func TestBuildConfig_EmptyRegistryNameInConfig(t *testing.T) {
+func TestBuildConfig_EmptySourceNameInConfig(t *testing.T) {
 	t.Parallel()
-	// Test that an empty registry name in config returns the correct error
+	// Test that an empty source name in config returns the correct error
 	mcpRegistry := &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-registry",
 		},
 		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 				{
 					Name:   "", // Empty name should cause an error
 					Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -113,6 +145,12 @@ func TestBuildConfig_EmptyRegistryNameInConfig(t *testing.T) {
 					},
 				},
 			},
+			Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{""},
+				},
+			},
 		},
 	}
 
@@ -120,19 +158,19 @@ func TestBuildConfig_EmptyRegistryNameInConfig(t *testing.T) {
 	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "registry name is required")
+	assert.Contains(t, err.Error(), "source name is required")
 	assert.Nil(t, config)
 }
 
-func TestBuildConfig_DuplicateRegistryNames(t *testing.T) {
+func TestBuildConfig_DuplicateSourceNames(t *testing.T) {
 	t.Parallel()
-	// Test that duplicate registry names return the correct error
+	// Test that duplicate source names return the correct error
 	mcpRegistry := &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-registry",
 		},
 		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 				{
 					Name:   "duplicate",
 					Format: mcpv1alpha1.RegistryFormatToolHive,
@@ -154,6 +192,12 @@ func TestBuildConfig_DuplicateRegistryNames(t *testing.T) {
 					},
 				},
 			},
+			Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"duplicate"},
+				},
+			},
 		},
 	}
 
@@ -161,7 +205,7 @@ func TestBuildConfig_DuplicateRegistryNames(t *testing.T) {
 	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "duplicate registry name")
+	assert.Contains(t, err.Error(), "duplicate source name")
 	assert.Nil(t, config)
 }
 
@@ -171,47 +215,48 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 
 	t.Run("valid configmap source", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "configmap-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "registry-configmap",
-							},
-							Key: "registry.json",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "configmap-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "registry-configmap",
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
+						Key: "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "configmap-registry",
+					Sources: []string{"configmap-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified one
-		assert.Equal(t, "configmap-registry", config.Registries[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
-		require.NotNil(t, config.Registries[1].File)
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "configmap-registry", RegistryJSONFileName), config.Registries[1].File.Path)
-		require.NotNil(t, config.Registries[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified one
+		assert.Equal(t, "configmap-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].File)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "configmap-source", RegistryJSONFileName), config.Sources[0].File.Path)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
+		// Verify registry view
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "configmap-registry", config.Registries[0].Name)
+		assert.Equal(t, []string{"configmap-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
@@ -223,20 +268,21 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 	t.Run("nil git source object", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git:    &mcpv1alpha1.GitSource{}, // Nil Git source should cause an error
-					},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "default",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git:    &mcpv1alpha1.GitSource{}, // Empty Git source should cause an error
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -248,22 +294,23 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 	t.Run("empty git repository", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "", // Empty repository should cause an error
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "default",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "", // Empty repository should cause an error
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -275,24 +322,25 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 	t.Run("no git reference specified", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/repo.git",
-							Path:       "registry.json",
-							// No branch, tag, or commit specified - should cause an error
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "default",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/repo.git",
+						Path:       "registry.json",
+						// No branch, tag, or commit specified - should cause an error
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -304,22 +352,23 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 	t.Run("no git path specified", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/repo.git",
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "default",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/repo.git",
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -331,145 +380,148 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 	t.Run("valid git source with branch", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "git-branch-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/repo.git",
-							Branch:     "main",
-							Path:       "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "git-branch-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/repo.git",
+						Branch:     "main",
+						Path:       "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "git-branch-registry",
+					Sources: []string{"git-branch-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified git registry
-		assert.Equal(t, "git-branch-registry", config.Registries[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
-		require.NotNil(t, config.Registries[1].Git)
-		assert.Equal(t, "https://github.com/example/repo.git", config.Registries[1].Git.Repository)
-		assert.Equal(t, "main", config.Registries[1].Git.Branch)
-		assert.Empty(t, config.Registries[1].Git.Tag)
-		assert.Empty(t, config.Registries[1].Git.Commit)
-		require.NotNil(t, config.Registries[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source
+		assert.Equal(t, "git-branch-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].Git)
+		assert.Equal(t, "https://github.com/example/repo.git", config.Sources[0].Git.Repository)
+		assert.Equal(t, "main", config.Sources[0].Git.Branch)
+		assert.Empty(t, config.Sources[0].Git.Tag)
+		assert.Empty(t, config.Sources[0].Git.Commit)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
+		// Verify registry view
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "git-branch-registry", config.Registries[0].Name)
+		assert.Equal(t, []string{"git-branch-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("valid git source with tag", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "git-tag-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "git@github.com:example/repo.git",
-							Tag:        "v1.2.3",
-							Path:       "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "git-tag-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "git@github.com:example/repo.git",
+						Tag:        "v1.2.3",
+						Path:       "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "git-tag-registry",
+					Sources: []string{"git-tag-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified git registry
-		assert.Equal(t, "git-tag-registry", config.Registries[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
-		require.NotNil(t, config.Registries[1].Git)
-		assert.Equal(t, "git@github.com:example/repo.git", config.Registries[1].Git.Repository)
-		assert.Empty(t, config.Registries[1].Git.Branch)
-		assert.Equal(t, "v1.2.3", config.Registries[1].Git.Tag)
-		assert.Empty(t, config.Registries[1].Git.Commit)
-		require.NotNil(t, config.Registries[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source
+		assert.Equal(t, "git-tag-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].Git)
+		assert.Equal(t, "git@github.com:example/repo.git", config.Sources[0].Git.Repository)
+		assert.Empty(t, config.Sources[0].Git.Branch)
+		assert.Equal(t, "v1.2.3", config.Sources[0].Git.Tag)
+		assert.Empty(t, config.Sources[0].Git.Commit)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
+		// Verify registry view
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "git-tag-registry", config.Registries[0].Name)
+		assert.Equal(t, []string{"git-tag-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("valid git source with commit", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "git-commit-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/repo.git",
-							Commit:     "abc123def456",
-							Path:       "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "git-commit-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/repo.git",
+						Commit:     "abc123def456",
+						Path:       "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "git-commit-registry",
+					Sources: []string{"git-commit-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified git registry
-		assert.Equal(t, "git-commit-registry", config.Registries[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
-		require.NotNil(t, config.Registries[1].Git)
-		assert.Equal(t, "https://github.com/example/repo.git", config.Registries[1].Git.Repository)
-		assert.Empty(t, config.Registries[1].Git.Branch)
-		assert.Empty(t, config.Registries[1].Git.Tag)
-		assert.Equal(t, "abc123def456", config.Registries[1].Git.Commit)
-		require.NotNil(t, config.Registries[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source
+		assert.Equal(t, "git-commit-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].Git)
+		assert.Equal(t, "https://github.com/example/repo.git", config.Sources[0].Git.Repository)
+		assert.Empty(t, config.Sources[0].Git.Branch)
+		assert.Empty(t, config.Sources[0].Git.Tag)
+		assert.Equal(t, "abc123def456", config.Sources[0].Git.Commit)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
+		// Verify registry view
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "git-commit-registry", config.Registries[0].Name)
+		assert.Equal(t, []string{"git-commit-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -480,81 +532,83 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 
 	t.Run("valid git source with auth", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "private-git-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/private-repo.git",
-							Branch:     "main",
-							Path:       "registry.json",
-							Auth: &mcpv1alpha1.GitAuthConfig{
-								Username: "git",
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "git-credentials",
-									},
-									Key: "token",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "private-git-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/private-repo.git",
+						Branch:     "main",
+						Path:       "registry.json",
+						Auth: &mcpv1alpha1.GitAuthConfig{
+							Username: "git",
+							PasswordSecretRef: corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "git-credentials",
 								},
+								Key: "token",
 							},
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "private-git-registry",
+					Sources: []string{"private-git-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// Second registry should be the user-specified git registry with auth
-		assert.Equal(t, "private-git-registry", config.Registries[1].Name)
-		require.NotNil(t, config.Registries[1].Git)
-		require.NotNil(t, config.Registries[1].Git.Auth)
-		assert.Equal(t, "git", config.Registries[1].Git.Auth.Username)
-		assert.Equal(t, "/secrets/git-credentials/token", config.Registries[1].Git.Auth.PasswordFile)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified git source with auth
+		assert.Equal(t, "private-git-source", config.Sources[0].Name)
+		require.NotNil(t, config.Sources[0].Git)
+		require.NotNil(t, config.Sources[0].Git.Auth)
+		assert.Equal(t, "git", config.Sources[0].Git.Auth.Username)
+		assert.Equal(t, "/secrets/git-credentials/token", config.Sources[0].Git.Auth.PasswordFile)
 	})
 
 	t.Run("git auth missing password secret key", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "private-git-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/private-repo.git",
-							Branch:     "main",
-							Path:       "registry.json",
-							Auth: &mcpv1alpha1.GitAuthConfig{
-								Username: "git",
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "git-credentials",
-									},
-									// Key is empty - should cause an error
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "private-git-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/private-repo.git",
+						Branch:     "main",
+						Path:       "registry.json",
+						Auth: &mcpv1alpha1.GitAuthConfig{
+							Username: "git",
+							PasswordSecretRef: corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "git-credentials",
 								},
+								// Key is empty - should cause an error
 							},
 						},
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "private-git-registry",
+					Sources: []string{"private-git-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -566,33 +620,34 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 
 	t.Run("git auth missing username", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "private-git-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/private-repo.git",
-							Branch:     "main",
-							Path:       "registry.json",
-							Auth: &mcpv1alpha1.GitAuthConfig{
-								// Username is empty - should cause an error
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "git-credentials",
-									},
-									Key: "token",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "private-git-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/private-repo.git",
+						Branch:     "main",
+						Path:       "registry.json",
+						Auth: &mcpv1alpha1.GitAuthConfig{
+							// Username is empty - should cause an error
+							PasswordSecretRef: corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "git-credentials",
 								},
+								Key: "token",
 							},
 						},
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "private-git-registry",
+					Sources: []string{"private-git-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -604,33 +659,34 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 
 	t.Run("git auth missing password secret name", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "private-git-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/private-repo.git",
-							Branch:     "main",
-							Path:       "registry.json",
-							Auth: &mcpv1alpha1.GitAuthConfig{
-								Username: "git",
-								PasswordSecretRef: corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "", // Empty name should cause an error
-									},
-									Key: "token",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "private-git-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/private-repo.git",
+						Branch:     "main",
+						Path:       "registry.json",
+						Auth: &mcpv1alpha1.GitAuthConfig{
+							Username: "git",
+							PasswordSecretRef: corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "", // Empty name should cause an error
 								},
+								Key: "token",
 							},
 						},
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "private-git-registry",
+					Sources: []string{"private-git-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -648,20 +704,21 @@ func TestBuildConfig_APISource(t *testing.T) {
 
 	t.Run("nil api source object", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						API:    &mcpv1alpha1.APISource{}, // Nil API source should cause an error
-					},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "default",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					API:    &mcpv1alpha1.APISource{}, // Empty API source should cause an error
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -673,22 +730,23 @@ func TestBuildConfig_APISource(t *testing.T) {
 
 	t.Run("empty api endpoint", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						API: &mcpv1alpha1.APISource{
-							Endpoint: "", // Empty endpoint should cause an error
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "default",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					API: &mcpv1alpha1.APISource{
+						Endpoint: "", // Empty endpoint should cause an error
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -700,47 +758,48 @@ func TestBuildConfig_APISource(t *testing.T) {
 
 	t.Run("valid api source with endpoint", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "api-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						API: &mcpv1alpha1.APISource{
-							Endpoint: "https://api.example.com/registry",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "api-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					API: &mcpv1alpha1.APISource{
+						Endpoint: "https://api.example.com/registry",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "api-registry",
+					Sources: []string{"api-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified API registry
-		assert.Equal(t, "api-registry", config.Registries[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
-		require.NotNil(t, config.Registries[1].API)
-		assert.Equal(t, "https://api.example.com/registry", config.Registries[1].API.Endpoint)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should be the user-specified API source
+		assert.Equal(t, "api-source", config.Sources[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Sources[0].Format)
+		require.NotNil(t, config.Sources[0].API)
+		assert.Equal(t, "https://api.example.com/registry", config.Sources[0].API.Endpoint)
 		// Verify that other source types are nil
-		assert.Nil(t, config.Registries[1].File)
-		assert.Nil(t, config.Registries[1].Git)
-		require.NotNil(t, config.Registries[1].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		assert.Nil(t, config.Sources[0].File)
+		assert.Nil(t, config.Sources[0].Git)
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
+		// Verify registry view
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "api-registry", config.Registries[0].Name)
+		assert.Equal(t, []string{"api-source"}, config.Registries[0].Sources)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -751,68 +810,66 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 
 	t.Run("nil sync policy", func(t *testing.T) {
 		t.Parallel()
-		// Nil sync policy is now optional (moved into registry config)
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "sync-policy-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
+		// Nil sync policy is now optional (moved into source config)
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "sync-policy-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
 						},
-						SyncPolicy: nil, // Nil SyncPolicy is now optional
+						Key: "registry.json",
 					},
+					SyncPolicy: nil, // Nil SyncPolicy is now optional
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "sync-policy-registry",
+					Sources: []string{"sync-policy-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified one
-		assert.Nil(t, config.Registries[1].SyncPolicy)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have nil sync policy
+		assert.Nil(t, config.Sources[0].SyncPolicy)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("empty interval", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "default",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "", // Empty interval should cause an error
-						},
+						Key: "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "", // Empty interval should cause an error
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "default-view",
+					Sources: []string{"default"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -824,43 +881,40 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 
 	t.Run("valid sync policy with interval", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "sync-policy-valid-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "sync-policy-valid-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "30m", // Valid interval
-						},
+						Key: "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "30m", // Valid interval
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "sync-policy-valid-registry",
+					Sources: []string{"sync-policy-valid-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified one
-		require.NotNil(t, config.Registries[1].SyncPolicy)
-		assert.Equal(t, "30m", config.Registries[1].SyncPolicy.Interval)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have valid sync policy
+		require.NotNil(t, config.Sources[0].SyncPolicy)
+		assert.Equal(t, "30m", config.Sources[0].SyncPolicy.Interval)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -872,255 +926,244 @@ func TestBuildConfig_Filter(t *testing.T) {
 	t.Run("nil filter", func(t *testing.T) {
 		t.Parallel()
 		// Nil filter should not cause an error
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "filter-nil-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "filter-nil-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
-						Filter: nil, // Nil filter is optional
+						Key: "registry.json",
 					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
+					},
+					Filter: nil, // Nil filter is optional
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "filter-nil-registry",
+					Sources: []string{"filter-nil-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Filter should be nil when not provided for the user-specified registry
-		assert.Nil(t, config.Registries[1].Filter)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// Filter should be nil when not provided for the user-specified source
+		assert.Nil(t, config.Sources[0].Filter)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with name filters", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "filter-names-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "filter-names-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
-						Filter: &mcpv1alpha1.RegistryFilter{
-							NameFilters: &mcpv1alpha1.NameFilter{
-								Include: []string{"server-*", "tool-*"},
-								Exclude: []string{"*-deprecated", "*-test"},
-							},
+						Key: "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
+					},
+					Filter: &mcpv1alpha1.RegistryFilter{
+						NameFilters: &mcpv1alpha1.NameFilter{
+							Include: []string{"server-*", "tool-*"},
+							Exclude: []string{"*-deprecated", "*-test"},
 						},
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "filter-names-registry",
+					Sources: []string{"filter-names-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should have the filter
-		require.NotNil(t, config.Registries[1].Filter)
-		require.NotNil(t, config.Registries[1].Filter.Names)
-		assert.Equal(t, []string{"server-*", "tool-*"}, config.Registries[1].Filter.Names.Include)
-		assert.Equal(t, []string{"*-deprecated", "*-test"}, config.Registries[1].Filter.Names.Exclude)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
+		require.NotNil(t, config.Sources[0].Filter.Names)
+		assert.Equal(t, []string{"server-*", "tool-*"}, config.Sources[0].Filter.Names.Include)
+		assert.Equal(t, []string{"*-deprecated", "*-test"}, config.Sources[0].Filter.Names.Exclude)
 		// Tags should be nil when not provided
-		assert.Nil(t, config.Registries[1].Filter.Tags)
+		assert.Nil(t, config.Sources[0].Filter.Tags)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with tags", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "filter-tags-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/repo.git",
-							Branch:     "main",
-							Path:       "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "30m",
-						},
-						Filter: &mcpv1alpha1.RegistryFilter{
-							Tags: &mcpv1alpha1.TagFilter{
-								Include: []string{"stable", "production", "v1.*"},
-								Exclude: []string{"beta", "alpha", "experimental"},
-							},
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "filter-tags-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					Git: &mcpv1alpha1.GitSource{
+						Repository: "https://github.com/example/repo.git",
+						Branch:     "main",
+						Path:       "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "30m",
+					},
+					Filter: &mcpv1alpha1.RegistryFilter{
+						Tags: &mcpv1alpha1.TagFilter{
+							Include: []string{"stable", "production", "v1.*"},
+							Exclude: []string{"beta", "alpha", "experimental"},
 						},
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "filter-tags-registry",
+					Sources: []string{"filter-tags-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should have the filter
-		require.NotNil(t, config.Registries[1].Filter)
-		require.NotNil(t, config.Registries[1].Filter.Tags)
-		assert.Equal(t, []string{"stable", "production", "v1.*"}, config.Registries[1].Filter.Tags.Include)
-		assert.Equal(t, []string{"beta", "alpha", "experimental"}, config.Registries[1].Filter.Tags.Exclude)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
+		require.NotNil(t, config.Sources[0].Filter.Tags)
+		assert.Equal(t, []string{"stable", "production", "v1.*"}, config.Sources[0].Filter.Tags.Include)
+		assert.Equal(t, []string{"beta", "alpha", "experimental"}, config.Sources[0].Filter.Tags.Exclude)
 		// Names should be nil when not provided
-		assert.Nil(t, config.Registries[1].Filter.Names)
+		assert.Nil(t, config.Sources[0].Filter.Names)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with both name filters and tags", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "filter-both-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						API: &mcpv1alpha1.APISource{
-							Endpoint: "https://api.example.com/registry",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "filter-both-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					API: &mcpv1alpha1.APISource{
+						Endpoint: "https://api.example.com/registry",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "2h",
+					},
+					Filter: &mcpv1alpha1.RegistryFilter{
+						NameFilters: &mcpv1alpha1.NameFilter{
+							Include: []string{"mcp-*"},
+							Exclude: []string{"*-internal"},
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "2h",
-						},
-						Filter: &mcpv1alpha1.RegistryFilter{
-							NameFilters: &mcpv1alpha1.NameFilter{
-								Include: []string{"mcp-*"},
-								Exclude: []string{"*-internal"},
-							},
-							Tags: &mcpv1alpha1.TagFilter{
-								Include: []string{"latest", "stable"},
-								Exclude: []string{"dev", "test"},
-							},
+						Tags: &mcpv1alpha1.TagFilter{
+							Include: []string{"latest", "stable"},
+							Exclude: []string{"dev", "test"},
 						},
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "filter-both-registry",
+					Sources: []string{"filter-both-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should have the filter
-		require.NotNil(t, config.Registries[1].Filter)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
 		// Both name filters and tags should be present
-		require.NotNil(t, config.Registries[1].Filter.Names)
-		assert.Equal(t, []string{"mcp-*"}, config.Registries[1].Filter.Names.Include)
-		assert.Equal(t, []string{"*-internal"}, config.Registries[1].Filter.Names.Exclude)
-		require.NotNil(t, config.Registries[1].Filter.Tags)
-		assert.Equal(t, []string{"latest", "stable"}, config.Registries[1].Filter.Tags.Include)
-		assert.Equal(t, []string{"dev", "test"}, config.Registries[1].Filter.Tags.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Names)
+		assert.Equal(t, []string{"mcp-*"}, config.Sources[0].Filter.Names.Include)
+		assert.Equal(t, []string{"*-internal"}, config.Sources[0].Filter.Names.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Tags)
+		assert.Equal(t, []string{"latest", "stable"}, config.Sources[0].Filter.Tags.Include)
+		assert.Equal(t, []string{"dev", "test"}, config.Sources[0].Filter.Tags.Exclude)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with empty include and exclude lists", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "filter-empty-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "filter-empty-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
 						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
+						Key: "registry.json",
+					},
+					SyncPolicy: &mcpv1alpha1.SyncPolicy{
+						Interval: "1h",
+					},
+					Filter: &mcpv1alpha1.RegistryFilter{
+						NameFilters: &mcpv1alpha1.NameFilter{
+							Include: []string{},
+							Exclude: []string{},
 						},
-						Filter: &mcpv1alpha1.RegistryFilter{
-							NameFilters: &mcpv1alpha1.NameFilter{
-								Include: []string{},
-								Exclude: []string{},
-							},
-							Tags: &mcpv1alpha1.TagFilter{
-								Include: []string{},
-								Exclude: []string{},
-							},
+						Tags: &mcpv1alpha1.TagFilter{
+							Include: []string{},
+							Exclude: []string{},
 						},
 					},
 				},
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "filter-empty-registry",
+					Sources: []string{"filter-empty-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should have the filter
-		require.NotNil(t, config.Registries[1].Filter)
+		// Should have 1 source: user-specified
+		require.Len(t, config.Sources, 1)
+		// First source should have the filter
+		require.NotNil(t, config.Sources[0].Filter)
 		// Empty lists should still be set
-		require.NotNil(t, config.Registries[1].Filter.Names)
-		assert.Empty(t, config.Registries[1].Filter.Names.Include)
-		assert.Empty(t, config.Registries[1].Filter.Names.Exclude)
-		require.NotNil(t, config.Registries[1].Filter.Tags)
-		assert.Empty(t, config.Registries[1].Filter.Tags.Include)
-		assert.Empty(t, config.Registries[1].Filter.Tags.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Names)
+		assert.Empty(t, config.Sources[0].Filter.Names.Include)
+		assert.Empty(t, config.Sources[0].Filter.Names.Exclude)
+		require.NotNil(t, config.Sources[0].Filter.Tags)
+		assert.Empty(t, config.Sources[0].Filter.Tags.Include)
+		assert.Empty(t, config.Sources[0].Filter.Tags.Exclude)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
@@ -1130,10 +1173,9 @@ func TestBuildConfig_Filter(t *testing.T) {
 func TestToConfigMapWithContentChecksum(t *testing.T) {
 	t.Parallel()
 
-	// Create a populated Config object
+	// Create a populated Config object using the v2 format
 	config := &Config{
-		RegistryName: "checksum-test-registry",
-		Registries: []RegistryConfig{
+		Sources: []SourceConfig{
 			{
 				Name:   "default",
 				Format: "toolhive",
@@ -1153,6 +1195,12 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 				},
 			},
 		},
+		Registries: []RegistryConfig{
+			{
+				Name:    "checksum-test-registry",
+				Sources: []string{"default"},
+			},
+		},
 	}
 
 	mcpRegistry := &mcpv1alpha1.MCPRegistry{
@@ -1170,7 +1218,7 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 	require.NotNil(t, configMap)
 
 	// Verify basic ConfigMap properties
-	assert.Equal(t, "checksum-test-registry-registry-server-config", configMap.Name)
+	assert.Equal(t, "test-registry-registry-server-config", configMap.Name)
 	assert.Equal(t, "test-namespace", configMap.Namespace)
 
 	// Verify the checksum annotation exists
@@ -1189,7 +1237,6 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 	require.NotEmpty(t, yamlData)
 
 	// Verify YAML content includes expected fields
-	assert.Contains(t, yamlData, "registryName: checksum-test-registry")
 	assert.Contains(t, yamlData, "repository: https://github.com/example/mcp-servers.git")
 	assert.Contains(t, yamlData, "interval: 15m")
 
@@ -1200,24 +1247,24 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 	assert.Equal(t, checksumValue, checksum2Value, "Same config should produce same checksum")
 
 	// Test that different config produces different checksum
-	config.Registries[0].SyncPolicy.Interval = "30m"
+	config.Sources[0].SyncPolicy.Interval = "30m"
 	configMap3, err := config.ToConfigMapWithContentChecksum(mcpRegistry)
 	require.NoError(t, err)
 	checksum3Value := configMap3.Annotations[checksum.ContentChecksumAnnotation]
 	assert.NotEqual(t, checksumValue, checksum3Value, "Different config should produce different checksum")
 }
 
-func TestBuildConfig_MultipleRegistries(t *testing.T) {
+func TestBuildConfig_MultipleSources(t *testing.T) {
 	t.Parallel()
-	// Test that multiple registries are properly built
+	// Test that multiple sources are properly built
 	mcpRegistry := &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-registry",
 		},
 		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 				{
-					Name:   "registry1",
+					Name:   "source1",
 					Format: mcpv1alpha1.RegistryFormatToolHive,
 					ConfigMapRef: &corev1.ConfigMapKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{
@@ -1230,7 +1277,7 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 					},
 				},
 				{
-					Name:   "registry2",
+					Name:   "source2",
 					Format: mcpv1alpha1.RegistryFormatToolHive,
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
@@ -1247,6 +1294,12 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 					},
 				},
 			},
+			Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "registry1",
+					Sources: []string{"source1", "source2"},
+				},
+			},
 		},
 	}
 
@@ -1255,198 +1308,59 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, config)
-	assert.Equal(t, "test-registry", config.RegistryName)
-	// Should have 3 registries: default kubernetes + 2 user-specified
-	require.Len(t, config.Registries, 3)
+	// Should have 2 sources: user-specified
+	require.Len(t, config.Sources, 2)
 
-	// First registry should be the default kubernetes registry
-	assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-	require.NotNil(t, config.Registries[0].Kubernetes)
+	// Verify first source
+	assert.Equal(t, "source1", config.Sources[0].Name)
+	require.NotNil(t, config.Sources[0].File)
+	assert.Equal(t, filepath.Join(RegistryJSONFilePath, "source1", RegistryJSONFileName), config.Sources[0].File.Path)
+	require.NotNil(t, config.Sources[0].SyncPolicy)
+	assert.Equal(t, "1h", config.Sources[0].SyncPolicy.Interval)
+	assert.Nil(t, config.Sources[0].Filter)
 
-	// Verify second registry (first user-specified)
-	assert.Equal(t, "registry1", config.Registries[1].Name)
-	require.NotNil(t, config.Registries[1].File)
-	assert.Equal(t, filepath.Join(RegistryJSONFilePath, "registry1", RegistryJSONFileName), config.Registries[1].File.Path)
-	require.NotNil(t, config.Registries[1].SyncPolicy)
-	assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
-	assert.Nil(t, config.Registries[1].Filter)
+	// Verify second source
+	assert.Equal(t, "source2", config.Sources[1].Name)
+	require.NotNil(t, config.Sources[1].Git)
+	assert.Equal(t, "https://github.com/example/repo.git", config.Sources[1].Git.Repository)
+	require.NotNil(t, config.Sources[1].SyncPolicy)
+	assert.Equal(t, "30m", config.Sources[1].SyncPolicy.Interval)
+	require.NotNil(t, config.Sources[1].Filter)
+	require.NotNil(t, config.Sources[1].Filter.Names)
+	assert.Equal(t, []string{"server-*"}, config.Sources[1].Filter.Names.Include)
 
-	// Verify third registry (second user-specified)
-	assert.Equal(t, "registry2", config.Registries[2].Name)
-	require.NotNil(t, config.Registries[2].Git)
-	assert.Equal(t, "https://github.com/example/repo.git", config.Registries[2].Git.Repository)
-	require.NotNil(t, config.Registries[2].SyncPolicy)
-	assert.Equal(t, "30m", config.Registries[2].SyncPolicy.Interval)
-	require.NotNil(t, config.Registries[2].Filter)
-	require.NotNil(t, config.Registries[2].Filter.Names)
-	assert.Equal(t, []string{"server-*"}, config.Registries[2].Filter.Names.Include)
+	// Verify registry view
+	require.Len(t, config.Registries, 1)
+	assert.Equal(t, "registry1", config.Registries[0].Name)
+	assert.Equal(t, []string{"source1", "source2"}, config.Registries[0].Sources)
 	assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 }
 
-func TestBuildConfig_PVCSource(t *testing.T) {
-	t.Parallel()
-
-	t.Run("valid pvc source with default path", func(t *testing.T) {
-		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "pvc-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						PVCRef: &mcpv1alpha1.PVCSource{
-							ClaimName: "registry-data-pvc",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "1h",
-						},
-					},
-				},
-			},
-		}
-
-		manager := NewConfigManager(mcpRegistry)
-		config, err := manager.BuildConfig()
-
-		require.NoError(t, err)
-		require.NotNil(t, config)
-		assert.Equal(t, "test-registry", config.RegistryName)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified PVC registry
-		assert.Equal(t, "pvc-registry", config.Registries[1].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
-		require.NotNil(t, config.Registries[1].File)
-		// Path: /config/registry/{registryName}/{pvcRef.path}
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "pvc-registry", RegistryJSONFileName), config.Registries[1].File.Path)
-		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
-	})
-
-	t.Run("valid pvc source with subdirectory path", func(t *testing.T) {
-		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "production-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						PVCRef: &mcpv1alpha1.PVCSource{
-							ClaimName: "registry-data-pvc",
-							Path:      "production/v1/servers.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "30m",
-						},
-					},
-				},
-			},
-		}
-
-		manager := NewConfigManager(mcpRegistry)
-		config, err := manager.BuildConfig()
-
-		require.NoError(t, err)
-		require.NotNil(t, config)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified PVC registry
-		assert.Equal(t, "production-registry", config.Registries[1].Name)
-		require.NotNil(t, config.Registries[1].File)
-		// Path: /config/registry/{registryName}/{pvcRef.path}
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "production-registry", "production/v1/servers.json"), config.Registries[1].File.Path)
-		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
-	})
-
-	t.Run("valid pvc source with filter", func(t *testing.T) {
-		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "filtered-pvc",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						PVCRef: &mcpv1alpha1.PVCSource{
-							ClaimName: "registry-data-pvc",
-							Path:      "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "15m",
-						},
-						Filter: &mcpv1alpha1.RegistryFilter{
-							NameFilters: &mcpv1alpha1.NameFilter{
-								Include: []string{"prod-*"},
-							},
-							Tags: &mcpv1alpha1.TagFilter{
-								Include: []string{"production"},
-							},
-						},
-					},
-				},
-			},
-		}
-
-		manager := NewConfigManager(mcpRegistry)
-		config, err := manager.BuildConfig()
-
-		require.NoError(t, err)
-		require.NotNil(t, config)
-		// Should have 2 registries: default kubernetes + user-specified
-		require.Len(t, config.Registries, 2)
-		// First registry should be the default kubernetes registry
-		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].Kubernetes)
-		// Second registry should be the user-specified PVC registry
-		assert.Equal(t, "filtered-pvc", config.Registries[1].Name)
-		require.NotNil(t, config.Registries[1].File)
-		// Verify filter is preserved
-		require.NotNil(t, config.Registries[1].Filter)
-		require.NotNil(t, config.Registries[1].Filter.Names)
-		assert.Equal(t, []string{"prod-*"}, config.Registries[1].Filter.Names.Include)
-		require.NotNil(t, config.Registries[1].Filter.Tags)
-		assert.Equal(t, []string{"production"}, config.Registries[1].Filter.Tags.Include)
-		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
-	})
-}
 func TestBuildConfig_DatabaseConfig(t *testing.T) {
 	t.Parallel()
 
 	t.Run("default database config when nil", func(t *testing.T) {
 		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "db-nil-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
+		mcpRegistry := minimalRegistry(
+			[]mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   "db-nil-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
 						},
+						Key: "registry.json",
 					},
 				},
-				// DatabaseConfig not specified, should use defaults
 			},
-		}
+			[]mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    "db-nil-registry",
+					Sources: []string{"db-nil-source"},
+				},
+			},
+		)
 
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
@@ -1457,13 +1371,13 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 
 		// Verify default values
 		assert.Equal(t, "postgres", config.Database.Host)
-		assert.Equal(t, 5432, config.Database.Port)
+		assert.Equal(t, int32(5432), config.Database.Port)
 		assert.Equal(t, "db_app", config.Database.User)
 		assert.Equal(t, "db_migrator", config.Database.MigrationUser)
 		assert.Equal(t, "registry", config.Database.Database)
 		assert.Equal(t, "prefer", config.Database.SSLMode)
-		assert.Equal(t, 10, config.Database.MaxOpenConns)
-		assert.Equal(t, 2, config.Database.MaxIdleConns)
+		assert.Equal(t, int32(10), config.Database.MaxOpenConns)
+		assert.Equal(t, int32(2), config.Database.MaxIdleConns)
 		assert.Equal(t, "30m", config.Database.ConnMaxLifetime)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
@@ -1475,9 +1389,9 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 					{
-						Name:   "db-custom-registry",
+						Name:   "db-custom-source",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -1485,6 +1399,12 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 							},
 							Key: "registry.json",
 						},
+					},
+				},
+				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+					{
+						Name:    "db-custom-registry",
+						Sources: []string{"db-custom-source"},
 					},
 				},
 				DatabaseConfig: &mcpv1alpha1.MCPRegistryDatabaseConfig{
@@ -1510,13 +1430,13 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 
 		// Verify custom values
 		assert.Equal(t, "custom-postgres.example.com", config.Database.Host)
-		assert.Equal(t, 15432, config.Database.Port)
+		assert.Equal(t, int32(15432), config.Database.Port)
 		assert.Equal(t, "custom_app_user", config.Database.User)
 		assert.Equal(t, "custom_migrator", config.Database.MigrationUser)
 		assert.Equal(t, "custom_registry_db", config.Database.Database)
 		assert.Equal(t, "require", config.Database.SSLMode)
-		assert.Equal(t, 25, config.Database.MaxOpenConns)
-		assert.Equal(t, 5, config.Database.MaxIdleConns)
+		assert.Equal(t, int32(25), config.Database.MaxOpenConns)
+		assert.Equal(t, int32(5), config.Database.MaxIdleConns)
 		assert.Equal(t, "1h", config.Database.ConnMaxLifetime)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
@@ -1528,9 +1448,9 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
 					{
-						Name:   "db-partial-registry",
+						Name:   "db-partial-source",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -1538,6 +1458,12 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 							},
 							Key: "registry.json",
 						},
+					},
+				},
+				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
+					{
+						Name:    "db-partial-registry",
+						Sources: []string{"db-partial-source"},
 					},
 				},
 				DatabaseConfig: &mcpv1alpha1.MCPRegistryDatabaseConfig{
@@ -1560,12 +1486,12 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 		assert.Equal(t, "custom-db", config.Database.Database)
 
 		// Verify defaults are used for omitted fields
-		assert.Equal(t, 5432, config.Database.Port)
+		assert.Equal(t, int32(5432), config.Database.Port)
 		assert.Equal(t, "db_app", config.Database.User)
 		assert.Equal(t, "db_migrator", config.Database.MigrationUser)
 		assert.Equal(t, "prefer", config.Database.SSLMode)
-		assert.Equal(t, 10, config.Database.MaxOpenConns)
-		assert.Equal(t, 2, config.Database.MaxIdleConns)
+		assert.Equal(t, int32(10), config.Database.MaxOpenConns)
+		assert.Equal(t, int32(2), config.Database.MaxIdleConns)
 		assert.Equal(t, "30m", config.Database.ConnMaxLifetime)
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
@@ -1574,25 +1500,37 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 func TestBuildConfig_AuthConfig(t *testing.T) {
 	t.Parallel()
 
+	// helper to build a source+view pair for auth tests
+	authSource := func(name string) ([]mcpv1alpha1.MCPRegistrySourceConfig, []mcpv1alpha1.MCPRegistryViewConfig) {
+		return []mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   name + "-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
+					},
+				},
+			}, []mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    name,
+					Sources: []string{name + "-source"},
+				},
+			}
+	}
+
 	t.Run("default auth config when nil", func(t *testing.T) {
 		t.Parallel()
+		sources, views := authSource("auth-nil-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "auth-nil-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				// AuthConfig not specified, should default to anonymous
 			},
 		}
@@ -1609,23 +1547,14 @@ func TestBuildConfig_AuthConfig(t *testing.T) {
 
 	t.Run("explicit anonymous mode", func(t *testing.T) {
 		t.Parallel()
+		sources, views := authSource("auth-anonymous-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "auth-anonymous-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeAnonymous,
 				},
@@ -1644,23 +1573,14 @@ func TestBuildConfig_AuthConfig(t *testing.T) {
 
 	t.Run("oauth mode with full config", func(t *testing.T) {
 		t.Parallel()
+		sources, views := authSource("auth-oauth-full-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "auth-oauth-full-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -1718,23 +1638,14 @@ func TestBuildConfig_AuthConfig(t *testing.T) {
 
 	t.Run("oauth mode with multiple providers", func(t *testing.T) {
 		t.Parallel()
+		sources, views := authSource("auth-multi-provider-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "auth-multi-provider-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -1772,23 +1683,14 @@ func TestBuildConfig_AuthConfig(t *testing.T) {
 
 	t.Run("oauth mode without oauth config returns error", func(t *testing.T) {
 		t.Parallel()
+		sources, views := authSource("auth-oauth-no-config-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "auth-oauth-no-config-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode:  mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: nil, // OAuth mode but no OAuth config
@@ -1810,23 +1712,14 @@ func TestBuildConfig_AuthConfig(t *testing.T) {
 
 	t.Run("empty mode defaults to anonymous", func(t *testing.T) {
 		t.Parallel()
+		sources, views := authSource("auth-empty-mode-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "auth-empty-mode-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: "", // Empty mode should default to anonymous
 				},
@@ -1846,25 +1739,37 @@ func TestBuildConfig_AuthConfig(t *testing.T) {
 func TestBuildOAuthProviderConfig_Validation(t *testing.T) {
 	t.Parallel()
 
+	// helper for auth provider validation tests
+	providerSource := func(name string) ([]mcpv1alpha1.MCPRegistrySourceConfig, []mcpv1alpha1.MCPRegistryViewConfig) {
+		return []mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   name + "-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
+					},
+				},
+			}, []mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    name,
+					Sources: []string{name + "-source"},
+				},
+			}
+	}
+
 	t.Run("missing provider name", func(t *testing.T) {
 		t.Parallel()
+		sources, views := providerSource("provider-no-name-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "provider-no-name-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -1890,23 +1795,14 @@ func TestBuildOAuthProviderConfig_Validation(t *testing.T) {
 
 	t.Run("missing issuer URL", func(t *testing.T) {
 		t.Parallel()
+		sources, views := providerSource("provider-no-issuer-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "provider-no-issuer-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -1932,23 +1828,14 @@ func TestBuildOAuthProviderConfig_Validation(t *testing.T) {
 
 	t.Run("missing audience", func(t *testing.T) {
 		t.Parallel()
+		sources, views := providerSource("provider-no-audience-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "provider-no-audience-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -2044,25 +1931,37 @@ func TestBuildCACertFilePath(t *testing.T) {
 func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
 	t.Parallel()
 
+	// helper for direct path tests
+	directPathSource := func(name string) ([]mcpv1alpha1.MCPRegistrySourceConfig, []mcpv1alpha1.MCPRegistryViewConfig) {
+		return []mcpv1alpha1.MCPRegistrySourceConfig{
+				{
+					Name:   name + "-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
+					},
+				},
+			}, []mcpv1alpha1.MCPRegistryViewConfig{
+				{
+					Name:    name,
+					Sources: []string{name + "-source"},
+				},
+			}
+	}
+
 	t.Run("direct caCertPath takes precedence over CACertRef", func(t *testing.T) {
 		t.Parallel()
+		sources, views := directPathSource("direct-ca-path-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "direct-ca-path-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -2098,23 +1997,14 @@ func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
 
 	t.Run("CACertRef is used when caCertPath is empty", func(t *testing.T) {
 		t.Parallel()
+		sources, views := directPathSource("ref-ca-path-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "ref-ca-path-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -2150,23 +2040,14 @@ func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
 
 	t.Run("direct authTokenFile takes precedence over AuthTokenRef", func(t *testing.T) {
 		t.Parallel()
+		sources, views := directPathSource("direct-token-path-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "direct-token-path-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -2202,23 +2083,14 @@ func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
 
 	t.Run("AuthTokenRef is used when authTokenFile is empty", func(t *testing.T) {
 		t.Parallel()
+		sources, views := directPathSource("ref-token-path-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "ref-token-path-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
@@ -2254,23 +2126,14 @@ func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
 
 	t.Run("provider with all direct paths set", func(t *testing.T) {
 		t.Parallel()
+		sources, views := directPathSource("all-direct-paths-registry")
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "all-direct-paths-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
+				Sources:    sources,
+				Registries: views,
 				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
 					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
 					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{

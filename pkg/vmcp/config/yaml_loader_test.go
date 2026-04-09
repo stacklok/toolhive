@@ -131,6 +131,45 @@ aggregation:
 			wantErr: false,
 		},
 		{
+			name: "valid OIDC configuration with jwksUrl and introspectionUrl",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: oidc
+  oidc:
+    issuer: https://auth.example.com
+    clientId: test-client
+    audience: vmcp
+    jwksUrl: https://auth.example.com/custom/jwks
+    introspectionUrl: https://auth.example.com/custom/introspect
+
+outgoingAuth:
+  source: inline
+  default:
+    type: unauthenticated
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if cfg.IncomingAuth.OIDC == nil {
+					t.Fatal("IncomingAuth.OIDC is nil")
+				}
+				if cfg.IncomingAuth.OIDC.JWKSURL != "https://auth.example.com/custom/jwks" {
+					t.Errorf("OIDC.JWKSURL = %v, want https://auth.example.com/custom/jwks", cfg.IncomingAuth.OIDC.JWKSURL)
+				}
+				if cfg.IncomingAuth.OIDC.IntrospectionURL != "https://auth.example.com/custom/introspect" {
+					t.Errorf("OIDC.IntrospectionURL = %v, want https://auth.example.com/custom/introspect", cfg.IncomingAuth.OIDC.IntrospectionURL)
+				}
+			},
+			wantErr: false,
+		},
+		{
 			name: "partial operational config gets defaults for missing fields",
 			yaml: `
 name: test-vmcp

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package secrets provides generic secret management utilities for authentication.
@@ -177,6 +177,30 @@ func StoreSecretInManagerWithProvider(ctx context.Context, secretName, secretVal
 	return nil
 }
 
+// GetUserSecretsProvider returns a secrets provider suitable for user-facing
+// callers (CLI, API, MCP tool server). It filters out system-reserved keys so
+// user commands cannot accidentally read or overwrite internal secrets.
+func GetUserSecretsProvider() (secrets.Provider, error) {
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
+
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+
+	provider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
+	}
+
+	return provider, nil
+}
+
 // GetSecretsManager returns the secrets manager instance
 // This is exported so it can be reused by other packages
 func GetSecretsManager() (secrets.Provider, error) {
@@ -193,10 +217,10 @@ func GetSecretsManager() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	provider, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
+		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}
 
-	return manager, nil
+	return provider, nil
 }

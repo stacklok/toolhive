@@ -73,6 +73,36 @@ func TestStatusCollector_SetObservedGeneration(t *testing.T) {
 	assert.Equal(t, int64(42), status.ObservedGeneration)
 }
 
+func TestStatusCollector_SetOIDCConfigHash(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetOIDCConfigHash("abc123hash")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Equal(t, "abc123hash", status.OIDCConfigHash)
+}
+
+func TestStatusCollector_SetOIDCConfigHash_Clear(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetOIDCConfigHash("")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{OIDCConfigHash: "old-hash"}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Empty(t, status.OIDCConfigHash)
+}
+
 func TestStatusCollector_SetGroupRefValidatedCondition(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +152,7 @@ func TestStatusCollector_BatchedUpdates(t *testing.T) {
 	collector.SetMessage("test message")
 	collector.SetURL("http://test.example.com")
 	collector.SetObservedGeneration(42)
+	collector.SetOIDCConfigHash("oidc-hash-123")
 	collector.SetGroupRefValidatedCondition("TestReason", "group is valid", metav1.ConditionTrue)
 	collector.SetReadyCondition("DeploymentReady", "deployment is ready", metav1.ConditionTrue)
 
@@ -134,6 +165,7 @@ func TestStatusCollector_BatchedUpdates(t *testing.T) {
 	assert.Equal(t, "test message", status.Message)
 	assert.Equal(t, "http://test.example.com", status.URL)
 	assert.Equal(t, int64(42), status.ObservedGeneration)
+	assert.Equal(t, "oidc-hash-123", status.OIDCConfigHash)
 	assert.Len(t, status.Conditions, 2)
 }
 

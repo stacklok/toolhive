@@ -13,8 +13,6 @@ import (
 	"path"
 	"strings"
 
-	"golang.org/x/sync/syncmap"
-
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/secrets/aes"
 )
@@ -24,8 +22,7 @@ import (
 type EncryptedManager struct {
 	filePath string
 	// Key used to re-encrypt the secrets file if changes are needed.
-	key     []byte
-	secrets syncmap.Map // Thread-safe map for storing secrets
+	key []byte
 }
 
 // fileStructure is the structure of the secrets file.
@@ -33,21 +30,24 @@ type fileStructure struct {
 	Secrets map[string]string `json:"secrets"`
 }
 
-// GetSecret retrieves a secret from the in-memory cache.
-// It does not re-read the file; secrets written by other processes after
-// construction may not be visible. This is intentional: CLI invocations
-// create a fresh manager per call, and long-running proxies only need
-// their own tokens.
+// GetSecret retrieves a secret from the secret store.
+//
+// The file is read and decrypted on every call so that changes written by
+// other processes are immediately visible.
 func (e *EncryptedManager) GetSecret(_ context.Context, name string) (string, error) {
 	if name == "" {
 		return "", errors.New("secret name cannot be empty")
 	}
 
-	value, ok := e.secrets.Load(name)
-	if !ok {
-		return "", fmt.Errorf("secret not found: %s", name)
+	secrets, err := e.readFileSecrets()
+	if err != nil {
+		return "", fmt.Errorf("reading secrets: %w", err)
 	}
-	return value.(string), nil
+	value, ok := secrets[name]
+	if !ok {
+		return "", fmt.Errorf("%w: %s", ErrSecretNotFound, name)
+	}
+	return value, nil
 }
 
 // SetSecret stores a secret in the secret store.
@@ -64,14 +64,7 @@ func (e *EncryptedManager) SetSecret(_ context.Context, name, value string) erro
 			return err
 		}
 		secrets[name] = value
-		if err := e.writeFileSecrets(secrets); err != nil {
-			return err
-		}
-		// Update the in-memory cache after the disk write. There is a brief
-		// window where a concurrent GetSecret may return a stale value; this
-		// is acceptable because the file is the authoritative source of truth.
-		e.secrets.Store(name, value)
-		return nil
+		return e.writeFileSecrets(secrets)
 	})
 }
 
@@ -89,33 +82,24 @@ func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 			return err
 		}
 		if _, ok := secrets[name]; !ok {
-			// Evict stale cache entry: another process may have already
-			// deleted this key from disk while it remained in our cache.
-			e.secrets.Delete(name)
 			return fmt.Errorf("cannot delete non-existent secret: %s", name)
 		}
 		delete(secrets, name)
-		if err := e.writeFileSecrets(secrets); err != nil {
-			return err
-		}
-		// Update the in-memory cache after the disk write. There is a brief
-		// window where a concurrent GetSecret may return a stale value; this
-		// is acceptable because the file is the authoritative source of truth.
-		e.secrets.Delete(name)
-		return nil
+		return e.writeFileSecrets(secrets)
 	})
 }
 
 // ListSecrets returns a list of all secret names stored in the manager.
 func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, error) {
-	var secretNames []SecretDescription
-
-	e.secrets.Range(func(key, _ interface{}) bool {
-		secretNames = append(secretNames, SecretDescription{Key: key.(string)})
-		return true
-	})
-
-	return secretNames, nil
+	secrets, err := e.readFileSecrets()
+	if err != nil {
+		return nil, fmt.Errorf("reading secrets: %w", err)
+	}
+	result := make([]SecretDescription, 0, len(secrets))
+	for key := range secrets {
+		result = append(result, SecretDescription{Key: key})
+	}
+	return result, nil
 }
 
 // DeleteSecrets removes all named keys from the store.
@@ -130,30 +114,14 @@ func (e *EncryptedManager) DeleteSecrets(_ context.Context, keys []string) error
 		for _, key := range keys {
 			delete(current, key)
 		}
-		if err := e.writeFileSecrets(current); err != nil {
-			return err
-		}
-		// Update in-memory cache after the disk write.
-		for _, key := range keys {
-			e.secrets.Delete(key)
-		}
-		return nil
+		return e.writeFileSecrets(current)
 	})
 }
 
 // Cleanup removes all secrets managed by this manager.
 func (e *EncryptedManager) Cleanup() error {
 	return fileutils.WithFileLock(e.filePath, func() error {
-		empty := make(map[string]string)
-		if err := e.writeFileSecrets(empty); err != nil {
-			return err
-		}
-		// Clear the in-memory cache
-		e.secrets.Range(func(key, _ interface{}) bool {
-			e.secrets.Delete(key)
-			return true
-		})
-		return nil
+		return e.writeFileSecrets(make(map[string]string))
 	})
 }
 
@@ -170,7 +138,6 @@ func (*EncryptedManager) Capabilities() ProviderCapabilities {
 
 // readFileSecrets reads and decrypts the secrets file, returning the current
 // on-disk secrets. Returns an empty map for an empty or non-existent file.
-// Must be called while holding the file lock.
 func (e *EncryptedManager) readFileSecrets() (map[string]string, error) {
 	// #nosec G304: File path is not configurable at this time.
 	data, err := os.ReadFile(e.filePath)
@@ -228,35 +195,35 @@ func NewEncryptedManager(filePath string, key []byte) (Provider, error) {
 
 	// Ensure the file exists (create if needed).
 	// #nosec G304: File path is not configurable at this time.
-	secretsFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0600)
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open secrets file: %w", err)
 	}
-	if err := secretsFile.Close(); err != nil {
-		// Non-fatal: secrets file cleanup failure
+	if err := f.Close(); err != nil {
 		slog.Warn("Failed to close secrets file", "error", err)
 	}
 
 	manager := &EncryptedManager{
 		filePath: filePath,
-		secrets:  syncmap.Map{},
 		key:      key,
 	}
 
-	// Load the initial snapshot into the in-memory cache.
-	secrets, err := manager.readFileSecrets()
+	// Validate the file is readable and correctly encrypted at startup.
+	stat, err := os.Stat(filePath)
 	if err != nil {
-		if strings.Contains(err.Error(), "unable to decrypt") {
-			fmt.Fprintf(os.Stderr, "\nSecrets file decryption failed: this usually means the password "+
-				"is incorrect or the secrets file has been corrupted.\n"+
-				"If your keyring was recently reset, try again with your original password.\n"+
-				"If the secrets file is corrupted, delete it at %s and run 'thv secret setup' to start fresh.\n\n",
-				filePath)
-		}
-		return nil, err
+		return nil, fmt.Errorf("failed to stat secrets file: %w", err)
 	}
-	for k, v := range secrets {
-		manager.secrets.Store(k, v)
+	if stat.Size() > 0 {
+		if _, err := manager.readFileSecrets(); err != nil {
+			if strings.Contains(err.Error(), "unable to decrypt") {
+				fmt.Fprintf(os.Stderr, "\nSecrets file decryption failed: this usually means the password "+
+					"is incorrect or the secrets file has been corrupted.\n"+
+					"If your keyring was recently reset, try again with your original password.\n"+
+					"If the secrets file is corrupted, delete it at %s and run 'thv secret setup' to start fresh.\n\n",
+					filePath)
+			}
+			return nil, err
+		}
 	}
 
 	return manager, nil

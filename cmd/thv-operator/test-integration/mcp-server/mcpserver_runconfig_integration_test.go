@@ -59,13 +59,12 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "example/mcp-server:v1.0.0",
-					Transport:   "stdio",
-					ProxyMode:   "sse",
-					ProxyPort:   8080,
-					McpPort:     8081,
-					Args:        []string{"--verbose", "--debug"},
-					ToolsFilter: []string{"tool1", "tool2"},
+					Image:     "example/mcp-server:v1.0.0",
+					Transport: "stdio",
+					ProxyMode: "sse",
+					ProxyPort: 8080,
+					McpPort:   8081,
+					Args:      []string{"--verbose", "--debug"},
 					Env: []mcpv1alpha1.EnvVar{
 						{
 							Name:  "DEBUG",
@@ -172,7 +171,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.Port).To(Equal(8080))
 			Expect(runConfig.TargetPort).To(Equal(8081))
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--verbose", "--debug"}))
-			Expect(runConfig.ToolsFilter).To(Equal([]string{"tool1", "tool2"}))
 
 			// Verify environment variables
 			Expect(runConfig.EnvVars).To(HaveKeyWithValue("DEBUG", "true"))
@@ -527,6 +525,167 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.TelemetryConfig.EnablePrometheusMetricsPath).To(BeTrue())
 		})
 
+		It("Should handle MCPServer with telemetryConfigRef producing same RunConfig as inline telemetry", func() {
+			namespace := "telemetry-ref-test-ns"
+			mcpServerName := "telemetry-ref-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			// Create namespace
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Create the MCPTelemetryConfig resource with the same settings
+			// as the inline telemetry test above
+			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "shared-otel-config",
+					Namespace: namespace,
+				},
+			}
+			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "otel-collector:4317",
+				Insecure: true,
+				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
+				Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+			}
+			telCfg.Spec.Prometheus = &mcpv1alpha1.PrometheusConfig{Enabled: true}
+
+			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
+			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck
+
+			// Wait for the MCPTelemetryConfig to be reconciled (hash set)
+			Eventually(func() bool {
+				fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      telCfg.Name,
+					Namespace: telCfg.Namespace,
+				}, fetched)
+				return err == nil && fetched.Status.ConfigHash != ""
+			}, timeout, interval).Should(BeTrue())
+
+			// Create MCPServer with telemetryConfigRef (NOT inline telemetry)
+			// Use ServiceName override to match what the inline test sets
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "telemetry/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						Name:        "shared-otel-config",
+						ServiceName: "test-service",
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			// Wait for RunConfig ConfigMap to be created
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			// Parse RunConfig and verify telemetry configuration matches the
+			// inline telemetry test expectations
+			var runConfig runner.RunConfig
+			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(runConfig.TelemetryConfig).NotTo(BeNil())
+			// Endpoint should have http:// stripped (same normalization as inline path)
+			Expect(runConfig.TelemetryConfig.Endpoint).To(Equal("otel-collector:4317"))
+			// ServiceName comes from the ref override
+			Expect(runConfig.TelemetryConfig.ServiceName).To(Equal("test-service"))
+			Expect(runConfig.TelemetryConfig.Insecure).To(BeTrue())
+			Expect(runConfig.TelemetryConfig.TracingEnabled).To(BeTrue())
+			Expect(runConfig.TelemetryConfig.MetricsEnabled).To(BeTrue())
+			Expect(runConfig.TelemetryConfig.SamplingRate).To(Equal("0.1"))
+			Expect(runConfig.TelemetryConfig.EnablePrometheusMetricsPath).To(BeTrue())
+		})
+
+		It("Should use server name as default service name when telemetryConfigRef has no override", func() {
+			namespace := "telemetry-default-svc-ns"
+			mcpServerName := "telemetry-default-svc-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-svcname-config",
+					Namespace: namespace,
+				},
+			}
+			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "otel-collector:4317",
+				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			}
+
+			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
+			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck
+
+			Eventually(func() bool {
+				fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      telCfg.Name,
+					Namespace: telCfg.Namespace,
+				}, fetched)
+				return err == nil && fetched.Status.ConfigHash != ""
+			}, timeout, interval).Should(BeTrue())
+
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "telemetry/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						Name: "no-svcname-config",
+						// ServiceName intentionally omitted — should default to server name
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			var runConfig runner.RunConfig
+			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(runConfig.TelemetryConfig).NotTo(BeNil())
+			// ServiceName should fall back to the MCPServer name
+			Expect(runConfig.TelemetryConfig.ServiceName).To(Equal(mcpServerName))
+		})
+
 		It("Should handle MCPServer with inline authorization configuration", func() {
 			namespace := "authz-test-ns"
 			mcpServerName := "authz-server"
@@ -613,12 +772,11 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "deterministic/mcp-server:v1.0.0",
-					Transport:   "sse",
-					ProxyPort:   9090,
-					McpPort:     8080,
-					Args:        []string{"--arg1", "--arg2", "--arg3"},
-					ToolsFilter: []string{"tool3", "tool1", "tool2"},
+					Image:     "deterministic/mcp-server:v1.0.0",
+					Transport: "sse",
+					ProxyPort: 9090,
+					McpPort:   8080,
+					Args:      []string{"--arg1", "--arg2", "--arg3"},
 					Env: []mcpv1alpha1.EnvVar{
 						{Name: "VAR_C", Value: "value_c"},
 						{Name: "VAR_A", Value: "value_a"},
@@ -700,7 +858,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.Port).To(Equal(9090))
 			Expect(runConfig.TargetPort).To(Equal(8080))
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--arg1", "--arg2", "--arg3"}))
-			Expect(runConfig.ToolsFilter).To(Equal([]string{"tool3", "tool1", "tool2"}))
 		})
 
 		It("Should handle MCPServer with OIDC authentication configuration", func() {
@@ -734,7 +891,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
 							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
 							ClientID:           "toolhive-client",
-							ClientSecret:       "secret123",
 							JWKSAllowPrivateIP: true,
 						},
 					},
@@ -773,7 +929,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.OIDCConfig.JWKSURL).To(Equal("https://auth.example.com/.well-known/jwks.json"))
 			Expect(runConfig.OIDCConfig.IntrospectionURL).To(Equal("https://auth.example.com/oauth/introspect"))
 			Expect(runConfig.OIDCConfig.ClientID).To(Equal("toolhive-client"))
-			Expect(runConfig.OIDCConfig.ClientSecret).To(Equal("secret123"))
 			Expect(runConfig.OIDCConfig.AllowPrivateIP).To(BeTrue())
 
 			// Verify fields that should be empty/nil
@@ -802,7 +957,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 						Expect(oidcConfig["JWKSURL"]).To(Equal("https://auth.example.com/.well-known/jwks.json"))
 						Expect(oidcConfig["IntrospectionURL"]).To(Equal("https://auth.example.com/oauth/introspect"))
 						Expect(oidcConfig["ClientID"]).To(Equal("toolhive-client"))
-						Expect(oidcConfig["ClientSecret"]).To(Equal("secret123"))
 						Expect(oidcConfig["AllowPrivateIP"]).To(BeTrue())
 					} else {
 						Fail("OIDC config not found in auth middleware parameters")

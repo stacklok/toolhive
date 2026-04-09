@@ -1,6 +1,10 @@
+# DEPRECATED: Inline oidcConfig will be removed in v1beta1.
+# Prefer using a shared MCPOIDCConfig with oidcConfigRef instead.
+# See mcpserver_with_oidcconfig_ref.yaml for the recommended pattern.
+#
 # Example: MCPServer with inline OIDC configuration
-# Note: For production use with client secrets, see mcpserver_with_inline_oidc_secretref.yaml
-# which demonstrates the recommended clientSecretRef approach instead of plaintext clientSecret.
+# Note: For client secret support, see mcpserver_with_inline_oidc_secretref.yaml
+# which demonstrates using clientSecretRef to reference a Kubernetes Secret.
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -17,7 +21,7 @@ spec:
       audience: "my-audience"
       jwksUrl: "https://my-oidc-provider.com/.well-known/jwks.json"
       clientId: "my-client-id"
-      # Optional: For production, use clientSecretRef instead of clientSecret
+      # Optional: Reference a Kubernetes Secret for client secret
       # clientSecretRef:
       #   name: oidc-client-secret
       #   key: client-secret

@@ -61,7 +61,8 @@ type defaultMultiSession struct {
 	// All fields below are written once by MakeSession and are read-only thereafter.
 	connections     map[string]backend.Session
 	routingTable    *vmcp.RoutingTable
-	tools           []vmcp.Tool
+	tools           []vmcp.Tool // advertised tools (shown to MCP clients)
+	allTools        []vmcp.Tool // all resolved tools, including non-advertised ones
 	resources       []vmcp.Resource
 	prompts         []vmcp.Prompt
 	backendSessions map[string]string
@@ -69,10 +70,18 @@ type defaultMultiSession struct {
 	queue AdmissionQueue
 }
 
-// Tools returns a snapshot copy of the tools available in this session.
+// Tools returns a snapshot copy of the advertised tools available in this session.
 func (s *defaultMultiSession) Tools() []vmcp.Tool {
 	result := make([]vmcp.Tool, len(s.tools))
 	copy(result, s.tools)
+	return result
+}
+
+// AllTools returns a snapshot copy of all resolved tools in this session,
+// including tools excluded from advertising to MCP clients.
+func (s *defaultMultiSession) AllTools() []vmcp.Tool {
+	result := make([]vmcp.Tool, len(s.allTools))
+	copy(result, s.allTools)
 	return result
 }
 

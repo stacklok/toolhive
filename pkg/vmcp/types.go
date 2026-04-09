@@ -243,7 +243,7 @@ type Status struct {
 	Message            string              `json:"message,omitempty"`
 	Conditions         []Condition         `json:"conditions,omitempty"`
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
-	BackendCount       int                 `json:"backendCount,omitempty"`
+	BackendCount       int32               `json:"backendCount,omitempty"`
 	ObservedGeneration int64               `json:"observedGeneration,omitempty"`
 	Timestamp          time.Time           `json:"timestamp"`
 }

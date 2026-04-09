@@ -8,9 +8,14 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: EmbeddingServer
     listKind: EmbeddingServerList
     plural: embeddingservers
+    shortNames:
+    - emb
+    - embedding
     singular: embeddingserver
   scope: Namespaced
   versions:
@@ -61,6 +66,7 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: atomic
               env:
                 description: Env are environment variables to set in the container
                 items:
@@ -77,6 +83,9 @@ spec:
                   - value
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               hfTokenSecretRef:
                 description: |-
                   HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.
@@ -319,6 +328,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               message:
                 description: Message provides additional information about the current
                   phase
@@ -333,7 +345,7 @@ spec:
                 enum:
                 - Pending
                 - Downloading
-                - Running
+                - Ready
                 - Failed
                 - Terminating
                 type: string

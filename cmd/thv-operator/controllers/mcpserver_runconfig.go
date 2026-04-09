@@ -97,11 +97,10 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// This avoids secrets provider errors in Kubernetes environment
 
 	// Get tool configuration from MCPToolConfig if referenced
-	toolsFilter := m.Spec.ToolsFilter
+	var toolsFilter []string
 	var toolsOverride map[string]runner.ToolOverride
 
 	if m.Spec.ToolConfigRef != nil {
-		// ToolConfigRef takes precedence over inline ToolsFilter
 		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(ctx, r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
@@ -186,8 +185,19 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	// Add telemetry configuration if specified
-	runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
+	// Add telemetry configuration: prefer TelemetryConfigRef over deprecated inline Telemetry
+	if m.Spec.TelemetryConfigRef != nil {
+		telCfg, err := getTelemetryConfigForMCPServer(ctx, r.Client, m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPTelemetryConfig: %w", err)
+		}
+		if telCfg != nil {
+			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
+			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, m.Spec.TelemetryConfigRef.ServiceName, m.Name, caPath)
+		}
+	} else {
+		runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
+	}
 
 	// Add authorization configuration if specified
 
@@ -195,20 +205,50 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
-		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-	}
-
-	// Resolve OIDC config for embedded auth server configuration
-	// ResourceURL provides AllowedAudiences, Scopes provides ScopesSupported
-	// Note: Validation (OIDC config required) happens in AddExternalAuthConfigOptions
+	// Resolve OIDC configuration from either legacy OIDCConfig or new MCPOIDCConfigRef.
+	// Resolve once and reuse for both RunConfig options and embedded auth server config.
 	var resolvedOIDCConfig *oidc.OIDCConfig
-	if m.Spec.OIDCConfig != nil {
-		resolver := oidc.NewResolver(r.Client)
-		var err error
-		resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
+	if m.Spec.OIDCConfigRef != nil {
+		// New path: resolve from MCPOIDCConfig reference
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+			return nil, fmt.Errorf("failed to get MCPOIDCConfig %s: %w", m.Spec.OIDCConfigRef.Name, err)
+		}
+		resolver := oidc.NewResolver(r.Client)
+		resolvedOIDCConfig, err = resolver.ResolveFromConfigRef(
+			ctx, m.Spec.OIDCConfigRef, oidcCfg, m.Name, m.Namespace, m.GetProxyPort(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig: %w", err)
+		}
+		if resolvedOIDCConfig != nil {
+			options = append(options, runner.WithOIDCConfig(
+				resolvedOIDCConfig.Issuer,
+				resolvedOIDCConfig.Audience,
+				resolvedOIDCConfig.JWKSURL,
+				resolvedOIDCConfig.IntrospectionURL,
+				resolvedOIDCConfig.ClientID,
+				resolvedOIDCConfig.ClientSecret,
+				resolvedOIDCConfig.ThvCABundlePath,
+				resolvedOIDCConfig.JWKSAuthTokenPath,
+				resolvedOIDCConfig.ResourceURL,
+				resolvedOIDCConfig.JWKSAllowPrivateIP,
+				resolvedOIDCConfig.InsecureAllowHTTP,
+				resolvedOIDCConfig.Scopes,
+			))
+		}
+	} else {
+		// Legacy path: resolve from inline OIDCConfig
+		if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
+			return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
+		}
+		if m.Spec.OIDCConfig != nil {
+			resolver := oidc.NewResolver(r.Client)
+			var err error
+			resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+			}
 		}
 	}
 
@@ -224,6 +264,11 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, m.Spec.Audit)
 
+	// Add rate limit configuration if specified
+	if m.Spec.RateLimiting != nil {
+		options = append(options, runner.WithRateLimitConfig(m.Namespace, m.Spec.RateLimiting))
+	}
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
 		context.Background(),
@@ -236,15 +281,16 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, err
 	}
 
+	// Populate scaling config (BackendReplicas and Redis session storage).
+	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
+	// Must run before PopulateMiddlewareConfigs because rate limiting reads SessionRedis.
+	populateScalingConfig(runConfig, m)
+
 	// Populate middleware configs from the configuration fields
 	// This ensures that middleware_configs is properly set for serialization
 	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
 		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
 	}
-
-	// Populate scaling config (BackendReplicas and Redis session storage).
-	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
-	populateScalingConfig(runConfig, m)
 
 	return runConfig, nil
 }

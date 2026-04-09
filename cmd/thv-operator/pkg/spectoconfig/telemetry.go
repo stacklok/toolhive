@@ -60,7 +60,7 @@ func ConvertTelemetryConfig(
 			if otel.Tracing.SamplingRate != "" {
 				// Parse sampling rate string to float64
 				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
-					otelSamplingRate = rate
+					otelSamplingRate = clampSamplingRate(rate)
 				} else {
 					logger := log.FromContext(ctx)
 					logger.Error(err, "Failed to parse sampling rate, using default",
@@ -101,6 +101,57 @@ func ConvertTelemetryConfig(
 	return NormalizeTelemetryConfig(config, mcpServerName)
 }
 
+// NormalizeMCPTelemetryConfig converts an MCPTelemetryConfigSpec to a normalized telemetry.Config.
+// It maps the nested CRD structure (openTelemetry/prometheus) to a flat telemetry.Config,
+// applies the per-server ServiceName override from the reference, then delegates to
+// NormalizeTelemetryConfig for endpoint normalization and service name defaulting.
+func NormalizeMCPTelemetryConfig(
+	spec *v1alpha1.MCPTelemetryConfigSpec,
+	serviceNameOverride string,
+	defaultServiceName string,
+) *telemetry.Config {
+	if spec == nil {
+		return nil
+	}
+
+	config := &telemetry.Config{}
+
+	// Map nested OpenTelemetry fields to flat telemetry.Config.
+	// Only configure OTLP when Enabled is true, matching ConvertTelemetryConfig behavior.
+	if spec.OpenTelemetry != nil && spec.OpenTelemetry.Enabled {
+		otel := spec.OpenTelemetry
+		config.Endpoint = otel.Endpoint
+		config.Insecure = otel.Insecure
+		config.Headers = otel.Headers
+		config.CustomAttributes = otel.ResourceAttributes
+		config.UseLegacyAttributes = otel.UseLegacyAttributes
+
+		if otel.Tracing != nil {
+			config.TracingEnabled = otel.Tracing.Enabled
+			if otel.Tracing.SamplingRate != "" {
+				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
+					config.SetSamplingRateFromFloat(clampSamplingRate(rate))
+				}
+			}
+		}
+		if otel.Metrics != nil {
+			config.MetricsEnabled = otel.Metrics.Enabled
+		}
+	}
+
+	// Map Prometheus configuration
+	if spec.Prometheus != nil {
+		config.EnablePrometheusMetricsPath = spec.Prometheus.Enabled
+	}
+
+	// Apply per-server service name override from the TelemetryConfigRef
+	if serviceNameOverride != "" {
+		config.ServiceName = serviceNameOverride
+	}
+
+	return NormalizeTelemetryConfig(config, defaultServiceName)
+}
+
 // NormalizeTelemetryConfig applies runtime normalization to a telemetry.Config.
 // This includes:
 // - Stripping http:// or https:// prefixes from the endpoint (OTLP clients expect host:port format)
@@ -131,4 +182,15 @@ func NormalizeTelemetryConfig(config *telemetry.Config, defaultServiceName strin
 	}
 
 	return &normalized
+}
+
+// clampSamplingRate restricts a sampling rate to the valid range [0.0, 1.0].
+func clampSamplingRate(rate float64) float64 {
+	if rate < 0 {
+		return 0
+	}
+	if rate > 1 {
+		return 1
+	}
+	return rate
 }

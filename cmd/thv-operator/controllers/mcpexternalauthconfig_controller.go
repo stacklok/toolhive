@@ -6,7 +6,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -85,7 +84,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
 		// Update status with validation error
 		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               mcpv1alpha1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
 			Reason:             "ValidationFailed",
 			Message:            err.Error(),
@@ -99,7 +98,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Validation succeeded - set Valid=True condition
 	conditionChanged := meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-		Type:               "Valid",
+		Type:               mcpv1alpha1.ConditionTypeValid,
 		Status:             metav1.ConditionTrue,
 		Reason:             "ValidationSucceeded",
 		Message:            "Spec validation passed",
@@ -123,9 +122,9 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		}
 	}
 
-	// Even when hash hasn't changed, update referencing servers list.
-	// This ensures ReferencingServers is updated when MCPServers are created or deleted.
-	return r.updateReferencingServers(ctx, externalAuthConfig)
+	// Even when hash hasn't changed, update referencing workloads list.
+	// This ensures ReferencingWorkloads is updated when MCPServers are created or deleted.
+	return r.updateReferencingWorkloads(ctx, externalAuthConfig)
 }
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
@@ -155,13 +154,13 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
-	// Update the status with the list of referencing servers
-	serverNames := make([]string, 0, len(referencingServers))
+	// Update the status with the list of referencing workloads
+	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(referencingServers))
 	for _, server := range referencingServers {
-		serverNames = append(serverNames, server.Name)
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
 	}
-	slices.Sort(serverNames)
-	externalAuthConfig.Status.ReferencingServers = serverNames
+	ctrlutil.SortWorkloadRefs(refs)
+	externalAuthConfig.Status.ReferencingWorkloads = refs
 
 	// Update the MCPExternalAuthConfig status
 	if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
@@ -197,31 +196,32 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(externalAuthConfig, ExternalAuthConfigFinalizerName) {
-		// Check if any MCPServers are still referencing this MCPExternalAuthConfig
-		referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
+		// Check if any workloads still reference this MCPExternalAuthConfig
+		referencingWorkloads, err := r.findReferencingWorkloads(ctx, externalAuthConfig)
 		if err != nil {
-			logger.Error(err, "Failed to find referencing MCPServers during deletion")
+			logger.Error(err, "Failed to check referencing workloads during deletion")
 			return ctrl.Result{}, err
 		}
 
-		if len(referencingServers) > 0 {
-			// Cannot delete - still referenced
-			serverNames := make([]string, 0, len(referencingServers))
-			for _, server := range referencingServers {
-				serverNames = append(serverNames, server.Name)
-			}
-			logger.Info("Cannot delete MCPExternalAuthConfig - still referenced by MCPServers",
-				"externalAuthConfig", externalAuthConfig.Name, "referencingServers", serverNames)
+		if len(referencingWorkloads) > 0 {
+			logger.Info("MCPExternalAuthConfig is still referenced by workloads, blocking deletion",
+				"externalAuthConfig", externalAuthConfig.Name,
+				"referencingWorkloads", referencingWorkloads)
 
-			// Update status to show it's still referenced
-			externalAuthConfig.Status.ReferencingServers = serverNames
-			if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
-				logger.Error(err, "Failed to update MCPExternalAuthConfig status during deletion")
+			meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
+				Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
+				Status:             metav1.ConditionTrue,
+				Reason:             "ReferencedByWorkloads",
+				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
+				ObservedGeneration: externalAuthConfig.Generation,
+			})
+			externalAuthConfig.Status.ReferencingWorkloads = referencingWorkloads
+			if updateErr := r.Status().Update(ctx, externalAuthConfig); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
 
-			// Return an error to prevent deletion
-			return ctrl.Result{}, fmt.Errorf("MCPExternalAuthConfig %s is still referenced by MCPServers: %v",
-				externalAuthConfig.Name, serverNames)
+			// Requeue to check again later
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
 		// No references, safe to remove finalizer and allow deletion
@@ -250,28 +250,70 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 		})
 }
 
+// findReferencingWorkloads returns the workload resources (MCPServer)
+// that reference this MCPExternalAuthConfig via their ExternalAuthConfigRef field.
+func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
+	ctx context.Context,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) ([]mcpv1alpha1.WorkloadReference, error) {
+	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
+			if server.Spec.ExternalAuthConfigRef != nil {
+				return &server.Spec.ExternalAuthConfigRef.Name
+			}
+			return nil
+		})
+}
+
 // SetupWithManager sets up the controller with the Manager.
+// Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Create a handler that maps MCPServer changes to MCPExternalAuthConfig reconciliation requests.
-	// When an MCPServer is created, updated, or deleted, we reconcile the MCPExternalAuthConfig
-	// it references so that the ReferencingServers status field stays up to date.
+	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPExternalAuthConfigs.
+	// This handler enqueues both the currently-referenced MCPExternalAuthConfig AND any
+	// MCPExternalAuthConfig that still lists this server in ReferencingWorkloads (covers the
+	// case where a server removes its externalAuthConfigRef — the previously-referenced
+	// config needs to reconcile and clean up the stale entry).
 	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(_ context.Context, obj client.Object) []reconcile.Request {
-			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			server, ok := obj.(*mcpv1alpha1.MCPServer)
 			if !ok {
 				return nil
 			}
 
-			if mcpServer.Spec.ExternalAuthConfigRef == nil {
-				return nil
+			seen := make(map[types.NamespacedName]struct{})
+			var requests []reconcile.Request
+
+			// Enqueue the currently-referenced MCPExternalAuthConfig (if any)
+			if server.Spec.ExternalAuthConfigRef != nil {
+				nn := types.NamespacedName{
+					Name:      server.Spec.ExternalAuthConfigRef.Name,
+					Namespace: server.Namespace,
+				}
+				seen[nn] = struct{}{}
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
 			}
 
-			return []reconcile.Request{{
-				NamespacedName: types.NamespacedName{
-					Name:      mcpServer.Spec.ExternalAuthConfigRef.Name,
-					Namespace: mcpServer.Namespace,
-				},
-			}}
+			// Also enqueue any MCPExternalAuthConfig that still lists this server in
+			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
+			extAuthConfigList := &mcpv1alpha1.MCPExternalAuthConfigList{}
+			if err := r.List(ctx, extAuthConfigList, client.InNamespace(server.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPExternalAuthConfigs for MCPServer watch")
+				return requests
+			}
+			for _, cfg := range extAuthConfigList.Items {
+				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+				if _, already := seen[nn]; already {
+					continue
+				}
+				for _, ref := range cfg.Status.ReferencingWorkloads {
+					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
+						requests = append(requests, reconcile.Request{NamespacedName: nn})
+						break
+					}
+				}
+			}
+
+			return requests
 		},
 	)
 
@@ -282,26 +324,20 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 		Complete(r)
 }
 
-// updateReferencingServers finds referencing MCPServers and updates the status if the list changed
-func (r *MCPExternalAuthConfigReconciler) updateReferencingServers(
+// updateReferencingWorkloads finds referencing workloads and updates the status if the list changed
+func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) (ctrl.Result, error) {
-	referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
+	refs, err := r.findReferencingWorkloads(ctx, externalAuthConfig)
 	if err != nil {
 		logger := log.FromContext(ctx)
-		logger.Error(err, "Failed to find referencing MCPServers")
-		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
+		logger.Error(err, "Failed to find referencing workloads")
+		return ctrl.Result{}, fmt.Errorf("failed to find referencing workloads: %w", err)
 	}
 
-	serverNames := make([]string, 0, len(referencingServers))
-	for _, server := range referencingServers {
-		serverNames = append(serverNames, server.Name)
-	}
-	slices.Sort(serverNames)
-
-	if !slices.Equal(externalAuthConfig.Status.ReferencingServers, serverNames) {
-		externalAuthConfig.Status.ReferencingServers = serverNames
+	if !ctrlutil.WorkloadRefsEqual(externalAuthConfig.Status.ReferencingWorkloads, refs) {
+		externalAuthConfig.Status.ReferencingWorkloads = refs
 		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
 			logger := log.FromContext(ctx)
 			logger.Error(err, "Failed to update MCPExternalAuthConfig status")

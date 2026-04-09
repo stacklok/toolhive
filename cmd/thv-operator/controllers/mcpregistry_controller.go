@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,8 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
 // Default timing constants for the controller
@@ -97,28 +98,39 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		ctxLogger.Error(err, "Failed to get MCPRegistry")
 		return ctrl.Result{}, err
 	}
-	// Safe access to nested status fields
-	var apiPhase any
-	if mcpRegistry.Status.APIStatus != nil {
-		apiPhase = mcpRegistry.Status.APIStatus.Phase
-	}
 
-	apiEndpoint := ""
-	if mcpRegistry.Status.APIStatus != nil {
-		apiEndpoint = mcpRegistry.Status.APIStatus.Endpoint
-	}
-	ctxLogger.Info("Reconciling MCPRegistry", "MCPRegistry.Name", mcpRegistry.Name, "phase", mcpRegistry.Status.Phase,
-		"apiPhase", apiPhase, "apiEndpoint", apiEndpoint)
+	ctxLogger.Info("Reconciling MCPRegistry", "MCPRegistry.Name", mcpRegistry.Name,
+		"phase", mcpRegistry.Status.Phase, "url", mcpRegistry.Status.URL)
 
 	// Validate PodTemplateSpec early - before other operations
+	var podTemplateCondition *metav1.Condition
 	if mcpRegistry.HasPodTemplateSpec() {
-		// Validate PodTemplateSpec early - before other operations
-		// This ensures we fail fast if the spec is invalid
-		if !r.validateAndUpdatePodTemplateStatus(ctx, mcpRegistry) {
+		valid, cond := r.validatePodTemplate(mcpRegistry)
+		podTemplateCondition = cond
+		if !valid {
+			// Write status immediately for the failure case since we return early
+			mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+			mcpRegistry.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", cond.Message)
+			meta.SetStatusCondition(&mcpRegistry.Status.Conditions, *cond)
+			if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
+			}
 			// Invalid PodTemplateSpec - return without error to avoid infinite retries
 			// The user must fix the spec and the next reconciliation will retry
 			return ctrl.Result{}, nil
 		}
+	}
+
+	// Validate new-path spec fields (mutual exclusivity, reserved names, mount paths)
+	if err := validateNewPathSpec(mcpRegistry); err != nil {
+		mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+		mcpRegistry.Status.Message = fmt.Sprintf("Spec validation failed: %v", err)
+		setRegistryReadyCondition(mcpRegistry, metav1.ConditionFalse,
+			"ValidationFailed", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with spec validation error")
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// 2. Handle deletion if DeletionTimestamp is set
@@ -162,114 +174,42 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// 3. Create status manager for batched updates with separation of concerns
-	statusManager := mcpregistrystatus.NewStatusManager(mcpRegistry)
-
-	// Initialize result
-	result := ctrl.Result{}
-	err = nil
-
-	// 4. Reconcile API service
+	// 3. Reconcile API service - capture error for status update
+	var reconcileErr error
 	if apiErr := r.registryAPIManager.ReconcileAPIService(ctx, mcpRegistry); apiErr != nil {
 		ctxLogger.Error(apiErr, "Failed to reconcile API service")
-		// Set API status with detailed error message from structured error
-		statusManager.API().SetAPIStatus(mcpv1alpha1.APIPhaseError, apiErr.Message, "")
-		statusManager.API().SetAPIReadyCondition(apiErr.ConditionReason, apiErr.Message, metav1.ConditionFalse)
-		err = apiErr
-	} else {
-		// API reconciliation successful - check readiness and set appropriate status
-		isReady := r.registryAPIManager.IsAPIReady(ctx, mcpRegistry)
-		if isReady {
-			// In-cluster endpoint (simplified form works for internal access)
-			endpoint := fmt.Sprintf("http://%s.%s:8080",
-				mcpRegistry.GetAPIResourceName(), mcpRegistry.Namespace)
-			statusManager.API().SetAPIStatus(mcpv1alpha1.APIPhaseReady,
-				"Registry API is ready and serving requests", endpoint)
-			statusManager.API().SetAPIReadyCondition("APIReady",
-				"Registry API is ready and serving requests", metav1.ConditionTrue)
-		} else {
-			statusManager.API().SetAPIStatus(mcpv1alpha1.APIPhaseDeploying,
-				"Registry API deployment is not ready yet", "")
-			statusManager.API().SetAPIReadyCondition("APINotReady",
-				"Registry API deployment is not ready yet", metav1.ConditionFalse)
-		}
+		reconcileErr = apiErr
 	}
 
-	// 5. Check if we need to requeue for API readiness
-	if err == nil && !r.registryAPIManager.IsAPIReady(ctx, mcpRegistry) {
-		ctxLogger.Info("API not ready yet, scheduling requeue to check readiness")
-		if result.RequeueAfter == 0 || result.RequeueAfter > time.Second*30 {
-			result.RequeueAfter = time.Second * 30
-		}
-	}
-
-	// 6. Derive overall phase and message from API status
-	statusDeriver := mcpregistrystatus.NewDefaultStatusDeriver()
-	r.deriveOverallStatus(ctx, mcpRegistry, statusManager, statusDeriver)
-
-	// 7. Apply all status changes in a single batch update
-	if statusUpdateErr := r.applyStatusUpdates(ctx, r.Client, mcpRegistry, statusManager); statusUpdateErr != nil {
-		ctxLogger.Error(statusUpdateErr, "Failed to apply batched status update")
+	// 4. Determine and persist status
+	isReady, statusUpdateErr := r.updateRegistryStatus(ctx, mcpRegistry, reconcileErr, podTemplateCondition)
+	if statusUpdateErr != nil {
+		ctxLogger.Error(statusUpdateErr, "Failed to update registry status")
 		// Return the status update error only if there was no main reconciliation error
-		if err == nil {
-			err = statusUpdateErr
+		if reconcileErr == nil {
+			reconcileErr = statusUpdateErr
 		}
 	}
+
+	// 5. Determine requeue based on phase
+	result := ctrl.Result{}
+	if reconcileErr == nil && !isReady {
+		ctxLogger.Info("API not ready yet, scheduling requeue to check readiness")
+		result.RequeueAfter = time.Second * 30
+	}
+
 	// Log reconciliation completion
-	if err != nil {
-		ctxLogger.Error(err, "Reconciliation completed with error",
+	if reconcileErr != nil {
+		ctxLogger.Error(reconcileErr, "Reconciliation completed with error",
 			"MCPRegistry.Name", mcpRegistry.Name, "requeueAfter", result.RequeueAfter)
 	} else {
-		var apiPhase string
-		if mcpRegistry.Status.APIStatus != nil {
-			apiPhase = string(mcpRegistry.Status.APIStatus.Phase)
-		}
-
 		ctxLogger.Info("Reconciliation completed successfully",
 			"MCPRegistry.Name", mcpRegistry.Name,
 			"phase", mcpRegistry.Status.Phase,
-			"apiPhase", apiPhase,
 			"requeueAfter", result.RequeueAfter)
 	}
 
-	return result, err
-}
-
-// finalizeMCPRegistry performs the finalizer logic for the MCPRegistry
-func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registry *mcpv1alpha1.MCPRegistry) error {
-	ctxLogger := log.FromContext(ctx)
-
-	// Update the MCPRegistry status to indicate termination - immediate update needed since object is being deleted
-	registry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseTerminating
-	registry.Status.Message = "MCPRegistry is being terminated"
-	if err := r.Status().Update(ctx, registry); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPRegistry status during finalization")
-		return err
-	}
-
-	ctxLogger.Info("MCPRegistry finalization completed", "registry", registry.Name)
-	return nil
-}
-
-// deriveOverallStatus determines the overall MCPRegistry phase and message based on API status
-func (*MCPRegistryReconciler) deriveOverallStatus(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-	statusManager mcpregistrystatus.StatusManager, statusDeriver mcpregistrystatus.StatusDeriver) {
-	ctxLogger := log.FromContext(ctx)
-
-	apiStatus := statusManager.API().Status()
-	if apiStatus == nil {
-		apiStatus = mcpRegistry.Status.APIStatus
-	}
-	// Use the StatusDeriver to determine the overall phase and message
-	// based on current API status
-	derivedPhase, derivedMessage := statusDeriver.DeriveOverallStatus(apiStatus)
-
-	// Only update phase and message if they've changed
-	statusManager.SetOverallStatus(derivedPhase, derivedMessage)
-	ctxLogger.Info("Updated overall status", "apiStatus", apiStatus,
-		"oldPhase", mcpRegistry.Status.Phase, "newPhase", derivedPhase,
-		"oldMessage", mcpRegistry.Status.Message, "newMessage", derivedMessage)
+	return result, reconcileErr
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -285,95 +225,276 @@ func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Apply applies all collected status changes in a single batch update.
-// Only actual changes are applied to the status to avoid unnecessary reconciliations
-func (*MCPRegistryReconciler) applyStatusUpdates(
-	ctx context.Context, k8sClient client.Client,
-	mcpRegistry *mcpv1alpha1.MCPRegistry, statusManager mcpregistrystatus.StatusManager) error {
+// updateRegistryStatus determines the MCPRegistry phase from the API deployment state
+// and persists it with a single status update. Returns whether the API is ready and any
+// error from the status update.
+func (r *MCPRegistryReconciler) updateRegistryStatus(
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reconcileErr error, podTemplateCond *metav1.Condition,
+) (bool, error) {
+	// Refetch the latest version to avoid conflicts
+	latest := &mcpv1alpha1.MCPRegistry{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), latest); err != nil {
+		return false, fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
+	}
 
+	var isReady bool
+
+	if reconcileErr != nil {
+		latest.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+		latest.Status.ReadyReplicas = 0
+		// Use structured error fields if available
+		var apiErr *registryapi.Error
+		if errors.As(reconcileErr, &apiErr) {
+			latest.Status.Message = apiErr.Message
+			setRegistryReadyCondition(latest, metav1.ConditionFalse, apiErr.ConditionReason, apiErr.Message)
+		} else {
+			latest.Status.Message = reconcileErr.Error()
+			setRegistryReadyCondition(latest, metav1.ConditionFalse,
+				mcpv1alpha1.ConditionReasonRegistryNotReady, reconcileErr.Error())
+		}
+	} else {
+		var readyReplicas int32
+		isReady, readyReplicas = r.registryAPIManager.GetAPIStatus(ctx, mcpRegistry)
+		latest.Status.ReadyReplicas = readyReplicas
+
+		if isReady {
+			endpoint := fmt.Sprintf("http://%s.%s:8080",
+				mcpRegistry.GetAPIResourceName(), mcpRegistry.Namespace)
+			latest.Status.Phase = mcpv1alpha1.MCPRegistryPhaseReady
+			latest.Status.Message = "Registry API is ready and serving requests"
+			latest.Status.URL = endpoint
+			setRegistryReadyCondition(latest, metav1.ConditionTrue,
+				mcpv1alpha1.ConditionReasonRegistryReady, "Registry API is ready and serving requests")
+		} else {
+			latest.Status.Phase = mcpv1alpha1.MCPRegistryPhasePending
+			latest.Status.Message = "Registry API deployment is not ready yet"
+			setRegistryReadyCondition(latest, metav1.ConditionFalse,
+				mcpv1alpha1.ConditionReasonRegistryNotReady, "Registry API deployment is not ready yet")
+		}
+	}
+
+	// Apply PodTemplate condition if present
+	if podTemplateCond != nil {
+		meta.SetStatusCondition(&latest.Status.Conditions, *podTemplateCond)
+	}
+
+	latest.Status.ObservedGeneration = latest.Generation
+	if err := r.Status().Update(ctx, latest); err != nil {
+		return false, err
+	}
+	return isReady, nil
+}
+
+// setRegistryReadyCondition sets the top-level Ready condition on an MCPRegistry.
+func setRegistryReadyCondition(registry *mcpv1alpha1.MCPRegistry, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&registry.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: registry.Generation,
+	})
+}
+
+// finalizeMCPRegistry performs the finalizer logic for the MCPRegistry
+func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registry *mcpv1alpha1.MCPRegistry) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Refetch the latest version of the resource to avoid conflicts
-	latestRegistry := &mcpv1alpha1.MCPRegistry{}
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), latestRegistry); err != nil {
-		ctxLogger.Error(err, "Failed to fetch latest MCPRegistry version for status update")
-		return fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
+	// Update the MCPRegistry status to indicate termination - immediate update needed since object is being deleted
+	registry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseTerminating
+	registry.Status.Message = "MCPRegistry is being terminated"
+	setRegistryReadyCondition(registry, metav1.ConditionFalse,
+		mcpv1alpha1.ConditionReasonRegistryNotReady, "MCPRegistry is being terminated")
+	if err := r.Status().Update(ctx, registry); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPRegistry status during finalization")
+		return err
 	}
-	latestRegistryStatus := latestRegistry.Status
-	hasUpdates := false
 
-	// Apply status changes from status manager
-	hasUpdates = statusManager.UpdateStatus(ctx, &latestRegistryStatus) || hasUpdates
+	ctxLogger.Info("MCPRegistry finalization completed", "registry", registry.Name)
+	return nil
+}
 
-	// Single status update using the latest version
-	if hasUpdates {
-		latestRegistry.Status = latestRegistryStatus
-		if err := k8sClient.Status().Update(ctx, latestRegistry); err != nil {
-			ctxLogger.Error(err, "Failed to apply batched status update")
-			return fmt.Errorf("failed to apply batched status update: %w", err)
+// validateNewPathSpec validates MCPRegistry spec fields for mutual exclusivity,
+// reserved resource name conflicts, and mount path collisions. Returns nil if
+// the spec is valid or a descriptive error if validation fails. CEL admission
+// rules cover the common cases; this is defense-in-depth inside the reconciler.
+//
+//nolint:staticcheck // Intentionally references deprecated fields for mutual exclusivity validation
+func validateNewPathSpec(mcpRegistry *mcpv1alpha1.MCPRegistry) error {
+	spec := &mcpRegistry.Spec
+
+	if err := validatePathExclusivity(spec); err != nil {
+		return err
+	}
+
+	// Remaining validations only apply to the new configYAML path
+	if spec.ConfigYAML == "" {
+		return nil
+	}
+
+	// Parse user PodTemplateSpec once for subsequent checks
+	var userPTS *corev1.PodTemplateSpec
+	if mcpRegistry.HasPodTemplateSpec() {
+		parsed, err := registryapi.ParsePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
+		if err == nil && parsed != nil {
+			userPTS = parsed
 		}
-		var apiPhase string
-		if latestRegistryStatus.APIStatus != nil {
-			apiPhase = string(latestRegistryStatus.APIStatus.Phase)
+	}
+
+	if err := validateReservedNames(spec, userPTS); err != nil {
+		return err
+	}
+
+	return validateMountPathCollisions(spec, userPTS)
+}
+
+// validatePathExclusivity checks mutual exclusivity between new and legacy config paths,
+// and that new-path-only fields are not set without configYAML.
+//
+//nolint:staticcheck // Intentionally references deprecated fields for mutual exclusivity validation
+func validatePathExclusivity(spec *mcpv1alpha1.MCPRegistrySpec) error {
+	hasNewPath := spec.ConfigYAML != ""
+	hasLegacySources := len(spec.Sources) > 0 || len(spec.Registries) > 0
+	hasLegacyConfig := spec.DatabaseConfig != nil || spec.AuthConfig != nil || spec.TelemetryConfig != nil
+
+	if hasNewPath && (hasLegacySources || hasLegacyConfig) {
+		return fmt.Errorf(
+			"configYAML is mutually exclusive with sources, databaseConfig, and authConfig; " +
+				"use configYAML with volumes/volumeMounts for the decoupled path, " +
+				"or use sources/databaseConfig/authConfig for the legacy path")
+	}
+
+	if !hasNewPath && !hasLegacySources {
+		return fmt.Errorf("either configYAML or sources must be specified")
+	}
+
+	if !hasNewPath {
+		if len(spec.Volumes) > 0 || len(spec.VolumeMounts) > 0 {
+			return fmt.Errorf("volumes and volumeMounts require configYAML to be set")
 		}
-		ctxLogger.V(1).Info("Applied batched status updates",
-			"phase", latestRegistryStatus.Phase,
-			"apiPhase", apiPhase,
-			"message", latestRegistryStatus.Message,
-			"conditionsCount", len(latestRegistryStatus.Conditions))
-	} else {
-		ctxLogger.V(1).Info("No batched status updates applied")
+		if spec.PGPassSecretRef != nil {
+			return fmt.Errorf("pgpassSecretRef requires configYAML to be set; use databaseConfig for the legacy path")
+		}
+	}
+
+	return validatePGPassSecretRef(spec.PGPassSecretRef)
+}
+
+// validatePGPassSecretRef checks that pgpassSecretRef has required name and key when set.
+func validatePGPassSecretRef(ref *corev1.SecretKeySelector) error {
+	if ref == nil {
+		return nil
+	}
+	if ref.Name == "" {
+		return fmt.Errorf("pgpassSecretRef.name is required")
+	}
+	if ref.Key == "" {
+		return fmt.Errorf("pgpassSecretRef.key is required")
+	}
+	return nil
+}
+
+// validateReservedNames checks that user-provided volumes and init containers do not
+// collide with operator-reserved names.
+func validateReservedNames(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
+	reservedVolumeNames := map[string]bool{
+		registryapi.RegistryServerConfigVolumeName: true,
+	}
+	if spec.PGPassSecretRef != nil {
+		reservedVolumeNames[registryapi.PGPassSecretVolumeName] = true
+		reservedVolumeNames[registryapi.PGPassVolumeName] = true
+	}
+
+	volumes, err := spec.ParseVolumes()
+	if err != nil {
+		return fmt.Errorf("invalid volumes: %w", err)
+	}
+	for _, vol := range volumes {
+		if reservedVolumeNames[vol.Name] {
+			return fmt.Errorf("volume name '%s' is reserved by the operator", vol.Name)
+		}
+	}
+
+	if userPTS != nil {
+		for _, vol := range userPTS.Spec.Volumes {
+			if reservedVolumeNames[vol.Name] {
+				return fmt.Errorf("volume name '%s' is reserved by the operator", vol.Name)
+			}
+		}
+
+		if spec.PGPassSecretRef != nil {
+			for _, ic := range userPTS.Spec.InitContainers {
+				if ic.Name == registryapi.PGPassInitContainerName {
+					return fmt.Errorf(
+						"init container name '%s' is reserved by the operator when pgpassSecretRef is set",
+						registryapi.PGPassInitContainerName)
+				}
+			}
+		}
 	}
 
 	return nil
 }
 
-// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the MCPRegistry status
-// with appropriate conditions. Returns true if validation passes, false otherwise.
-func (r *MCPRegistryReconciler) validateAndUpdatePodTemplateStatus(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-) bool {
-	ctxLogger := log.FromContext(ctx)
+// validateMountPathCollisions detects duplicate mount paths across operator-generated mounts,
+// spec.VolumeMounts, and user PodTemplateSpec container mounts.
+func validateMountPathCollisions(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
+	mountPaths := make(map[string]struct{})
 
-	// Validate the PodTemplateSpec by attempting to parse it
+	// Operator-generated mounts
+	mountPaths[config.RegistryServerConfigFilePath] = struct{}{}
+	if spec.PGPassSecretRef != nil {
+		mountPaths[registryapi.PGPassAppUserMountPath] = struct{}{}
+	}
+
+	mounts, err := spec.ParseVolumeMounts()
+	if err != nil {
+		return fmt.Errorf("invalid volumeMounts: %w", err)
+	}
+	for _, mount := range mounts {
+		if _, exists := mountPaths[mount.MountPath]; exists {
+			return fmt.Errorf("duplicate mount path '%s'", mount.MountPath)
+		}
+		mountPaths[mount.MountPath] = struct{}{}
+	}
+
+	if userPTS != nil {
+		for i := range userPTS.Spec.Containers {
+			if userPTS.Spec.Containers[i].Name == registryapi.RegistryAPIContainerName {
+				for _, mount := range userPTS.Spec.Containers[i].VolumeMounts {
+					if _, exists := mountPaths[mount.MountPath]; exists {
+						return fmt.Errorf("duplicate mount path '%s'", mount.MountPath)
+					}
+					mountPaths[mount.MountPath] = struct{}{}
+				}
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
+// validatePodTemplate validates the PodTemplateSpec and returns a condition reflecting the result.
+// Returns true if validation passes, and a condition to apply during the next status update.
+func (*MCPRegistryReconciler) validatePodTemplate(
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+) (bool, *metav1.Condition) {
 	err := registryapi.ValidatePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
 	if err != nil {
-		// Set phase and message
-		mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
-		mcpRegistry.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
-
-		// Set condition for invalid PodTemplateSpec
-		meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionRegistryPodTemplateValid,
+		return false, &metav1.Condition{
+			Type:               mcpv1alpha1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: mcpRegistry.Generation,
-			Reason:             mcpv1alpha1.ConditionReasonRegistryPodTemplateInvalid,
+			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
-		})
-
-		// Update status with the condition
-		if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
-			return false
 		}
-
-		ctxLogger.Error(err, "PodTemplateSpec validation failed")
-		return false
 	}
-
-	// Set condition for valid PodTemplateSpec
-	meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionRegistryPodTemplateValid,
+	return true, &metav1.Condition{
+		Type:               mcpv1alpha1.ConditionPodTemplateValid,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: mcpRegistry.Generation,
-		Reason:             mcpv1alpha1.ConditionReasonRegistryPodTemplateValid,
+		Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
 		Message:            "PodTemplateSpec is valid",
-	})
-
-	// Update status with the condition
-	if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
-		ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
 	}
-
-	return true
 }

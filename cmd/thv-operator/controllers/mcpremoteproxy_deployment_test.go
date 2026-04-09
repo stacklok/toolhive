@@ -94,7 +94,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					Resources: mcpv1alpha1.ResourceRequirements{
 						Limits: mcpv1alpha1.ResourceList{
 							CPU:    "1",
@@ -125,7 +125,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
@@ -177,40 +177,21 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 			},
 		},
 		{
-			name: "deprecated port field",
+			name: "custom proxyPort",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "legacy-proxy",
+					Name:      "custom-port-proxy",
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      9090,
+					ProxyPort: 9090,
 				},
 			},
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
 				t.Helper()
 				container := dep.Spec.Template.Spec.Containers[0]
 				assert.Equal(t, int32(9090), container.Ports[0].ContainerPort)
-			},
-		},
-		{
-			name: "proxyPort takes precedence over port",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "precedence-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8081,
-					Port:      9091,
-				},
-			},
-			validate: func(t *testing.T, dep *appsv1.Deployment) {
-				t.Helper()
-				container := dep.Spec.Template.Spec.Containers[0]
-				assert.Equal(t, int32(8081), container.Ports[0].ContainerPort)
 			},
 		},
 	}
@@ -253,7 +234,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			validate: func(t *testing.T, svc *corev1.Service) {
@@ -282,7 +263,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL:       "https://mcp.example.com",
-					Port:            8080,
+					ProxyPort:       8080,
 					SessionAffinity: string(corev1.ServiceAffinityNone),
 				},
 			},
@@ -300,7 +281,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      9090,
+					ProxyPort: 9090,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyService: &mcpv1alpha1.ResourceMetadataOverrides{
 							Labels: map[string]string{
@@ -573,7 +554,7 @@ func TestEnsureDeployment(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			existingDeployment: nil,
@@ -588,7 +569,7 @@ func TestEnsureDeployment(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			existingDeployment: &appsv1.Deployment{
@@ -677,7 +658,7 @@ func TestEnsureService(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			existingService: nil,
@@ -911,7 +892,7 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
 							Issuer:   "https://auth.example.com",
@@ -1007,7 +988,7 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 

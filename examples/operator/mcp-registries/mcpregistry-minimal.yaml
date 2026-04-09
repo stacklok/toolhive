@@ -144,7 +144,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Production-Ready MCP Servers"
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -157,3 +157,7 @@ spec:
           exclude:
             - "experimental"
             - "deprecated"
+  registries:
+    - name: default
+      sources:
+        - default

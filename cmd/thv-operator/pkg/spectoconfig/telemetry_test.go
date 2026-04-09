@@ -182,6 +182,172 @@ func TestNormalizeTelemetryConfig_DoesNotModifyInput(t *testing.T) {
 	assert.Equal(t, "default-service", result.ServiceName)
 }
 
+func TestNormalizeMCPTelemetryConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		spec                *v1alpha1.MCPTelemetryConfigSpec
+		serviceNameOverride string
+		defaultServiceName  string
+		expected            *telemetry.Config
+	}{
+		{
+			name:                "nil spec returns nil",
+			spec:                nil,
+			serviceNameOverride: "override",
+			defaultServiceName:  "default",
+			expected:            nil,
+		},
+		{
+			name: "service name override takes precedence",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "https://otel-collector:4317",
+				},
+			},
+			serviceNameOverride: "per-server-override",
+			defaultServiceName:  "default-name",
+			expected: &telemetry.Config{
+				Endpoint:    "otel-collector:4317",
+				ServiceName: "per-server-override",
+			},
+		},
+		{
+			name: "empty override falls through to defaultServiceName",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "default-server",
+			expected: &telemetry.Config{
+				Endpoint:    "otel-collector:4317",
+				ServiceName: "default-server",
+			},
+		},
+		{
+			name: "endpoint normalization strips http:// prefix",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "http://collector.monitoring:4317",
+					Tracing:  &v1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+				},
+			},
+			serviceNameOverride: "my-service",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				Endpoint:       "collector.monitoring:4317",
+				ServiceName:    "my-service",
+				TracingEnabled: true,
+			},
+		},
+		{
+			name: "endpoint normalization strips https:// prefix",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "https://secure-collector:4317",
+				},
+			},
+			serviceNameOverride: "my-service",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				Endpoint:    "secure-collector:4317",
+				ServiceName: "my-service",
+			},
+		},
+		{
+			name: "default service name used when no override",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "collector:4317",
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				Endpoint:    "collector:4317",
+				ServiceName: "fallback",
+			},
+		},
+		{
+			name: "enabled false skips OTel config entirely",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  false,
+					Endpoint: "https://otel-collector:4317",
+					Tracing:  &v1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+					Metrics:  &v1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+				},
+			},
+			serviceNameOverride: "my-service",
+			defaultServiceName:  "fallback",
+			expected: &telemetry.Config{
+				ServiceName: "my-service",
+			},
+		},
+		{
+			name: "endpoint with nil tracing and metrics produces no tracing or metrics",
+			spec: &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					// Tracing and Metrics are nil
+				},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				Endpoint:    "otel-collector:4317",
+				ServiceName: "test-server",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := NormalizeMCPTelemetryConfig(tt.spec, tt.serviceNameOverride, tt.defaultServiceName)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+			} else {
+				require.NotNil(t, result)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestNormalizeMCPTelemetryConfig_DoesNotModifyInput(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1alpha1.MCPTelemetryConfigSpec{
+		OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: "https://otel-collector:4317",
+		},
+	}
+
+	originalEndpoint := spec.OpenTelemetry.Endpoint
+
+	result := NormalizeMCPTelemetryConfig(spec, "override-name", "default-name")
+
+	// Verify the original spec was not modified
+	assert.Equal(t, originalEndpoint, spec.OpenTelemetry.Endpoint, "Input endpoint should not be modified")
+
+	// Verify result has normalized values
+	require.NotNil(t, result)
+	assert.Equal(t, "otel-collector:4317", result.Endpoint)
+	assert.Equal(t, "override-name", result.ServiceName)
+}
+
 func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 	t.Parallel()
 
@@ -281,6 +447,114 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 			assert.Equal(t, tt.expected.TracingEnabled, result.TracingEnabled)
 			assert.Equal(t, tt.expected.EnablePrometheusMetricsPath, result.EnablePrometheusMetricsPath)
 			assert.Equal(t, tt.expected.UseLegacyAttributes, result.UseLegacyAttributes)
+		})
+	}
+}
+
+func TestConvertTelemetryConfig_ClampsSamplingRate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		samplingRate string
+		expected     string
+	}{
+		{
+			name:         "value above 1.0 is clamped to 1",
+			samplingRate: "42",
+			expected:     "1",
+		},
+		{
+			name:         "negative value is clamped to 0",
+			samplingRate: "-1",
+			expected:     "0",
+		},
+		{
+			name:         "value of 1.5 is clamped to 1",
+			samplingRate: "1.5",
+			expected:     "1",
+		},
+		{
+			name:         "valid value 0.5 is preserved",
+			samplingRate: "0.5",
+			expected:     "0.5",
+		},
+		{
+			name:         "boundary value 0 is preserved",
+			samplingRate: "0",
+			expected:     "0",
+		},
+		{
+			name:         "boundary value 1 is preserved",
+			samplingRate: "1",
+			expected:     "1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			input := &v1alpha1.TelemetryConfig{
+				OpenTelemetry: &v1alpha1.OpenTelemetryConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
+						Enabled:      true,
+						SamplingRate: tt.samplingRate,
+					},
+				},
+			}
+			result := ConvertTelemetryConfig(ctx, input, "test-server")
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected, result.SamplingRate)
+		})
+	}
+}
+
+func TestNormalizeMCPTelemetryConfig_ClampsSamplingRate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		samplingRate string
+		expected     string
+	}{
+		{
+			name:         "value above 1.0 is clamped to 1",
+			samplingRate: "42",
+			expected:     "1",
+		},
+		{
+			name:         "negative value is clamped to 0",
+			samplingRate: "-1",
+			expected:     "0",
+		},
+		{
+			name:         "valid value is preserved",
+			samplingRate: "0.3",
+			expected:     "0.3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			spec := &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
+						Enabled:      true,
+						SamplingRate: tt.samplingRate,
+					},
+				},
+			}
+			result := NormalizeMCPTelemetryConfig(spec, "test-service", "default")
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected, result.SamplingRate)
 		})
 	}
 }

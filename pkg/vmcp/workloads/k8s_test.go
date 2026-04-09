@@ -88,7 +88,7 @@ func TestDiscoverAuth_TokenExchange(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -168,7 +168,7 @@ func TestDiscoverAuth_HeaderInjection(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -214,7 +214,7 @@ func TestDiscoverAuth_NoAuthConfig(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -255,7 +255,7 @@ func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -314,7 +314,7 @@ func TestDiscoverAuth_SecretNotFound(t *testing.T) {
 			},
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -350,7 +350,7 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -370,7 +370,7 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
 	assert.Equal(t, "mcp_server", backend.Metadata["workload_type"])
-	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseRunning), backend.Metadata["workload_status"])
+	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseReady), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
 
@@ -391,7 +391,7 @@ func TestMCPServerToBackend_StdioTransport(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -428,7 +428,7 @@ func TestMCPServerToBackend_WithAnnotations(t *testing.T) {
 			ProxyPort: 8080,
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -650,6 +650,80 @@ func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
 		Name: "server2",
 		Type: WorkloadTypeMCPServer,
 	})
+}
+
+func TestMCPServerToBackend_EmptyStatusURL(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	// MCPServer is Running with transport and port, but Status.URL is empty
+	// (the controller hasn't reconciled the Service yet).
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pending-server",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "streamable-http",
+			ProxyPort: 8080,
+		},
+		Status: mcpv1alpha1.MCPServerStatus{
+			Phase: mcpv1alpha1.MCPServerPhaseReady,
+			// URL intentionally empty — not yet assigned by the operator
+		},
+	}
+
+	k8sClient := setupTestClient(t, mcpServer)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	ctx := context.Background()
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "pending-server",
+		Type: WorkloadTypeMCPServer,
+	})
+
+	// Backend should be skipped (nil) because Status.URL is empty.
+	// Previously the code fell back to a localhost URL which pointed to the
+	// wrong target inside K8s pods.
+	require.NoError(t, err)
+	require.Nil(t, backend, "should return nil backend when Status.URL is empty")
+}
+
+func TestMCPRemoteProxyToBackend_EmptyStatusURL(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	// MCPRemoteProxy is Ready with transport, but Status.URL is empty.
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pending-proxy",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote-mcp.example.com",
+			Transport: "streamable-http",
+		},
+		Status: mcpv1alpha1.MCPRemoteProxyStatus{
+			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			// URL intentionally empty — not yet assigned by the operator
+		},
+	}
+
+	k8sClient := setupTestClient(t, proxy)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	ctx := context.Background()
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "pending-proxy",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+
+	// Backend should be skipped (nil) because Status.URL is empty.
+	require.NoError(t, err)
+	require.Nil(t, backend, "should return nil backend when Status.URL is empty")
 }
 
 func TestMCPRemoteProxyToBackend_BasicFields(t *testing.T) {

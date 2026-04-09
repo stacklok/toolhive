@@ -2,11 +2,11 @@ operator:
   image: ko.local/thv-operator:ci-test
   toolhiveRunnerImage: ko.local/thv-proxyrunner:ci-test
   vmcpImage: ko.local/vmcp:ci-test
-  extraVolumeMounts:
+  volumeMounts:
     - name: test
       mountPath: /somepath
       readOnly: true
-  extraVolumes:
+  volumes:
     - name: test
       emptyDir:
         sizeLimit: 5Mi

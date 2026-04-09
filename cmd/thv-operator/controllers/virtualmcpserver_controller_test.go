@@ -86,7 +86,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 						Namespace: "default",
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 						URL:   "http://backend-1.default.svc.cluster.local:8080",
 					},
 				},
@@ -96,7 +96,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 						Namespace: "default",
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 						URL:   "http://backend-2.default.svc.cluster.local:8080",
 					},
 				},
@@ -1687,7 +1687,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1711,7 +1711,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 8080},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1762,7 +1762,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: "wrong-service-account",
@@ -1787,7 +1787,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1825,7 +1825,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1850,7 +1850,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -2145,7 +2145,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -2178,7 +2178,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -2210,7 +2210,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -2242,7 +2242,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -2790,7 +2790,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 							Ports: []corev1.ContainerPort{
 								{ContainerPort: 4483},
 							},
-							Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+							Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 						},
 					},
 					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -3016,7 +3016,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Status: mcpv1alpha1.EmbeddingServerStatus{
-					Phase:         mcpv1alpha1.EmbeddingServerPhaseRunning,
+					Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 1,
 				},
 			},
@@ -3086,7 +3086,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Status: mcpv1alpha1.EmbeddingServerStatus{
-					Phase:         mcpv1alpha1.EmbeddingServerPhaseRunning,
+					Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 0,
 				},
 			},
@@ -3306,4 +3306,14 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 	// HPA-managed replica count must not be overwritten
 	require.NotNil(t, updated.Spec.Replicas)
 	assert.Equal(t, int32(5), *updated.Spec.Replicas)
+}
+
+// mustBuildEnvVarsForVmcp is a test helper that calls buildEnvVarsForVmcp and panics on error.
+// All test VirtualMCPServers use anonymous auth (no OIDCConfigRef), so the error path is unreachable.
+func mustBuildEnvVarsForVmcp(r *VirtualMCPServerReconciler, vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
+	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
+	if err != nil {
+		panic("mustBuildEnvVarsForVmcp: " + err.Error())
+	}
+	return env
 }

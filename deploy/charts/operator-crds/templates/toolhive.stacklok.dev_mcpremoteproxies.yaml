@@ -11,9 +11,14 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPRemoteProxy
     listKind: MCPRemoteProxyList
     plural: mcpremoteproxies
+    shortNames:
+    - rp
+    - mcprp
     singular: mcpremoteproxy
   scope: Namespaced
   versions:
@@ -26,6 +31,9 @@ spec:
       type: string
     - jsonPath: .status.url
       name: URL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -103,6 +111,7 @@ spec:
                           type: string
                         minItems: 1
                         type: array
+                        x-kubernetes-list-type: atomic
                     required:
                     - policies
                     type: object
@@ -182,6 +191,9 @@ spec:
                       - valueSecretRef
                       type: object
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - headerName
+                    x-kubernetes-list-type: map
                   addPlaintextHeaders:
                     additionalProperties:
                       type: string
@@ -193,8 +205,9 @@ spec:
                 type: object
               oidcConfig:
                 description: |-
-                  OIDCConfig defines OIDC authentication configuration for the proxy
-                  This validates incoming tokens from clients. Required for proxy mode.
+                  OIDCConfig defines OIDC authentication configuration for the proxy.
+                  Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+                  This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -255,8 +268,7 @@ spec:
                       caBundleRef:
                         description: |-
                           CABundleRef references a ConfigMap containing the CA certificate bundle.
-                          When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
-                          If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+                          When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path.
                         properties:
                           configMapRef:
                             description: |-
@@ -287,15 +299,9 @@ spec:
                       clientId:
                         description: ClientID is the OIDC client ID
                         type: string
-                      clientSecret:
-                        description: |-
-                          ClientSecret is the client secret for introspection (optional)
-                          Deprecated: Use ClientSecretRef instead for better security
-                        type: string
                       clientSecretRef:
-                        description: |-
-                          ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
-                          If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+                        description: ClientSecretRef is a reference to a Kubernetes
+                          Secret containing the client secret
                         properties:
                           key:
                             description: Key is the key within the secret
@@ -348,16 +354,7 @@ spec:
                         items:
                           type: string
                         type: array
-                      thvCABundlePath:
-                        description: |-
-                          ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
-
-                          Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
-                          already exist in the proxy runner container (e.g., Kubernetes service account CA at
-                          /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
-                          use CABundleRef which automatically mounts the ConfigMap and computes the path.
-                          This field will be removed when the API graduates to v1beta1.
-                        type: string
+                        x-kubernetes-list-type: atomic
                     required:
                     - issuer
                     type: object
@@ -427,15 +424,35 @@ spec:
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
                 - message: kubernetes must not be set when type is not 'kubernetes'
                   rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) : true'
-              port:
-                default: 8080
+              oidcConfigRef:
                 description: |-
-                  Port is the port to expose the MCP proxy on
-                  Deprecated: Use ProxyPort instead
-                format: int32
-                maximum: 65535
-                minimum: 1
-                type: integer
+                  OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+                  The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Per-server overrides (audience, scopes) are specified here; shared provider config
+                  lives in the MCPOIDCConfig resource.
+                properties:
+                  audience:
+                    description: |-
+                      Audience is the expected audience for token validation.
+                      This MUST be unique per server to prevent token replay attacks.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the MCPOIDCConfig resource
+                    minLength: 1
+                    type: string
+                  scopes:
+                    description: |-
+                      Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
+                      If empty, defaults to ["openid"].
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - audience
+                - name
+                type: object
               proxyPort:
                 default: 8080
                 description: ProxyPort is the port to expose the MCP proxy on
@@ -480,6 +497,9 @@ spec:
                           - value
                           type: object
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       imagePullSecrets:
                         description: |-
                           ImagePullSecrets allows specifying image pull secrets for the proxy runner
@@ -501,6 +521,7 @@ spec:
                           type: object
                           x-kubernetes-map-type: atomic
                         type: array
+                        x-kubernetes-list-type: atomic
                       labels:
                         additionalProperties:
                           type: string
@@ -606,6 +627,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                       insecure:
                         default: false
                         description: Insecure indicates whether to use HTTP instead
@@ -637,6 +659,7 @@ spec:
                           samplingRate:
                             default: "0.05"
                             description: SamplingRate is the trace sampling rate (0.0-1.0)
+                            pattern: ^(0(\.\d+)?|1(\.0+)?)$
                             type: string
                         type: object
                       useLegacyAttributes:
@@ -687,9 +710,12 @@ spec:
                   and X-Forwarded-Prefix headers to construct endpoint URLs
                 type: boolean
             required:
-            - oidcConfig
             - remoteURL
             type: object
+            x-kubernetes-validations:
+            - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
+                to reference a shared MCPOIDCConfig
+              rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:
@@ -751,6 +777,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               externalAuthConfigHash:
                 description: ExternalAuthConfigHash is the hash of the referenced
                   MCPExternalAuthConfig spec
@@ -768,6 +797,10 @@ spec:
                   recently observed MCPRemoteProxy
                 format: int64
                 type: integer
+              oidcConfigHash:
+                description: OIDCConfigHash is the hash of the referenced MCPOIDCConfig
+                  spec for change detection
+                type: string
               phase:
                 description: Phase is the current phase of the MCPRemoteProxy
                 enum:

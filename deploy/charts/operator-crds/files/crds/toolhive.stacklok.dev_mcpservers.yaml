@@ -8,6 +8,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPServer
     listKind: MCPServerList
     plural: mcpservers
@@ -21,8 +23,11 @@ spec:
     - jsonPath: .status.phase
       name: Status
       type: string
-    - jsonPath: .status.readyReplicas
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
+      type: string
+    - jsonPath: .status.readyReplicas
+      name: Replicas
       type: integer
     - jsonPath: .status.url
       name: URL
@@ -60,6 +65,7 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: atomic
               audit:
                 description: Audit defines audit logging configuration for the MCP
                   server
@@ -107,6 +113,7 @@ spec:
                           type: string
                         minItems: 1
                         type: array
+                        x-kubernetes-list-type: atomic
                     required:
                     - policies
                     type: object
@@ -160,6 +167,9 @@ spec:
                   - value
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               externalAuthConfigRef:
                 description: |-
                   ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
@@ -186,8 +196,10 @@ spec:
                 minimum: 1
                 type: integer
               oidcConfig:
-                description: OIDCConfig defines OIDC authentication configuration
-                  for the MCP server
+                description: |-
+                  OIDCConfig defines OIDC authentication configuration for the MCP server.
+                  Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+                  This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -248,8 +260,7 @@ spec:
                       caBundleRef:
                         description: |-
                           CABundleRef references a ConfigMap containing the CA certificate bundle.
-                          When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
-                          If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+                          When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path.
                         properties:
                           configMapRef:
                             description: |-
@@ -280,15 +291,9 @@ spec:
                       clientId:
                         description: ClientID is the OIDC client ID
                         type: string
-                      clientSecret:
-                        description: |-
-                          ClientSecret is the client secret for introspection (optional)
-                          Deprecated: Use ClientSecretRef instead for better security
-                        type: string
                       clientSecretRef:
-                        description: |-
-                          ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
-                          If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+                        description: ClientSecretRef is a reference to a Kubernetes
+                          Secret containing the client secret
                         properties:
                           key:
                             description: Key is the key within the secret
@@ -341,16 +346,7 @@ spec:
                         items:
                           type: string
                         type: array
-                      thvCABundlePath:
-                        description: |-
-                          ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
-
-                          Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
-                          already exist in the proxy runner container (e.g., Kubernetes service account CA at
-                          /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
-                          use CABundleRef which automatically mounts the ConfigMap and computes the path.
-                          This field will be removed when the API graduates to v1beta1.
-                        type: string
+                        x-kubernetes-list-type: atomic
                     required:
                     - issuer
                     type: object
@@ -420,6 +416,35 @@ spec:
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
                 - message: kubernetes must not be set when type is not 'kubernetes'
                   rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) : true'
+              oidcConfigRef:
+                description: |-
+                  OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+                  The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
+                  Per-server overrides (audience, scopes) are specified here; shared provider config
+                  lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+                properties:
+                  audience:
+                    description: |-
+                      Audience is the expected audience for token validation.
+                      This MUST be unique per server to prevent token replay attacks.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the MCPOIDCConfig resource
+                    minLength: 1
+                    type: string
+                  scopes:
+                    description: |-
+                      Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
+                      If empty, defaults to ["openid"].
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - audience
+                - name
+                type: object
               permissionProfile:
                 description: PermissionProfile defines the permission profile to use
                 properties:
@@ -454,15 +479,6 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
-              port:
-                default: 8080
-                description: |-
-                  Port is the port to expose the MCP server on
-                  Deprecated: Use ProxyPort instead
-                format: int32
-                maximum: 65535
-                minimum: 1
-                type: integer
               proxyMode:
                 default: streamable-http
                 description: |-
@@ -481,6 +497,82 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              rateLimiting:
+                description: |-
+                  RateLimiting defines rate limiting configuration for the MCP server.
+                  Requires Redis session storage to be configured for distributed rate limiting.
+                properties:
+                  shared:
+                    description: Shared defines a token bucket shared across all users
+                      for the entire server.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                  tools:
+                    description: |-
+                      Tools defines per-tool rate limit overrides.
+                      Each entry applies additional rate limits to calls targeting a specific tool name.
+                      A request must pass both the server-level limit and the per-tool limit.
+                    items:
+                      description: ToolRateLimitConfig defines rate limits for a specific
+                        tool.
+                      properties:
+                        name:
+                          description: Name is the MCP tool name this limit applies
+                            to.
+                          minLength: 1
+                          type: string
+                        shared:
+                          description: Shared defines a token bucket shared across
+                            all users for this specific tool.
+                          properties:
+                            maxTokens:
+                              description: |-
+                                MaxTokens is the maximum number of tokens (bucket capacity).
+                                This is also the burst size: the maximum number of requests that can be served
+                                instantaneously before the bucket is depleted.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                            refillPeriod:
+                              description: |-
+                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                              type: string
+                          required:
+                          - maxTokens
+                          - refillPeriod
+                          type: object
+                      required:
+                      - name
+                      - shared
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
+                x-kubernetes-validations:
+                - message: at least one of shared or tools must be configured
+                  rule: has(self.shared) || (has(self.tools) && size(self.tools) >
+                    0)
               replicas:
                 description: |-
                   Replicas is the desired number of proxy runner (thv run) pod replicas.
@@ -524,6 +616,9 @@ spec:
                           - value
                           type: object
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       imagePullSecrets:
                         description: |-
                           ImagePullSecrets allows specifying image pull secrets for the proxy runner
@@ -545,6 +640,7 @@ spec:
                           type: object
                           x-kubernetes-map-type: atomic
                         type: array
+                        x-kubernetes-list-type: atomic
                       labels:
                         additionalProperties:
                           type: string
@@ -635,6 +731,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               serviceAccount:
                 description: |-
                   ServiceAccount is the name of an already existing service account to use by the MCP server.
@@ -696,17 +795,12 @@ spec:
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
-              targetPort:
-                description: |-
-                  TargetPort is the port that MCP server listens to
-                  Deprecated: Use McpPort instead
-                format: int32
-                maximum: 65535
-                minimum: 1
-                type: integer
               telemetry:
-                description: Telemetry defines observability configuration for the
-                  MCP server
+                description: |-
+                  Telemetry defines inline observability configuration for the MCP server.
+                  Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
+                  This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
+                  is rejected by CEL validation.
                 properties:
                   openTelemetry:
                     description: OpenTelemetry defines OpenTelemetry configuration
@@ -726,6 +820,7 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                       insecure:
                         default: false
                         description: Insecure indicates whether to use HTTP instead
@@ -757,6 +852,7 @@ spec:
                           samplingRate:
                             default: "0.05"
                             description: SamplingRate is the trace sampling rate (0.0-1.0)
+                            pattern: ^(0(\.\d+)?|1(\.0+)?)$
                             type: string
                         type: object
                       useLegacyAttributes:
@@ -777,12 +873,32 @@ spec:
                         type: boolean
                     type: object
                 type: object
+              telemetryConfigRef:
+                description: |-
+                  TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+                  The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
+                  Cross-namespace references are not supported for security and isolation reasons.
+                  Mutually exclusive with the deprecated inline Telemetry field.
+                properties:
+                  name:
+                    description: Name is the name of the MCPTelemetryConfig resource
+                    minLength: 1
+                    type: string
+                  serviceName:
+                    description: |-
+                      ServiceName overrides the telemetry service name for this specific server.
+                      This MUST be unique per server for proper observability (e.g., distinguishing
+                      traces and metrics from different servers sharing the same collector).
+                      If empty, defaults to the server name with "thv-" prefix at runtime.
+                    type: string
+                required:
+                - name
+                type: object
               toolConfigRef:
                 description: |-
                   ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
                   The referenced MCPToolConfig must exist in the same namespace as this MCPServer.
                   Cross-namespace references are not supported for security and isolation reasons.
-                  If specified, this takes precedence over the inline ToolsFilter field.
                 properties:
                   name:
                     description: Name is the name of the MCPToolConfig resource in
@@ -791,13 +907,6 @@ spec:
                 required:
                 - name
                 type: object
-              tools:
-                description: |-
-                  ToolsFilter is the filter on tools applied to the MCP server
-                  Deprecated: Use ToolConfigRef instead
-                items:
-                  type: string
-                type: array
               transport:
                 default: stdio
                 description: Transport is the transport method for the MCP server
@@ -840,9 +949,22 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             required:
             - image
             type: object
+            x-kubernetes-validations:
+            - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
+                to reference a shared MCPOIDCConfig
+              rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
+            - message: telemetry and telemetryConfigRef are mutually exclusive; migrate
+                to telemetryConfigRef
+              rule: '!(has(self.telemetry) && has(self.telemetryConfigRef))'
+            - message: rateLimiting requires sessionStorage with provider 'redis'
+              rule: '!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider
+                == ''redis'')'
           status:
             description: MCPServerStatus defines the observed state of MCPServer
             properties:
@@ -904,6 +1026,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               externalAuthConfigHash:
                 description: ExternalAuthConfigHash is the hash of the referenced
                   MCPExternalAuthConfig spec
@@ -912,11 +1037,20 @@ spec:
                 description: Message provides additional information about the current
                   phase
                 type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation most recently
+                  observed by the controller
+                format: int64
+                type: integer
+              oidcConfigHash:
+                description: OIDCConfigHash is the hash of the referenced MCPOIDCConfig
+                  spec for change detection
+                type: string
               phase:
                 description: Phase is the current phase of the MCPServer
                 enum:
                 - Pending
-                - Running
+                - Ready
                 - Failed
                 - Terminating
                 - Stopped
@@ -925,6 +1059,10 @@ spec:
                 description: ReadyReplicas is the number of ready proxy replicas
                 format: int32
                 type: integer
+              telemetryConfigHash:
+                description: TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig
+                  spec for change detection
+                type: string
               toolConfigHash:
                 description: ToolConfigHash stores the hash of the referenced ToolConfig
                   for change detection

@@ -319,7 +319,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 			}, server); err != nil {
 				return err
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not running yet, phase: %s", server.Status.Phase)
 			}
 			return nil

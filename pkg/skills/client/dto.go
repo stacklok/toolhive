@@ -36,3 +36,7 @@ type listResponse struct {
 type installResponse struct {
 	Skill skills.InstalledSkill `json:"skill"`
 }
+
+type listBuildsResponse struct {
+	Builds []skills.LocalBuild `json:"builds"`
+}

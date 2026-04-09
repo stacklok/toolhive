@@ -17,7 +17,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/k8s"
-	"github.com/stacklok/toolhive/pkg/transport"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
@@ -203,27 +202,12 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	// Calculate effective proxy mode
 	effectiveProxyMode := types.GetEffectiveProxyMode(transportType, mcpServer.Spec.ProxyMode)
 
-	// Generate URL from status or reconstruct from spec
+	// Use the URL from status, which is set by the MCPServer controller after
+	// creating the K8s Service. Do NOT fall back to localhost — in K8s mode,
+	// 127.0.0.1 inside the vMCP pod points to the vMCP itself (e.g. its metrics
+	// server on port 8080), not the backend. If Status.URL is empty, the backend
+	// will be skipped and added later by the reconciler once the URL is set.
 	url := mcpServer.Status.URL
-	if url == "" {
-		// Use ProxyPort (not McpPort) because it's the externally accessible port
-		// that the egress proxy listens on. This is what vMCP connects to.
-		// The McpPort is only for internal container-to-container communication.
-		port := int(mcpServer.Spec.ProxyPort)
-		if port == 0 {
-			port = int(mcpServer.Spec.Port) // Fallback to deprecated Port field
-		}
-		if port > 0 {
-			url = transport.GenerateMCPServerURL(
-				mcpServer.Spec.Transport,
-				mcpServer.Spec.ProxyMode,
-				transport.LocalhostIPv4,
-				port,
-				mcpServer.Name,
-				"",
-			)
-		}
-	}
 
 	// Map workload phase to backend health status
 	healthStatus := mapK8SWorkloadPhaseToHealth(mcpServer.Status.Phase)
@@ -350,7 +334,7 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 // mapK8SWorkloadPhaseToHealth converts a MCPServerPhase to a backend health status.
 func mapK8SWorkloadPhaseToHealth(phase mcpv1alpha1.MCPServerPhase) vmcp.BackendHealthStatus {
 	switch phase {
-	case mcpv1alpha1.MCPServerPhaseRunning:
+	case mcpv1alpha1.MCPServerPhaseReady:
 		return vmcp.BackendHealthy
 	case mcpv1alpha1.MCPServerPhaseFailed:
 		return vmcp.BackendUnhealthy
@@ -394,14 +378,9 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 		transportType = transporttypes.TransportTypeStreamableHTTP
 	}
 
-	// Use the status URL if available, otherwise reconstruct from service name
+	// Use the URL from status, which is set by the controller after creating the
+	// K8s Service. Do NOT fall back to localhost — see mcpServerToBackend comment.
 	url := proxy.Status.URL
-	if url == "" {
-		port := int(proxy.GetProxyPort())
-		if port > 0 {
-			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, "", transport.LocalhostIPv4, port, proxy.Name, "")
-		}
-	}
 
 	// Map proxy phase to backend health status
 	healthStatus := mapMCPRemoteProxyPhaseToHealth(proxy.Status.Phase)

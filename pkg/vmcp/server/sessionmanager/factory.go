@@ -150,12 +150,12 @@ func compositeToolsDecorator(
 		}
 
 		compositeToolsMeta := compositetools.ConvertWorkflowDefsToTools(sessionDefs)
-		if err := compositetools.ValidateNoToolConflicts(sess.Tools(), compositeToolsMeta); err != nil {
+		if err := compositetools.ValidateNoToolConflicts(sess.AllTools(), compositeToolsMeta); err != nil {
 			slog.Warn("composite tool name conflict detected; skipping composite tools", "session_id", sess.ID(), "error", err)
 			return sess, nil
 		}
 
-		sessionComposer := composerFactory(sess.GetRoutingTable(), sess.Tools())
+		sessionComposer := composerFactory(sess.GetRoutingTable(), sess.AllTools())
 		sessionExecutors := make(map[string]compositetools.WorkflowExecutor, len(sessionDefs))
 		for _, def := range sessionDefs {
 			ex := newComposerWorkflowExecutor(sessionComposer, def)

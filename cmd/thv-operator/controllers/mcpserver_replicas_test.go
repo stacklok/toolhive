@@ -6,6 +6,7 @@ package controllers
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -451,7 +452,7 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 	}, updatedMCPServer)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.MCPServerPhaseRunning, updatedMCPServer.Status.Phase)
+	assert.Equal(t, mcpv1alpha1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
 	assert.Equal(t, int32(2), updatedMCPServer.Status.ReadyReplicas,
 		"ReadyReplicas should match the number of running pods")
 }
@@ -788,4 +789,193 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "ConditionSessionStorageWarning condition should be set to False when Redis is configured")
+}
+
+func TestCategorizePodStatusExcludesTerminatingPods(t *testing.T) {
+	t.Parallel()
+
+	now := metav1.NewTime(time.Now())
+
+	tests := []struct {
+		name            string
+		pod             corev1.Pod
+		expectedRunning int
+		expectedPending int
+		expectedFailed  int
+	}{
+		{
+			name: "terminating pod with running containers is excluded",
+			pod: corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					DeletionTimestamp: &now,
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					},
+				},
+			},
+			expectedRunning: 0,
+			expectedPending: 0,
+			expectedFailed:  0,
+		},
+		{
+			name: "non-terminating running pod is counted",
+			pod: corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					},
+				},
+			},
+			expectedRunning: 1,
+			expectedPending: 0,
+			expectedFailed:  0,
+		},
+		{
+			name: "terminating pending pod is excluded",
+			pod: corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					DeletionTimestamp: &now,
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodPending,
+				},
+			},
+			expectedRunning: 0,
+			expectedPending: 0,
+			expectedFailed:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			running, pending, failed, _ := categorizePodStatus(tt.pod)
+			assert.Equal(t, tt.expectedRunning, running, "running count")
+			assert.Equal(t, tt.expectedPending, pending, "pending count")
+			assert.Equal(t, tt.expectedFailed, failed, "failed count")
+		})
+	}
+}
+
+func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
+	t.Parallel()
+
+	name := "terminating-pods-test"
+	namespace := testNamespaceDefault
+	now := metav1.NewTime(time.Now())
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "sse",
+			ProxyPort: 8080,
+		},
+	}
+
+	testScheme := createTestScheme()
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(2),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labelsForMCPServer(name),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelsForMCPServer(name),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "mcp", Image: "test-image:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	// 2 running pods + 1 terminating-but-ready pod (old replica during rollout)
+	runningPod1 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-pod-0", name),
+			Namespace: namespace,
+			Labels:    labelsForMCPServer(name),
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "mcp", Image: "test-image:latest"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			},
+		},
+	}
+	runningPod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-pod-1", name),
+			Namespace: namespace,
+			Labels:    labelsForMCPServer(name),
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "mcp", Image: "test-image:latest"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			},
+		},
+	}
+	terminatingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              fmt.Sprintf("%s-pod-old", name),
+			Namespace:         namespace,
+			Labels:            labelsForMCPServer(name),
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"test-finalizer"}, // required for fake client with DeletionTimestamp
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "mcp", Image: "test-image:latest"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer, deployment, runningPod1, runningPod2, terminatingPod).
+		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.updateMCPServerStatus(t.Context(), mcpServer)
+	require.NoError(t, err)
+
+	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      name,
+		Namespace: namespace,
+	}, updatedMCPServer)
+	require.NoError(t, err)
+
+	assert.Equal(t, mcpv1alpha1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
+	assert.Equal(t, int32(2), updatedMCPServer.Status.ReadyReplicas,
+		"ReadyReplicas should exclude terminating pods")
 }

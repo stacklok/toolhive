@@ -122,7 +122,8 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 		require.NoError(t, err)
 		assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
-		assert.Contains(t, updatedConfig.Status.ReferencingServers, "test-server")
+		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "test-server"})
 	})
 
 	t.Run("reconcile with changed spec", func(t *testing.T) {
@@ -350,10 +351,13 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		var updatedConfig mcpv1alpha1.MCPToolConfig
 		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 		require.NoError(t, err)
-		assert.Len(t, updatedConfig.Status.ReferencingServers, 3)
-		assert.Contains(t, updatedConfig.Status.ReferencingServers, "server1")
-		assert.Contains(t, updatedConfig.Status.ReferencingServers, "server2")
-		assert.Contains(t, updatedConfig.Status.ReferencingServers, "server3")
+		assert.Len(t, updatedConfig.Status.ReferencingWorkloads, 3)
+		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
+		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
+		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
 	})
 
 	t.Run("empty MCPToolConfig spec", func(t *testing.T) {

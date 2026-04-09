@@ -502,7 +502,7 @@ func (a *defaultAggregator) ProcessPreQueriedCapabilities(
 	ctx context.Context,
 	toolsByBackend map[string][]vmcp.Tool,
 	targets map[string]*vmcp.BackendTarget,
-) ([]vmcp.Tool, map[string]*vmcp.BackendTarget, error) {
+) ([]vmcp.Tool, []vmcp.Tool, map[string]*vmcp.BackendTarget, error) {
 	// Step 1: Apply per-backend overrides (renames, description changes).
 	processed := make(map[string]*BackendCapabilities, len(toolsByBackend))
 	for backendID, rawTools := range toolsByBackend {
@@ -515,11 +515,16 @@ func (a *defaultAggregator) ProcessPreQueriedCapabilities(
 	// Step 2: Resolve naming conflicts across backends.
 	resolved, err := a.ResolveConflicts(ctx, processed)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	// Step 3: Build advertised list and routing table, applying advertising filter.
+	// Step 3: Build advertised list, all-resolved list, and routing table.
+	// advertisedTools is the subset shown to MCP clients (post-filter).
+	// allResolvedTools includes every resolved tool regardless of advertising filter,
+	// so that workflow engines can look up InputSchema for type coercion even when
+	// a backend tool is hidden from clients via excludeAll or filter configuration.
 	var advertisedTools []vmcp.Tool
+	var allResolvedTools []vmcp.Tool
 	routingTable := make(map[string]*vmcp.BackendTarget, len(resolved.Tools))
 
 	for _, rt := range resolved.Tools {
@@ -536,19 +541,21 @@ func (a *defaultAggregator) ProcessPreQueriedCapabilities(
 		t.OriginalCapabilityName = actualBackendCapabilityName(a.toolConfigMap, rt.BackendID, rt.OriginalName)
 		routingTable[rt.ResolvedName] = &t
 
+		resolved := vmcp.Tool{
+			Name:         rt.ResolvedName,
+			Description:  rt.Description,
+			InputSchema:  rt.InputSchema,
+			OutputSchema: rt.OutputSchema,
+			Annotations:  rt.Annotations,
+			BackendID:    rt.BackendID,
+		}
+		allResolvedTools = append(allResolvedTools, resolved)
 		if a.shouldAdvertiseTool(rt.BackendID, rt.OriginalName) {
-			advertisedTools = append(advertisedTools, vmcp.Tool{
-				Name:         rt.ResolvedName,
-				Description:  rt.Description,
-				InputSchema:  rt.InputSchema,
-				OutputSchema: rt.OutputSchema,
-				Annotations:  rt.Annotations,
-				BackendID:    rt.BackendID,
-			})
+			advertisedTools = append(advertisedTools, resolved)
 		}
 	}
 
-	return advertisedTools, routingTable, nil
+	return advertisedTools, allResolvedTools, routingTable, nil
 }
 
 // actualBackendCapabilityName returns the real capability name the backend uses,

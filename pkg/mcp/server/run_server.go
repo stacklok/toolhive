@@ -50,6 +50,10 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}
 
+	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
+	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, h.configProvider.GetConfig())
+	regServerName := runner.ResolveRegistryServerName(serverMetadata)
+
 	// Build run configuration.
 	// Use type assertion with nil check to guard against typed nil pointers.
 	var imageMetadata *types.ImageMetadata
@@ -57,7 +61,9 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		imageMetadata = md
 	}
 
-	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
+	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata,
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
+		runner.WithRegistryServerName(regServerName))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
 	}
@@ -109,12 +115,13 @@ func parseRunServerArgs(request mcp.CallToolRequest) (*runServerArgs, error) {
 	return args, nil
 }
 
-// buildServerConfig creates the run configuration for the server
+// buildServerConfig creates the run configuration for the server.
 func buildServerConfig(
 	ctx context.Context,
 	args *runServerArgs,
 	imageURL string,
 	imageMetadata *types.ImageMetadata,
+	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -128,6 +135,7 @@ func buildServerConfig(
 		runner.WithName(args.Name),
 		runner.WithHost(args.Host),
 	}
+	opts = append(opts, extraOpts...)
 
 	// Configure transport and metadata
 	transport := configureTransport(&opts, imageMetadata)

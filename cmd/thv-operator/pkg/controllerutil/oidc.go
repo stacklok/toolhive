@@ -53,6 +53,29 @@ func AddOIDCConfigOptions(
 	return nil
 }
 
+// GetOIDCConfigForServer fetches the MCPOIDCConfig referenced by an MCPServer.
+// Returns nil if the ref is nil or the resource is not found.
+func GetOIDCConfigForServer(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	ref *mcpv1alpha1.MCPOIDCConfigReference,
+) (*mcpv1alpha1.MCPOIDCConfig, error) {
+	if ref == nil {
+		return nil, nil
+	}
+
+	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{}
+	if err := c.Get(ctx, types.NamespacedName{
+		Name:      ref.Name,
+		Namespace: namespace,
+	}, oidcConfig); err != nil {
+		return nil, fmt.Errorf("failed to get MCPOIDCConfig %s/%s: %w", namespace, ref.Name, err)
+	}
+
+	return oidcConfig, nil
+}
+
 // GenerateOIDCClientSecretEnvVar generates environment variable for OIDC client secret
 // when using a SecretKeyRef.
 // Returns nil if clientSecretRef is nil.

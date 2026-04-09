@@ -189,17 +189,7 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	// Add OIDC client secret environment variable if using inline config with secretRef
-	if proxy.Spec.OIDCConfig.Type == "inline" && proxy.Spec.OIDCConfig.Inline != nil {
-		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
-			ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfig.Inline.ClientSecretRef,
-		)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
-		} else if oidcClientSecretEnvVar != nil {
-			env = append(env, *oidcClientSecretEnvVar)
-		}
-	}
+	env = append(env, r.buildOIDCClientSecretEnvVars(ctx, proxy)...)
 
 	// Add header forward secret environment variables
 	if proxy.Spec.HeaderForward != nil && len(proxy.Spec.HeaderForward.AddHeadersFromSecret) > 0 {
@@ -226,6 +216,28 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildOIDCClientSecretEnvVars returns OIDC client secret env vars when inline OIDC config
+// with a client secret ref is used. Returns nil when OIDCConfig is nil or not inline.
+func (r *MCPRemoteProxyReconciler) buildOIDCClientSecretEnvVars(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) []corev1.EnvVar {
+	if proxy.Spec.OIDCConfig == nil || proxy.Spec.OIDCConfig.Type != "inline" || proxy.Spec.OIDCConfig.Inline == nil {
+		return nil
+	}
+	oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfig.Inline.ClientSecretRef,
+	)
+	if err != nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
+		return nil
+	}
+	if oidcClientSecretEnvVar == nil {
+		return nil
+	}
+	return []corev1.EnvVar{*oidcClientSecretEnvVar}
 }
 
 // buildHeaderForwardSecretEnvVars builds environment variables for header forward secrets.

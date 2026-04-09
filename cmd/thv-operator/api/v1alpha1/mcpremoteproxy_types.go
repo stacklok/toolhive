@@ -16,6 +16,8 @@ type HeaderForwardConfig struct {
 	AddPlaintextHeaders map[string]string `json:"addPlaintextHeaders,omitempty"`
 
 	// AddHeadersFromSecret references Kubernetes Secrets for sensitive header values.
+	// +listType=map
+	// +listMapKey=headerName
 	// +optional
 	AddHeadersFromSecret []HeaderFromSecret `json:"addHeadersFromSecret,omitempty"`
 }
@@ -34,18 +36,15 @@ type HeaderFromSecret struct {
 }
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://`
 	RemoteURL string `json:"remoteURL"`
-
-	// Port is the port to expose the MCP proxy on
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +kubebuilder:default=8080
-	// Deprecated: Use ProxyPort instead
-	Port int32 `json:"port,omitempty"`
 
 	// ProxyPort is the port to expose the MCP proxy on
 	// +kubebuilder:validation:Minimum=1
@@ -58,10 +57,18 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:default=streamable-http
 	Transport string `json:"transport,omitempty"`
 
-	// OIDCConfig defines OIDC authentication configuration for the proxy
-	// This validates incoming tokens from clients. Required for proxy mode.
-	// +kubebuilder:validation:Required
-	OIDCConfig OIDCConfigRef `json:"oidcConfig"`
+	// OIDCConfig defines OIDC authentication configuration for the proxy.
+	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
+	// +optional
+	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Per-server overrides (audience, scopes) are specified here; shared provider config
+	// lives in the MCPOIDCConfig resource.
+	// +optional
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
 	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
 	// When specified, the proxy will exchange validated incoming tokens for remote service tokens.
@@ -152,6 +159,8 @@ type MCPRemoteProxyStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions represent the latest available observations of the MCPRemoteProxy's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
@@ -162,6 +171,10 @@ type MCPRemoteProxyStatus struct {
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
+	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
+	// +optional
+	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
 
 	// Message provides additional information about the current phase
 	// +optional
@@ -291,9 +304,11 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:resource:shortName=rp;mcprp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteURL"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPRemoteProxy is the Schema for the mcpremoteproxies API
@@ -331,30 +346,13 @@ func (m *MCPRemoteProxy) GetNamespace() string {
 
 // GetOIDCConfig returns the OIDC configuration reference
 func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
-	return &m.Spec.OIDCConfig
+	return m.Spec.OIDCConfig
 }
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy
 func (m *MCPRemoteProxy) GetProxyPort() int32 {
-	const defaultProxyPort int32 = 8080
-
-	// If the legacy Port is set and ProxyPort is only the default,
-	// prefer Port to preserve backward compatibility when ProxyPort
-	// was defaulted by the API server.
-	if m.Spec.Port > 0 && m.Spec.ProxyPort == defaultProxyPort {
-		return m.Spec.Port
-	}
-
 	if m.Spec.ProxyPort > 0 {
 		return m.Spec.ProxyPort
 	}
-
-	// the below is deprecated and will be removed in a future version
-	// we need to keep it here to avoid breaking changes
-	if m.Spec.Port > 0 {
-		return m.Spec.Port
-	}
-
-	// default to 8080 if no port is specified
-	return defaultProxyPort
+	return 8080
 }

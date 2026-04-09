@@ -305,3 +305,157 @@ func TestFindReferencingMCPServers(t *testing.T) {
 		assert.Equal(t, "namespace1", servers[0].Namespace)
 	})
 }
+
+func TestSortWorkloadRefs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sorts by kind then name", func(t *testing.T) {
+		t.Parallel()
+
+		refs := []mcpv1alpha1.WorkloadReference{
+			{Kind: "VirtualMCPServer", Name: "beta"},
+			{Kind: "MCPServer", Name: "gamma"},
+			{Kind: "MCPServer", Name: "alpha"},
+			{Kind: "VirtualMCPServer", Name: "alpha"},
+		}
+
+		SortWorkloadRefs(refs)
+
+		assert.Equal(t, []mcpv1alpha1.WorkloadReference{
+			{Kind: "MCPServer", Name: "alpha"},
+			{Kind: "MCPServer", Name: "gamma"},
+			{Kind: "VirtualMCPServer", Name: "alpha"},
+			{Kind: "VirtualMCPServer", Name: "beta"},
+		}, refs)
+	})
+
+	t.Run("empty slice is a no-op", func(t *testing.T) {
+		t.Parallel()
+		var refs []mcpv1alpha1.WorkloadReference
+		SortWorkloadRefs(refs)
+		assert.Empty(t, refs)
+	})
+
+	t.Run("single element is unchanged", func(t *testing.T) {
+		t.Parallel()
+		refs := []mcpv1alpha1.WorkloadReference{{Kind: "MCPServer", Name: "only"}}
+		SortWorkloadRefs(refs)
+		assert.Equal(t, []mcpv1alpha1.WorkloadReference{{Kind: "MCPServer", Name: "only"}}, refs)
+	})
+}
+
+func TestWorkloadRefsEqual(t *testing.T) {
+	t.Parallel()
+
+	t.Run("equal slices", func(t *testing.T) {
+		t.Parallel()
+		a := []mcpv1alpha1.WorkloadReference{
+			{Kind: "MCPServer", Name: "alpha"},
+			{Kind: "MCPServer", Name: "beta"},
+		}
+		b := []mcpv1alpha1.WorkloadReference{
+			{Kind: "MCPServer", Name: "alpha"},
+			{Kind: "MCPServer", Name: "beta"},
+		}
+		assert.True(t, WorkloadRefsEqual(a, b))
+	})
+
+	t.Run("different order is not equal", func(t *testing.T) {
+		t.Parallel()
+		a := []mcpv1alpha1.WorkloadReference{
+			{Kind: "MCPServer", Name: "alpha"},
+			{Kind: "MCPServer", Name: "beta"},
+		}
+		b := []mcpv1alpha1.WorkloadReference{
+			{Kind: "MCPServer", Name: "beta"},
+			{Kind: "MCPServer", Name: "alpha"},
+		}
+		assert.False(t, WorkloadRefsEqual(a, b))
+	})
+
+	t.Run("different lengths", func(t *testing.T) {
+		t.Parallel()
+		a := []mcpv1alpha1.WorkloadReference{{Kind: "MCPServer", Name: "alpha"}}
+		b := []mcpv1alpha1.WorkloadReference{
+			{Kind: "MCPServer", Name: "alpha"},
+			{Kind: "MCPServer", Name: "beta"},
+		}
+		assert.False(t, WorkloadRefsEqual(a, b))
+	})
+
+	t.Run("both nil", func(t *testing.T) {
+		t.Parallel()
+		assert.True(t, WorkloadRefsEqual(nil, nil))
+	})
+
+	t.Run("nil vs empty", func(t *testing.T) {
+		t.Parallel()
+		assert.True(t, WorkloadRefsEqual(nil, []mcpv1alpha1.WorkloadReference{}))
+	})
+}
+
+func TestFindWorkloadRefsFromMCPServers(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	t.Run("returns sorted refs", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+
+		// Create servers in reverse alphabetical order to verify sorting
+		servers := []mcpv1alpha1.MCPServer{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "charlie", Namespace: "ns"},
+				Spec:       mcpv1alpha1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "cfg"}},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "alpha", Namespace: "ns"},
+				Spec:       mcpv1alpha1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "cfg"}},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "bravo", Namespace: "ns"},
+				Spec:       mcpv1alpha1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "cfg"}},
+			},
+		}
+
+		builder := fake.NewClientBuilder().WithScheme(scheme)
+		for i := range servers {
+			builder = builder.WithObjects(&servers[i])
+		}
+		fakeClient := builder.Build()
+
+		refs, err := FindWorkloadRefsFromMCPServers(ctx, fakeClient, "ns", "cfg",
+			func(s *mcpv1alpha1.MCPServer) *string {
+				if s.Spec.ToolConfigRef != nil {
+					return &s.Spec.ToolConfigRef.Name
+				}
+				return nil
+			})
+
+		require.NoError(t, err)
+		require.Len(t, refs, 3)
+		assert.Equal(t, "alpha", refs[0].Name)
+		assert.Equal(t, "bravo", refs[1].Name)
+		assert.Equal(t, "charlie", refs[2].Name)
+		for _, ref := range refs {
+			assert.Equal(t, "MCPServer", ref.Kind)
+		}
+	})
+
+	t.Run("returns empty for no matches", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		refs, err := FindWorkloadRefsFromMCPServers(ctx, fakeClient, "ns", "cfg",
+			func(_ *mcpv1alpha1.MCPServer) *string {
+				return nil
+			})
+
+		require.NoError(t, err)
+		assert.Empty(t, refs)
+	})
+}

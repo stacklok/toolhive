@@ -33,6 +33,7 @@ The skill command provides subcommands to manage skills.
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
 * [thv skill build](thv_skill_build.md)	 - Build a skill
+* [thv skill builds](thv_skill_builds.md)	 - List locally-built skill artifacts
 * [thv skill info](thv_skill_info.md)	 - Show skill details
 * [thv skill install](thv_skill_install.md)	 - Install a skill
 * [thv skill list](thv_skill_list.md)	 - List installed skills

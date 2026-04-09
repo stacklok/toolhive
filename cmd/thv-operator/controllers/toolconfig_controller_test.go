@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -220,17 +221,24 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 					"MCPToolConfig status should have config hash")
 			}
 
-			// Check referencing servers in status
+			// Check referencing workloads in status
 			if tt.existingMCPServer != nil {
-				assert.Contains(t, updatedConfig.Status.ReferencingServers,
-					tt.existingMCPServer.Name,
-					"Status should contain referencing MCPServer")
+				assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+					mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
+					"Status should contain referencing MCPServer as WorkloadReference")
 			}
+
+			// Check Valid condition is set after successful reconciliation
+			cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+			require.NotNil(t, cond, "Valid condition must be set after successful reconciliation")
+			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Valid condition should be True")
+			assert.Equal(t, mcpv1alpha1.ConditionReasonToolConfigValidationSucceeded, cond.Reason)
+			assert.Equal(t, "Spec validation passed", cond.Message)
 		})
 	}
 }
 
-func TestToolConfigReconciler_findReferencingMCPServers(t *testing.T) {
+func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -294,21 +302,16 @@ func TestToolConfigReconciler_findReferencingMCPServers(t *testing.T) {
 	}
 
 	ctx := t.Context()
-	servers, err := r.findReferencingMCPServers(ctx, toolConfig)
+	refs, err := r.findReferencingWorkloads(ctx, toolConfig)
 	require.NoError(t, err)
 
-	assert.Len(t, servers, 2, "Should find 2 referencing MCPServers")
-
-	serverNames := make([]string, len(servers))
-	for i, s := range servers {
-		serverNames[i] = s.Name
-	}
-	assert.Contains(t, serverNames, "server1")
-	assert.Contains(t, serverNames, "server2")
-	assert.NotContains(t, serverNames, "server3")
+	assert.Len(t, refs, 2, "Should find 2 referencing workloads")
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
+	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
+	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
 }
 
-func TestToolConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *testing.T) {
+func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -358,7 +361,12 @@ func TestToolConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *test
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
-	assert.Empty(t, updatedConfig.Status.ReferencingServers, "No servers should be referencing yet")
+	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No servers should be referencing yet")
+
+	// Verify Valid condition is set after initial reconciliation
+	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+	require.NotNil(t, cond, "Valid condition must be set after reconciliation")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 
 	// Add an MCPServer that references this config (without changing the config spec)
 	mcpServer := &mcpv1alpha1.MCPServer{
@@ -381,11 +389,12 @@ func TestToolConfigReconciler_ReferencingServersUpdatedWithoutHashChange(t *test
 
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingServers, "new-server",
-		"ReferencingServers should be updated even without hash change")
+	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
+		"ReferencingWorkloads should be updated even without hash change")
 }
 
-func TestToolConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testing.T) {
+func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -447,7 +456,8 @@ func TestToolConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testi
 	var updatedConfig mcpv1alpha1.MCPToolConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingServers, "server-to-delete")
+	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
 
 	// Delete the MCPServer
 	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
@@ -458,6 +468,88 @@ func TestToolConfigReconciler_ReferencingServersRemovedOnServerDeletion(t *testi
 
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
-	assert.Empty(t, updatedConfig.Status.ReferencingServers,
-		"ReferencingServers should be empty after server deletion")
+	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
+		"ReferencingWorkloads should be empty after server deletion")
+}
+
+func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	toolConfig := &mcpv1alpha1.MCPToolConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-config",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1alpha1.MCPToolConfigSpec{
+			ToolsFilter: []string{"tool1"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(toolConfig).
+		WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+		Build()
+
+	r := &ToolConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      toolConfig.Name,
+			Namespace: toolConfig.Namespace,
+		},
+	}
+
+	// First reconciliation - add finalizer
+	result, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0))
+
+	// Second reconciliation - sets hash and condition
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1alpha1.MCPToolConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+
+	// Verify Valid condition exists with correct fields
+	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+	require.NotNil(t, cond, "Valid condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, mcpv1alpha1.ConditionReasonToolConfigValidationSucceeded, cond.Reason)
+	assert.Equal(t, "Spec validation passed", cond.Message)
+	assert.Equal(t, updatedConfig.Generation, cond.ObservedGeneration,
+		"ObservedGeneration should match the object's Generation")
+
+	// Simulate a spec change by updating the object's generation
+	updatedConfig.Spec.ToolsFilter = []string{"tool1", "tool2"}
+	updatedConfig.Generation = 2
+	err = fakeClient.Update(ctx, &updatedConfig)
+	require.NoError(t, err)
+
+	// Reconcile after spec change
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var finalConfig mcpv1alpha1.MCPToolConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &finalConfig)
+	require.NoError(t, err)
+
+	// Verify ObservedGeneration tracks the updated generation
+	cond = k8smeta.FindStatusCondition(finalConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+	require.NotNil(t, cond, "Valid condition must still be set after spec change")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, int64(2), cond.ObservedGeneration,
+		"ObservedGeneration should be updated to match new Generation")
 }

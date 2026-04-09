@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -66,8 +67,33 @@ func NewScopedProvider(inner Provider, scope SecretScope) Provider {
 }
 
 // GetSecret retrieves the secret identified by name under this provider's scope.
+// If the scoped key is not found, it falls back to the bare (pre-migration) key.
+// This makes the provider safe to use before or during secret scope migration:
+// once migration completes and bare keys are deleted, the fallback is a no-op.
 func (s *ScopedProvider) GetSecret(ctx context.Context, name string) (string, error) {
-	return s.provider.GetSecret(ctx, s.getScopedKey(name))
+	val, err := s.provider.GetSecret(ctx, s.getScopedKey(name))
+	if err == nil {
+		return val, nil
+	}
+	if IsNotFoundError(err) {
+		// Migration window: the scoped key does not exist yet. Try the bare key
+		// that was used before secret scope migration ran. After migration
+		// completes and the bare key is deleted, this lookup returns not-found
+		// and we fall through to return the original scoped-key error.
+		bareVal, bareErr := s.provider.GetSecret(ctx, name)
+		if bareErr == nil {
+			slog.Debug("secret scope migration fallback: returning bare key",
+				"scope", s.scope, "name", name)
+			return bareVal, nil
+		}
+		if !IsNotFoundError(bareErr) {
+			// Bare-key lookup hit a real backend error (e.g. connection failure,
+			// auth error). Surface it so the caller doesn't misdiagnose a backend
+			// problem as "secret not found".
+			return "", fmt.Errorf("scoped key not found and bare-key fallback failed: %w", bareErr)
+		}
+	}
+	return "", err
 }
 
 // SetSecret stores value under the scoped key for name.

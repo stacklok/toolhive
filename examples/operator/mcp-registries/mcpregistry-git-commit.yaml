@@ -5,7 +5,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "ToolHive Registry from Specific Commit"
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
@@ -15,3 +15,7 @@ spec:
         path: "pkg/registry/data/registry.json"
       syncPolicy:
         interval: "24h"  # Sync less frequently for pinned commits
+  registries:
+    - name: default
+      sources:
+        - default

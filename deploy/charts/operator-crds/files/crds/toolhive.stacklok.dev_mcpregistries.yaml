@@ -13,25 +13,25 @@ spec:
     kind: MCPRegistry
     listKind: MCPRegistryList
     plural: mcpregistries
+    shortNames:
+    - mcpreg
+    - registry
     singular: mcpregistry
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
-      name: Phase
+      name: Status
       type: string
-    - jsonPath: .status.syncStatus.phase
-      name: Sync
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
       type: string
-    - jsonPath: .status.apiStatus.phase
-      name: API
-      type: string
-    - jsonPath: .status.syncStatus.serverCount
-      name: Servers
+    - jsonPath: .status.readyReplicas
+      name: Replicas
       type: integer
-    - jsonPath: .status.syncStatus.lastSyncTime
-      name: Last Sync
-      type: date
+    - jsonPath: .status.url
+      name: URL
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -64,7 +64,47 @@ spec:
                 description: |-
                   AuthConfig defines the authentication configuration for the registry API server.
                   If not specified, defaults to anonymous authentication.
+                  Deprecated: Put auth config in configYAML instead.
                 properties:
+                  authz:
+                    description: Authz defines authorization configuration for role-based
+                      access control.
+                    properties:
+                      roles:
+                        description: |-
+                          Roles defines the role-based authorization rules.
+                          Each role is a list of claim matchers (JSON objects with string or []string values).
+                        properties:
+                          manageEntries:
+                            description: ManageEntries grants permission to create,
+                              update, and delete registry entries.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          manageRegistries:
+                            description: ManageRegistries grants permission to create,
+                              update, and delete registries.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          manageSources:
+                            description: ManageSources grants permission to create,
+                              update, and delete sources.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          superAdmin:
+                            description: SuperAdmin grants full administrative access
+                              to the registry.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                    type: object
                   mode:
                     default: anonymous
                     description: |-
@@ -230,6 +270,9 @@ spec:
                           type: object
                         minItems: 1
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       realm:
                         description: |-
                           Realm is the protection space identifier for WWW-Authenticate header (RFC 7235)
@@ -247,8 +290,36 @@ spec:
                         items:
                           type: string
                         type: array
+                        x-kubernetes-list-type: atomic
                     type: object
+                  publicPaths:
+                    description: |-
+                      PublicPaths defines additional paths that bypass authentication.
+                      These extend the default public paths (health, docs, swagger, well-known).
+                      Each path must start with "/". Do not add API data paths here.
+                      Example: ["/custom/public", "/metrics"]
+                    items:
+                      minLength: 1
+                      pattern: ^/
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                 type: object
+                x-kubernetes-validations:
+                - message: authz configuration has no effect when auth mode is anonymous
+                  rule: self.mode != 'anonymous' || !has(self.authz)
+              configYAML:
+                description: |-
+                  ConfigYAML is the complete registry server config.yaml content.
+                  The operator creates a ConfigMap from this string and mounts it
+                  at /config/config.yaml in the registry-api container.
+                  The operator does NOT parse, validate, or transform this content.
+
+                  Mutually exclusive with the legacy typed fields (Sources, Registries,
+                  DatabaseConfig, AuthConfig, TelemetryConfig). When set, the operator
+                  uses the decoupled code path — volumes and mounts must be provided
+                  via the Volumes and VolumeMounts fields below.
+                type: string
               databaseConfig:
                 description: |-
                   DatabaseConfig defines the PostgreSQL database configuration for the registry API server.
@@ -262,6 +333,8 @@ spec:
                     - MaxOpenConns: 10
                     - MaxIdleConns: 2
                     - ConnMaxLifetime: "30m"
+
+                  Deprecated: Put database config in configYAML and use pgpassSecretRef.
                 properties:
                   connMaxLifetime:
                     default: 30m
@@ -328,6 +401,24 @@ spec:
                     - key
                     type: object
                     x-kubernetes-map-type: atomic
+                  dynamicAuth:
+                    description: |-
+                      DynamicAuth defines dynamic database authentication configuration.
+                      When set, the registry server authenticates to the database using
+                      short-lived credentials instead of static passwords.
+                    properties:
+                      awsRdsIam:
+                        description: AWSRDSIAM enables AWS RDS IAM authentication
+                          for database connections.
+                        properties:
+                          region:
+                            description: |-
+                              Region is the AWS region for RDS IAM authentication.
+                              Use "detect" to automatically detect the region from instance metadata.
+                            minLength: 1
+                            type: string
+                        type: object
+                    type: object
                   host:
                     default: postgres
                     description: Host is the database server hostname
@@ -336,12 +427,22 @@ spec:
                     default: 2
                     description: MaxIdleConns is the maximum number of idle connections
                       in the pool
+                    format: int32
                     minimum: 0
+                    type: integer
+                  maxMetaSize:
+                    description: |-
+                      MaxMetaSize is the maximum allowed size in bytes for publisher-provided
+                      metadata extensions (_meta). Must be greater than zero.
+                      Defaults to 262144 (256KB) if not specified.
+                    format: int32
+                    minimum: 1
                     type: integer
                   maxOpenConns:
                     default: 10
                     description: MaxOpenConns is the maximum number of open connections
                       to the database
+                    format: int32
                     minimum: 1
                     type: integer
                   migrationUser:
@@ -354,6 +455,7 @@ spec:
                   port:
                     default: 5432
                     description: Port is the database server port
+                    format: int32
                     maximum: 65535
                     minimum: 1
                     type: integer
@@ -381,7 +483,9 @@ spec:
                 - dbMigrationUserPasswordSecretRef
                 type: object
               displayName:
-                description: DisplayName is a human-readable name for the registry
+                description: |-
+                  DisplayName is a human-readable name for the registry.
+                  Works with both the new configYAML path and the legacy typed path.
                 type: string
               enforceServers:
                 default: false
@@ -392,26 +496,109 @@ spec:
                   MCPServers with images not found in any registry will be rejected.
                   When false (default), MCPServers can be deployed regardless of registry presence.
                 type: boolean
+              pgpassSecretRef:
+                description: "PGPassSecretRef references a Secret containing a pre-created
+                  pgpass file.\nOnly used when configYAML is set. Mutually exclusive
+                  with DatabaseConfig.\n\nWhy this is a dedicated field instead of
+                  a regular volume/volumeMount:\nPostgreSQL's libpq rejects pgpass
+                  files that aren't mode 0600. Kubernetes\nsecret volumes mount files
+                  as root-owned, and the registry-api container\nruns as non-root
+                  (UID 65532). A root-owned 0600 file is unreadable by\nUID 65532,
+                  and using fsGroup changes permissions to 0640 which libpq also\nrejects.
+                  The only solution is an init container that copies the file to an\nemptyDir
+                  as the app user and runs chmod 0600. This cannot be expressed\nthrough
+                  volumes/volumeMounts alone — it requires an init container, two\nextra
+                  volumes (secret + emptyDir), a subPath mount, and an environment\nvariable,
+                  all wired together correctly.\n\nWhen specified, the operator generates
+                  all of that plumbing invisibly.\nThe user creates the Secret with
+                  pgpass-formatted content; the operator\nhandles only the Kubernetes
+                  permission mechanics.\n\nExample Secret:\n\n\tapiVersion: v1\n\tkind:
+                  Secret\n\tmetadata:\n\t  name: my-pgpass\n\tstringData:\n\t  .pgpass:
+                  |\n\t    postgres:5432:registry:db_app:mypassword\n\t    postgres:5432:registry:db_migrator:otherpassword\n\nThen
+                  reference it:\n\n\tpgpassSecretRef:\n\t  name: my-pgpass\n\t  key:
+                  .pgpass"
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
               podTemplateSpec:
                 description: |-
-                  PodTemplateSpec defines the pod template to use for the registry API server
+                  PodTemplateSpec defines the pod template to use for the registry API server.
                   This allows for customizing the pod configuration beyond what is provided by the other fields.
                   Note that to modify the specific container the registry API server runs in, you must specify
                   the `registry-api` container name in the PodTemplateSpec.
                   This field accepts a PodTemplateSpec object as JSON/YAML.
+                  Works with both the new configYAML path and the legacy typed path.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               registries:
-                description: Registries defines the configuration for the registry
-                  data sources
+                description: |-
+                  Registries defines lightweight registry views that aggregate one or more sources.
+                  Each registry references sources by name and can optionally gate access via claims.
+                  Deprecated: Use configYAML with volumes/volumeMounts instead.
                 items:
-                  description: MCPRegistryConfig defines the configuration for a registry
-                    data source
+                  description: MCPRegistryViewConfig defines a lightweight registry
+                    view that aggregates one or more sources.
+                  properties:
+                    claims:
+                      description: |-
+                        Claims are key-value pairs that gate access to this registry view.
+                        Only requests with matching claims can access this registry. Values must be string or []string.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    name:
+                      description: Name is a unique identifier for this registry view
+                      minLength: 1
+                      type: string
+                    sources:
+                      description: |-
+                        Sources is an ordered list of source names that feed this registry.
+                        Each name must reference a source defined in spec.sources.
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: atomic
+                  required:
+                  - name
+                  - sources
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              sources:
+                description: |-
+                  Sources defines the data source configurations for the registry.
+                  Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes).
+                  Deprecated: Use configYAML with volumes/volumeMounts instead.
+                items:
+                  description: |-
+                    MCPRegistrySourceConfig defines a data source configuration for the registry.
+                    Exactly one source type must be specified (ConfigMapRef, Git, API, URL, Managed, or Kubernetes).
                   properties:
                     api:
                       description: |-
                         API defines the API source configuration
-                        Mutually exclusive with ConfigMapRef, Git, and PVCRef
+                        Mutually exclusive with ConfigMapRef, Git, URL, Managed, and Kubernetes
                       properties:
                         endpoint:
                           description: |-
@@ -428,10 +615,16 @@ spec:
                       required:
                       - endpoint
                       type: object
+                    claims:
+                      description: |-
+                        Claims are key-value pairs attached to this source for authorization purposes.
+                        All entries from this source inherit these claims. Values must be string or []string.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     configMapRef:
                       description: |-
                         ConfigMapRef defines the ConfigMap source configuration
-                        Mutually exclusive with Git, API, and PVCRef
+                        Mutually exclusive with Git, API, URL, Managed, and Kubernetes
                       properties:
                         key:
                           description: The key to select.
@@ -454,8 +647,9 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     filter:
-                      description: Filter defines include/exclude patterns for registry
-                        content
+                      description: |-
+                        Filter defines include/exclude patterns for registry content.
+                        Not applicable for Managed and Kubernetes sources (will be ignored).
                       properties:
                         names:
                           description: NameFilters defines name-based filtering
@@ -465,11 +659,13 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             include:
                               description: Include is a list of glob patterns to include
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                           type: object
                         tags:
                           description: Tags defines tag-based filtering
@@ -479,11 +675,13 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             include:
                               description: Include is a list of tags to include
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                           type: object
                       type: object
                     format:
@@ -496,7 +694,7 @@ spec:
                     git:
                       description: |-
                         Git defines the Git repository source configuration
-                        Mutually exclusive with ConfigMapRef, API, and PVCRef
+                        Mutually exclusive with ConfigMapRef, API, URL, Managed, and Kubernetes
                       properties:
                         auth:
                           description: |-
@@ -584,58 +782,39 @@ spec:
                       required:
                       - repository
                       type: object
+                    kubernetes:
+                      description: |-
+                        Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.
+                        Mutually exclusive with ConfigMapRef, Git, API, URL, and Managed
+                      properties:
+                        namespaces:
+                          description: |-
+                            Namespaces is a list of Kubernetes namespaces to watch for MCP servers.
+                            If empty, watches the operator's configured namespace.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      type: object
+                    managed:
+                      description: |-
+                        Managed defines a managed source that is directly manipulated via the registry API.
+                        Managed sources do not sync from external sources.
+                        At most one managed source is allowed per MCPRegistry.
+                        Mutually exclusive with ConfigMapRef, Git, API, URL, and Kubernetes
+                      type: object
                     name:
-                      description: Name is a unique identifier for this registry configuration
-                        within the MCPRegistry
+                      description: Name is a unique identifier for this source within
+                        the MCPRegistry
                       minLength: 1
                       type: string
-                    pvcRef:
-                      description: |-
-                        PVCRef defines the PersistentVolumeClaim source configuration
-                        Mutually exclusive with ConfigMapRef, Git, and API
-                      properties:
-                        claimName:
-                          description: ClaimName is the name of the PersistentVolumeClaim
-                          minLength: 1
-                          type: string
-                        path:
-                          default: registry.json
-                          description: |-
-                            Path is the relative path to the registry file within the PVC.
-                            The PVC is mounted at /config/registry/{registryName}/.
-                            The full file path becomes: /config/registry/{registryName}/{path}
-
-                            This design:
-                            - Each registry gets its own mount point (consistent with ConfigMap sources)
-                            - Multiple registries can share the same PVC by mounting it at different paths
-                            - Users control PVC organization freely via the path field
-
-                            Examples:
-                              Registry "production" using PVC "shared-data" with path "prod/registry.json":
-                                PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json
-
-                              Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":
-                                PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json
-                                (Same PVC, different mount path)
-
-                              Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":
-                                PVC contains /registry.json → accessed at /config/registry/staging/registry.json
-                                (Different PVC, independent mount)
-
-                              Registry "team-a" with path "v1/servers.json":
-                                PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json
-                                (Subdirectories allowed in path)
-                          pattern: ^.*\.json$
-                          type: string
-                      required:
-                      - claimName
-                      type: object
                     syncPolicy:
                       description: |-
-                        SyncPolicy defines the automatic synchronization behavior for this registry.
+                        SyncPolicy defines the automatic synchronization behavior for this source.
                         If specified, enables automatic synchronization at the given interval.
                         Manual synchronization is always supported via annotation-based triggers
                         regardless of this setting.
+                        Not applicable for Managed and Kubernetes sources (will be ignored).
                       properties:
                         interval:
                           description: |-
@@ -646,51 +825,133 @@ spec:
                       required:
                       - interval
                       type: object
+                    url:
+                      description: |-
+                        URL defines a URL-hosted file source configuration.
+                        The registry server fetches the registry data from the specified HTTP/HTTPS URL.
+                        Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes
+                      properties:
+                        endpoint:
+                          description: |-
+                            Endpoint is the HTTP/HTTPS URL to fetch the registry file from.
+                            HTTPS is required unless the host is localhost.
+                          minLength: 1
+                          pattern: ^https?://.*
+                          type: string
+                        timeout:
+                          description: |-
+                            Timeout is the timeout for HTTP requests (Go duration format).
+                            Defaults to "30s" if not specified.
+                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                          type: string
+                      required:
+                      - endpoint
+                      type: object
                   required:
                   - name
                   type: object
-                minItems: 1
+                  x-kubernetes-validations:
+                  - message: exactly one source type must be specified
+                    rule: '(has(self.configMapRef) ? 1 : 0) + (has(self.git) ? 1 :
+                      0) + (has(self.api) ? 1 : 0) + (has(self.url) ? 1 : 0) + (has(self.managed)
+                      ? 1 : 0) + (has(self.kubernetes) ? 1 : 0) == 1'
+                maxItems: 20
                 type: array
-            required:
-            - registries
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              telemetryConfig:
+                description: |-
+                  TelemetryConfig defines OpenTelemetry configuration for the registry API server.
+                  When enabled, the server exports traces and metrics via OTLP.
+                  Deprecated: Put telemetry config in configYAML instead.
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether telemetry is enabled globally.
+                      When false, no telemetry providers are initialized.
+                    type: boolean
+                  endpoint:
+                    description: |-
+                      Endpoint is the OTLP collector endpoint (host:port).
+                      Defaults to "localhost:4318" if not specified.
+                    type: string
+                  insecure:
+                    default: false
+                    description: |-
+                      Insecure allows HTTP connections instead of HTTPS to the OTLP endpoint.
+                      Should only be true for development/testing environments.
+                    type: boolean
+                  metrics:
+                    description: Metrics defines metrics-specific configuration.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether metrics collection is
+                          enabled.
+                        type: boolean
+                    type: object
+                  serviceName:
+                    description: |-
+                      ServiceName is the name of the service for telemetry identification.
+                      Defaults to "thv-registry-api" if not specified.
+                    type: string
+                  serviceVersion:
+                    description: ServiceVersion is the version of the service for
+                      telemetry identification.
+                    type: string
+                  tracing:
+                    description: Tracing defines tracing-specific configuration.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether tracing is enabled.
+                        type: boolean
+                      sampling:
+                        description: |-
+                          Sampling controls the trace sampling rate (0.0 to 1.0, exclusive of 0.0).
+                          1.0 means sample all traces, 0.5 means sample 50%.
+                          Defaults to 0.05 (5%) if not specified.
+                        type: string
+                    type: object
+                type: object
+              volumeMounts:
+                description: |-
+                  VolumeMounts defines additional volume mounts for the registry-api container.
+                  Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).
+                  The operator appends them to the container's volume mounts alongside the config mount.
+                  Only used when configYAML is set.
+
+                  Mount paths must match the file paths referenced in configYAML.
+                  For example, if configYAML references passwordFile: /secrets/git-creds/token,
+                  a corresponding volume mount must exist with mountPath: /secrets/git-creds.
+                items:
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
+                x-kubernetes-list-type: atomic
+                x-kubernetes-preserve-unknown-fields: true
+              volumes:
+                description: |-
+                  Volumes defines additional volumes to add to the registry API pod.
+                  Each entry is a standard Kubernetes Volume object (JSON/YAML).
+                  The operator appends them to the pod spec alongside its own config volume.
+                  Only used when configYAML is set.
+
+                  Use these to mount:
+                    - Secrets (git auth tokens, OAuth client secrets, CA certs)
+                    - ConfigMaps (registry data files)
+                    - PersistentVolumeClaims (registry data on persistent storage)
+                    - Any other volume type the registry server needs
+                items:
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
+                x-kubernetes-list-type: atomic
+                x-kubernetes-preserve-unknown-fields: true
             type: object
           status:
             description: MCPRegistryStatus defines the observed state of MCPRegistry
             properties:
-              apiStatus:
-                description: APIStatus provides detailed information about the API
-                  service
-                properties:
-                  endpoint:
-                    description: Endpoint is the URL where the API is accessible
-                    type: string
-                  message:
-                    description: Message provides additional information about the
-                      API status
-                    type: string
-                  phase:
-                    allOf:
-                    - enum:
-                      - NotStarted
-                      - Deploying
-                      - Ready
-                      - Unhealthy
-                      - Error
-                    - enum:
-                      - NotStarted
-                      - Deploying
-                      - Ready
-                      - Unhealthy
-                      - Error
-                    description: Phase represents the current API service phase
-                    type: string
-                  readySince:
-                    description: ReadySince is the timestamp when the API became ready
-                    format: date-time
-                    type: string
-                required:
-                - phase
-                type: object
               conditions:
                 description: Conditions represent the latest available observations
                   of the MCPRegistry's state
@@ -752,108 +1013,39 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              lastAppliedFilterHash:
-                description: LastAppliedFilterHash is the hash of the last applied
-                  filter
-                type: string
-              lastManualSyncTrigger:
-                description: |-
-                  LastManualSyncTrigger tracks the last processed manual sync annotation value
-                  Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
-                type: string
               message:
                 description: Message provides additional information about the current
                   phase
                 type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation most recently
+                  observed by the controller
+                format: int64
+                type: integer
               phase:
-                description: |-
-                  Phase represents the current overall phase of the MCPRegistry
-                  Derived from sync and API status
+                description: Phase represents the current overall phase of the MCPRegistry
                 enum:
                 - Pending
                 - Ready
                 - Failed
-                - Syncing
                 - Terminating
                 type: string
-              storageRef:
-                description: StorageRef is a reference to the internal storage location
-                properties:
-                  configMapRef:
-                    description: |-
-                      ConfigMapRef is a reference to a ConfigMap storage
-                      Only used when Type is "configmap"
-                    properties:
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  type:
-                    description: Type is the storage type (configmap)
-                    enum:
-                    - configmap
-                    type: string
-                required:
-                - type
-                type: object
-              syncStatus:
-                description: SyncStatus provides detailed information about data synchronization
-                properties:
-                  attemptCount:
-                    description: AttemptCount is the number of sync attempts since
-                      last success
-                    minimum: 0
-                    type: integer
-                  lastAttempt:
-                    description: LastAttempt is the timestamp of the last sync attempt
-                    format: date-time
-                    type: string
-                  lastSyncHash:
-                    description: |-
-                      LastSyncHash is the hash of the last successfully synced data
-                      Used to detect changes in source data
-                    type: string
-                  lastSyncTime:
-                    description: LastSyncTime is the timestamp of the last successful
-                      sync
-                    format: date-time
-                    type: string
-                  message:
-                    description: Message provides additional information about the
-                      sync status
-                    type: string
-                  phase:
-                    allOf:
-                    - enum:
-                      - Syncing
-                      - Complete
-                      - Failed
-                    - enum:
-                      - Syncing
-                      - Complete
-                      - Failed
-                    description: Phase represents the current synchronization phase
-                    type: string
-                  serverCount:
-                    description: ServerCount is the total number of servers in the
-                      registry
-                    minimum: 0
-                    type: integer
-                required:
-                - phase
-                type: object
+              readyReplicas:
+                description: ReadyReplicas is the number of ready registry API replicas
+                format: int32
+                type: integer
+              url:
+                description: URL is the URL where the registry API can be accessed
+                type: string
             type: object
         type: object
         x-kubernetes-validations:
-        - message: at least one registry must be specified
-          rule: size(self.spec.registries) > 0
+        - message: either configYAML or sources must be specified
+          rule: size(self.spec.configYAML) > 0 || (has(self.spec.sources) && size(self.spec.sources)
+            > 0)
+        - message: at most one managed source is allowed
+          rule: '!has(self.spec.sources) || self.spec.sources.filter(s, has(s.managed)).size()
+            <= 1'
     served: true
     storage: true
     subresources:

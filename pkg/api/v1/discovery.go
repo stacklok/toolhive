@@ -27,7 +27,8 @@ func DiscoveryRouter() http.Handler {
 // discoverClients
 //
 //	@Summary		List all clients status
-//	@Description	List all clients compatible with ToolHive and their status
+//	@Description	List all clients compatible with ToolHive and their status.
+//	@Description	Each object includes supports_skills when ToolHive can install skills for that client.
 //	@Tags			discovery
 //	@Produce		json
 //	@Success		200	{object}	clientStatusResponse

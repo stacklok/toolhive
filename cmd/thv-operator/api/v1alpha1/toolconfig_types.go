@@ -7,6 +7,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Condition types for MCPToolConfig
+const (
+	// ConditionToolConfigValid indicates whether the MCPToolConfig spec is valid.
+	ConditionToolConfigValid = ConditionTypeValid
+)
+
+const (
+	// ConditionReasonToolConfigValidationSucceeded indicates validation passed.
+	ConditionReasonToolConfigValidationSucceeded = "ValidationSucceeded"
+	// ConditionReasonToolConfigValidationFailed indicates validation failed.
+	ConditionReasonToolConfigValidationFailed = "ValidationFailed"
+)
+
 // MCPToolConfigSpec defines the desired state of MCPToolConfig.
 // MCPToolConfig resources are namespace-scoped and can only be referenced by
 // MCPServer resources in the same namespace.
@@ -14,6 +27,7 @@ type MCPToolConfigSpec struct {
 	// ToolsFilter is a list of tool names to filter (allow list).
 	// Only tools in this list will be exposed by the MCP server.
 	// If empty, all tools are exposed.
+	// +listType=set
 	// +optional
 	ToolsFilter []string `json:"toolsFilter,omitempty"`
 
@@ -68,6 +82,12 @@ type ToolOverride struct {
 
 // MCPToolConfigStatus defines the observed state of MCPToolConfig
 type MCPToolConfigStatus struct {
+	// Conditions represent the latest available observations of the MCPToolConfig's state
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
 	// ObservedGeneration is the most recent generation observed for this MCPToolConfig.
 	// It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server.
 	// +optional
@@ -77,18 +97,19 @@ type MCPToolConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
-	// ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig
-	// This helps track which servers need to be reconciled when this config changes
+	// ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.
+	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
-	ReferencingServers []string `json:"referencingServers,omitempty"`
+	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=tc;toolconfig
-// +kubebuilder:printcolumn:name="Filter Count",type=integer,JSONPath=`.spec.toolsFilter[*]`
-// +kubebuilder:printcolumn:name="Override Count",type=integer,JSONPath=`.spec.toolsOverride`
-// +kubebuilder:printcolumn:name="Referenced By",type=string,JSONPath=`.status.referencingServers`
+// +kubebuilder:resource:shortName=tc;toolconfig,categories=toolhive
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPToolConfig is the Schema for the mcptoolconfigs API.

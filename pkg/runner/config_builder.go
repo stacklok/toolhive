@@ -5,15 +5,19 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -22,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
+	appconfig "github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -96,6 +101,44 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 		b.config.RemoteURL = remoteURL
 		return nil
 	}
+}
+
+// WithRegistrySourceURLs records the registry URLs that served this server's metadata.
+func WithRegistrySourceURLs(apiURL, registryURL string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RegistryAPIURL = apiURL
+		b.config.RegistryURL = registryURL
+		return nil
+	}
+}
+
+// ResolveRegistrySourceURLs returns the registry API URL and registry URL from
+// config when the server was discovered via registry lookup (non-nil metadata).
+// Both values are empty when metadata is nil (direct image reference or protocol scheme)
+// or when appConfig is nil.
+func ResolveRegistrySourceURLs(serverMetadata regtypes.ServerMetadata, appConfig *appconfig.Config) (apiURL, registryURL string) {
+	if serverMetadata == nil || appConfig == nil {
+		return "", ""
+	}
+	return appConfig.RegistryApiUrl, appConfig.RegistryUrl
+}
+
+// WithRegistryServerName records the registry entry name used to look up this server's metadata.
+func WithRegistryServerName(name string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RegistryServerName = name
+		return nil
+	}
+}
+
+// ResolveRegistryServerName returns the registry entry name from server metadata
+// when the server was discovered via registry lookup (non-nil metadata).
+// Returns empty string when metadata is nil (direct image reference or protocol scheme).
+func ResolveRegistryServerName(serverMetadata regtypes.ServerMetadata) string {
+	if serverMetadata == nil {
+		return ""
+	}
+	return serverMetadata.GetName()
 }
 
 // WithRegistryProxyPort sets the proxy port from registry metadata.
@@ -475,6 +518,15 @@ func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 	}
 }
 
+// WithRateLimitConfig sets the rate limiting configuration.
+func WithRateLimitConfig(namespace string, config *v1alpha1.RateLimitConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RateLimitConfig = config
+		b.config.RateLimitNamespace = namespace
+		return nil
+	}
+}
+
 // WithToolsFilter sets the tools filter
 func WithToolsFilter(toolsFilter []string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -542,7 +594,11 @@ func WithMiddlewareFromFlags(
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
-		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
+		var authzErr error
+		middlewareConfigs, authzErr = addAuthzMiddleware(middlewareConfigs, authzConfigPath, b.config.EmbeddedAuthServerConfig)
+		if authzErr != nil {
+			return authzErr
+		}
 		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
 		// Add recovery middleware (always present, added last to be outermost wrapper)
@@ -669,29 +725,41 @@ func addTelemetryMiddleware(
 	return middlewareConfigs
 }
 
-// addAuthzMiddleware adds authorization middleware if config path is provided
+// addAuthzMiddleware adds authorization middleware if a config path is provided.
+// When embeddedAuthServerCfg is non-nil, the loaded Cedar config is enriched
+// with the upstream provider name so Cedar policies evaluate claims from the
+// upstream IDP token rather than the ToolHive-issued JWT.
 func addAuthzMiddleware(
-	middlewareConfigs []types.MiddlewareConfig, authzConfigPath string,
-) []types.MiddlewareConfig {
+	middlewareConfigs []types.MiddlewareConfig,
+	authzConfigPath string,
+	embeddedAuthServerCfg *authserver.RunConfig,
+) ([]types.MiddlewareConfig, error) {
 	if authzConfigPath == "" {
-		return middlewareConfigs
+		return middlewareConfigs, nil
+	}
+
+	// Load the authz config eagerly so that a malformed file produces a clear
+	// error now rather than a confusing failure at request time.
+	authzConfigData, err := authz.LoadConfig(authzConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load authorization config from %q: %w", authzConfigPath, err)
+	}
+
+	enriched, err := injectUpstreamProviderIfNeeded(authzConfigData, embeddedAuthServerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inject upstream provider into authz config: %w", err)
 	}
 
 	authzParams := authz.FactoryMiddlewareParams{
-		ConfigPath: authzConfigPath, // Keep for backwards compatibility
+		ConfigPath: authzConfigPath, // Keep for backwards compatibility.
+		ConfigData: enriched,
 	}
 
-	// Read authz config contents if path is provided
-	if authzConfigData, err := authz.LoadConfig(authzConfigPath); err == nil {
-		authzParams.ConfigData = authzConfigData
+	authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authorization middleware config: %w", err)
 	}
-	// Note: We keep ConfigPath set for backwards compatibility
-
-	if authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams); err == nil {
-		middlewareConfigs = append(middlewareConfigs, *authzConfig)
-	}
-
-	return middlewareConfigs
+	return append(middlewareConfigs, *authzConfig), nil
 }
 
 // addAuditMiddleware adds audit middleware if enabled or config path is provided
@@ -836,6 +904,9 @@ func internalRunConfigBuilder(
 
 	// Set schema version.
 	b.config.SchemaVersion = CurrentSchemaVersion
+
+	// Normalize proxyMode to the effective value before returning.
+	b.config.NormalizeProxyMode()
 
 	return b.config, nil
 }
@@ -1073,6 +1144,24 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		source, target, err := mount.Parse()
 		if err != nil {
 			return fmt.Errorf("invalid volume format: %s (%w)", volume, err)
+		}
+
+		// Validate source path exists on the host (CLI context only)
+		if b.buildContext == BuildContextCLI {
+			absSource := source
+			if !filepath.IsAbs(source) {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("failed to resolve relative volume path %s: %w", source, err)
+				}
+				absSource = filepath.Join(cwd, source)
+			}
+			if _, err := os.Stat(absSource); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("volume source path does not exist: %s", absSource)
+				}
+				return fmt.Errorf("failed to access volume source path %s: %w", absSource, err)
+			}
 		}
 
 		// Check for duplicate mount target

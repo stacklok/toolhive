@@ -162,6 +162,18 @@ func (mr *MockStatusManagerMockRecorder) SetMessage(message any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetMessage", reflect.TypeOf((*MockStatusManager)(nil).SetMessage), message)
 }
 
+// SetOIDCConfigHash mocks base method.
+func (m *MockStatusManager) SetOIDCConfigHash(hash string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetOIDCConfigHash", hash)
+}
+
+// SetOIDCConfigHash indicates an expected call of SetOIDCConfigHash.
+func (mr *MockStatusManagerMockRecorder) SetOIDCConfigHash(hash any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetOIDCConfigHash", reflect.TypeOf((*MockStatusManager)(nil).SetOIDCConfigHash), hash)
+}
+
 // SetObservedGeneration mocks base method.
 func (m *MockStatusManager) SetObservedGeneration(generation int64) {
 	m.ctrl.T.Helper()

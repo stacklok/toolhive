@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package runner provides functionality for running MCP servers
@@ -12,6 +12,7 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/permissions"
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -53,6 +54,18 @@ type RunConfig struct {
 
 	// RemoteURL is the URL of the remote MCP server (if running remotely)
 	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
+
+	// RegistryAPIURL is the registry API URL that served this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryAPIURL string `json:"registry_api_url,omitempty" yaml:"registry_api_url,omitempty"`
+
+	// RegistryURL is the registry URL that served this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryURL string `json:"registry_url,omitempty" yaml:"registry_url,omitempty"`
+
+	// RegistryServerName is the registry entry name used to look up this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryServerName string `json:"registry_server_name,omitempty" yaml:"registry_server_name,omitempty"`
 
 	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
 	RemoteAuthConfig *remote.Config `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
@@ -145,6 +158,13 @@ type RunConfig struct {
 	// TelemetryConfig contains the OpenTelemetry configuration
 	TelemetryConfig *telemetry.Config `json:"telemetry_config,omitempty" yaml:"telemetry_config,omitempty"`
 
+	// RateLimitConfig contains the CRD rate limiting configuration.
+	// When set, rate limiting middleware is added to the proxy middleware chain.
+	RateLimitConfig *v1alpha1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
+
+	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
+	RateLimitNamespace string `json:"rate_limit_namespace,omitempty" yaml:"rate_limit_namespace,omitempty"`
+
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
@@ -171,7 +191,9 @@ type RunConfig struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
-	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+	// ProxyMode is the effective HTTP protocol the proxy uses.
+	// For stdio transports, this is the configured mode (sse or streamable-http).
+	// For direct transports (sse/streamable-http), this matches the transport type.
 	// Note: "sse" is deprecated; use "streamable-http" instead.
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty" enums:"sse,streamable-http"`
 
@@ -203,6 +225,10 @@ type RunConfig struct {
 
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.
 	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
+
+	// MutatingWebhooks contains the configuration for mutating webhook middleware.
+	// Mutating webhooks run before validating webhooks, per RFC THV-0017 ordering.
+	MutatingWebhooks []webhook.Config `json:"mutating_webhooks,omitempty" yaml:"mutating_webhooks,omitempty"`
 
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port
@@ -261,6 +287,12 @@ type SessionRedisConfig struct {
 	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
 }
 
+// NormalizeProxyMode sets ProxyMode to the effective value based on the
+// transport type, so downstream readers always see the actual HTTP protocol.
+func (c *RunConfig) NormalizeProxyMode() {
+	c.ProxyMode = types.EffectiveProxyMode(c.Transport, c.ProxyMode)
+}
+
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
 func (c *RunConfig) WriteJSON(w io.Writer) error {
 	// Ensure the schema version is set
@@ -312,6 +344,9 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	if err := migrateBearerToken(&config); err != nil {
 		return nil, fmt.Errorf("failed to migrate bearer token: %w", err)
 	}
+
+	// Normalize proxyMode so pre-existing configs always reflect the effective protocol
+	config.NormalizeProxyMode()
 
 	return &config, nil
 }
@@ -497,9 +532,9 @@ func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunCon
 }
 
 // ValidateSecrets checks if the secrets can be parsed and are valid
-func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
+func (c *RunConfig) ValidateSecrets(ctx context.Context, userProvider secrets.Provider) error {
 	if len(c.Secrets) > 0 {
-		_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		_, err := environment.ParseSecretParameters(ctx, c.Secrets, userProvider)
 		if err != nil {
 			return fmt.Errorf("failed to get secrets: %w", err)
 		}
@@ -514,11 +549,17 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 	return nil
 }
 
-// WithSecrets processes secrets and adds them to environment variables
-func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
-	// Process regular secrets if provided
+// WithSecrets processes secrets and adds them to environment variables.
+// systemProvider is used for system-managed secrets (auth tokens, registry credentials).
+// userProvider is used for user-managed secrets (--secret flags, header secrets).
+func (c *RunConfig) WithSecrets(
+	ctx context.Context,
+	systemProvider secrets.Provider,
+	userProvider secrets.Provider,
+) (*RunConfig, error) {
+	// Process regular secrets if provided — these are user-managed (from --secret flags)
 	if len(c.Secrets) > 0 {
-		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, userProvider)
 		if err != nil {
 			return c, fmt.Errorf("failed to get secrets: %w", err)
 		}
@@ -534,12 +575,12 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		}
 	}
 
-	// Process RemoteAuthConfig.ClientSecret if it's in CLI format
+	// Process RemoteAuthConfig.ClientSecret if it's in CLI format — system-managed secret
 	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
 		// Check if it's in CLI format (contains ",target=")
 		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret); err == nil {
 			// It's in CLI format, resolve the actual secret value
-			actualSecret, err := secretManager.GetSecret(ctx, secretParam.Name)
+			actualSecret, err := systemProvider.GetSecret(ctx, secretParam.Name)
 			if err != nil {
 				return c, fmt.Errorf("failed to resolve OAuth client secret '%s': %w", secretParam.Name, err)
 			}
@@ -549,12 +590,12 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		// If it's not in CLI format (plain text), leave it as is
 	}
 
-	// Process RemoteAuthConfig.BearerToken if it's in CLI format
+	// Process RemoteAuthConfig.BearerToken if it's in CLI format — system-managed secret
 	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.BearerToken != "" {
 		// Check if it's in CLI format (contains ",target=")
 		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.BearerToken); err == nil {
 			// It's in CLI format, resolve the actual token value
-			actualToken, err := secretManager.GetSecret(ctx, secretParam.Name)
+			actualToken, err := systemProvider.GetSecret(ctx, secretParam.Name)
 			if err != nil {
 				return c, fmt.Errorf("failed to resolve bearer token '%s': %w", secretParam.Name, err)
 			}
@@ -564,8 +605,8 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		// If it's not in CLI format (plain text), leave it as is
 	}
 
-	// Process HeaderForward.AddHeadersFromSecret
-	if err := c.resolveHeaderForwardSecrets(ctx, secretManager); err != nil {
+	// Process HeaderForward.AddHeadersFromSecret — user-managed secrets
+	if err := c.resolveHeaderForwardSecrets(ctx, userProvider); err != nil {
 		return c, err
 	}
 
@@ -576,7 +617,7 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 // and builds the merged resolvedHeaders map for middleware consumption.
 // Only the secret references are persisted to disk; actual values exist only in memory
 // via the non-serialized resolvedHeaders field.
-func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, secretManager secrets.Provider) error {
+func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, userProvider secrets.Provider) error {
 	if c.HeaderForward == nil || len(c.HeaderForward.AddHeadersFromSecret) == 0 {
 		return nil
 	}
@@ -586,7 +627,7 @@ func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, secretManag
 		merged[k] = v
 	}
 	for headerName, secretName := range c.HeaderForward.AddHeadersFromSecret {
-		actualValue, err := secretManager.GetSecret(ctx, secretName)
+		actualValue, err := userProvider.GetSecret(ctx, secretName)
 		if err != nil {
 			return fmt.Errorf("failed to resolve header secret %q: %w", secretName, err)
 		}

@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,9 +25,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	registryapimocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/mocks"
 )
+
+// toRawJSONSlice marshals each item to JSON and wraps it in apiextensionsv1.JSON
+// so tests can construct []apiextensionsv1.JSON fields from typed Go structs.
+func toRawJSONSlice[T any](t *testing.T, items []T) []apiextensionsv1.JSON {
+	t.Helper()
+	result := make([]apiextensionsv1.JSON, len(items))
+	for i, item := range items {
+		data, err := json.Marshal(item)
+		require.NoError(t, err)
+		result[i] = apiextensionsv1.JSON{Raw: data}
+	}
+	return result
+}
 
 // newMCPRegistryTestScheme creates a runtime scheme with all required API groups registered.
 func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
@@ -38,13 +53,22 @@ func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer already set.
+// newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer
+// and a minimal valid spec (one source) so it passes reconciler validation.
 func newMCPRegistryWithFinalizer(name, namespace string) *mcpv1alpha1.MCPRegistry { //nolint:unparam
 	return &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
 			Namespace:  namespace,
 			Finalizers: []string{"mcpregistry.toolhive.stacklok.dev/finalizer"},
+		},
+		Spec: mcpv1alpha1.MCPRegistrySpec{
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+				{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+					Key:                  "registry.json",
+				}},
+			},
 		},
 	}
 }
@@ -86,6 +110,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				t.Helper()
 				mcpRegistry := &mcpv1alpha1.MCPRegistry{
 					ObjectMeta: metav1.ObjectMeta{Name: registryName, Namespace: registryNamespace},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+								Key:                  "registry.json",
+							}},
+						},
+					},
 				}
 				builder := fake.NewClientBuilder().
 					WithScheme(s).
@@ -123,6 +155,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						},
 						DeletionTimestamp: &now,
 					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+								Key:                  "registry.json",
+							}},
+						},
+					},
 				}
 				builder := fake.NewClientBuilder().
 					WithScheme(s).
@@ -157,6 +197,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						Namespace:         registryNamespace,
 						Finalizers:        []string{"other.finalizer/test"},
 						DeletionTimestamp: &now,
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+								Key:                  "registry.json",
+							}},
+						},
 					},
 				}
 				builder := fake.NewClientBuilder().
@@ -195,7 +243,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionRegistryPodTemplateValid)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
 				require.NotNil(t, cond, "PodTemplateValid condition must be set")
 				assert.Equal(t, metav1.ConditionFalse, cond.Status)
 				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseFailed, updated.Status.Phase)
@@ -219,7 +267,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(true, int32(1))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -228,7 +276,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionRegistryPodTemplateValid)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
 				require.NotNil(t, cond, "PodTemplateValid condition must be set")
 				assert.Equal(t, metav1.ConditionTrue, cond.Status)
 			},
@@ -246,15 +294,15 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(
-					&mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+					&registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 				)
-				// err != nil in Reconcile → IsAPIReady is never called.
+				// reconcileErr != nil → IsAPIReady and GetReadyReplicas are never called.
 			},
 			expResult: ctrl.Result{},
-			expErr:    &mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+			expErr:    &registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 		},
 		{
-			// applyStatusUpdates writes APIPhaseDeploying; deriveOverallStatus sets PhasePending.
+			// updateRegistryStatus sets Phase=Pending when API is not ready.
 			// Reconcile also schedules a requeue because IsAPIReady returns false.
 			name: "api_reconcile_success_api_not_ready",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
@@ -268,8 +316,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called twice: once in the success branch, once in the requeue check.
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(false).Times(2)
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(false, int32(0))
 			},
 			expResult: ctrl.Result{RequeueAfter: 30 * time.Second},
 			expErr:    nil,
@@ -278,13 +325,12 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, mcpv1alpha1.APIPhaseDeploying, updated.Status.APIStatus.Phase)
 				assert.Equal(t, mcpv1alpha1.MCPRegistryPhasePending, updated.Status.Phase)
+				assert.Equal(t, int32(0), updated.Status.ReadyReplicas)
 			},
 		},
 		{
-			// applyStatusUpdates writes APIPhaseReady; deriveOverallStatus sets PhaseReady.
+			// updateRegistryStatus sets Phase=Running when API is ready.
 			// No requeue because IsAPIReady returns true.
 			name: "api_reconcile_success_api_ready",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
@@ -298,8 +344,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called twice: once in the success branch, once in the requeue check.
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(true, int32(1))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -308,15 +353,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, mcpv1alpha1.APIPhaseReady, updated.Status.APIStatus.Phase)
 				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseReady, updated.Status.Phase)
+				assert.Equal(t, int32(1), updated.Status.ReadyReplicas)
 			},
 		},
 		{
-			// When ReconcileAPIService fails, applyStatusUpdates should still persist
-			// APIStatus.Phase=Error and set the APIReady condition to False.
-			name: "api_reconcile_error_updates_api_error_status",
+			// When ReconcileAPIService fails, updateRegistryStatus sets Phase=Failed
+			// and the Ready condition to False with the structured error reason.
+			name: "api_reconcile_error_updates_failed_status",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
 				t.Helper()
 				mcpRegistry := newMCPRegistryWithFinalizer(registryName, registryNamespace)
@@ -328,27 +372,28 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(
-					&mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+					&registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 				)
-				// err != nil → IsAPIReady is never called.
+				// reconcileErr != nil → IsAPIReady and GetReadyReplicas are never called.
 			},
 			expResult: ctrl.Result{},
-			expErr:    &mcpregistrystatus.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
+			expErr:    &registryapi.Error{Message: "deploy failed", ConditionReason: "DeployFailed"},
 			assertRegistry: func(t *testing.T, fakeClient client.Client) {
 				t.Helper()
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, mcpv1alpha1.APIPhaseError, updated.Status.APIStatus.Phase)
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionAPIReady)
-				require.NotNil(t, cond, "APIReady condition must be set")
+				assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseFailed, updated.Status.Phase)
+				assert.Equal(t, "deploy failed", updated.Status.Message)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionTypeReady)
+				require.NotNil(t, cond, "Ready condition must be set")
 				assert.Equal(t, metav1.ConditionFalse, cond.Status)
+				assert.Equal(t, "DeployFailed", cond.Reason)
 			},
 		},
 		{
-			// When the API is ready, the endpoint in APIStatus should follow the in-cluster
-			// URL format and the APIReady condition should be True.
+			// When the API is ready, the URL should follow the in-cluster format
+			// and the Ready condition should be True.
 			name: "api_reconcile_success_api_ready_checks_endpoint_and_condition",
 			setup: func(t *testing.T, s *runtime.Scheme) (*fake.ClientBuilder, *mcpv1alpha1.MCPRegistry) {
 				t.Helper()
@@ -361,8 +406,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			},
 			configureMocks: func(mock *registryapimocks.MockManager) {
 				mock.EXPECT().ReconcileAPIService(gomock.Any(), gomock.Any()).Return(nil)
-				// Called twice: once in the success branch, once in the requeue check.
-				mock.EXPECT().IsAPIReady(gomock.Any(), gomock.Any()).Return(true).Times(2)
+				mock.EXPECT().GetAPIStatus(gomock.Any(), gomock.Any()).Return(true, int32(2))
 			},
 			expResult: ctrl.Result{},
 			expErr:    nil,
@@ -371,10 +415,10 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				var updated mcpv1alpha1.MCPRegistry
 				require.NoError(t, fakeClient.Get(t.Context(),
 					types.NamespacedName{Name: registryName, Namespace: registryNamespace}, &updated))
-				require.NotNil(t, updated.Status.APIStatus)
-				assert.Equal(t, "http://test-registry-api.default:8080", updated.Status.APIStatus.Endpoint)
-				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionAPIReady)
-				require.NotNil(t, cond, "APIReady condition must be set")
+				assert.Equal(t, "http://test-registry-api.default:8080", updated.Status.URL)
+				assert.Equal(t, int32(2), updated.Status.ReadyReplicas)
+				cond := k8smeta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionTypeReady)
+				require.NotNil(t, cond, "Ready condition must be set")
 				assert.Equal(t, metav1.ConditionTrue, cond.Status)
 			},
 		},
@@ -416,6 +460,297 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			assert.Equal(t, tt.expErr, err)
 			if tt.assertRegistry != nil {
 				tt.assertRegistry(t, fakeClient)
+			}
+		})
+	}
+}
+
+func TestValidateNewPathSpec(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spec    mcpv1alpha1.MCPRegistrySpec
+		wantErr string
+	}{
+		{
+			name: "valid new path with configYAML and no legacy fields",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+			},
+		},
+		{
+			name: "valid legacy path with sources and no configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+			},
+		},
+		{
+			name: "mutual exclusivity configYAML plus sources",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "mutual exclusivity configYAML plus databaseConfig",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML:     "sources:\n  - name: default\n",
+				DatabaseConfig: &mcpv1alpha1.MCPRegistryDatabaseConfig{Host: "pg"},
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "mutual exclusivity configYAML plus authConfig",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{Mode: mcpv1alpha1.MCPRegistryAuthModeAnonymous},
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "neither path specified",
+			spec:    mcpv1alpha1.MCPRegistrySpec{},
+			wantErr: "either configYAML or sources must be specified",
+		},
+		{
+			name: "volumes without configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: "extra", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+			wantErr: "volumes and volumeMounts require configYAML",
+		},
+		{
+			name: "volumeMounts without configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
+					{Name: "extra", MountPath: "/extra"},
+				}),
+			},
+			wantErr: "volumes and volumeMounts require configYAML",
+		},
+		{
+			name: "pgpassSecretRef without configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "pgpass"},
+					Key:                  ".pgpass",
+				},
+			},
+			wantErr: "pgpassSecretRef requires configYAML",
+		},
+		{
+			name: "pgpassSecretRef with empty name",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+					Key:                  ".pgpass",
+				},
+			},
+			wantErr: "pgpassSecretRef.name is required",
+		},
+		{
+			name: "pgpassSecretRef with empty key",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+					Key:                  "",
+				},
+			},
+			wantErr: "pgpassSecretRef.key is required",
+		},
+		{
+			name: "reserved volume name registry-server-config in spec volumes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: registryapi.RegistryServerConfigVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "reserved volume name pgpass-secret when pgpassSecretRef is set",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+					Key:                  ".pgpass",
+				},
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "non-reserved volume name passes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: "my-custom-volume", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+		},
+		{
+			name: "reserved volume name pgpass-secret when pgpassSecretRef is NOT set passes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+			// pgpass-secret is only reserved when pgpassSecretRef is set
+		},
+		{
+			name: "reserved volume name registry-server-config in PodTemplateSpec",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Volumes: []corev1.Volume{
+							{
+								Name: registryapi.RegistryServerConfigVolumeName,
+								VolumeSource: corev1.VolumeSource{
+									EmptyDir: &corev1.EmptyDirVolumeSource{},
+								},
+							},
+						},
+						Containers: []corev1.Container{
+							{Name: "registry-api"},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML:      "sources:\n  - name: default\n",
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "init container setup-pgpass in PodTemplateSpec when pgpassSecretRef is set",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						InitContainers: []corev1.Container{
+							{Name: registryapi.PGPassInitContainerName, Image: "busybox"},
+						},
+						Containers: []corev1.Container{
+							{Name: "registry-api"},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML: "sources:\n  - name: default\n",
+					PGPassSecretRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+						Key:                  ".pgpass",
+					},
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "reserved by the operator when pgpassSecretRef is set",
+		},
+		{
+			name: "mount path collision from PodTemplateSpec container mounts",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name: "registry-api",
+								VolumeMounts: []corev1.VolumeMount{
+									{Name: "user-vol", MountPath: "/config"},
+								},
+							},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML:      "sources:\n  - name: default\n",
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "duplicate mount path '/config'",
+		},
+		{
+			name: "duplicate mount path in spec volumeMounts",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
+					{Name: "vol-a", MountPath: "/data/files"},
+					{Name: "vol-b", MountPath: "/data/files"},
+				}),
+			},
+			wantErr: "duplicate mount path",
+		},
+		{
+			name: "mount path collision with operator-reserved config path",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
+					{Name: "my-vol", MountPath: "/config"},
+				}),
+			},
+			wantErr: "duplicate mount path '/config'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpRegistry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "default",
+				},
+				Spec: tt.spec,
+			}
+
+			err := validateNewPathSpec(mcpRegistry)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

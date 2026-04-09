@@ -11,6 +11,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: VirtualMCPCompositeToolDefinition
     listKind: VirtualMCPCompositeToolDefinitionList
     plural: virtualmcpcompositetooldefinitions
@@ -387,6 +389,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this VirtualMCPCompositeToolDefinition
@@ -400,12 +405,14 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: set
               validationErrors:
                 description: ValidationErrors contains validation error messages if
                   ValidationStatus is Invalid
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: atomic
               validationStatus:
                 description: |-
                   ValidationStatus indicates the validation state of the workflow

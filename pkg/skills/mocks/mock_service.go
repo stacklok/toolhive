@@ -56,6 +56,20 @@ func (mr *MockSkillServiceMockRecorder) Build(ctx, opts any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Build", reflect.TypeOf((*MockSkillService)(nil).Build), ctx, opts)
 }
 
+// DeleteBuild mocks base method.
+func (m *MockSkillService) DeleteBuild(ctx context.Context, tag string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteBuild", ctx, tag)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteBuild indicates an expected call of DeleteBuild.
+func (mr *MockSkillServiceMockRecorder) DeleteBuild(ctx, tag any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteBuild", reflect.TypeOf((*MockSkillService)(nil).DeleteBuild), ctx, tag)
+}
+
 // Info mocks base method.
 func (m *MockSkillService) Info(ctx context.Context, opts skills.InfoOptions) (*skills.SkillInfo, error) {
 	m.ctrl.T.Helper()
@@ -99,6 +113,21 @@ func (m *MockSkillService) List(ctx context.Context, opts skills.ListOptions) ([
 func (mr *MockSkillServiceMockRecorder) List(ctx, opts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockSkillService)(nil).List), ctx, opts)
+}
+
+// ListBuilds mocks base method.
+func (m *MockSkillService) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListBuilds", ctx)
+	ret0, _ := ret[0].([]skills.LocalBuild)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListBuilds indicates an expected call of ListBuilds.
+func (mr *MockSkillServiceMockRecorder) ListBuilds(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListBuilds", reflect.TypeOf((*MockSkillService)(nil).ListBuilds), ctx)
 }
 
 // Push mocks base method.

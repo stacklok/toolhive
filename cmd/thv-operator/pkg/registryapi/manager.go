@@ -15,7 +15,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
@@ -41,9 +40,95 @@ func NewManager(
 // ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API.
 // This method coordinates all aspects of API service including creating/updating the deployment and service,
 // checking readiness, and updating the MCPRegistry status with deployment references and endpoint information.
+//
+// When ConfigYAML is set on the MCPRegistry spec, the decoupled reconciliation path is used.
+// Otherwise, the legacy path is used for backward compatibility.
 func (m *manager) ReconcileAPIService(
 	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-) *mcpregistrystatus.Error {
+) *Error {
+	if mcpRegistry.Spec.ConfigYAML != "" {
+		return m.reconcileNewPath(ctx, mcpRegistry)
+	}
+	return m.reconcileLegacyPath(ctx, mcpRegistry)
+}
+
+// reconcileNewPath handles reconciliation for MCPRegistry resources that use the
+// decoupled ConfigYAML field. It creates a ConfigMap from the raw YAML string and
+// mounts user-provided volumes directly, without parsing or transforming config.
+func (m *manager) reconcileNewPath(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *Error {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+	ctxLogger.Info("Reconciling API service (new config path)")
+
+	// Create config ConfigMap from raw YAML
+	configMap, err := config.RawConfigToConfigMap(mcpRegistry.Name, mcpRegistry.Namespace, mcpRegistry.Spec.ConfigYAML)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to create config map from raw YAML")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to create config map from raw YAML: %v", err),
+			ConditionReason: "ConfigMapFailed",
+		}
+	}
+
+	// Upsert the ConfigMap with owner reference
+	configMapsClient := configmaps.NewClient(m.client, m.scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to upsert registry server config config map")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to upsert registry server config config map: %v", err),
+			ConditionReason: "ConfigMapFailed",
+		}
+	}
+
+	configMapName := configMap.Name
+
+	// Ensure RBAC resources (ServiceAccount, Role, RoleBinding) before deployment
+	if err := m.ensureRBACResources(ctx, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to ensure RBAC resources")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure RBAC resources: %v", err),
+			ConditionReason: "RBACFailed",
+		}
+	}
+
+	// Ensure deployment exists and is configured correctly
+	deployment, err := m.ensureDeploymentNewPath(ctx, mcpRegistry, configMapName)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to ensure deployment")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure deployment: %v", err),
+			ConditionReason: "DeploymentFailed",
+		}
+	}
+
+	// Ensure service exists and is configured correctly
+	if err := m.ensureService(ctx, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to ensure service")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure service: %v", err),
+			ConditionReason: "ServiceFailed",
+		}
+	}
+
+	// Check API readiness
+	isReady := m.CheckAPIReadiness(ctx, deployment)
+
+	if isReady {
+		ctxLogger.Info("API service reconciliation completed successfully - API is ready")
+	} else {
+		ctxLogger.Info("API service reconciliation completed - API is not ready yet")
+	}
+
+	return nil
+}
+
+// reconcileLegacyPath handles reconciliation for MCPRegistry resources that use
+// the legacy typed fields (Sources, Registries, DatabaseConfig, etc.).
+func (m *manager) reconcileLegacyPath(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *Error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Reconciling API service")
 
@@ -54,10 +139,9 @@ func (m *manager) ReconcileAPIService(
 	err := m.ensureRegistryServerConfigConfigMap(ctx, mcpRegistry, configManager)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure registry server config config map")
-		return &mcpregistrystatus.Error{
+		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure registry server config config map: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionAPIReady,
 			ConditionReason: "ConfigMapFailed",
 		}
 	}
@@ -66,10 +150,9 @@ func (m *manager) ReconcileAPIService(
 	err = m.ensureRBACResources(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
-		return &mcpregistrystatus.Error{
+		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure RBAC resources: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionAPIReady,
 			ConditionReason: "RBACFailed",
 		}
 	}
@@ -79,10 +162,9 @@ func (m *manager) ReconcileAPIService(
 		err = m.ensurePGPassSecret(ctx, mcpRegistry)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to ensure pgpass secret")
-			return &mcpregistrystatus.Error{
+			return &Error{
 				Err:             err,
 				Message:         fmt.Sprintf("Failed to ensure pgpass secret: %v", err),
-				ConditionType:   mcpv1alpha1.ConditionAPIReady,
 				ConditionReason: "PGPassSecretFailed",
 			}
 		}
@@ -92,22 +174,20 @@ func (m *manager) ReconcileAPIService(
 	deployment, err := m.ensureDeployment(ctx, mcpRegistry, configManager)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure deployment")
-		return &mcpregistrystatus.Error{
+		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure deployment: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionAPIReady,
 			ConditionReason: "DeploymentFailed",
 		}
 	}
 
 	// Step 2: Ensure service exists and is configured correctly
-	_, err = m.ensureService(ctx, mcpRegistry)
+	err = m.ensureService(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure service")
-		return &mcpregistrystatus.Error{
+		return &Error{
 			Err:             err,
 			Message:         fmt.Sprintf("Failed to ensure service: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionAPIReady,
 			ConditionReason: "ServiceFailed",
 		}
 	}
@@ -147,6 +227,46 @@ func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRe
 
 	// Delegate to the existing CheckAPIReadiness method for consistency
 	return m.CheckAPIReadiness(ctx, deployment)
+}
+
+// GetReadyReplicas returns the number of ready replicas for the registry API deployment.
+// Returns 0 if the deployment is not found or an error occurs.
+func (m *manager) GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) int32 {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	deploymentName := mcpRegistry.GetAPIResourceName()
+	deployment := &appsv1.Deployment{}
+
+	err := m.client.Get(ctx, client.ObjectKey{
+		Name:      deploymentName,
+		Namespace: mcpRegistry.Namespace,
+	}, deployment)
+
+	if err != nil {
+		ctxLogger.V(1).Info("API deployment not found for ready replicas check", "error", err)
+		return 0
+	}
+
+	return deployment.Status.ReadyReplicas
+}
+
+// GetAPIStatus returns the readiness state and ready replica count from a single Deployment fetch.
+func (m *manager) GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, int32) {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	deploymentName := mcpRegistry.GetAPIResourceName()
+	deployment := &appsv1.Deployment{}
+
+	err := m.client.Get(ctx, client.ObjectKey{
+		Name:      deploymentName,
+		Namespace: mcpRegistry.Namespace,
+	}, deployment)
+	if err != nil {
+		ctxLogger.V(1).Info("API deployment not found", "error", err)
+		return false, 0
+	}
+
+	return m.CheckAPIReadiness(ctx, deployment), deployment.Status.ReadyReplicas
 }
 
 // getConfigMapName generates the ConfigMap name for registry storage

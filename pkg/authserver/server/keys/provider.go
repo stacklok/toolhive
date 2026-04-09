@@ -18,10 +18,20 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 )
 
-//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=provider.go KeyProvider
+//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=provider.go KeyProvider,PublicKeyProvider
+
+// PublicKeyProvider provides public keys for JWT verification.
+// Use this interface when a component only needs to verify tokens,
+// not sign them, to avoid leaking private key access.
+type PublicKeyProvider interface {
+	// PublicKeys returns all public keys for the JWKS endpoint.
+	// May return multiple keys during rotation periods.
+	PublicKeys(ctx context.Context) ([]*PublicKeyData, error)
+}
 
 // KeyProvider provides signing keys for JWT operations.
 // Implementations handle key sourcing (file, memory, generation).
+// KeyProvider implicitly satisfies PublicKeyProvider.
 type KeyProvider interface {
 	// SigningKey returns the current signing key.
 	// Returns ErrNoSigningKey if no key is available.
@@ -228,6 +238,8 @@ func generatePrivateKey(algorithm string) (crypto.Signer, error) {
 
 // Compile-time interface checks.
 var (
-	_ KeyProvider = (*FileProvider)(nil)
-	_ KeyProvider = (*GeneratingProvider)(nil)
+	_ KeyProvider       = (*FileProvider)(nil)
+	_ KeyProvider       = (*GeneratingProvider)(nil)
+	_ PublicKeyProvider = (*FileProvider)(nil)
+	_ PublicKeyProvider = (*GeneratingProvider)(nil)
 )

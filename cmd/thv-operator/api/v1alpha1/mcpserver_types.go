@@ -10,6 +10,7 @@ import (
 )
 
 // Condition types for MCPServer
+// Note: ConditionTypeReady is shared across multiple resources and defined in mcpremoteproxy_types.go
 const (
 	// ConditionImageValidated indicates whether this image is fine to be used
 	ConditionImageValidated = "ImageValidated"
@@ -19,6 +20,14 @@ const (
 
 	// ConditionPodTemplateValid indicates whether the PodTemplateSpec is valid
 	ConditionPodTemplateValid = "PodTemplateValid"
+)
+
+const (
+	// ConditionReasonReady indicates the MCPServer is ready
+	ConditionReasonReady = "Ready"
+
+	// ConditionReasonNotReady indicates the MCPServer is not ready
+	ConditionReasonNotReady = "NotReady"
 )
 
 const (
@@ -57,6 +66,26 @@ const (
 	ConditionCABundleRefValidated = "CABundleRefValidated"
 )
 
+// Condition type for MCPOIDCConfig reference validation
+const (
+	// ConditionOIDCConfigRefValidated indicates whether the OIDCConfigRef is valid
+	ConditionOIDCConfigRefValidated = "OIDCConfigRefValidated"
+)
+
+const (
+	// ConditionReasonOIDCConfigRefValid indicates the referenced MCPOIDCConfig is valid and ready
+	ConditionReasonOIDCConfigRefValid = "OIDCConfigRefValid"
+
+	// ConditionReasonOIDCConfigRefNotFound indicates the referenced MCPOIDCConfig was not found
+	ConditionReasonOIDCConfigRefNotFound = "OIDCConfigRefNotFound"
+
+	// ConditionReasonOIDCConfigRefNotValid indicates the referenced MCPOIDCConfig is not valid
+	ConditionReasonOIDCConfigRefNotValid = "OIDCConfigRefNotValid"
+
+	// ConditionReasonOIDCConfigRefError indicates an error occurred validating the OIDCConfigRef
+	ConditionReasonOIDCConfigRefError = "OIDCConfigRefError"
+)
+
 const (
 	// ConditionReasonCABundleRefValid indicates the CABundleRef is valid and the ConfigMap exists
 	ConditionReasonCABundleRefValid = "CABundleRefValid"
@@ -77,6 +106,23 @@ const (
 	// ConditionReasonExternalAuthConfigMultiUpstream indicates the ExternalAuthConfig has multiple upstreams,
 	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+)
+
+// ConditionTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
+const ConditionTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
+
+const (
+	// ConditionReasonTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
+	ConditionReasonTelemetryConfigRefValid = "TelemetryConfigRefValid"
+
+	// ConditionReasonTelemetryConfigRefNotFound indicates the referenced MCPTelemetryConfig was not found
+	ConditionReasonTelemetryConfigRefNotFound = "TelemetryConfigRefNotFound"
+
+	// ConditionReasonTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is not valid
+	ConditionReasonTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonTelemetryConfigRefError indicates a transient error occurred fetching the config
+	ConditionReasonTelemetryConfigRefError = "TelemetryConfigRefError"
 )
 
 // ConditionStdioReplicaCapped indicates spec.replicas was capped at 1 for stdio transport.
@@ -105,6 +151,12 @@ const (
 const SessionStorageProviderRedis = "redis"
 
 // MCPServerSpec defines the desired state of MCPServer
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
 	// +kubebuilder:validation:Required
@@ -124,20 +176,6 @@ type MCPServerSpec struct {
 	// +optional
 	ProxyMode string `json:"proxyMode,omitempty"`
 
-	// Port is the port to expose the MCP server on
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +kubebuilder:default=8080
-	// Deprecated: Use ProxyPort instead
-	Port int32 `json:"port,omitempty"`
-
-	// TargetPort is the port that MCP server listens to
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +optional
-	// Deprecated: Use McpPort instead
-	TargetPort int32 `json:"targetPort,omitempty"`
-
 	// ProxyPort is the port to expose the proxy runner on
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
@@ -151,14 +189,19 @@ type MCPServerSpec struct {
 	McpPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
+	// +listType=atomic
 	// +optional
 	Args []string `json:"args,omitempty"`
 
 	// Env are environment variables to set in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Volumes are volumes to mount in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Volumes []Volume `json:"volumes,omitempty"`
 
@@ -167,6 +210,8 @@ type MCPServerSpec struct {
 	Resources ResourceRequirements `json:"resources,omitempty"`
 
 	// Secrets are references to secrets to mount in the MCP server container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 
@@ -193,9 +238,18 @@ type MCPServerSpec struct {
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
 
-	// OIDCConfig defines OIDC authentication configuration for the MCP server
+	// OIDCConfig defines OIDC authentication configuration for the MCP server.
+	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
 	// +optional
 	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
+	// Per-server overrides (audience, scopes) are specified here; shared provider config
+	// lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+	// +optional
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
 	// AuthzConfig defines authorization policy configuration for the MCP server
 	// +optional
@@ -205,15 +259,9 @@ type MCPServerSpec struct {
 	// +optional
 	Audit *AuditConfig `json:"audit,omitempty"`
 
-	// ToolsFilter is the filter on tools applied to the MCP server
-	// Deprecated: Use ToolConfigRef instead
-	// +optional
-	ToolsFilter []string `json:"tools,omitempty"`
-
 	// ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
 	// The referenced MCPToolConfig must exist in the same namespace as this MCPServer.
 	// Cross-namespace references are not supported for security and isolation reasons.
-	// If specified, this takes precedence over the inline ToolsFilter field.
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
@@ -222,7 +270,17 @@ type MCPServerSpec struct {
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 
-	// Telemetry defines observability configuration for the MCP server
+	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
+	// Cross-namespace references are not supported for security and isolation reasons.
+	// Mutually exclusive with the deprecated inline Telemetry field.
+	// +optional
+	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
+
+	// Telemetry defines inline observability configuration for the MCP server.
+	// Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
+	// This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
+	// is rejected by CEL validation.
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
@@ -274,6 +332,11 @@ type MCPServerSpec struct {
 	// When nil, no session storage is configured.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
+
+	// RateLimiting defines rate limiting configuration for the MCP server.
+	// Requires Redis session storage to be configured for distributed rate limiting.
+	// +optional
+	RateLimiting *RateLimitConfig `json:"rateLimiting,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -297,11 +360,14 @@ type ProxyDeploymentOverrides struct {
 	// Env are environment variables to set in the proxy container (thv run process)
 	// These affect the toolhive proxy itself, not the MCP server it manages
 	// Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 
 	// ImagePullSecrets allows specifying image pull secrets for the proxy runner
 	// These are applied to both the Deployment and the ServiceAccount
+	// +listType=atomic
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
@@ -421,6 +487,54 @@ type SessionStorageConfig struct {
 	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
 }
 
+// RateLimitConfig defines rate limiting configuration for an MCP server.
+// At least one of shared or tools must be configured.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared or tools must be configured"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type RateLimitConfig struct {
+	// Shared defines a token bucket shared across all users for the entire server.
+	// +optional
+	Shared *RateLimitBucket `json:"shared,omitempty"`
+
+	// Tools defines per-tool rate limit overrides.
+	// Each entry applies additional rate limits to calls targeting a specific tool name.
+	// A request must pass both the server-level limit and the per-tool limit.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Tools []ToolRateLimitConfig `json:"tools,omitempty"`
+}
+
+// RateLimitBucket defines a token bucket configuration.
+type RateLimitBucket struct {
+	// MaxTokens is the maximum number of tokens (bucket capacity).
+	// This is also the burst size: the maximum number of requests that can be served
+	// instantaneously before the bucket is depleted.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	MaxTokens int32 `json:"maxTokens"`
+
+	// RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+	// The effective refill rate is maxTokens / refillPeriod tokens per second.
+	// Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+	// +kubebuilder:validation:Required
+	RefillPeriod metav1.Duration `json:"refillPeriod"`
+}
+
+// ToolRateLimitConfig defines rate limits for a specific tool.
+type ToolRateLimitConfig struct {
+	// Name is the MCP tool name this limit applies to.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Shared defines a token bucket shared across all users for this specific tool.
+	// +kubebuilder:validation:Required
+	Shared *RateLimitBucket `json:"shared"`
+}
+
 // Permission profile types
 const (
 	// PermissionProfileTypeBuiltin is the type for built-in permission profiles
@@ -473,10 +587,12 @@ type PermissionProfileRef struct {
 // PermissionProfileSpec defines the permissions for an MCP server
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
+	// +listType=atomic
 	// +optional
 	Read []string `json:"read,omitempty"`
 
 	// Write is a list of paths that the MCP server can write to
+	// +listType=atomic
 	// +optional
 	Write []string `json:"write,omitempty"`
 
@@ -505,10 +621,12 @@ type OutboundNetworkPermissions struct {
 	InsecureAllowAll bool `json:"insecureAllowAll,omitempty"`
 
 	// AllowHost is a list of hosts to allow connections to
+	// +listType=set
 	// +optional
 	AllowHost []string `json:"allowHost,omitempty"`
 
 	// AllowPort is a list of ports to allow connections to
+	// +listType=set
 	// +optional
 	AllowPort []int32 `json:"allowPort,omitempty"`
 }
@@ -635,29 +753,12 @@ type InlineOIDCConfig struct {
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 
-	// ClientSecret is the client secret for introspection (optional)
-	// Deprecated: Use ClientSecretRef instead for better security
-	// +optional
-	ClientSecret string `json:"clientSecret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
-
 	// ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
-	// If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
-	//
-	// Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
-	// already exist in the proxy runner container (e.g., Kubernetes service account CA at
-	// /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
-	// use CABundleRef which automatically mounts the ConfigMap and computes the path.
-	// This field will be removed when the API graduates to v1beta1.
-	// +optional
-	ThvCABundlePath string `json:"thvCABundlePath,omitempty"`
-
 	// CABundleRef references a ConfigMap containing the CA certificate bundle.
-	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
-	// If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path.
 	// +optional
 	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 
@@ -687,6 +788,7 @@ type InlineOIDCConfig struct {
 
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
 	// If empty, defaults to ["openid"]
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 }
@@ -747,6 +849,7 @@ type InlineAuthzConfig struct {
 	// Policies is a list of Cedar policy strings
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
 	Policies []string `json:"policies"`
 
 	// EntitiesJSON is a JSON string representing Cedar entities
@@ -793,6 +896,7 @@ type OpenTelemetryConfig struct {
 
 	// Headers contains authentication headers for the OTLP endpoint
 	// Specified as key=value pairs
+	// +listType=atomic
 	// +optional
 	Headers []string `json:"headers,omitempty"`
 
@@ -834,6 +938,7 @@ type OpenTelemetryTracingConfig struct {
 
 	// SamplingRate is the trace sampling rate (0.0-1.0)
 	// +kubebuilder:default="0.05"
+	// +kubebuilder:validation:Pattern=`^(0(\.\d+)?|1(\.0+)?)$`
 	// +optional
 	SamplingRate string `json:"samplingRate,omitempty"`
 }
@@ -849,8 +954,14 @@ type OpenTelemetryMetricsConfig struct {
 // MCPServerStatus defines the observed state of MCPServer
 type MCPServerStatus struct {
 	// Conditions represent the latest available observations of the MCPServer's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ObservedGeneration reflects the generation most recently observed by the controller
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// ToolConfigHash stores the hash of the referenced ToolConfig for change detection
 	// +optional
@@ -859,6 +970,14 @@ type MCPServerStatus struct {
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
+	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
+	// +optional
+	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
+
+	// TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection
+	// +optional
+	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional
@@ -878,15 +997,15 @@ type MCPServerStatus struct {
 }
 
 // MCPServerPhase is the phase of the MCPServer
-// +kubebuilder:validation:Enum=Pending;Running;Failed;Terminating;Stopped
+// +kubebuilder:validation:Enum=Pending;Ready;Failed;Terminating;Stopped
 type MCPServerPhase string
 
 const (
 	// MCPServerPhasePending means the MCPServer is being created
 	MCPServerPhasePending MCPServerPhase = "Pending"
 
-	// MCPServerPhaseRunning means the MCPServer is running
-	MCPServerPhaseRunning MCPServerPhase = "Running"
+	// MCPServerPhaseReady means the MCPServer is ready
+	MCPServerPhaseReady MCPServerPhase = "Ready"
 
 	// MCPServerPhaseFailed means the MCPServer failed to start
 	MCPServerPhaseFailed MCPServerPhase = "Failed"
@@ -900,9 +1019,10 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpserver;mcpservers
+//+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+//+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
@@ -944,14 +1064,6 @@ func (m *MCPServer) GetProxyPort() int32 {
 	if m.Spec.ProxyPort > 0 {
 		return m.Spec.ProxyPort
 	}
-
-	// the below is deprecated and will be removed in a future version
-	// we need to keep it here to avoid breaking changes
-	if m.Spec.Port > 0 {
-		return m.Spec.Port
-	}
-
-	// default to 8080 if no port is specified
 	return 8080
 }
 
@@ -960,15 +1072,6 @@ func (m *MCPServer) GetMcpPort() int32 {
 	if m.Spec.McpPort > 0 {
 		return m.Spec.McpPort
 	}
-
-	// the below is deprecated and will be removed in a future version
-	// we need to keep it here to avoid breaking changes
-	if m.Spec.TargetPort > 0 {
-		return m.Spec.TargetPort
-	}
-
-	// Default to 8080 if no port is specified (matches GetProxyPort behavior)
-	// This is needed for HTTP-based transports (SSE, streamable-http) which require a target port
 	return 8080
 }
 

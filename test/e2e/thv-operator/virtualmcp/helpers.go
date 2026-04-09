@@ -10,10 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -28,14 +26,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/test/e2e/images"
+	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
 
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
@@ -79,59 +75,8 @@ func WaitForVirtualMCPServerReady(
 }
 
 // checkPodsReady waits for at least one pod matching the given labels to be ready.
-// This is used when checking for a single expected pod (e.g., one replica deployment).
-// Pods not in Running phase are skipped (e.g., Succeeded, Failed from previous deployments).
 func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
-	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(namespace),
-		client.MatchingLabels(labels)); err != nil {
-		return fmt.Errorf("failed to list pods: %w", err)
-	}
-
-	if len(podList.Items) == 0 {
-		return fmt.Errorf("no pods found with labels %v", labels)
-	}
-
-	for _, pod := range podList.Items {
-		// Skip pods that are not running (e.g., Succeeded, Failed from old deployments)
-		if pod.Status.Phase != corev1.PodRunning {
-			continue
-		}
-
-		containerReady := false
-		podReady := false
-
-		for _, condition := range pod.Status.Conditions {
-			if condition.Type == corev1.ContainersReady {
-				containerReady = condition.Status == corev1.ConditionTrue
-			}
-
-			if condition.Type == corev1.PodReady {
-				podReady = condition.Status == corev1.ConditionTrue
-			}
-		}
-
-		if !containerReady {
-			return fmt.Errorf("pod %s containers not ready", pod.Name)
-		}
-
-		if !podReady {
-			return fmt.Errorf("pod %s not ready", pod.Name)
-		}
-	}
-
-	// After filtering, ensure we found at least one running pod
-	runningPods := 0
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodRunning {
-			runningPods++
-		}
-	}
-	if runningPods == 0 {
-		return fmt.Errorf("no running pods found with labels %v", labels)
-	}
-	return nil
+	return testutil.CheckPodsReady(ctx, c, namespace, labels)
 }
 
 // InitializedMCPClient holds an initialized MCP client with its associated context
@@ -190,53 +135,9 @@ func CreateInitializedMCPClient(nodePort int32, clientName string, timeout time.
 	}, nil
 }
 
-// getPodLogs retrieves logs from a specific pod container
+// getPodLogs retrieves logs from a specific pod container.
 func getPodLogs(ctx context.Context, namespace, podName, containerName string, previous bool) (string, error) {
-	// Get the rest config - try in-cluster first, then fall back to kubeconfig
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		// If not in cluster, try to load from kubeconfig file (from KUBECONFIG env or default location)
-		kubeconfigPath := os.Getenv("KUBECONFIG")
-		if kubeconfigPath == "" {
-			kubeconfigPath = clientcmd.RecommendedHomeFile
-		}
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to get rest config: %w", err)
-		}
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return "", fmt.Errorf("failed to create clientset: %w", err)
-	}
-
-	// Set up log options
-	logOptions := &corev1.PodLogOptions{
-		Container: containerName,
-		Previous:  previous,
-		TailLines: func(i int64) *int64 { return &i }(50), // Last 50 lines
-	}
-
-	// Get the logs
-	req := clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
-	podLogs, err := req.Stream(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get log stream: %w", err)
-	}
-	defer func() {
-		// Error ignored in test cleanup
-		_ = podLogs.Close()
-	}()
-
-	// Read logs
-	buf := new(bytes.Buffer)
-	_, err = io.Copy(buf, podLogs)
-	if err != nil {
-		return "", fmt.Errorf("failed to read logs: %w", err)
-	}
-
-	return buf.String(), nil
+	return testutil.GetPodLogs(ctx, namespace, podName, containerName, previous)
 }
 
 // GetVirtualMCPServerPods returns all pods for a VirtualMCPServer
@@ -788,7 +689,7 @@ func CreateMCPServerAndWait(
 		if err != nil {
 			return fmt.Errorf("failed to get server: %w", err)
 		}
-		if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+		if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 			return nil
 		}
 		return fmt.Errorf("%s not ready yet, phase: %s", name, server.Status.Phase)
@@ -887,7 +788,7 @@ func CreateMultipleMCPServersInParallel(
 			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed {
 				return gomega.StopTrying(fmt.Sprintf("%s failed: %s", cfg.Name, server.Status.Message))
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("%s not ready yet, phase: %s", cfg.Name, server.Status.Phase)
 			}
 		}

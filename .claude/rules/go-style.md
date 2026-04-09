@@ -54,6 +54,21 @@ if someCondition {
 - Use `fmt.Errorf` with `%w` to preserve error chains; don't wrap excessively
 - Use `recover()` sparingly — only at top-level API/CLI boundaries
 
+## Package API Surface
+
+- Packages expose interfaces, result types, and constructors
+- Constructors accept dependencies (interfaces/functions), runtime information
+  (identity, context), and config (in the caller's terms)
+- Start without intermediate config types — introduce them when a concrete need
+  arises (runtime shape meaningfully differs from input, multiple config sources,
+  resolved secrets). Don't create a public type just to hold parsed values
+  between two internal functions
+- Use `internal/` subpackages for implementation details that callers should not
+  depend on
+- Public functions are a smell: if a function converts external types to internal
+  state, ask whether it can be folded into a constructor or belongs in the
+  caller's package
+
 ## Logging
 
 - **Silent success** — no output at INFO or above for successful operations

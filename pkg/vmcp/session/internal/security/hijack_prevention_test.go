@@ -218,3 +218,42 @@ func TestPreventSessionHijacking_BasicFunctionality(t *testing.T) {
 		assert.Empty(t, metadata[metadataKeyTokenSalt])
 	})
 }
+
+// TestRestoreHijackPrevention tests restoration of the hijack-prevention decorator.
+func TestRestoreHijackPrevention(t *testing.T) {
+	t.Parallel()
+
+	t.Run("anonymous session (empty hash and salt)", func(t *testing.T) {
+		t.Parallel()
+
+		base := newMockSession("s1")
+		restored, err := RestoreHijackPrevention(base, "", "", testSecret)
+		require.NoError(t, err)
+		require.NotNil(t, restored)
+	})
+
+	t.Run("hash present but salt absent is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		base := newMockSession("s2")
+		_, err := RestoreHijackPrevention(base, "somehash", "", testSecret)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "salt is missing")
+	})
+
+	t.Run("salt present but hash absent is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		base := newMockSession("s3")
+		_, err := RestoreHijackPrevention(base, "", "deadbeef", testSecret)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "hash is missing")
+	})
+
+	t.Run("nil session is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := RestoreHijackPrevention(nil, "", "", testSecret)
+		require.Error(t, err)
+	})
+}

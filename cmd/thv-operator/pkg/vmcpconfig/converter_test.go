@@ -89,6 +89,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			mockReturn: &oidc.OIDCConfig{
 				Issuer: "https://issuer.example.com", Audience: "my-audience",
 				ResourceURL: "https://resource.example.com", JWKSAllowPrivateIP: true,
+				JWKSURL: "https://issuer.example.com/jwks", IntrospectionURL: "https://issuer.example.com/introspect",
 			},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
 				t.Helper()
@@ -97,6 +98,8 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				assert.Equal(t, "https://issuer.example.com", config.IncomingAuth.OIDC.Issuer)
 				assert.Equal(t, "my-audience", config.IncomingAuth.OIDC.Audience)
 				assert.Equal(t, "https://resource.example.com", config.IncomingAuth.OIDC.Resource)
+				assert.Equal(t, "https://issuer.example.com/jwks", config.IncomingAuth.OIDC.JWKSURL)
+				assert.Equal(t, "https://issuer.example.com/introspect", config.IncomingAuth.OIDC.IntrospectionURL)
 				assert.True(t, config.IncomingAuth.OIDC.ProtectedResourceAllowPrivateIP)
 			},
 		},
@@ -123,8 +126,13 @@ func TestConverter_OIDCResolution(t *testing.T) {
 		{
 			name: "inline with client secret sets ClientSecretEnv",
 			oidcConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type:   mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{ClientSecret: "secret"},
+				Type: mcpv1alpha1.OIDCConfigTypeInline,
+				Inline: &mcpv1alpha1.InlineOIDCConfig{
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "oidc-secret",
+						Key:  "client-secret",
+					},
+				},
 			},
 			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
@@ -305,6 +313,31 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 			},
 			description: "Should correctly convert OIDC auth config with scopes",
 		},
+		{
+			name: "oidc auth with jwksUrl and introspectionUrl",
+			incomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "oidc",
+				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: "inline",
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:           "https://auth.example.com",
+						ClientID:         "test-client",
+						Audience:         "test-audience",
+						JWKSURL:          "https://auth.example.com/custom/jwks",
+						IntrospectionURL: "https://auth.example.com/custom/introspect",
+					},
+				},
+			},
+			expectedAuthType: "oidc",
+			expectedOIDCConfig: &vmcpconfig.OIDCConfig{
+				Issuer:           "https://auth.example.com",
+				ClientID:         "test-client",
+				Audience:         "test-audience",
+				JWKSURL:          "https://auth.example.com/custom/jwks",
+				IntrospectionURL: "https://auth.example.com/custom/introspect",
+			},
+			description: "Should correctly convert OIDC auth config with jwksUrl and introspectionUrl",
+		},
 	}
 
 	for _, tt := range tests {
@@ -329,10 +362,12 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 			// Configure mock to return expected OIDC config
 			if tt.expectedOIDCConfig != nil {
 				mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&oidc.OIDCConfig{
-					Issuer:   tt.expectedOIDCConfig.Issuer,
-					ClientID: tt.expectedOIDCConfig.ClientID,
-					Audience: tt.expectedOIDCConfig.Audience,
-					Scopes:   tt.expectedOIDCConfig.Scopes,
+					Issuer:           tt.expectedOIDCConfig.Issuer,
+					ClientID:         tt.expectedOIDCConfig.ClientID,
+					Audience:         tt.expectedOIDCConfig.Audience,
+					JWKSURL:          tt.expectedOIDCConfig.JWKSURL,
+					IntrospectionURL: tt.expectedOIDCConfig.IntrospectionURL,
+					Scopes:           tt.expectedOIDCConfig.Scopes,
 				}, nil)
 			} else {
 				mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
@@ -356,6 +391,8 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					assert.Equal(t, tt.expectedOIDCConfig.Issuer, config.IncomingAuth.OIDC.Issuer, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.ClientID, config.IncomingAuth.OIDC.ClientID, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.Audience, config.IncomingAuth.OIDC.Audience, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.JWKSURL, config.IncomingAuth.OIDC.JWKSURL, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.IntrospectionURL, config.IncomingAuth.OIDC.IntrospectionURL, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.Scopes, config.IncomingAuth.OIDC.Scopes, tt.description)
 				} else {
 					assert.Nil(t, config.IncomingAuth.OIDC, tt.description)

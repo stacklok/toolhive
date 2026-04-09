@@ -115,6 +115,7 @@ type TokenExchangeConfig struct {
 	Audience string `json:"audience"`
 
 	// Scopes is a list of OAuth 2.0 scopes to request for the exchanged token
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -136,6 +137,10 @@ type TokenExchangeConfig struct {
 
 	// SubjectProviderName is the name of the upstream provider whose token is used as the
 	// RFC 8693 subject token instead of identity.Token when performing token exchange.
+	// When left empty and an embedded authorization server is configured on the VirtualMCPServer,
+	// the controller automatically populates this field with the first configured upstream
+	// provider name. Set it explicitly to override that default or to select a specific
+	// provider when multiple upstreams are configured.
 	// +optional
 	SubjectProviderName string `json:"subjectProviderName,omitempty"`
 }
@@ -189,6 +194,7 @@ type EmbeddedAuthServerConfig struct {
 	// If not specified, an ephemeral signing key will be auto-generated (development only -
 	// JWTs will be invalid after restart).
 	// +kubebuilder:validation:MaxItems=5
+	// +listType=atomic
 	// +optional
 	SigningKeySecretRefs []SecretKeyRef `json:"signingKeySecretRefs,omitempty"`
 
@@ -198,6 +204,7 @@ type EmbeddedAuthServerConfig struct {
 	// Supports secret rotation via multiple entries (first is current, rest are for verification).
 	// If not specified, an ephemeral secret will be auto-generated (development only -
 	// auth codes and refresh tokens will be invalid after restart).
+	// +listType=atomic
 	// +optional
 	HMACSecretRefs []SecretKeyRef `json:"hmacSecretRefs,omitempty"`
 
@@ -211,6 +218,8 @@ type EmbeddedAuthServerConfig struct {
 	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
 
 	// Storage configures the storage backend for the embedded auth server.
@@ -313,6 +322,7 @@ type OIDCUpstreamConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -358,6 +368,7 @@ type OAuth2UpstreamConfig struct {
 	RedirectURI string `json:"redirectUri,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -437,18 +448,21 @@ type UserInfoFieldMapping struct {
 	// SubjectFields is an ordered list of field names to try for the user ID.
 	// The first non-empty value found will be used.
 	// Default: ["sub"]
+	// +listType=atomic
 	// +optional
 	SubjectFields []string `json:"subjectFields,omitempty"`
 
 	// NameFields is an ordered list of field names to try for the display name.
 	// The first non-empty value found will be used.
 	// Default: ["name"]
+	// +listType=atomic
 	// +optional
 	NameFields []string `json:"nameFields,omitempty"`
 
 	// EmailFields is an ordered list of field names to try for the email address.
 	// The first non-empty value found will be used.
 	// Default: ["email"]
+	// +listType=atomic
 	// +optional
 	EmailFields []string `json:"emailFields,omitempty"`
 }
@@ -531,6 +545,7 @@ type RedisSentinelConfig struct {
 
 	// SentinelAddrs is a list of Sentinel host:port addresses.
 	// Mutually exclusive with SentinelService.
+	// +listType=atomic
 	// +optional
 	SentinelAddrs []string `json:"sentinelAddrs,omitempty"`
 
@@ -623,6 +638,7 @@ type AWSStsConfig struct {
 	// RoleMappings defines claim-based role selection rules
 	// Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
 	// Lower priority values are evaluated first (higher priority)
+	// +listType=atomic
 	// +optional
 	RoleMappings []RoleMapping `json:"roleMappings,omitempty"`
 
@@ -700,6 +716,8 @@ type UpstreamInjectSpec struct {
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
@@ -712,16 +730,20 @@ type MCPExternalAuthConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
-	// ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig
-	// This helps track which servers need to be reconciled when this config changes
+	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
+	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
-	ReferencingServers []string `json:"referencingServers,omitempty"`
+	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=extauth;mcpextauth
+// +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.

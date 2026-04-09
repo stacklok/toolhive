@@ -5,7 +5,7 @@ metadata:
   namespace: default
 spec:
   displayName: "ToolHive Registry via API"
-  registries:
+  sources:
     - name: default
       format: toolhive
       api:
@@ -13,3 +13,7 @@ spec:
         endpoint: "http://my-registry-api.default.svc.cluster.local"
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - default

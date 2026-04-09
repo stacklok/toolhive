@@ -5,4 +5,4 @@ metadata:
   namespace: test-namespace
 status:
   message: "MCP server is running"
-  phase: "Running"
+  phase: "Ready"

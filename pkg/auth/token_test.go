@@ -26,6 +26,8 @@ import (
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	upstreamtokenmocks "github.com/stacklok/toolhive/pkg/auth/upstreamtoken/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	keysmocks "github.com/stacklok/toolhive/pkg/authserver/server/keys/mocks"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -2464,5 +2466,136 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Nil(t, captured.UpstreamTokens)
+	})
+}
+
+func TestWithKeyProvider(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+	opt := WithKeyProvider(provider)
+
+	o := &tokenValidatorOptions{}
+	opt(o)
+
+	require.Equal(t, provider, o.keyProvider)
+}
+
+func TestGetKeyFromLocalProvider(t *testing.T) {
+	t.Parallel()
+
+	// Generate a test RSA key pair for verification
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	t.Run("returns nil when no provider configured", func(t *testing.T) {
+		t.Parallel()
+
+		v := &TokenValidator{} // no keyProvider
+		token := &jwt.Token{
+			Method: jwt.SigningMethodRS256,
+			Header: map[string]interface{}{"kid": "test-kid"},
+		}
+
+		key, err := v.getKeyFromLocalProvider(context.Background(), token)
+		require.NoError(t, err)
+		require.Nil(t, key)
+	})
+
+	t.Run("returns key when kid matches", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+		provider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
+			{KeyID: "other-kid", PublicKey: &privateKey.PublicKey},
+			{KeyID: "target-kid", PublicKey: &privateKey.PublicKey},
+		}, nil)
+
+		v := &TokenValidator{keyProvider: provider}
+		token := &jwt.Token{
+			Method: jwt.SigningMethodRS256,
+			Header: map[string]interface{}{"kid": "target-kid"},
+		}
+
+		key, err := v.getKeyFromLocalProvider(context.Background(), token)
+		require.NoError(t, err)
+		require.NotNil(t, key)
+		require.Equal(t, &privateKey.PublicKey, key)
+	})
+
+	t.Run("falls back when kid not found", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+		provider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
+			{KeyID: "other-kid", PublicKey: &privateKey.PublicKey},
+		}, nil)
+
+		v := &TokenValidator{keyProvider: provider}
+		token := &jwt.Token{
+			Method: jwt.SigningMethodRS256,
+			Header: map[string]interface{}{"kid": "missing-kid"},
+		}
+
+		key, err := v.getKeyFromLocalProvider(context.Background(), token)
+		require.NoError(t, err)
+		require.Nil(t, key, "should return nil to signal HTTP fallback")
+	})
+
+	t.Run("falls back when provider returns error", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+		provider.EXPECT().PublicKeys(gomock.Any()).Return(nil, errors.New("key unavailable"))
+
+		v := &TokenValidator{keyProvider: provider}
+		token := &jwt.Token{
+			Method: jwt.SigningMethodRS256,
+			Header: map[string]interface{}{"kid": "test-kid"},
+		}
+
+		key, err := v.getKeyFromLocalProvider(context.Background(), token)
+		require.NoError(t, err, "provider errors should trigger fallback, not hard failure")
+		require.Nil(t, key)
+	})
+
+	t.Run("rejects unsupported signing method", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+
+		v := &TokenValidator{keyProvider: provider}
+		token := &jwt.Token{
+			Method: jwt.SigningMethodHS256,
+			Header: map[string]interface{}{"alg": "HS256", "kid": "test-kid"},
+		}
+
+		key, err := v.getKeyFromLocalProvider(context.Background(), token)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unexpected signing method")
+		require.Nil(t, key)
+	})
+
+	t.Run("rejects missing kid", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+
+		v := &TokenValidator{keyProvider: provider}
+		token := &jwt.Token{
+			Method: jwt.SigningMethodRS256,
+			Header: map[string]interface{}{},
+		}
+
+		key, err := v.getKeyFromLocalProvider(context.Background(), token)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "token header missing kid")
+		require.Nil(t, key)
 	})
 }

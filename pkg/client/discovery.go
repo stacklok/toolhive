@@ -72,6 +72,9 @@ type ClientAppStatus struct {
 
 	// Registered indicates whether the client is registered in the ToolHive configuration
 	Registered bool `json:"registered"`
+
+	// SupportsSkills indicates whether ToolHive can install skills for this client
+	SupportsSkills bool `json:"supports_skills"`
 }
 
 // GetClientStatus returns the status of all supported MCP clients using this manager's dependencies
@@ -102,9 +105,10 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus
 
 	for _, cfg := range cm.clientIntegrations {
 		status := ClientAppStatus{
-			ClientType: cfg.ClientType,
-			Installed:  false, // start with assuming client is not installed
-			Registered: registeredClients[string(cfg.ClientType)],
+			ClientType:     cfg.ClientType,
+			Installed:      false, // start with assuming client is not installed
+			Registered:     registeredClients[string(cfg.ClientType)],
+			SupportsSkills: cfg.SupportsSkills,
 		}
 
 		// Determine path to check based on configuration

@@ -21,8 +21,10 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -402,6 +404,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Auto-populate SubjectProviderName on any token_exchange strategy that
+	// omitted it when an embedded auth server is active.  Without this, the
+	// strategy silently falls back to identity.Token (the ToolHive JWT) as the
+	// RFC 8693 subject token, which the exchange endpoint rejects.
+	config.InjectSubjectProviderNames(cfg, authServerRC)
+
 	// Construct embedded authorization server if configured.
 	// Hard failure — if the auth server is configured but cannot be
 	// created, we must not silently fall back to unauthenticated mode.
@@ -588,8 +596,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// Extract dependencies from the embedded auth server so the OIDC middleware
+	// can (a) resolve JWKS keys in-process instead of self-referential HTTP
+	// calls, and (b) enrich Identity with upstream provider tokens.
+	var upstreamReader upstreamtoken.TokenReader
+	var keyProvider keys.PublicKeyProvider
+	if embeddedAuthServer != nil {
+		stor := embeddedAuthServer.IDPTokenStorage()
+		refresher := embeddedAuthServer.UpstreamTokenRefresher()
+		upstreamReader = upstreamtoken.NewInProcessService(stor, refresher)
+		keyProvider = embeddedAuthServer.KeyProvider()
+	}
+
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth, passThroughTools)
+		factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth, passThroughTools, upstreamReader, keyProvider)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
@@ -614,6 +634,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
+		SessionStorage:          cfg.SessionStorage,
 	}
 
 	// Convert composite tool configurations to workflow definitions

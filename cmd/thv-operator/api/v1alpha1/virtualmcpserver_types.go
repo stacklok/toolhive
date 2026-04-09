@@ -109,9 +109,10 @@ type EmbeddingServerRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 //
-// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfig) : true",message="spec.incomingAuth.oidcConfig is required when type is oidc"
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) || has(self.oidcConfigRef)) : true",message="spec.incomingAuth.oidcConfig or oidcConfigRef is required when type is oidc"
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
 //
-//nolint:lll // CEL validation rule exceeds line length limit
+//nolint:lll // CEL validation rules exceed line length limit
 type IncomingAuthConfig struct {
 	// Type defines the authentication type: anonymous or oidc
 	// When no authentication is required, explicitly set this to "anonymous"
@@ -119,10 +120,18 @@ type IncomingAuthConfig struct {
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// OIDCConfig defines OIDC authentication configuration
-	// Reuses MCPServer OIDC patterns
+	// OIDCConfig defines OIDC authentication configuration.
+	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
+	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
 	// +optional
 	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.
+	// Per-server overrides (audience, scopes) are specified here; shared provider config
+	// lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+	// +optional
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
 	// AuthzConfig defines authorization policy configuration
 	// Reuses MCPServer authz patterns
@@ -182,6 +191,8 @@ type DiscoveredBackend = vmcptypes.DiscoveredBackend
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
@@ -203,13 +214,20 @@ type VirtualMCPServerStatus struct {
 	URL string `json:"url,omitempty"`
 
 	// DiscoveredBackends lists discovered backend configurations from the MCPGroup
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
 
 	// BackendCount is the number of healthy/ready backends
 	// (excludes unavailable, degraded, and unknown backends)
 	// +optional
-	BackendCount int `json:"backendCount,omitempty"`
+	BackendCount int32 `json:"backendCount,omitempty"`
+
+	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.
+	// Only populated when IncomingAuth.OIDCConfigRef is set.
+	// +optional
+	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
@@ -349,7 +367,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=vmcp;virtualmcp
+//+kubebuilder:resource:shortName=vmcp;virtualmcp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"
 //+kubebuilder:printcolumn:name="Backends",type="integer",JSONPath=".status.backendCount",description="Discovered backends count"

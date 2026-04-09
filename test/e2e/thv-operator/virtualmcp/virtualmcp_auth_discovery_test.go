@@ -1092,7 +1092,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
 				backend := &mcpv1alpha1.MCPServer{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: backendName, Namespace: testNamespace}, backend)).To(Succeed())
-				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning))
+				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseReady))
 			}
 
 			GinkgoWriter.Println("Discovered auth mode successfully aggregates backends with:")
@@ -1499,7 +1499,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 			if err != nil {
 				return fmt.Errorf("failed to get server %s: %w", backendValidAuthName, err)
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("%s not ready yet, phase: %s", backendValidAuthName, server.Status.Phase)
 			}
 			return nil
@@ -1681,7 +1681,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 			}, validServer)
 		}, timeout, pollingInterval).Should(Succeed())
 		GinkgoWriter.Printf("Backend with valid auth config phase: %s\n", validServer.Status.Phase)
-		Expect(validServer.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning),
+		Expect(validServer.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseReady),
 			"Backend with valid auth config should reach Running phase")
 
 		By("Checking MCPServer status for backend with missing auth config")

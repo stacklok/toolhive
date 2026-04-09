@@ -12,12 +12,14 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	cedar "github.com/cedar-policy/cedar-go"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/syncutil"
 )
 
 // ConfigType is the configuration type identifier for Cedar authorization.
@@ -59,6 +61,38 @@ func ExtractConfig(authzConfig *authorizers.Config) (*Config, error) {
 		return nil, fmt.Errorf("cedar config is nil")
 	}
 	return &config, nil
+}
+
+// InjectUpstreamProvider returns a new authorizers.Config that is identical to
+// src except that the Cedar options' PrimaryUpstreamProvider field is set to
+// providerName. Any existing PrimaryUpstreamProvider value is overwritten; if
+// the Cedar config file already contains a non-empty PrimaryUpstreamProvider
+// that differs from providerName, the file value is silently replaced. This is
+// intentional: the embedded auth server config is the authoritative source of
+// the upstream provider name at runtime. This is used by the runner middleware
+// when the embedded auth server is active to wire the upstream provider into
+// Cedar evaluation.
+//
+// If src is not a Cedar config, providerName is empty, or src is nil, src is
+// returned unchanged with a nil error. This makes the function safe to call
+// unconditionally whenever the embedded auth server is active.
+func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*authorizers.Config, error) {
+	if src == nil || providerName == "" {
+		return src, nil
+	}
+
+	cedarCfg, err := ExtractConfig(src)
+	if err != nil {
+		// src is not a Cedar config (e.g. a future HTTP authorizer); treat as a
+		// no-op so callers can apply this unconditionally without needing to
+		// know the authorizer type ahead of time.
+		slog.Debug("skipping upstream provider injection for non-Cedar config",
+			"provider", providerName, "type", src.Type)
+		return src, nil
+	}
+
+	cedarCfg.Options.PrimaryUpstreamProvider = providerName
+	return authorizers.NewConfig(cedarCfg)
 }
 
 // Factory implements the authorizers.AuthorizerFactory interface for Cedar.
@@ -122,6 +156,17 @@ type Authorizer struct {
 	entityFactory *EntityFactory
 	// Mutex for thread safety
 	mu sync.RWMutex
+	// primaryUpstreamProvider names the upstream IDP provider whose access token
+	// should be used as the source of JWT claims for Cedar evaluation.
+	// When empty, claims from the token on the original client request are used,
+	// which may be a ToolHive-issued token or any other bearer token.
+	primaryUpstreamProvider string
+	// groupClaimName is the JWT claim key that contains group membership.
+	// When empty, the well-known defaults are checked ("groups", "roles", etc.).
+	groupClaimName string
+	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
+	// so it emits at most once per 30 seconds instead of once per authorization check.
+	claimKeyLog *syncutil.AtMost
 }
 
 // ConfigOptions represents the Cedar-specific authorization configuration options.
@@ -131,14 +176,30 @@ type ConfigOptions struct {
 
 	// EntitiesJSON is the JSON string representing Cedar entities
 	EntitiesJSON string `json:"entities_json" yaml:"entities_json"`
+
+	// PrimaryUpstreamProvider names the upstream IDP provider whose access
+	// token should be used as the source of JWT claims for Cedar evaluation.
+	// When empty, claims from the ToolHive-issued token are used (current behaviour).
+	// Must match an entry in identity.UpstreamTokens (e.g. "default", "github").
+	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
+
+	// GroupClaimName is the JWT claim key that contains group membership for the
+	// principal. When set, it takes priority over the well-known defaults
+	// ("groups", "roles", "cognito:groups"). Use this for IDPs that place groups
+	// under a URI-style claim (e.g. "https://example.com/groups" in Auth0/Okta).
+	// When empty, only the well-known claim names are checked.
+	GroupClaimName string `json:"group_claim_name,omitempty" yaml:"group_claim_name,omitempty"`
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
 func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
 	authorizer := &Authorizer{
-		policySet:     cedar.NewPolicySet(),
-		entities:      cedar.EntityMap{},
-		entityFactory: NewEntityFactory(),
+		policySet:               cedar.NewPolicySet(),
+		entities:                cedar.EntityMap{},
+		entityFactory:           NewEntityFactory(),
+		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
+		groupClaimName:          options.GroupClaimName,
+		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
 	}
 
 	// Load policies
@@ -242,6 +303,13 @@ func (a *Authorizer) GetEntityFactory() *EntityFactory {
 // - action: The operation being performed (e.g., "Action::call_tool")
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
+//
+// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") only
+// work when entities are constructed via AuthorizeWithJWTClaims, which calls
+// CreateEntitiesForRequest with the extracted groups slice and adds THVGroup
+// parent entities. Callers that bypass AuthorizeWithJWTClaims and pass their
+// own entity map must include THVGroup entities manually for group policies to
+// evaluate correctly.
 // - entities: Optional Cedar entity map with attributes
 func (a *Authorizer) IsAuthorized(
 	principal, action, resource string,
@@ -326,6 +394,66 @@ func (a *Authorizer) IsAuthorized(
 	return decision == cedar.Allow, nil
 }
 
+// resolveClaims determines which JWT claims to use for Cedar policy evaluation.
+// When primaryUpstreamProvider is set, claims are extracted from the upstream
+// IDP token stored in the identity. Otherwise, claims from the token on the
+// original client request are used, which may be a ToolHive-issued token or
+// any other bearer token.
+func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, error) {
+	if a.primaryUpstreamProvider != "" {
+		// Embedded auth server path: use the upstream IDP token's claims.
+		upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
+		if !tokenFound || upstreamToken == "" {
+			// The upstream token must be present if the authorizer is configured to use it.
+			// Missing token means the session has no upstream credential; deny.
+			return nil, fmt.Errorf("upstream token for provider %q not found in identity",
+				a.primaryUpstreamProvider)
+		}
+		parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
+				a.primaryUpstreamProvider, err)
+		}
+		a.logClaimKeys("upstream", parsedClaims)
+		return parsedClaims, nil
+	}
+	// Default path: use claims from the original client request's token.
+	claims := jwt.MapClaims(identity.Claims)
+	a.logClaimKeys("token", claims)
+	return claims, nil
+}
+
+// logClaimKeys emits a rate-limited DEBUG log listing the JWT claim keys
+// available for Cedar policy evaluation.
+func (a *Authorizer) logClaimKeys(source string, claims jwt.MapClaims) {
+	a.claimKeyLog.Do(func() {
+		keys := make([]string, 0, len(claims))
+		for k := range claims {
+			keys = append(keys, k)
+		}
+		slog.Debug("Resolved JWT claim keys for Cedar evaluation",
+			"source", source,
+			"keys", keys)
+	})
+}
+
+// parseUpstreamJWTClaims parses JWT claims from an upstream access token without
+// verifying the signature. The token was already validated by the upstream IDP
+// during the OAuth 2.0 code exchange; we only need its claims for Cedar evaluation.
+// Returns an error if the token is not a parseable JWT (e.g. opaque token).
+func parseUpstreamJWTClaims(tokenStr string) (jwt.MapClaims, error) {
+	parser := jwt.NewParser()
+	token, _, err := parser.ParseUnverified(tokenStr, jwt.MapClaims{})
+	if err != nil {
+		return nil, fmt.Errorf("upstream token is not a parseable JWT: %w", err)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("upstream token has unexpected claims type")
+	}
+	return claims, nil
+}
+
 // extractClientIDFromClaims extracts the client ID from JWT claims.
 // By default, it uses the "sub" (subject) claim as the client ID.
 // This can be customized based on your JWT token structure.
@@ -396,6 +524,7 @@ func (a *Authorizer) authorizeToolCall(
 	clientID, toolName string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -420,7 +549,7 @@ func (a *Authorizer) authorizeToolCall(
 	})
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -438,6 +567,7 @@ func (a *Authorizer) authorizePromptGet(
 	clientID, promptName string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -456,7 +586,7 @@ func (a *Authorizer) authorizePromptGet(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -474,6 +604,7 @@ func (a *Authorizer) authorizeResourceRead(
 	clientID, resourceURI string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -494,7 +625,7 @@ func (a *Authorizer) authorizeResourceRead(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -513,6 +644,7 @@ func (a *Authorizer) authorizeFeatureList(
 	feature authorizers.MCPFeature,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
+	groups []string,
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -531,7 +663,7 @@ func (a *Authorizer) authorizeFeatureList(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -591,36 +723,96 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		return false, ErrMissingPrincipal
 	}
 
-	// Extract client ID from Identity claims
-	claims := jwt.MapClaims(identity.Claims)
-	clientID, ok := extractClientIDFromClaims(claims)
+	// Resolve the claims source: upstream IDP token or the original request's token.
+	resolvedClaims, err := a.resolveClaims(identity)
+	if err != nil {
+		return false, err
+	}
+
+	// Extract client ID from the resolved claims.
+	clientID, ok := extractClientIDFromClaims(resolvedClaims)
 	if !ok {
 		return false, ErrMissingPrincipal
 	}
 
+	// Extract groups from the resolved claims and pass them into the entity
+	// factory to build THVGroup parent entities for Cedar evaluation.
+	// The identity pointer is not mutated here because Identity MUST NOT be
+	// modified after it is placed in the request context (concurrent reads).
+	groups := extractGroupsFromClaims(resolvedClaims, a.groupClaimName)
+
 	// Preprocess claims and arguments
-	processedClaims := preprocessClaims(claims)
+	processedClaims := preprocessClaims(resolvedClaims)
 	processedArgs := preprocessArguments(arguments)
 
 	// Authorize based on the feature and operation
 	switch {
 	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
-		// Use the authorizeToolCall function for tool call operations
-		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs)
+		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs, groups)
 
 	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
-		// Use the authorizePromptGet function for prompt get operations
-		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs)
+		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs, groups)
 
 	case feature == authorizers.MCPFeatureResource && operation == authorizers.MCPOperationRead:
-		// Use the authorizeResourceRead function for resource read operations
-		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs)
+		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs, groups)
 
 	case operation == authorizers.MCPOperationList:
-		// Use the authorizeFeatureList function for list operations
-		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs)
+		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs, groups)
 
 	default:
 		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)
 	}
+}
+
+// defaultGroupClaimNames lists common group claim names across popular identity
+// providers. They are checked in order; the first non-empty match is returned.
+//
+// Sources:
+//   - "groups"         — Microsoft Entra ID, Okta, Auth0, PingIdentity (the de-facto standard).
+//     https://learn.microsoft.com/en-us/security/zero-trust/develop/configure-tokens-group-claims-app-roles
+//     https://developer.okta.com/docs/guides/customize-tokens-groups-claim/main/
+//   - "roles"          — Keycloak (when a protocol mapper flattens realm_access.roles to a top-level claim).
+//     https://www.keycloak.org/docs/latest/authorization_services/index.html
+//   - "cognito:groups" — AWS Cognito user pools (included in both ID and access tokens).
+//     https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-the-access-token.html
+var defaultGroupClaimNames = []string{"groups", "roles", "cognito:groups"}
+
+// extractGroupsFromClaims looks for group membership claims in the provided
+// claims map. It checks customClaimName first (if non-empty), then falls back to
+// the well-known names "groups", "roles", and "cognito:groups". Returns the
+// string-slice value of the first matching claim key (which may be empty), or nil
+// when no group claim key is found.
+//
+// Passing a non-empty customClaimName allows callers to support IDPs that use
+// URI-style claim names (e.g. "https://example.com/groups" used by Auth0/Okta).
+func extractGroupsFromClaims(claims map[string]any, customClaimName string) []string {
+	names := defaultGroupClaimNames
+	if customClaimName != "" {
+		// Prepend the custom name so it takes priority over well-known names.
+		names = append([]string{customClaimName}, defaultGroupClaimNames...)
+	}
+
+	for _, name := range names {
+		val, ok := claims[name]
+		if !ok {
+			continue
+		}
+		switch v := val.(type) {
+		case []interface{}:
+			groups := make([]string, 0, len(v))
+			for _, g := range v {
+				if s, ok := g.(string); ok {
+					groups = append(groups, s)
+				}
+			}
+			return groups
+		case []string:
+			return v
+		}
+		// Claim key exists but has an unrecognized type; stop searching.
+		slog.Warn("group claim has unrecognized type, ignoring",
+			"claim", name, "type", fmt.Sprintf("%T", val))
+		return nil
+	}
+	return nil
 }

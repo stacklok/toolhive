@@ -101,6 +101,7 @@ rules:
   - embeddingservers
   - mcpexternalauthconfigs
   - mcpgroups
+  - mcpoidcconfigs
   - mcpregistries
   - mcpremoteproxies
   - mcpservers
@@ -120,8 +121,10 @@ rules:
   - embeddingservers/finalizers
   - mcpexternalauthconfigs/finalizers
   - mcpgroups/finalizers
+  - mcpoidcconfigs/finalizers
   - mcpregistries/finalizers
   - mcpservers/finalizers
+  - mcptelemetryconfigs/finalizers
   - mcptoolconfigs/finalizers
   verbs:
   - update
@@ -131,9 +134,12 @@ rules:
   - embeddingservers/status
   - mcpexternalauthconfigs/status
   - mcpgroups/status
+  - mcpoidcconfigs/status
   - mcpregistries/status
   - mcpremoteproxies/status
+  - mcpserverentries/status
   - mcpservers/status
+  - mcptelemetryconfigs/status
   - mcptoolconfigs/status
   - virtualmcpservers/status
   verbs:
@@ -143,8 +149,19 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - mcpserverentries
   - virtualmcpcompositetooldefinitions
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcptelemetryconfigs
+  verbs:
+  - get
+  - list
+  - patch
+  - update
   - watch

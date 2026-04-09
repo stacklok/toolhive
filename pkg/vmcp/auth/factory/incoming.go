@@ -10,6 +10,8 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -49,6 +51,8 @@ func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
 	passThroughTools map[string]struct{},
+	upstreamReader upstreamtoken.TokenReader,
+	keyProvider keys.PublicKeyProvider,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -63,7 +67,7 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader, keyProvider)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -110,13 +114,16 @@ func newCedarAuthzMiddleware(
 
 	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
-	// Build the Cedar config structure expected by the authorizer factory
+	// Build the Cedar config structure expected by the authorizer factory.
+	// PrimaryUpstreamProvider is forwarded so Cedar evaluates claims from the
+	// upstream IDP token when the embedded auth server is active.
 	cedarConfig := cedar.Config{
 		Version: "1.0",
 		Type:    cedar.ConfigType,
 		Options: &cedar.ConfigOptions{
-			Policies:     authzCfg.Policies,
-			EntitiesJSON: "[]",
+			Policies:                authzCfg.Policies,
+			EntitiesJSON:            "[]",
+			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
 		},
 	}
 
@@ -138,9 +145,15 @@ func newCedarAuthzMiddleware(
 // newOIDCAuthMiddleware creates OIDC authentication middleware.
 // Reuses pkg/auth.GetAuthenticationMiddleware for OIDC token validation.
 // The middleware now directly creates Identity in context (no separate conversion needed).
+//
+// The reader parameter, when non-nil, enables the JWT validator to load upstream
+// provider tokens from the embedded auth server's storage. This is required for
+// upstream_inject outgoing auth to work with an embedded auth server.
 func newOIDCAuthMiddleware(
 	ctx context.Context,
 	oidcCfg *config.OIDCConfig,
+	reader upstreamtoken.TokenReader,
+	keyProvider keys.PublicKeyProvider,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -158,13 +171,26 @@ func newOIDCAuthMiddleware(
 		ClientID:          oidcCfg.ClientID,
 		Audience:          oidcCfg.Audience,
 		ResourceURL:       oidcCfg.Resource,
+		JWKSURL:           oidcCfg.JWKSURL,
+		IntrospectionURL:  oidcCfg.IntrospectionURL,
 		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
 		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
 		Scopes:            oidcCfg.Scopes,
 	}
 
+	// Wire optional dependencies from the embedded auth server so the JWT
+	// validator can (a) resolve JWKS keys in-process instead of self-referential
+	// HTTP calls, and (b) enrich Identity with upstream provider tokens.
+	var opts []auth.TokenValidatorOption
+	if keyProvider != nil {
+		opts = append(opts, auth.WithKeyProvider(keyProvider))
+	}
+	if reader != nil {
+		opts = append(opts, auth.WithUpstreamTokenReader(reader))
+	}
+
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
-	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
 	}

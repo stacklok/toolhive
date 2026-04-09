@@ -648,6 +648,45 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 	})
 }
 
+func TestEmbeddedAuthServer_KeyProvider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns non-nil KeyProvider after construction", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "http://localhost:8080",
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "http://localhost:8080/oauth/callback",
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+
+		server, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		require.NotNil(t, server)
+		defer func() { _ = server.Close() }()
+
+		provider := server.KeyProvider()
+		require.NotNil(t, provider, "KeyProvider should be non-nil after construction")
+
+		// Verify it can return public keys
+		pubKeys, err := provider.PublicKeys(context.Background())
+		require.NoError(t, err)
+		assert.NotEmpty(t, pubKeys, "KeyProvider should have at least one public key")
+	})
+}
+
 func TestBuildUpstreamConfig(t *testing.T) {
 	t.Parallel()
 

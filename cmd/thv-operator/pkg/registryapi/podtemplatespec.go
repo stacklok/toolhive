@@ -228,37 +228,64 @@ func WithEnvVar(containerName string, envVar corev1.EnvVar) PodTemplateSpecOptio
 	}
 }
 
-// WithPGPassMount configures the pgpass secret mounting for PostgreSQL authentication.
+// WithPGPassMount configures the pgpass secret mounting for PostgreSQL authentication
+// using an operator-generated secret. It constructs the secret volume from the given
+// secret name and operator-defined key, then delegates to withPGPassMountFromVolume.
+func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
+	secretVolume := corev1.Volume{
+		Name: PGPassSecretVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretName,
+				Items: []corev1.KeyToPath{
+					{Key: GetPGPassSecretKey(), Path: pgpassFileName},
+				},
+			},
+		},
+	}
+	return withPGPassMountFromVolume(containerName, secretVolume)
+}
+
+// WithPGPassSecretRefMount configures pgpass secret mounting for PostgreSQL authentication
+// using a user-provided SecretKeySelector. If the secret reference is incomplete (empty
+// name or key), a no-op option is returned. Otherwise it constructs the secret volume
+// from the selector and delegates to withPGPassMountFromVolume.
+func WithPGPassSecretRefMount(containerName string, secretRef corev1.SecretKeySelector) PodTemplateSpecOption {
+	if secretRef.Name == "" || secretRef.Key == "" {
+		return func(*corev1.PodTemplateSpec) {} // no-op for incomplete references
+	}
+	secretVolume := corev1.Volume{
+		Name: PGPassSecretVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretRef.Name,
+				Items: []corev1.KeyToPath{
+					{Key: secretRef.Key, Path: pgpassFileName},
+				},
+			},
+		},
+	}
+	return withPGPassMountFromVolume(containerName, secretVolume)
+}
+
+// withPGPassMountFromVolume is the shared implementation for pgpass secret mounting.
 // Kubernetes secret volumes don't allow changing file permissions after mounting, so this
 // function uses an init container to copy the file and set proper permissions.
 //
-// This function adds:
-// 1. A volume from the secret containing the pgpass file (mounted in init container)
-// 2. An emptyDir volume for the prepared pgpass file (mounted in app container)
-// 3. An init container that copies the file and sets permissions (600) and ownership (65532:65532)
-// 4. A volume mount in the registry-api container for the pgpass file from the emptyDir
-// 5. The PGPASSFILE environment variable pointing to the mounted file
-func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
+// It adds:
+//  1. The caller-provided secret volume (mounted in init container)
+//  2. An emptyDir volume for the prepared pgpass file (mounted in app container)
+//  3. An init container that copies the file and sets permissions (chmod 0600)
+//  4. A volume mount in the app container for the pgpass file from the emptyDir
+//  5. The PGPASSFILE environment variable pointing to the mounted file
+func withPGPassMountFromVolume(containerName string, secretVolume corev1.Volume) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
 		// Add the secret volume with the pgpass file (for init container)
-		WithVolume(corev1.Volume{
-			Name: pgpassSecretVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: secretName,
-					Items: []corev1.KeyToPath{
-						{
-							Key:  GetPGPassSecretKey(),
-							Path: pgpassFileName,
-						},
-					},
-				},
-			},
-		})(pts)
+		WithVolume(secretVolume)(pts)
 
 		// Add the emptyDir volume for the prepared pgpass file (for app container)
 		WithVolume(corev1.Volume{
-			Name: pgpassVolumeName,
+			Name: PGPassVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -268,7 +295,7 @@ func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
 		// Using Chainguard's busybox which runs as nonroot (65532) by default,
 		// so no chown is needed - the file will be owned by the same user as the app container.
 		WithInitContainer(corev1.Container{
-			Name:  pgpassInitContainerName,
+			Name:  PGPassInitContainerName,
 			Image: pgpassInitContainerImage,
 			Command: []string{
 				"sh",
@@ -282,12 +309,12 @@ func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{
-					Name:      pgpassSecretVolumeName,
+					Name:      PGPassSecretVolumeName,
 					MountPath: pgpassSecretMountPath,
 					ReadOnly:  true,
 				},
 				{
-					Name:      pgpassVolumeName,
+					Name:      PGPassVolumeName,
 					MountPath: pgpassEmptyDirMountPath,
 					ReadOnly:  false,
 				},
@@ -312,19 +339,19 @@ func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
 			},
 		})(pts)
 
-		// Add the volume mount to the registry-api container
+		// Add the volume mount to the app container
 		// Uses subPath to mount just the .pgpass file at the expected location
 		WithVolumeMount(containerName, corev1.VolumeMount{
-			Name:      pgpassVolumeName,
-			MountPath: pgpassAppUserMountPath,
+			Name:      PGPassVolumeName,
+			MountPath: PGPassAppUserMountPath,
 			SubPath:   pgpassFileName,
 			ReadOnly:  true,
 		})(pts)
 
 		// Add the PGPASSFILE environment variable
 		WithEnvVar(containerName, corev1.EnvVar{
-			Name:  "PGPASSFILE",
-			Value: pgpassAppUserMountPath,
+			Name:  pgpassEnvVar,
+			Value: PGPassAppUserMountPath,
 		})(pts)
 	}
 }
@@ -385,16 +412,15 @@ func WithGitAuthMount(containerName string, secretRef corev1.SecretKeySelector) 
 	}
 }
 
-// WithRegistrySourceMounts creates volumes and mounts for all registry sources (ConfigMap and PVC).
-// Each registry source (ConfigMap or PVC) gets its own volume and mount point
-// at /config/registry/{registryName}/. Multiple registries can share the same PVC
-// by mounting it at different paths.
-func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCPRegistryConfig) PodTemplateSpecOption {
+// WithRegistrySourceMounts creates volumes and mounts for all registry sources.
+// Each ConfigMap source gets its own volume and mount point
+// at /config/registry/{sourceName}/.
+func WithRegistrySourceMounts(containerName string, sources []mcpv1alpha1.MCPRegistrySourceConfig) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
-		for _, registry := range registries {
-			if registry.ConfigMapRef != nil {
-				// ConfigMap: Create unique volume per registry
-				volumeName := fmt.Sprintf("registry-data-source-%s", registry.Name)
+		for _, source := range sources {
+			if source.ConfigMapRef != nil {
+				// ConfigMap: Create unique volume per source
+				volumeName := fmt.Sprintf("registry-data-source-%s", source.Name)
 
 				// Add the ConfigMap volume
 				WithVolume(corev1.Volume{
@@ -402,12 +428,12 @@ func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCP
 					VolumeSource: corev1.VolumeSource{
 						ConfigMap: &corev1.ConfigMapVolumeSource{
 							LocalObjectReference: corev1.LocalObjectReference{
-								Name: registry.ConfigMapRef.Name,
+								Name: source.ConfigMapRef.Name,
 							},
 							// Mount only the specified key as registry.json
 							Items: []corev1.KeyToPath{
 								{
-									Key:  registry.ConfigMapRef.Key,
+									Key:  source.ConfigMapRef.Key,
 									Path: "registry.json",
 								},
 							},
@@ -415,8 +441,8 @@ func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCP
 					},
 				})(pts)
 
-				// Add the volume mount at registry-specific subdirectory
-				mountPath := filepath.Join(config.RegistryJSONFilePath, registry.Name)
+				// Add the volume mount at source-specific subdirectory
+				mountPath := filepath.Join(config.RegistryJSONFilePath, source.Name)
 				WithVolumeMount(containerName, corev1.VolumeMount{
 					Name:      volumeName,
 					MountPath: mountPath,
@@ -424,30 +450,6 @@ func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCP
 				})(pts)
 			}
 
-			if registry.PVCRef != nil {
-				// PVC: Create unique volume per registry (same PVC can be mounted multiple times)
-				// Mount at /config/registry/{registryName}/ for consistent path structure
-				volumeName := fmt.Sprintf("registry-data-source-%s", registry.Name)
-
-				// Add the PVC volume
-				WithVolume(corev1.Volume{
-					Name: volumeName,
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: registry.PVCRef.ClaimName,
-							ReadOnly:  true,
-						},
-					},
-				})(pts)
-
-				// Mount at registry-specific subdirectory
-				mountPath := filepath.Join(config.RegistryJSONFilePath, registry.Name)
-				WithVolumeMount(containerName, corev1.VolumeMount{
-					Name:      volumeName,
-					MountPath: mountPath,
-					ReadOnly:  true,
-				})(pts)
-			}
 		}
 	}
 }
@@ -479,7 +481,7 @@ func ValidatePodTemplateSpec(raw *runtime.RawExtension) error {
 // BuildRegistryAPIContainer creates the registry-api container with default configuration.
 func BuildRegistryAPIContainer(image string) corev1.Container {
 	return corev1.Container{
-		Name:  registryAPIContainerName,
+		Name:  RegistryAPIContainerName,
 		Image: image,
 		Args: []string{
 			ServeCommand,

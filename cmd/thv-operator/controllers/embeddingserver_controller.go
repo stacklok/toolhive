@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package controllers contains the reconciliation logic for the EmbeddingServer custom resource.
@@ -420,10 +421,11 @@ func (r *EmbeddingServerReconciler) validateImage(ctx context.Context, embedding
 	if err == validation.ErrImageNotChecked {
 		ctxLogger.Info("Image validation skipped - no enforcement configured")
 		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionImageValidated,
-			Status:  metav1.ConditionTrue,
-			Reason:  mcpv1alpha1.ConditionReasonImageValidationSkipped,
-			Message: "Image validation was not performed (no enforcement configured)",
+			Type:               mcpv1alpha1.ConditionImageValidated,
+			Status:             metav1.ConditionTrue,
+			Reason:             mcpv1alpha1.ConditionReasonImageValidationSkipped,
+			Message:            "Image validation was not performed (no enforcement configured)",
+			ObservedGeneration: embedding.Generation,
 		})
 		return nil
 	} else if err == validation.ErrImageInvalid {
@@ -431,29 +433,32 @@ func (r *EmbeddingServerReconciler) validateImage(ctx context.Context, embedding
 		embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseFailed
 		embedding.Status.Message = err.Error()
 		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionImageValidated,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonImageValidationFailed,
-			Message: err.Error(),
+			Type:               mcpv1alpha1.ConditionImageValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonImageValidationFailed,
+			Message:            err.Error(),
+			ObservedGeneration: embedding.Generation,
 		})
 		return err
 	} else if err != nil {
 		ctxLogger.Error(err, "EmbeddingServer image validation system error", "image", embedding.Spec.Image)
 		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionImageValidated,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonImageValidationError,
-			Message: fmt.Sprintf("Error checking image validity: %v", err),
+			Type:               mcpv1alpha1.ConditionImageValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonImageValidationError,
+			Message:            fmt.Sprintf("Error checking image validity: %v", err),
+			ObservedGeneration: embedding.Generation,
 		})
 		return err
 	}
 
 	ctxLogger.Info("Image validation passed", "image", embedding.Spec.Image)
 	meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-		Type:    mcpv1alpha1.ConditionImageValidated,
-		Status:  metav1.ConditionTrue,
-		Reason:  mcpv1alpha1.ConditionReasonImageValidationSuccess,
-		Message: "Image validation passed",
+		Type:               mcpv1alpha1.ConditionImageValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonImageValidationSuccess,
+		Message:            "Image validation passed",
+		ObservedGeneration: embedding.Generation,
 	})
 
 	return nil
@@ -1019,7 +1024,7 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 		info := func() phaseInfo {
 			if statefulSet.Status.ReadyReplicas > 0 {
 				return phaseInfo{
-					phase:   mcpv1alpha1.EmbeddingServerPhaseRunning,
+					phase:   mcpv1alpha1.EmbeddingServerPhaseReady,
 					message: "Embedding server is running",
 				}
 			}

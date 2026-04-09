@@ -60,6 +60,7 @@ func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFacto
 			mock.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			mock.EXPECT().Tools().Return(nil).AnyTimes()
+			mock.EXPECT().AllTools().Return(nil).AnyTimes()
 			mock.EXPECT().Resources().Return(nil).AnyTimes()
 			mock.EXPECT().Prompts().Return(nil).AnyTimes()
 			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
@@ -110,6 +111,7 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			toolsCopy := make([]vmcp.Tool, len(tools))
 			copy(toolsCopy, tools)
 			mock.EXPECT().Tools().Return(toolsCopy).AnyTimes()
+			mock.EXPECT().AllTools().Return(toolsCopy).AnyTimes()
 			mock.EXPECT().Resources().Return(nil).AnyTimes()
 			mock.EXPECT().Prompts().Return(nil).AnyTimes()
 			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
@@ -386,10 +388,9 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 		"Close() should have been called on the MultiSession after termination")
 
 	// Subsequent requests with the terminated session ID are rejected.
-	// After Terminate() deletes the session from storage, the discovery middleware's
-	// handleSubsequentRequest finds no session and returns HTTP 401 before the SDK
-	// even calls Validate(). The 401 is consistent with the existing behaviour for
-	// all expired/unknown sessions in the discovery middleware.
+	// After Terminate() deletes the session from storage, the discovery middleware passes
+	// through (no session found → skip capability injection), and the SDK's Validate()
+	// returns HTTP 404 for the unknown session ID.
 	toolCallReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -401,7 +402,7 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	}
 	postResp := postMCP(t, ts.URL, toolCallReq, sessionID)
 	defer postResp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, postResp.StatusCode,
+	assert.Equal(t, http.StatusNotFound, postResp.StatusCode,
 		"request with terminated session ID should be rejected")
 }
 

@@ -26,21 +26,21 @@ operator:
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.14.1
+  image: ghcr.io/stacklok/toolhive/operator:v0.16.0
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.14.1
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.16.0
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.14.1
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.16.0
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
 
   # -- Environment variables to set in the operator container
-  env: {}
+  env: []
 
   # -- List of ports to expose from the operator container
   ports:
@@ -112,7 +112,7 @@ operator:
   # -- Go memory limits and garbage collection percentage for the operator container
   gc:
     # -- Go memory limits for the operator container
-    gomeglimit: 150MiB
+    gomemlimit: 110MiB
     # -- Go garbage collection percentage for the operator container
     gogc: 75  # 75% heap growth before GC (as Go default)
 
@@ -206,4 +206,4 @@ operator:
 # -- All values for the registry API deployment and associated resources
 registryAPI:
   # -- Container image for the registry API
-  image: "ghcr.io/stacklok/thv-registry-api:v0.6.6"
+  image: "ghcr.io/stacklok/thv-registry-api:v1.0.0"

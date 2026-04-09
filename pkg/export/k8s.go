@@ -88,7 +88,7 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 	}
 
 	// Set proxy mode if transport is stdio
-	if config.Transport == types.TransportTypeStdio && config.ProxyMode != "" {
+	if config.Transport == types.TransportTypeStdio {
 		mcpServer.Spec.ProxyMode = string(config.ProxyMode)
 	}
 
@@ -191,10 +191,7 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 		}
 	}
 
-	// Convert tools filter
-	if len(config.ToolsFilter) > 0 {
-		mcpServer.Spec.ToolsFilter = config.ToolsFilter
-	}
+	// Note: ToolsFilter is not exported to CRD; use MCPToolConfig resource with toolConfigRef instead
 
 	return mcpServer, nil
 }

@@ -94,7 +94,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 		It("should create a Deployment with custom port", func() {
 			By("creating an MCPRemoteProxy with custom port")
 			proxy := proxyHelper.NewRemoteProxyBuilder("test-custom-port").
-				WithPort(9090).
+				WithProxyPort(9090).
 				Create(proxyHelper)
 
 			deployment := proxyHelper.WaitForDeployment(proxy.Name, MediumTimeout)
@@ -135,7 +135,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 		It("should create a Service with custom port", func() {
 			By("creating an MCPRemoteProxy with custom port")
 			proxy := proxyHelper.NewRemoteProxyBuilder("test-service-port").
-				WithPort(9090).
+				WithProxyPort(9090).
 				Create(proxyHelper)
 
 			service := proxyHelper.WaitForService(ServiceName(proxy.Name), MediumTimeout)

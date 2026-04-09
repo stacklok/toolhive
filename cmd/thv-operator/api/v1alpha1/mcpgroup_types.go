@@ -16,28 +16,45 @@ type MCPGroupSpec struct {
 
 // MCPGroupStatus defines observed state
 type MCPGroupStatus struct {
+	// ObservedGeneration reflects the generation most recently observed by the controller
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Phase indicates current state
 	// +optional
 	// +kubebuilder:default=Pending
 	Phase MCPGroupPhase `json:"phase,omitempty"`
 
 	// Servers lists MCPServer names in this group
+	// +listType=set
 	// +optional
 	Servers []string `json:"servers"`
 
 	// ServerCount is the number of MCPServers
 	// +optional
-	ServerCount int `json:"serverCount"`
+	ServerCount int32 `json:"serverCount"`
 
 	// RemoteProxies lists MCPRemoteProxy names in this group
+	// +listType=set
 	// +optional
 	RemoteProxies []string `json:"remoteProxies,omitempty"`
 
 	// RemoteProxyCount is the number of MCPRemoteProxies
 	// +optional
-	RemoteProxyCount int `json:"remoteProxyCount,omitempty"`
+	RemoteProxyCount int32 `json:"remoteProxyCount,omitempty"`
+
+	// Entries lists MCPServerEntry names in this group
+	// +listType=set
+	// +optional
+	Entries []string `json:"entries,omitempty"`
+
+	// EntryCount is the number of MCPServerEntries
+	// +optional
+	EntryCount int32 `json:"entryCount,omitempty"`
 
 	// Conditions represent observations
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -70,12 +87,11 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpg;mcpgroup
-//nolint:lll
-//+kubebuilder:printerColumn:name="Servers",type="integer",JSONPath=".status.serverCount",description="The number of MCPServers in this group"
-//+kubebuilder:printerColumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the MCPGroup"
-//+kubebuilder:printerColumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="The age of the MCPGroup"
+//+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
+//+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
+//+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
+//+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPGroup is the Schema for the mcpgroups API
 type MCPGroup struct {

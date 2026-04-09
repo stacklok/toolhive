@@ -124,7 +124,6 @@ jobs:
 
       - name: Generate CRD Docs
         run: task crdref-gen
-        working-directory: cmd/thv-operator
 
       - name: Check for changes
         id: git-docs-check

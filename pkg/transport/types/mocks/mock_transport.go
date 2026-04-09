@@ -15,6 +15,7 @@ import (
 	reflect "reflect"
 
 	upstreamtoken "github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	keys "github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	types "github.com/stacklok/toolhive/pkg/transport/types"
 	gomock "go.uber.org/mock/gomock"
 	jsonrpc2 "golang.org/x/exp/jsonrpc2"
@@ -121,6 +122,20 @@ func (m *MockMiddlewareRunner) GetConfig() types.RunnerConfig {
 func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetConfig))
+}
+
+// GetKeyProvider mocks base method.
+func (m *MockMiddlewareRunner) GetKeyProvider() keys.PublicKeyProvider {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetKeyProvider")
+	ret0, _ := ret[0].(keys.PublicKeyProvider)
+	return ret0
+}
+
+// GetKeyProvider indicates an expected call of GetKeyProvider.
+func (mr *MockMiddlewareRunnerMockRecorder) GetKeyProvider() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetKeyProvider", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetKeyProvider))
 }
 
 // GetUpstreamTokenReader mocks base method.

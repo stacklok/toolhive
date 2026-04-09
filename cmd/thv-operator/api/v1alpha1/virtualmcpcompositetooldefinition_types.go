@@ -25,11 +25,13 @@ type VirtualMCPCompositeToolDefinitionStatus struct {
 	ValidationStatus ValidationStatus `json:"validationStatus,omitempty"`
 
 	// ValidationErrors contains validation error messages if ValidationStatus is Invalid
+	// +listType=atomic
 	// +optional
 	ValidationErrors []string `json:"validationErrors,omitempty"`
 
 	// ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow
 	// This helps track which servers need to be reconciled when this workflow changes
+	// +listType=set
 	// +optional
 	ReferencingVirtualServers []string `json:"referencingVirtualServers,omitempty"`
 
@@ -39,6 +41,8 @@ type VirtualMCPCompositeToolDefinitionStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions represent the latest available observations of the workflow's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -95,7 +99,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=vmcpctd;compositetool
+//+kubebuilder:resource:shortName=vmcpctd;compositetool,categories=toolhive
 //+kubebuilder:printcolumn:name="Workflow",type="string",JSONPath=".spec.name",description="Workflow name"
 //+kubebuilder:printcolumn:name="Steps",type="integer",JSONPath=".spec.steps[*]",description="Number of steps"
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.validationStatus",description="Validation status"

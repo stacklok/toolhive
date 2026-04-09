@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
@@ -68,10 +69,13 @@ type EmbeddingServerSpec struct {
 	Port int32 `json:"port,omitempty"`
 
 	// Args are additional arguments to pass to the embedding inference server
+	// +listType=atomic
 	// +optional
 	Args []string `json:"args,omitempty"`
 
 	// Env are environment variables to set in the container
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 
@@ -156,6 +160,8 @@ type EmbeddingStatefulSetOverrides struct {
 // EmbeddingServerStatus defines the observed state of EmbeddingServer
 type EmbeddingServerStatus struct {
 	// Conditions represent the latest available observations of the EmbeddingServer's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
@@ -181,7 +187,7 @@ type EmbeddingServerStatus struct {
 }
 
 // EmbeddingServerPhase is the phase of the EmbeddingServer
-// +kubebuilder:validation:Enum=Pending;Downloading;Running;Failed;Terminating
+// +kubebuilder:validation:Enum=Pending;Downloading;Ready;Failed;Terminating
 type EmbeddingServerPhase string
 
 const (
@@ -191,8 +197,8 @@ const (
 	// EmbeddingServerPhaseDownloading means the model is being downloaded
 	EmbeddingServerPhaseDownloading EmbeddingServerPhase = "Downloading"
 
-	// EmbeddingServerPhaseRunning means the EmbeddingServer is running and ready
-	EmbeddingServerPhaseRunning EmbeddingServerPhase = "Running"
+	// EmbeddingServerPhaseReady means the EmbeddingServer is ready
+	EmbeddingServerPhaseReady EmbeddingServerPhase = "Ready"
 
 	// EmbeddingServerPhaseFailed means the EmbeddingServer failed to start
 	EmbeddingServerPhaseFailed EmbeddingServerPhase = "Failed"
@@ -203,6 +209,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:resource:shortName=emb;embedding,categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Model",type="string",JSONPath=".spec.model"
 //+kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"

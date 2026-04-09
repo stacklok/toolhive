@@ -9,12 +9,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 )
 
 const (
-	// registryAPIContainerName is the name of the registry-api container in deployments
-	registryAPIContainerName = "registry-api"
+	// RegistryAPIContainerName is the name of the registry-api container in deployments
+	RegistryAPIContainerName = "registry-api"
 
 	// RegistryAPIPort is the port number used by the registry API container
 	RegistryAPIPort = 8080
@@ -62,12 +61,13 @@ const (
 	DefaultReplicas = 1
 
 	// PGPass volume and path constants
-	// pgpassSecretVolumeName is the name of the volume for the pgpass secret
-	pgpassSecretVolumeName = "pgpass-secret"
-	// pgpassVolumeName is the name of the emptyDir volume for the prepared pgpass file
-	pgpassVolumeName = "pgpass"
-	// pgpassInitContainerName is the name of the init container that sets up the pgpass file
-	pgpassInitContainerName = "setup-pgpass"
+
+	// PGPassSecretVolumeName is the name of the volume for the pgpass secret
+	PGPassSecretVolumeName = "pgpass-secret"
+	// PGPassVolumeName is the name of the emptyDir volume for the prepared pgpass file
+	PGPassVolumeName = "pgpass"
+	// PGPassInitContainerName is the name of the init container that sets up the pgpass file
+	PGPassInitContainerName = "setup-pgpass"
 	// pgpassInitContainerImage is the image used by the init container.
 	// Using Chainguard's busybox which runs as nonroot (65532) by default,
 	// matching the typical app user so no chown is needed.
@@ -79,29 +79,52 @@ const (
 	// pgpassEmptyDirMountPath is the path where the emptyDir is mounted
 	// nolint:gosec // G101: This is a file path, not a credential
 	pgpassEmptyDirMountPath = "/pgpass"
-	// pgpassAppUserMountPath is the path where the pgpass file is mounted in the app container
+	// PGPassAppUserMountPath is the path where the pgpass file is mounted in the app container
 	// nolint:gosec // G101: This is a file path, not a credential
-	pgpassAppUserMountPath = "/home/appuser/.pgpass"
+	PGPassAppUserMountPath = "/home/appuser/.pgpass"
 	// pgpassFileName is the name of the pgpass file
 	pgpassFileName = ".pgpass"
+	// pgpassEnvVar is the environment variable name for the pgpass file path
+	pgpassEnvVar = "PGPASSFILE"
 
 	// Git auth volume and path constants
 	// gitAuthSecretsBasePath is the base path where git auth secrets are mounted
 	gitAuthSecretsBasePath = "/secrets"
 )
 
+// Error represents a structured error with condition information for operator components
+type Error struct {
+	Err             error
+	Message         string
+	ConditionReason string
+}
+
+func (e *Error) Error() string {
+	return e.Message
+}
+
+func (e *Error) Unwrap() error {
+	return e.Err
+}
+
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=types.go Manager
 
 // Manager handles registry API deployment operations
 type Manager interface {
 	// ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API
-	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *mcpregistrystatus.Error
+	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *Error
 
 	// CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
 	CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deployment) bool
 
 	// IsAPIReady checks if the registry API deployment is ready and serving requests
 	IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool
+
+	// GetReadyReplicas returns the number of ready replicas for the registry API deployment
+	GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) int32
+
+	// GetAPIStatus returns the readiness state and ready replica count from a single Deployment fetch
+	GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ready bool, readyReplicas int32)
 }
 
 // GetServiceAccountName returns the service account name for a given MCPRegistry.

@@ -56,6 +56,9 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	if reader := runner.GetUpstreamTokenReader(); reader != nil {
 		opts = append(opts, WithUpstreamTokenReader(reader))
 	}
+	if provider := runner.GetKeyProvider(); provider != nil {
+		opts = append(opts, WithKeyProvider(provider))
+	}
 
 	middleware, authInfoHandler, err := GetAuthenticationMiddleware(context.Background(), params.OIDCConfig, opts...)
 	if err != nil {

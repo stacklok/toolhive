@@ -38,6 +38,7 @@ type HeaderFromSecret struct {
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
@@ -102,7 +103,17 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
-	// Telemetry defines observability configuration for the proxy
+	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Cross-namespace references are not supported for security and isolation reasons.
+	// Mutually exclusive with the deprecated inline Telemetry field.
+	// +optional
+	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
+
+	// Telemetry defines inline observability configuration for the proxy.
+	// Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
+	// This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
+	// is rejected by CEL validation.
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
@@ -174,6 +185,10 @@ type MCPRemoteProxyStatus struct {
 	// +optional
 	ToolConfigHash string `json:"toolConfigHash,omitempty"`
 
+	// TelemetryConfigHash stores the hash of the referenced MCPTelemetryConfig for change detection
+	// +optional
+	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
+
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
@@ -227,6 +242,9 @@ const (
 	// ConditionTypeMCPRemoteProxyToolConfigValidated indicates whether the ToolConfigRef is valid
 	ConditionTypeMCPRemoteProxyToolConfigValidated = "ToolConfigValidated"
 
+	// ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
+	ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
+
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
 
@@ -277,6 +295,18 @@ const (
 
 	// ConditionReasonMCPRemoteProxyToolConfigFetchError indicates an error occurred fetching the MCPToolConfig
 	ConditionReasonMCPRemoteProxyToolConfigFetchError = "ToolConfigFetchError"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefValid indicates the TelemetryConfigRef is valid
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefValid = "TelemetryConfigRefValid"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound indicates the referenced MCPTelemetryConfig was not found
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound = "TelemetryConfigRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is invalid
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError indicates an error occurred fetching the MCPTelemetryConfig
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError = "TelemetryConfigRefFetchError"
 
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigValid indicates the ExternalAuthConfigRef is valid
 	ConditionReasonMCPRemoteProxyExternalAuthConfigValid = "ExternalAuthConfigValid"

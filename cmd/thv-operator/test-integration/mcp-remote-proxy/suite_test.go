@@ -169,6 +169,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Register the MCPOIDCConfig controller (needed for authServerRef tests that use OIDCConfigRef)
+	err = (&controllers.MCPOIDCConfigReconciler{
+		Client: k8sManager.GetClient(),
+		Scheme: k8sManager.GetScheme(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
 	// Start the manager in a goroutine
 	go func() {
 		defer GinkgoRecover()

@@ -2444,7 +2444,8 @@ func TestBuildCABundlePathMap(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			result := r.buildCABundlePathMap(t.Context(), "default", tt.typedWorkloads)
+			result, err := r.buildCABundlePathMap(t.Context(), "default", tt.typedWorkloads)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expectedMap, result)
 		})
 	}

@@ -5,9 +5,13 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -139,7 +143,11 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	}
 
 	// Add CA bundle volumes for MCPServerEntry backends with caBundleRef
-	caVolumes, caMounts := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build CA bundle volumes for MCPServerEntries")
+		return nil
+	}
 	volumes = append(volumes, caVolumes...)
 	volumeMounts = append(volumeMounts, caMounts...)
 
@@ -980,23 +988,39 @@ const (
 // caBundleMountPath returns the mount path for a CA bundle ConfigMap for a given entry name.
 // The key defaults to "ca.crt" if not specified in the CABundleSource.
 func caBundleMountPath(entryName string, caBundleRef *mcpv1alpha1.CABundleSource) string {
+	if caBundleRef == nil {
+		return path.Join(caBundleBasePath, entryName, "ca.crt")
+	}
 	key := "ca.crt"
 	if caBundleRef.ConfigMapRef != nil && caBundleRef.ConfigMapRef.Key != "" {
 		key = caBundleRef.ConfigMapRef.Key
 	}
-	return fmt.Sprintf("%s/%s/%s", caBundleBasePath, entryName, key)
+	return path.Join(caBundleBasePath, entryName, key)
 }
 
 // caBundleVolumeName returns a deterministic volume name for a CA bundle.
-// Kubernetes volume names are limited to 63 characters. The "ca-bundle-" prefix
-// (10 chars) leaves 53 chars for the entry name, which is sufficient for typical
-// names. Long names are truncated to fit the limit.
+// Kubernetes volume names are limited to 63 characters and must be valid DNS labels.
+// For short names, the format is "ca-bundle-<entryName>".
+// For long names that would exceed 63 chars, a hash suffix is appended to the
+// truncated name to avoid collisions: "ca-bundle-<truncated>-<sha256[:8]>".
+// Trailing hyphens are trimmed to maintain DNS label validity.
 func caBundleVolumeName(entryName string) string {
 	name := fmt.Sprintf("ca-bundle-%s", entryName)
-	if len(name) > 63 {
-		name = name[:63]
+	if len(name) <= 63 {
+		return name
 	}
-	return name
+
+	// Use a hash suffix to avoid collisions between long names sharing a prefix
+	hash := sha256.Sum256([]byte(entryName))
+	suffix := hex.EncodeToString(hash[:4]) // 8 hex chars
+	// "ca-bundle-" (10) + truncated + "-" (1) + hash (8) = 19 overhead, leaving 44 for entry name
+	maxNameLen := 63 - 10 - 1 - 8 // 44
+	truncated := entryName
+	if len(truncated) > maxNameLen {
+		truncated = truncated[:maxNameLen]
+	}
+	truncated = strings.TrimRight(truncated, "-")
+	return fmt.Sprintf("ca-bundle-%s-%s", truncated, suffix)
 }
 
 // buildCABundleVolumesForEntries builds volumes and volume mounts for MCPServerEntry CA bundles.
@@ -1004,7 +1028,7 @@ func (r *VirtualMCPServerReconciler) buildCABundleVolumesForEntries(
 	ctx context.Context,
 	namespace string,
 	typedWorkloads []workloads.TypedWorkload,
-) ([]corev1.Volume, []corev1.VolumeMount) {
+) ([]corev1.Volume, []corev1.VolumeMount, error) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
 
@@ -1017,13 +1041,12 @@ func (r *VirtualMCPServerReconciler) buildCABundleVolumesForEntries(
 		}
 	}
 	if !hasEntries {
-		return volumes, mounts
+		return volumes, mounts, nil
 	}
 
 	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPServerEntries for CA bundle volumes")
-		return volumes, mounts
+		return nil, nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
 	}
 
 	for _, workload := range typedWorkloads {
@@ -1036,7 +1059,7 @@ func (r *VirtualMCPServerReconciler) buildCABundleVolumesForEntries(
 		}
 
 		volName := caBundleVolumeName(workload.Name)
-		mountPath := fmt.Sprintf("%s/%s", caBundleBasePath, workload.Name)
+		mountPath := path.Join(caBundleBasePath, workload.Name)
 
 		key := "ca.crt"
 		if entry.Spec.CABundleRef.ConfigMapRef.Key != "" {
@@ -1067,5 +1090,5 @@ func (r *VirtualMCPServerReconciler) buildCABundleVolumesForEntries(
 		})
 	}
 
-	return volumes, mounts
+	return volumes, mounts, nil
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/url"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -28,7 +29,7 @@ const (
 	transportTypeUnknown    = "unknown"
 	metadataKeyToolType     = "tool_type"
 	metadataKeyWorkloadType = "workload_type"
-	metadataKeyWorkloadStat = "workload_status"
+	metadataKeyWorkloadStatus = "workload_status"
 	metadataKeyNamespace    = "namespace"
 	metadataKeyRemoteURL    = "remote_url"
 )
@@ -278,7 +279,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	// Set system metadata (these override user labels to prevent conflicts)
 	backend.Metadata[metadataKeyToolType] = metadataToolTypeMCP
 	backend.Metadata[metadataKeyWorkloadType] = "mcp_server"
-	backend.Metadata[metadataKeyWorkloadStat] = string(mcpServer.Status.Phase)
+	backend.Metadata[metadataKeyWorkloadStatus] = string(mcpServer.Status.Phase)
 	if mcpServer.Namespace != "" {
 		backend.Metadata[metadataKeyNamespace] = mcpServer.Namespace
 	}
@@ -444,7 +445,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	// Set system metadata (these override user labels to prevent conflicts)
 	backend.Metadata[metadataKeyToolType] = metadataToolTypeMCP
 	backend.Metadata[metadataKeyWorkloadType] = "remote_proxy"
-	backend.Metadata[metadataKeyWorkloadStat] = string(proxy.Status.Phase)
+	backend.Metadata[metadataKeyWorkloadStatus] = string(proxy.Status.Phase)
 	backend.Metadata[metadataKeyRemoteURL] = proxy.Spec.RemoteURL
 	if proxy.Namespace != "" {
 		backend.Metadata[metadataKeyNamespace] = proxy.Namespace
@@ -470,6 +471,15 @@ func (d *k8sDiscoverer) getMCPServerEntryAsBackend(ctx context.Context, entryNam
 			return nil, fmt.Errorf("MCPServerEntry %s not found", entryName)
 		}
 		return nil, fmt.Errorf("failed to get MCPServerEntry: %w", err)
+	}
+
+	// Unlike MCPServer/MCPRemoteProxy (which use status.URL, empty until ready),
+	// MCPServerEntry always has spec.remoteURL set. Explicitly check phase to
+	// avoid routing to entries that failed validation.
+	if mcpServerEntry.Status.Phase != mcpv1alpha1.MCPServerEntryPhaseValid {
+		slog.Debug("skipping server entry with non-valid phase",
+			"entry", entryName, "phase", mcpServerEntry.Status.Phase)
+		return nil, nil
 	}
 
 	backend := d.mcpServerEntryToBackend(ctx, mcpServerEntry)
@@ -502,7 +512,15 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 	// MCPServerEntry uses the remote URL directly from the spec, not from status.
 	// This is the key difference from MCPServer/MCPRemoteProxy which use status.URL
 	// (set after K8s Service creation).
-	url := entry.Spec.RemoteURL
+	// Defense-in-depth: validate the URL at runtime even though the CRD has pattern validation.
+	if _, err := url.Parse(entry.Spec.RemoteURL); err != nil {
+		slog.Warn("invalid RemoteURL for MCPServerEntry",
+			"entry", entry.Name,
+			"url", entry.Spec.RemoteURL,
+			"error", err)
+		return nil
+	}
+	remoteURL := entry.Spec.RemoteURL
 
 	// Map entry phase to backend health status
 	healthStatus := mapMCPServerEntryPhaseToHealth(entry.Status.Phase)
@@ -525,7 +543,7 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 	backend := &vmcp.Backend{
 		ID:            entry.Name,
 		Name:          entry.Name,
-		BaseURL:       url,
+		BaseURL:       remoteURL,
 		TransportType: transportTypeStr,
 		HealthStatus:  healthStatus,
 		Metadata:      make(map[string]string),
@@ -537,7 +555,7 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 	// Set system metadata (these override user labels to prevent conflicts)
 	backend.Metadata[metadataKeyToolType] = metadataToolTypeMCP
 	backend.Metadata[metadataKeyWorkloadType] = "server_entry"
-	backend.Metadata[metadataKeyWorkloadStat] = string(entry.Status.Phase)
+	backend.Metadata[metadataKeyWorkloadStatus] = string(entry.Status.Phase)
 	backend.Metadata[metadataKeyRemoteURL] = entry.Spec.RemoteURL
 	if entry.Namespace != "" {
 		backend.Metadata[metadataKeyNamespace] = entry.Namespace

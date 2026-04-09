@@ -1283,6 +1283,52 @@ func TestMCPServerEntryToBackend_EmptyRemoteURL(t *testing.T) {
 	require.Nil(t, backend, "should return nil backend when RemoteURL is empty")
 }
 
+func TestGetWorkloadAsVMCPBackend_MCPServerEntry_NonValidPhaseSkipped(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	tests := []struct {
+		name  string
+		phase mcpv1alpha1.MCPServerEntryPhase
+	}{
+		{name: "Pending phase is skipped", phase: mcpv1alpha1.MCPServerEntryPhasePending},
+		{name: "Failed phase is skipped", phase: mcpv1alpha1.MCPServerEntryPhaseFailed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			entry := &mcpv1alpha1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "phase-test-entry",
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerEntrySpec{
+					RemoteURL: "https://mcp.example.com/v1",
+					Transport: "streamable-http",
+					GroupRef:  "group-a",
+				},
+				Status: mcpv1alpha1.MCPServerEntryStatus{
+					Phase: tt.phase,
+				},
+			}
+
+			k8sClient := setupTestClient(t, entry)
+			discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+			backend, err := discoverer.GetWorkloadAsVMCPBackend(t.Context(), TypedWorkload{
+				Name: "phase-test-entry",
+				Type: WorkloadTypeMCPServerEntry,
+			})
+
+			require.NoError(t, err)
+			require.Nil(t, backend, "should skip MCPServerEntry with %s phase", tt.phase)
+		})
+	}
+}
+
 func TestMCPServerEntryPhaseToHealth(t *testing.T) {
 	t.Parallel()
 

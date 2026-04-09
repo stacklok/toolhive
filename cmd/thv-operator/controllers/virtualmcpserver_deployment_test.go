@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -634,6 +635,7 @@ func TestCABundleVolumeName(t *testing.T) {
 		name         string
 		entryName    string
 		expectedName string
+		validate     func(t *testing.T, result string)
 	}{
 		{
 			name:         "simple entry name",
@@ -645,13 +647,48 @@ func TestCABundleVolumeName(t *testing.T) {
 			entryName:    "some-long-entry-name",
 			expectedName: "ca-bundle-some-long-entry-name",
 		},
+		{
+			name:      "long name is truncated with hash suffix and fits 63 chars",
+			entryName: "this-is-a-very-long-entry-name-that-exceeds-the-sixty-three-character-limit",
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+				assert.LessOrEqual(t, len(result), 63)
+				assert.True(t, strings.HasPrefix(result, "ca-bundle-"))
+				assert.NotHasSuffix(t, result, "-")
+			},
+		},
+		{
+			name:      "two long names with same prefix produce different volume names",
+			entryName: "shared-prefix-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-suffix-one",
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+				other := caBundleVolumeName("shared-prefix-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-suffix-two")
+				assert.NotEqual(t, result, other, "different entry names must produce different volume names")
+				assert.LessOrEqual(t, len(result), 63)
+				assert.LessOrEqual(t, len(other), 63)
+			},
+		},
+		{
+			name:      "truncation does not leave trailing hyphen",
+			entryName: "entry-name-with-hyphens-placed-so-truncation-lands-on----------end",
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+				assert.LessOrEqual(t, len(result), 63)
+				assert.NotHasSuffix(t, result, "-")
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			result := caBundleVolumeName(tt.entryName)
-			assert.Equal(t, tt.expectedName, result)
+			if tt.expectedName != "" {
+				assert.Equal(t, tt.expectedName, result)
+			}
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
 		})
 	}
 }
@@ -819,7 +856,8 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			volumes, mounts := r.buildCABundleVolumesForEntries(t.Context(), "default", tt.workloads)
+			volumes, mounts, err := r.buildCABundleVolumesForEntries(t.Context(), "default", tt.workloads)
+			require.NoError(t, err)
 
 			assert.Len(t, volumes, tt.expectedVolumes)
 			assert.Len(t, mounts, tt.expectedMounts)

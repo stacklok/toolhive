@@ -129,9 +129,10 @@ func SendToolCall(httpClient *http.Client, port int32, toolName string, requestI
 }
 
 // SendAuthenticatedToolCall sends a JSON-RPC tools/call request with a Bearer token.
+// Returns the HTTP status code, response body, and the Retry-After header value (empty if not set).
 func SendAuthenticatedToolCall(
 	httpClient *http.Client, port int32, toolName string, requestID int, bearerToken string,
-) (int, []byte) {
+) (int, []byte, string) {
 	reqBody := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      requestID,
@@ -155,10 +156,12 @@ func SendAuthenticatedToolCall(
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	defer func() { _ = resp.Body.Close() }()
 
+	retryAfter := resp.Header.Get("Retry-After")
+
 	respBody, err := io.ReadAll(resp.Body)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-	return resp.StatusCode, respBody
+	return resp.StatusCode, respBody, retryAfter
 }
 
 // GetOIDCToken fetches a JWT from the mock OIDC server for the given subject.

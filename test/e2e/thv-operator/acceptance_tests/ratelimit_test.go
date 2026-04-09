@@ -193,9 +193,7 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 
 		By("Deploying Redis for session storage and rate limiting")
-		// Redis is already deployed by the shared rate limit test suite.
-		// If running in isolation, uncomment:
-		// DeployRedis(ctx, k8sClient, testNamespace, timeout, pollingInterval)
+		DeployRedis(ctx, k8sClient, testNamespace, timeout, pollingInterval)
 
 		By("Deploying mock OIDC server for per-user identity")
 		var issuerURL string
@@ -279,6 +277,9 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 		if oidcCleanup != nil {
 			oidcCleanup()
 		}
+
+		By("Cleaning up Redis")
+		CleanupRedis(ctx, k8sClient, testNamespace)
 	})
 
 	It("should reject user after per-user limit exceeded and allow independent user (AC11, AC12)", func() {
@@ -287,18 +288,18 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 
 		By("Sending 2 requests as user-a — all should succeed")
 		for i := range 2 {
-			status, body := SendAuthenticatedToolCall(httpClient, nodePort, "echo", i+1, tokenA)
+			status, body, _ := SendAuthenticatedToolCall(httpClient, nodePort, "echo", i+1, tokenA)
 			Expect(status).To(Equal(http.StatusOK),
 				"user-a request %d should succeed, got status %d: %s", i+1, status, string(body))
 		}
 
 		By("Sending a 3rd request as user-a — should be rate limited with HTTP 429")
-		status, body := SendAuthenticatedToolCall(httpClient, nodePort, "echo", 3, tokenA)
+		status, body, retryAfter := SendAuthenticatedToolCall(httpClient, nodePort, "echo", 3, tokenA)
 		Expect(status).To(Equal(http.StatusTooManyRequests),
 			"user-a 3rd request should be rate limited, body: %s", string(body))
 
 		By("Verifying Retry-After header is present (AC12)")
-		// The header is set by writeRateLimited in middleware.go
+		Expect(retryAfter).ToNot(BeEmpty(), "Retry-After header should be set on 429 response")
 
 		By("Verifying JSON-RPC error code -32029 with retryAfterSeconds")
 		var resp map[string]any
@@ -316,7 +317,7 @@ var _ = Describe("MCPServer Per-User Rate Limiting", Ordered, func() {
 		tokenB := GetOIDCToken(httpClient, oidcNodePort, "user-b")
 
 		By("Sending request as user-b — should succeed (independent bucket)")
-		status, body = SendAuthenticatedToolCall(httpClient, nodePort, "echo", 4, tokenB)
+		status, body, _ = SendAuthenticatedToolCall(httpClient, nodePort, "echo", 4, tokenB)
 		Expect(status).To(Equal(http.StatusOK),
 			"user-b should not be blocked by user-a's limit, got status %d: %s", status, string(body))
 	})

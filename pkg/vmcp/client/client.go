@@ -141,7 +141,11 @@ func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transp
 		}
 
 		if !caCertPool.AppendCertsFromPEM(caPEM) {
-			return nil, fmt.Errorf("failed to parse CA certificate data")
+			source := "inline data"
+			if len(caBundleData) == 0 && caBundlePath != "" {
+				source = caBundlePath
+			}
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", source)
 		}
 
 		if t.TLSClientConfig == nil {

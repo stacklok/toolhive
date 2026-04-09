@@ -563,15 +563,17 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 		backend.Metadata[metadataKeyNamespace] = entry.Namespace
 	}
 
-	// Fetch CA bundle data from ConfigMap for dynamic mode TLS verification
+	// Fetch CA bundle data from ConfigMap for dynamic mode TLS verification.
+	// Failure is fatal: if the user explicitly configured caBundleRef, proceeding
+	// without custom CA would silently degrade TLS trust. The reconciler will retry.
 	if entry.Spec.CABundleRef != nil && entry.Spec.CABundleRef.ConfigMapRef != nil {
 		caData, err := d.fetchCABundleData(ctx, entry.Spec.CABundleRef)
 		if err != nil {
-			slog.Warn("failed to fetch CA bundle for MCPServerEntry, proceeding without custom CA",
+			slog.Error("failed to fetch CA bundle for MCPServerEntry",
 				"entry", entry.Name, "error", err)
-		} else {
-			backend.CABundleData = caData
+			return nil
 		}
+		backend.CABundleData = caData
 	}
 
 	// Discover and populate authentication configuration from MCPServerEntry

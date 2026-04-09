@@ -1565,3 +1565,103 @@ func TestDiscoverAuth_MCPServerEntry_TokenExchange(t *testing.T) {
 	assert.Equal(t, "entry-client", backend.AuthConfig.TokenExchange.ClientID)
 	assert.Equal(t, "entry-secret-value", backend.AuthConfig.TokenExchange.ClientSecret)
 }
+
+func TestFetchCABundleData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		ref      *mcpv1alpha1.CABundleSource
+		objs     []client.Object
+		wantData []byte
+		wantErr  string
+	}{
+		{
+			name: "nil ConfigMapRef returns error",
+			ref: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: nil,
+			},
+			wantErr: "configMapRef is nil",
+		},
+		{
+			name: "ConfigMap not found returns error",
+			ref: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "missing-cm"},
+				},
+			},
+			wantErr: "failed to get CA bundle ConfigMap",
+		},
+		{
+			name: "key missing from ConfigMap returns error",
+			ref: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "test-ca"},
+					Key:                  "nonexistent.pem",
+				},
+			},
+			objs: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-ca", Namespace: "default"},
+					Data:       map[string]string{"ca.crt": "cert-data"},
+				},
+			},
+			wantErr: "does not contain key",
+		},
+		{
+			name: "default key ca.crt used when key is empty",
+			ref: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "test-ca"},
+					Key:                  "",
+				},
+			},
+			objs: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-ca", Namespace: "default"},
+					Data:       map[string]string{"ca.crt": "cert-data"},
+				},
+			},
+			wantData: []byte("cert-data"),
+		},
+		{
+			name: "explicit key used",
+			ref: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "test-ca"},
+					Key:                  "custom.pem",
+				},
+			},
+			objs: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-ca", Namespace: "default"},
+					Data:       map[string]string{"custom.pem": "custom-cert"},
+				},
+			},
+			wantData: []byte("custom-cert"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			k8sClient := setupTestClient(t, tt.objs...)
+			discoverer := &k8sDiscoverer{
+				k8sClient: k8sClient,
+				namespace: "default",
+			}
+
+			data, err := discoverer.fetchCABundleData(t.Context(), tt.ref)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, data)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantData, data)
+			}
+		})
+	}
+}

@@ -231,7 +231,7 @@ func TestNewBackendTransport_CustomCA(t *testing.T) {
 			},
 			caBundleData:  []byte("not-a-cert"),
 			expectError:   true,
-			errorContains: "failed to parse CA certificate data",
+			errorContains: "failed to parse CA certificate from inline data",
 		},
 		{
 			name: "CA data takes precedence over file path",

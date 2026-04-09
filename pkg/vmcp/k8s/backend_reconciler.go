@@ -21,6 +21,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
+const (
+	// caBundleConfigMapIndex is the field index for MCPServerEntry→ConfigMap lookups.
+	// Used to efficiently find MCPServerEntries referencing a specific CA bundle ConfigMap.
+	caBundleConfigMapIndex = ".spec.caBundleRef.configMapRef.name"
+)
+
 // BackendReconciler watches MCPServers, MCPRemoteProxies, and MCPServerEntries,
 // converting them to vmcp.Backend and updating the DynamicRegistry when backends change.
 //
@@ -64,6 +70,23 @@ type BackendReconciler struct {
 
 	// Discoverer converts K8s resources to vmcp.Backend (reuses existing code)
 	Discoverer workloads.Discoverer
+}
+
+// SetupIndexes registers field indexes required by the reconciler's watch handlers.
+// Must be called before SetupWithManager.
+func (*BackendReconciler) SetupIndexes(ctx context.Context, mgr ctrl.Manager) error {
+	return mgr.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServerEntry{}, caBundleConfigMapIndex,
+		func(obj client.Object) []string {
+			entry, ok := obj.(*mcpv1alpha1.MCPServerEntry)
+			if !ok {
+				return nil
+			}
+			if entry.Spec.CABundleRef == nil || entry.Spec.CABundleRef.ConfigMapRef == nil {
+				return nil
+			}
+			return []string{entry.Spec.CABundleRef.ConfigMapRef.Name}
+		},
+	)
 }
 
 // Reconcile handles MCPServer, MCPRemoteProxy, and MCPServerEntry events, updating the DynamicRegistry.
@@ -184,6 +207,33 @@ func (r *BackendReconciler) fetchBackendResource(
 	// One is NotFound, the other is nil - should not happen in practice
 	// Handle gracefully by treating as deleted
 	return nil, nil
+}
+
+// MapAuthConfigToEntries returns reconcile requests for MCPServerEntries that reference
+// the given ExternalAuthConfig name. Used by the ExternalAuthConfig watch handler.
+func (r *BackendReconciler) MapAuthConfigToEntries(ctx context.Context, authConfigName string) []reconcile.Request {
+	entryList := &mcpv1alpha1.MCPServerEntryList{}
+	if err := r.List(ctx, entryList, client.InNamespace(r.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServerEntries for ExternalAuthConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, entry := range entryList.Items {
+		if entry.Spec.GroupRef != r.GroupRef {
+			continue
+		}
+		if entry.Spec.ExternalAuthConfigRef != nil &&
+			entry.Spec.ExternalAuthConfigRef.Name == authConfigName {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      entry.Name,
+					Namespace: entry.Namespace,
+				},
+			})
+		}
+	}
+	return requests
 }
 
 // removeBackendFromRegistry removes a backend from the registry with consistent logging.
@@ -336,27 +386,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Find MCPServerEntries referencing this ExternalAuthConfig
-			entryList := &mcpv1alpha1.MCPServerEntryList{}
-			if err := r.List(ctx, entryList, client.InNamespace(r.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list MCPServerEntries for ExternalAuthConfig watch")
-				return requests
-			}
-
-			for _, entry := range entryList.Items {
-				if entry.Spec.GroupRef != r.GroupRef {
-					continue
-				}
-
-				if entry.Spec.ExternalAuthConfigRef != nil &&
-					entry.Spec.ExternalAuthConfigRef.Name == authConfig.Name {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      entry.Name,
-							Namespace: entry.Namespace,
-						},
-					})
-				}
-			}
+			requests = append(requests, r.MapAuthConfigToEntries(ctx, authConfig.Name)...)
 
 			return requests
 		},
@@ -438,7 +468,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	)
 
 	// Event handler for ConfigMap changes (CA bundle updates)
-	// Maps ConfigMap → MCPServerEntries that reference it via caBundleRef
+	// Uses field index for efficient lookup of MCPServerEntries referencing the ConfigMap
 	caBundleConfigMapHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
 			configMap, ok := obj.(*corev1.ConfigMap)
@@ -446,9 +476,12 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return nil
 			}
 
-			// Find MCPServerEntries referencing this ConfigMap as a CA bundle
+			// Use field index to find MCPServerEntries referencing this ConfigMap
 			entryList := &mcpv1alpha1.MCPServerEntryList{}
-			if err := r.List(ctx, entryList, client.InNamespace(r.Namespace)); err != nil {
+			if err := r.List(ctx, entryList,
+				client.InNamespace(r.Namespace),
+				client.MatchingFields{caBundleConfigMapIndex: configMap.Name},
+			); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPServerEntries for ConfigMap watch")
 				return nil
 			}
@@ -458,17 +491,12 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if entry.Spec.GroupRef != r.GroupRef {
 					continue
 				}
-
-				if entry.Spec.CABundleRef != nil &&
-					entry.Spec.CABundleRef.ConfigMapRef != nil &&
-					entry.Spec.CABundleRef.ConfigMapRef.Name == configMap.Name {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      entry.Name,
-							Namespace: entry.Namespace,
-						},
-					})
-				}
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      entry.Name,
+						Namespace: entry.Namespace,
+					},
+				})
 			}
 
 			return requests

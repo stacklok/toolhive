@@ -45,7 +45,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket": {
-                "description": "Shared defines a token bucket shared across all users for this specific tool.\n+kubebuilder:validation:Required",
+                "description": "PerUser token bucket configuration for this tool.\n+optional",
                 "properties": {
                     "maxTokens": {
                         "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
@@ -60,6 +60,9 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig": {
                 "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
                 "properties": {
+                    "perUser": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    },
                     "shared": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
                     },
@@ -79,6 +82,9 @@ const docTemplate = `{
                     "name": {
                         "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
                         "type": "string"
+                    },
+                    "perUser": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
                     },
                     "shared": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"

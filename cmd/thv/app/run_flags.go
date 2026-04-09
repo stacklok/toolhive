@@ -347,12 +347,15 @@ func BuildRunnerConfig(
 		return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 	}
 
-	// Resolve registry source URLs when the server was discovered via registry lookup.
+	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
 	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, appConfig)
+	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	// Build the runner config
 	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
-		envVars, envVarValidator, oidcConfig, telemetryConfig, runner.WithRegistrySourceURLs(regAPIURL, regURL))
+		envVars, envVarValidator, oidcConfig, telemetryConfig,
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
+		runner.WithRegistryServerName(regServerName))
 }
 
 // setupOIDCConfiguration sets up OIDC configuration and validates URLs

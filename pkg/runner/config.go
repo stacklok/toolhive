@@ -63,6 +63,10 @@ type RunConfig struct {
 	// Empty when the server was not discovered via registry lookup.
 	RegistryURL string `json:"registry_url,omitempty" yaml:"registry_url,omitempty"`
 
+	// RegistryServerName is the registry entry name used to look up this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryServerName string `json:"registry_server_name,omitempty" yaml:"registry_server_name,omitempty"`
+
 	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
 	RemoteAuthConfig *remote.Config `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
 

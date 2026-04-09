@@ -123,6 +123,24 @@ func ResolveRegistrySourceURLs(serverMetadata regtypes.ServerMetadata, appConfig
 	return appConfig.RegistryApiUrl, appConfig.RegistryUrl
 }
 
+// WithRegistryServerName records the registry entry name used to look up this server's metadata.
+func WithRegistryServerName(name string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RegistryServerName = name
+		return nil
+	}
+}
+
+// ResolveRegistryServerName returns the registry entry name from server metadata
+// when the server was discovered via registry lookup (non-nil metadata).
+// Returns empty string when metadata is nil (direct image reference or protocol scheme).
+func ResolveRegistryServerName(serverMetadata regtypes.ServerMetadata) string {
+	if serverMetadata == nil {
+		return ""
+	}
+	return serverMetadata.GetName()
+}
+
 // WithRegistryProxyPort sets the proxy port from registry metadata.
 // This is used as a fallback when the CLI --proxy-port flag is not set.
 func WithRegistryProxyPort(port int) RunConfigBuilderOption {

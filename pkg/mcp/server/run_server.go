@@ -50,8 +50,9 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}
 
-	// Resolve registry source URLs when the server was discovered via registry lookup.
+	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
 	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, h.configProvider.GetConfig())
+	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	// Build run configuration.
 	// Use type assertion with nil check to guard against typed nil pointers.
@@ -61,7 +62,8 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata,
-		runner.WithRegistrySourceURLs(regAPIURL, regURL))
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
+		runner.WithRegistryServerName(regServerName))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
 	}

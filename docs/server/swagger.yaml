@@ -1172,6 +1172,11 @@ components:
             RegistryAPIURL is the registry API URL that served this server's metadata.
             Empty when the server was not discovered via registry lookup.
           type: string
+        registry_server_name:
+          description: |-
+            RegistryServerName is the registry entry name used to look up this server's metadata.
+            Empty when the server was not discovered via registry lookup.
+          type: string
         registry_url:
           description: |-
             RegistryURL is the registry URL that served this server's metadata.

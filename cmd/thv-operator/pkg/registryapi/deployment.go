@@ -194,22 +194,191 @@ func (*manager) buildRegistryAPIDeployment(
 		}),
 		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
 		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
-		WithRegistryServerConfigMount(registryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
-		WithRegistrySourceMounts(registryAPIContainerName, mcpRegistry.Spec.Sources),
-		WithRegistryStorageMount(registryAPIContainerName),
+		WithRegistryServerConfigMount(RegistryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
+		WithRegistrySourceMounts(RegistryAPIContainerName, mcpRegistry.Spec.Sources),
+		WithRegistryStorageMount(RegistryAPIContainerName),
 	}
 
 	// Add pgpass mount if databaseConfig is specified
 	if mcpRegistry.HasDatabaseConfig() {
 		secretName := mcpRegistry.BuildPGPassSecretName()
-		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretName))
+		opts = append(opts, WithPGPassMount(RegistryAPIContainerName, secretName))
 	}
 
 	// Add git auth mounts for sources that have authentication configured
 	for _, source := range mcpRegistry.Spec.Sources {
 		if source.Git != nil && source.Git.Auth != nil {
-			opts = append(opts, WithGitAuthMount(registryAPIContainerName, source.Git.Auth.PasswordSecretRef))
+			opts = append(opts, WithGitAuthMount(RegistryAPIContainerName, source.Git.Auth.PasswordSecretRef))
 		}
+	}
+
+	// Build PodTemplateSpec with defaults and user customizations merged
+	builder := NewPodTemplateSpecBuilderFrom(userPTS)
+	podTemplateSpec := builder.Apply(opts...).Build()
+
+	// Build deployment-level annotations with PodTemplateSpec hash for change detection
+	deploymentAnnotations := make(map[string]string)
+	if mcpRegistry.HasPodTemplateSpec() && mcpRegistry.Spec.PodTemplateSpec.Raw != nil {
+		hash, err := checksum.HashRawJSON(mcpRegistry.Spec.PodTemplateSpec.Raw)
+		if err == nil {
+			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
+		}
+	}
+
+	// Create basic deployment specification with named container
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        deploymentName,
+			Namespace:   mcpRegistry.Namespace,
+			Labels:      labels,
+			Annotations: deploymentAnnotations,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &[]int32{DefaultReplicas}[0], // Single replica for registry API
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":      deploymentName,
+					"app.kubernetes.io/component": "registry-api",
+				},
+			},
+			Template: podTemplateSpec,
+		},
+	}
+
+	return deployment
+}
+
+// ensureDeploymentNewPath creates or updates the registry-api Deployment for the new
+// decoupled config path. It mirrors ensureDeployment but takes a configMapName string
+// instead of a ConfigManager, delegating to buildRegistryAPIDeploymentNewPath.
+func (m *manager) ensureDeploymentNewPath(
+	ctx context.Context,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	configMapName string,
+) (*appsv1.Deployment, error) {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	// Build the desired deployment configuration
+	deployment := m.buildRegistryAPIDeploymentNewPath(ctx, mcpRegistry, configMapName)
+	deploymentName := deployment.Name
+
+	// Set owner reference for automatic garbage collection
+	if err := controllerutil.SetControllerReference(mcpRegistry, deployment, m.scheme); err != nil {
+		ctxLogger.Error(err, "Failed to set controller reference for deployment")
+		return nil, fmt.Errorf("failed to set controller reference for deployment: %w", err)
+	}
+
+	// Check if deployment already exists
+	existing := &appsv1.Deployment{}
+	err := m.client.Get(ctx, client.ObjectKey{
+		Name:      deploymentName,
+		Namespace: mcpRegistry.Namespace,
+	}, existing)
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Deployment doesn't exist, create it
+			ctxLogger.Info("Creating registry-api deployment", "deployment", deploymentName)
+			if err := m.client.Create(ctx, deployment); err != nil {
+				ctxLogger.Error(err, "Failed to create deployment")
+				return nil, fmt.Errorf("failed to create deployment %s: %w", deploymentName, err)
+			}
+			ctxLogger.Info("Successfully created registry-api deployment", "deployment", deploymentName)
+			return deployment, nil
+		}
+		// Unexpected error
+		ctxLogger.Error(err, "Failed to get deployment")
+		return nil, fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
+	}
+
+	// Check if the deployment needs to be updated
+	if !deploymentNeedsUpdate(existing, deployment) {
+		ctxLogger.V(1).Info("Deployment already up-to-date, skipping update", "deployment", deploymentName)
+		return existing, nil
+	}
+
+	// Selective field update: update Spec.Template and metadata, preserve Spec.Replicas for HPA
+	existing.Spec.Template = deployment.Spec.Template
+	existing.Labels = deployment.Labels
+
+	// Merge annotations to preserve Kubernetes-managed annotations (e.g., deployment.kubernetes.io/revision)
+	if existing.Annotations == nil {
+		existing.Annotations = make(map[string]string)
+	}
+	for k, v := range deployment.Annotations {
+		existing.Annotations[k] = v
+	}
+
+	// Ensure owner reference is set
+	if err := controllerutil.SetControllerReference(mcpRegistry, existing, m.scheme); err != nil {
+		return nil, fmt.Errorf("failed to set controller reference for existing deployment: %w", err)
+	}
+
+	if err := m.client.Update(ctx, existing); err != nil {
+		ctxLogger.Error(err, "Failed to update deployment")
+		return nil, fmt.Errorf("failed to update deployment %s: %w", deploymentName, err)
+	}
+
+	ctxLogger.Info("Successfully updated registry-api deployment", "deployment", deploymentName)
+	return existing, nil
+}
+
+// buildRegistryAPIDeploymentNewPath creates a Deployment for the decoupled config path.
+// Unlike buildRegistryAPIDeployment which uses a ConfigManager to generate config, this
+// function mounts a ConfigMap created from the raw ConfigYAML string. It supports
+// user-provided Volumes, VolumeMounts, and PGPassSecretRef instead of the legacy
+// Sources, DatabaseConfig, and auto-generated pgpass secret.
+func (*manager) buildRegistryAPIDeploymentNewPath(
+	ctx context.Context,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	configMapName string,
+) *appsv1.Deployment {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	// Generate deployment name using the established pattern
+	deploymentName := mcpRegistry.GetAPIResourceName()
+
+	// Define labels using common function
+	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)
+
+	// Parse user-provided PodTemplateSpec if present
+	var userPTS *corev1.PodTemplateSpec
+	if mcpRegistry.HasPodTemplateSpec() {
+		var err error
+		userPTS, err = ParsePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
+		if err != nil {
+			ctxLogger.Error(err, "Failed to parse PodTemplateSpec")
+			return nil
+		}
+	}
+
+	// Compute config hash from the raw ConfigYAML to detect config changes
+	configHash := ctrlutil.CalculateConfigHash([]byte(mcpRegistry.Spec.ConfigYAML))
+
+	// Build list of options for PodTemplateSpec
+	opts := []PodTemplateSpecOption{
+		WithLabels(labels),
+		WithAnnotations(map[string]string{
+			configHashAnnotation: configHash,
+		}),
+		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
+		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
+		WithRegistryServerConfigMount(RegistryAPIContainerName, configMapName),
+	}
+
+	// Add user-provided volumes
+	for _, vol := range mcpRegistry.Spec.Volumes {
+		opts = append(opts, WithVolume(vol))
+	}
+
+	// Add user-provided volume mounts
+	for _, mount := range mcpRegistry.Spec.VolumeMounts {
+		opts = append(opts, WithVolumeMount(RegistryAPIContainerName, mount))
+	}
+
+	// Add pgpass mount if a pre-created pgpass secret reference is specified
+	if mcpRegistry.Spec.PGPassSecretRef != nil {
+		opts = append(opts, WithPGPassSecretRefMount(RegistryAPIContainerName, *mcpRegistry.Spec.PGPassSecretRef))
 	}
 
 	// Build PodTemplateSpec with defaults and user customizations merged

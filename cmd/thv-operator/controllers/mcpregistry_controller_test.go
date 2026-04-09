@@ -38,13 +38,22 @@ func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer already set.
+// newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer
+// and a minimal valid spec (one source) so it passes reconciler validation.
 func newMCPRegistryWithFinalizer(name, namespace string) *mcpv1alpha1.MCPRegistry { //nolint:unparam
 	return &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
 			Namespace:  namespace,
 			Finalizers: []string{"mcpregistry.toolhive.stacklok.dev/finalizer"},
+		},
+		Spec: mcpv1alpha1.MCPRegistrySpec{
+			Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+				{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+					Key:                  "registry.json",
+				}},
+			},
 		},
 	}
 }
@@ -86,6 +95,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				t.Helper()
 				mcpRegistry := &mcpv1alpha1.MCPRegistry{
 					ObjectMeta: metav1.ObjectMeta{Name: registryName, Namespace: registryNamespace},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+								Key:                  "registry.json",
+							}},
+						},
+					},
 				}
 				builder := fake.NewClientBuilder().
 					WithScheme(s).
@@ -123,6 +140,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						},
 						DeletionTimestamp: &now,
 					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+								Key:                  "registry.json",
+							}},
+						},
+					},
 				}
 				builder := fake.NewClientBuilder().
 					WithScheme(s).
@@ -157,6 +182,14 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						Namespace:         registryNamespace,
 						Finalizers:        []string{"other.finalizer/test"},
 						DeletionTimestamp: &now,
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+							{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+								Key:                  "registry.json",
+							}},
+						},
 					},
 				}
 				builder := fake.NewClientBuilder().
@@ -412,6 +445,201 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			assert.Equal(t, tt.expErr, err)
 			if tt.assertRegistry != nil {
 				tt.assertRegistry(t, fakeClient)
+			}
+		})
+	}
+}
+
+func TestValidateNewPathSpec(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spec    mcpv1alpha1.MCPRegistrySpec
+		wantErr string
+	}{
+		{
+			name: "valid new path with configYAML and no legacy fields",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+			},
+		},
+		{
+			name: "valid legacy path with sources and no configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+			},
+		},
+		{
+			name: "mutual exclusivity configYAML plus sources",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "mutual exclusivity configYAML plus databaseConfig",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML:     "sources:\n  - name: default\n",
+				DatabaseConfig: &mcpv1alpha1.MCPRegistryDatabaseConfig{Host: "pg"},
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "mutual exclusivity configYAML plus authConfig",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{Mode: mcpv1alpha1.MCPRegistryAuthModeAnonymous},
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "neither path specified",
+			spec:    mcpv1alpha1.MCPRegistrySpec{},
+			wantErr: "either configYAML or sources must be specified",
+		},
+		{
+			name: "volumes without configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+				Volumes: []corev1.Volume{
+					{Name: "extra", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+			wantErr: "volumes and volumeMounts require configYAML",
+		},
+		{
+			name: "volumeMounts without configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "extra", MountPath: "/extra"},
+				},
+			},
+			wantErr: "volumes and volumeMounts require configYAML",
+		},
+		{
+			name: "pgpassSecretRef without configYAML",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+					{Name: "test", ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "test-cm"},
+						Key:                  "registry.json",
+					}},
+				},
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "pgpass"},
+					Key:                  ".pgpass",
+				},
+			},
+			wantErr: "pgpassSecretRef requires configYAML",
+		},
+		{
+			name: "reserved volume name registry-server-config in spec volumes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: []corev1.Volume{
+					{Name: registryapi.RegistryServerConfigVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "reserved volume name pgpass-secret when pgpassSecretRef is set",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+					Key:                  ".pgpass",
+				},
+				Volumes: []corev1.Volume{
+					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "non-reserved volume name passes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: []corev1.Volume{
+					{Name: "my-custom-volume", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+		},
+		{
+			name: "reserved volume name pgpass-secret when pgpassSecretRef is NOT set passes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: []corev1.Volume{
+					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+			// pgpass-secret is only reserved when pgpassSecretRef is set
+		},
+		{
+			name: "duplicate mount path in spec volumeMounts",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "vol-a", MountPath: "/data/files"},
+					{Name: "vol-b", MountPath: "/data/files"},
+				},
+			},
+			wantErr: "duplicate mount path",
+		},
+		{
+			name: "mount path collision with operator-reserved config path",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "my-vol", MountPath: "/config"},
+				},
+			},
+			wantErr: "duplicate mount path '/config'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpRegistry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "default",
+				},
+				Spec: tt.spec,
+			}
+
+			err := validateNewPathSpec(mcpRegistry)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

@@ -105,7 +105,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				// Verify containers
 				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 				container := deployment.Spec.Template.Spec.Containers[0]
-				assert.Equal(t, registryAPIContainerName, container.Name)
+				assert.Equal(t, RegistryAPIContainerName, container.Name)
 				assert.Equal(t, getRegistryAPIImage(), container.Image)
 
 				// Verify container ports

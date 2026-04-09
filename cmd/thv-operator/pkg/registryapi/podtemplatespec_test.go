@@ -319,7 +319,7 @@ func TestBuildRegistryAPIContainer(t *testing.T) {
 
 	container := BuildRegistryAPIContainer("my-image:v1.0")
 
-	assert.Equal(t, registryAPIContainerName, container.Name)
+	assert.Equal(t, RegistryAPIContainerName, container.Name)
 	assert.Equal(t, "my-image:v1.0", container.Image)
 	assert.Equal(t, []string{ServeCommand}, container.Args)
 
@@ -1197,4 +1197,193 @@ func TestWithGitAuthMount(t *testing.T) {
 		require.Len(t, pts.Spec.Containers, 1)
 		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
 	})
+}
+
+func TestWithPGPassSecretRefMount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		secretRef  corev1.SecretKeySelector
+		assertions func(t *testing.T, pts corev1.PodTemplateSpec)
+	}{
+		{
+			name: "creates pgpass-secret volume from the referenced secret",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				var secretVolume *corev1.Volume
+				for i := range pts.Spec.Volumes {
+					if pts.Spec.Volumes[i].Name == PGPassSecretVolumeName {
+						secretVolume = &pts.Spec.Volumes[i]
+						break
+					}
+				}
+				require.NotNil(t, secretVolume, "pgpass-secret volume must exist")
+				require.NotNil(t, secretVolume.Secret)
+				assert.Equal(t, "my-pgpass", secretVolume.Secret.SecretName)
+			},
+		},
+		{
+			name: "creates pgpass emptyDir volume",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				var emptyDirVolume *corev1.Volume
+				for i := range pts.Spec.Volumes {
+					if pts.Spec.Volumes[i].Name == PGPassVolumeName {
+						emptyDirVolume = &pts.Spec.Volumes[i]
+						break
+					}
+				}
+				require.NotNil(t, emptyDirVolume, "pgpass emptyDir volume must exist")
+				require.NotNil(t, emptyDirVolume.EmptyDir)
+			},
+		},
+		{
+			name: "creates setup-pgpass init container with correct command image and security context",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.InitContainers, 1)
+				ic := pts.Spec.InitContainers[0]
+
+				assert.Equal(t, PGPassInitContainerName, ic.Name)
+				assert.Equal(t, "cgr.dev/chainguard/busybox:latest", ic.Image)
+				require.Len(t, ic.Command, 3)
+				assert.Equal(t, "sh", ic.Command[0])
+				assert.Equal(t, "-c", ic.Command[1])
+				assert.Contains(t, ic.Command[2], "cp /secret/.pgpass /pgpass/.pgpass")
+				assert.Contains(t, ic.Command[2], "chmod 0600 /pgpass/.pgpass")
+
+				// Security context
+				require.NotNil(t, ic.SecurityContext)
+				assert.True(t, *ic.SecurityContext.RunAsNonRoot)
+				assert.False(t, *ic.SecurityContext.AllowPrivilegeEscalation)
+				assert.True(t, *ic.SecurityContext.ReadOnlyRootFilesystem)
+				require.NotNil(t, ic.SecurityContext.Capabilities)
+				assert.Contains(t, ic.SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
+			},
+		},
+		{
+			name: "creates volume mount on app container at pgpass path with subPath",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				container := pts.Spec.Containers[0]
+				require.Len(t, container.VolumeMounts, 1)
+
+				mount := container.VolumeMounts[0]
+				assert.Equal(t, PGPassVolumeName, mount.Name)
+				assert.Equal(t, PGPassAppUserMountPath, mount.MountPath)
+				assert.Equal(t, ".pgpass", mount.SubPath)
+				assert.True(t, mount.ReadOnly)
+			},
+		},
+		{
+			name: "creates PGPASSFILE env var",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				container := pts.Spec.Containers[0]
+
+				var pgpassEnv *corev1.EnvVar
+				for i := range container.Env {
+					if container.Env[i].Name == "PGPASSFILE" {
+						pgpassEnv = &container.Env[i]
+						break
+					}
+				}
+				require.NotNil(t, pgpassEnv, "PGPASSFILE env var must exist")
+				assert.Equal(t, PGPassAppUserMountPath, pgpassEnv.Value)
+			},
+		},
+		{
+			name: "no-op when secretRef name is empty",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Empty(t, pts.Spec.Volumes, "no volumes should be added when secret name is empty")
+				assert.Empty(t, pts.Spec.InitContainers, "no init containers should be added when secret name is empty")
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Empty(t, pts.Spec.Containers[0].VolumeMounts, "no volume mounts should be added when secret name is empty")
+				assert.Empty(t, pts.Spec.Containers[0].Env, "no env vars should be added when secret name is empty")
+			},
+		},
+		{
+			name: "no-op when secretRef key is empty",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  "",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Empty(t, pts.Spec.Volumes, "no volumes should be added when key is empty")
+				assert.Empty(t, pts.Spec.InitContainers, "no init containers should be added when key is empty")
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Empty(t, pts.Spec.Containers[0].VolumeMounts, "no volume mounts should be added when key is empty")
+				assert.Empty(t, pts.Spec.Containers[0].Env, "no env vars should be added when key is empty")
+			},
+		},
+		{
+			name: "uses the correct key from secretRef not hardcoded",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "custom-secret"},
+				Key:                  "custom-key",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				// Find the pgpass-secret volume and verify it uses the custom key
+				var secretVolume *corev1.Volume
+				for i := range pts.Spec.Volumes {
+					if pts.Spec.Volumes[i].Name == PGPassSecretVolumeName {
+						secretVolume = &pts.Spec.Volumes[i]
+						break
+					}
+				}
+				require.NotNil(t, secretVolume)
+				require.NotNil(t, secretVolume.Secret)
+				assert.Equal(t, "custom-secret", secretVolume.Secret.SecretName)
+				require.Len(t, secretVolume.Secret.Items, 1)
+				// The key should match secretRef.Key, not a hardcoded value
+				assert.Equal(t, "custom-key", secretVolume.Secret.Items[0].Key)
+				// The path is always .pgpass (the filename is fixed)
+				assert.Equal(t, ".pgpass", secretVolume.Secret.Items[0].Path)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewPodTemplateSpecBuilderFrom(nil)
+			pts := builder.Apply(
+				WithContainer(corev1.Container{Name: RegistryAPIContainerName}),
+				WithPGPassSecretRefMount(RegistryAPIContainerName, tt.secretRef),
+			).Build()
+
+			tt.assertions(t, pts)
+		})
+	}
 }

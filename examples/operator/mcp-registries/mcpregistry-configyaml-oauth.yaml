@@ -1,0 +1,90 @@
+# Example: MCPRegistry with OAuth authentication using the decoupled configYAML path
+#
+# This example demonstrates how to configure OAuth authentication with
+# the new configYAML field. In the decoupled path, OAuth secrets and CA
+# certificates are mounted explicitly via volumes/volumeMounts instead of
+# the operator auto-generating mounts from clientSecretRef and caCertRef.
+#
+# Key differences from the legacy path:
+# - OAuth uses "clientSecretFile:" with a file path, not "clientSecretRef:"
+# - OAuth uses "caCertPath:" with a file path, not "caCertRef:"
+# - All secret and ConfigMap volumes are defined explicitly
+# - Mount paths in volumes/volumeMounts must match the file paths in configYAML
+#
+# This example uses OAuth mode, which is the recommended default for
+# production deployments.
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: oauth-configyaml
+  namespace: toolhive-system
+spec:
+  displayName: "Secure Registry with OAuth (configYAML)"
+  configYAML: |
+    sources:
+      - name: production
+        format: toolhive
+        file:
+          path: /config/registry/production/registry.json
+    registries:
+      - name: default
+        sources: ["production"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: oauth
+      oauth:
+        resourceUrl: https://registry.example.com
+        realm: mcp-registry
+        scopesSupported:
+          - mcp-registry:read
+          - mcp-registry:write
+        providers:
+          - name: keycloak
+            issuerUrl: https://keycloak.example.com/realms/mcp
+            audience: mcp-registry
+            clientId: mcp-registry
+            # File path must match the volumeMount for the OAuth client secret
+            clientSecretFile: /secrets/oauth-client-secret/secret
+            # File path must match the volumeMount for the CA certificate
+            caCertPath: /config/certs/keycloak-ca/ca.crt
+  volumes:
+    # Registry data from a ConfigMap
+    - name: registry-data-production
+      configMap:
+        name: prod-registry
+        items:
+          - key: registry.json
+            path: registry.json
+    # OAuth client secret from a Kubernetes Secret
+    - name: oauth-client-secret
+      secret:
+        secretName: oauth-client-secret
+        items:
+          - key: secret
+            path: secret
+    # CA certificate for the OAuth provider from a ConfigMap
+    - name: keycloak-ca
+      configMap:
+        name: keycloak-ca
+        items:
+          - key: ca.crt
+            path: ca.crt
+  volumeMounts:
+    # Mount registry data at the path referenced in configYAML sources
+    - name: registry-data-production
+      mountPath: /config/registry/production
+      readOnly: true
+    # Mount OAuth client secret at the path referenced by clientSecretFile
+    - name: oauth-client-secret
+      mountPath: /secrets/oauth-client-secret
+      readOnly: true
+    # Mount CA certificate at the path referenced by caCertPath
+    - name: keycloak-ca
+      mountPath: /config/certs/keycloak-ca
+      readOnly: true

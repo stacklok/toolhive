@@ -1195,6 +1195,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "mutating_webhooks": {
+                        "description": "MutatingWebhooks contains the configuration for mutating webhook middleware.\nMutating webhooks run before validating webhooks, per RFC THV-0017 ordering.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "name": {
                         "description": "Name is the name of the MCP server",
                         "type": "string"

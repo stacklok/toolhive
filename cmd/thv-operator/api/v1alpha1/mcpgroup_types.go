@@ -43,6 +43,15 @@ type MCPGroupStatus struct {
 	// +optional
 	RemoteProxyCount int32 `json:"remoteProxyCount,omitempty"`
 
+	// Entries lists MCPServerEntry names in this group
+	// +listType=set
+	// +optional
+	Entries []string `json:"entries,omitempty"`
+
+	// EntryCount is the number of MCPServerEntries
+	// +optional
+	EntryCount int32 `json:"entryCount,omitempty"`
+
 	// Conditions represent observations
 	// +listType=map
 	// +listMapKey=type

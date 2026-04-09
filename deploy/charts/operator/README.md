@@ -99,6 +99,6 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.vmcpImage | string | `"ghcr.io/stacklok/toolhive/vmcp:v0.16.0"` | Image to use for Virtual MCP Server (vMCP) deployments |
 | operator.volumeMounts | list | `[]` | Additional volume mounts on the operator container |
 | operator.volumes | list | `[]` | Additional volumes to mount on the operator pod |
-| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:v1.0.0"}` | All values for the registry API deployment and associated resources |
-| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:v1.0.0"` | Container image for the registry API |
+| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:v1.0.1"}` | All values for the registry API deployment and associated resources |
+| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:v1.0.1"` | Container image for the registry API |
 

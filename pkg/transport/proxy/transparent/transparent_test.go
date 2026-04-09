@@ -48,7 +48,7 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 	parsedURL, _ := http.NewRequest("GET", target.URL, nil)
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
-	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	proxyURL.Transport = newTracingTransport(http.DefaultTransport, proxy)
 	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	// hit the proxy
@@ -77,7 +77,7 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 			pr.SetXForwarded()
 		},
 		FlushInterval:  -1,
-		Transport:      &tracingTransport{base: http.DefaultTransport, p: p},
+		Transport:      newTracingTransport(http.DefaultTransport, p),
 		ModifyResponse: p.modifyResponse,
 	}
 	return proxy
@@ -172,7 +172,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 		},
 	}
 
-	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	reverseProxy.Transport = newTracingTransport(http.DefaultTransport, proxy)
 
 	// Create request with trace context
 	ctx, span := otel.Tracer("test").Start(context.Background(), "test-operation")
@@ -428,7 +428,7 @@ func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 	reverseProxy.FlushInterval = -1
-	tracingTrans := &tracingTransport{base: http.DefaultTransport, p: proxy}
+	tracingTrans := newTracingTransport(http.DefaultTransport, proxy)
 	reverseProxy.Transport = tracingTrans
 
 	// Make a request through the proxy
@@ -474,7 +474,7 @@ func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 	reverseProxy.FlushInterval = -1
-	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	reverseProxy.Transport = newTracingTransport(http.DefaultTransport, proxy)
 
 	// Make multiple requests through the proxy
 	for i := 0; i < 5; i++ {
@@ -519,7 +519,7 @@ func TestTransparentProxy_NoUnauthorizedCallbackOnSuccess(t *testing.T) {
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 	reverseProxy.FlushInterval = -1
-	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	reverseProxy.Transport = newTracingTransport(http.DefaultTransport, proxy)
 
 	// Make a request through the proxy
 	rec := httptest.NewRecorder()
@@ -556,7 +556,7 @@ func TestTransparentProxy_NilUnauthorizedCallback(t *testing.T) {
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 	reverseProxy.FlushInterval = -1
-	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	reverseProxy.Transport = newTracingTransport(http.DefaultTransport, proxy)
 
 	// Make a request through the proxy - should not panic
 	rec := httptest.NewRecorder()
@@ -848,7 +848,7 @@ func TestSSEEndpointRewriting(t *testing.T) {
 	parsedURL, _ := http.NewRequest("GET", target.URL, nil)
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
-	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	proxyURL.Transport = newTracingTransport(http.DefaultTransport, proxy)
 	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	// Create request with X-Forwarded-Prefix header
@@ -897,7 +897,7 @@ func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
 	parsedURL, _ := http.NewRequest("GET", target.URL, nil)
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
-	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	proxyURL.Transport = newTracingTransport(http.DefaultTransport, proxy)
 	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	rec := httptest.NewRecorder()
@@ -945,7 +945,7 @@ func TestSSEMessageEventNotRewritten(t *testing.T) {
 	parsedURL, _ := http.NewRequest("GET", target.URL, nil)
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
-	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	proxyURL.Transport = newTracingTransport(http.DefaultTransport, proxy)
 	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	rec := httptest.NewRecorder()

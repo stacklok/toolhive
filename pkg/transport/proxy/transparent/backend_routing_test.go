@@ -172,13 +172,13 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	tt := &tracingTransport{base: http.DefaultTransport, p: NewTransparentProxyWithOptions(
+	tt := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
 		nil, nil, "", false,
 		nil,
-	)}
+	))
 
 	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
 		strings.NewReader(`{"method":"tools/list"}`))
@@ -207,13 +207,13 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	tt := &tracingTransport{base: http.DefaultTransport, p: NewTransparentProxyWithOptions(
+	tt := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
 		nil, nil, "", false,
 		nil,
-	)}
+	))
 
 	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
 		strings.NewReader(`{"method":"initialize"}`))
@@ -239,13 +239,13 @@ func TestRoundTripAllowsBatchInitializeWithUnknownSession(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	tt := &tracingTransport{base: http.DefaultTransport, p: NewTransparentProxyWithOptions(
+	tt := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
 		nil, nil, "", false,
 		nil,
-	)}
+	))
 
 	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
 		strings.NewReader(`[{"method":"initialize"},{"method":"tools/list"}]`))
@@ -468,6 +468,63 @@ func TestRoundTripReinitializesPreservesNonUUIDBackendSessionID(t *testing.T) {
 	require.Len(t, receivedSIDs, 2, "fresh backend should have received replay + second request")
 	assert.Equal(t, nonUUIDSessionID, receivedSIDs[0], "replay must forward raw non-UUID session ID")
 	assert.Equal(t, nonUUIDSessionID, receivedSIDs[1], "subsequent request via Rewrite must forward raw non-UUID session ID")
+}
+
+// TestRoundTripReinitializesAfterPriorReinit verifies that re-initialization
+// triggers correctly on a second failure when the session already has a
+// backend_sid from a prior re-init. Without the clientSID capture fix,
+// RoundTrip rewrites the header to backend_sid before calling reinitializeAndReplay,
+// which then looks up the session by the (wrong) backend SID and finds nothing.
+func TestRoundTripReinitializesAfterPriorReinit(t *testing.T) {
+	t.Parallel()
+
+	firstBackendSID := uuid.New().String()
+	secondBackendSID := uuid.New().String()
+
+	// staleBackend: returns 404 to trigger re-init.
+	staleBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer staleBackend.Close()
+
+	var freshHit atomic.Int32
+	freshBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		freshHit.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"initialize"`) {
+			w.Header().Set("Mcp-Session-Id", secondBackendSID)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer freshBackend.Close()
+
+	proxy, addr := startProxy(t, freshBackend.URL)
+
+	// Session pre-populated as if a prior re-init already happened:
+	// backend_url points to staleBackend, backend_sid is set to firstBackendSID.
+	clientSessionID := uuid.New().String()
+	sess := session.NewProxySession(clientSessionID)
+	sess.SetMetadata(sessionMetadataBackendURL, staleBackend.URL)
+	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sess.SetMetadata(sessionMetadataBackendSID, firstBackendSID)
+	require.NoError(t, proxy.sessionManager.AddSession(sess))
+
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+addr+"/mcp",
+		strings.NewReader(`{"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", clientSessionID)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"client should see 200: re-init must use client SID for session lookup, not backend SID")
+	assert.GreaterOrEqual(t, freshHit.Load(), int32(2),
+		"fresh backend should receive re-initialize + replay")
 }
 
 // TestRoundTripReinitializesOnDialError verifies that when the proxy cannot reach

@@ -1566,6 +1566,170 @@ func TestDiscoverAuth_MCPServerEntry_TokenExchange(t *testing.T) {
 	assert.Equal(t, "entry-secret-value", backend.AuthConfig.TokenExchange.ClientSecret)
 }
 
+func TestMCPServerEntryToBackend_SetsBackendTypeEntry(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "typed-entry",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com/mcp",
+			Transport: "streamable-http",
+			GroupRef:  "test-group",
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+	require.NotNil(t, backend)
+	assert.Equal(t, vmcp.BackendTypeEntry, backend.Type)
+}
+
+func TestMCPServerEntryToBackend_WithCABundle(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+	caCertData := "-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----"
+
+	caConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ca-bundle",
+			Namespace: namespace,
+		},
+		Data: map[string]string{
+			"ca.crt": caCertData,
+		},
+	}
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry-with-ca",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://internal-mcp.corp:8443/mcp",
+			Transport: "streamable-http",
+			GroupRef:  "test-group",
+			CABundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "test-ca-bundle",
+					},
+					Key: "ca.crt",
+				},
+			},
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, caConfigMap, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+	require.NotNil(t, backend)
+	assert.Equal(t, []byte(caCertData), backend.CABundleData)
+	assert.Equal(t, vmcp.BackendTypeEntry, backend.Type)
+}
+
+func TestMCPServerEntryToBackend_CABundleMissing_ReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	// No ConfigMap created — simulates missing CA bundle
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry-missing-ca",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://internal-mcp.corp:8443/mcp",
+			Transport: "streamable-http",
+			GroupRef:  "test-group",
+			CABundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "nonexistent-ca-bundle",
+					},
+					Key: "ca.crt",
+				},
+			},
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+	// CA bundle failure is fatal — backend should be nil
+	assert.Nil(t, backend)
+}
+
+func TestMCPServerEntryToBackend_WithCABundleDefaultKey(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+	caCertData := "-----BEGIN CERTIFICATE-----\nMIIBdefault\n-----END CERTIFICATE-----"
+
+	caConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default-key-ca",
+			Namespace: namespace,
+		},
+		Data: map[string]string{
+			"ca.crt": caCertData,
+		},
+	}
+
+	entry := &mcpv1alpha1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "entry-default-key",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerEntrySpec{
+			RemoteURL: "https://internal-mcp.corp:8443/mcp",
+			Transport: "streamable-http",
+			GroupRef:  "test-group",
+			CABundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "default-key-ca",
+					},
+					// Key is empty — should default to "ca.crt"
+				},
+			},
+		},
+		Status: mcpv1alpha1.MCPServerEntryStatus{
+			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		},
+	}
+
+	k8sClient := setupTestClient(t, caConfigMap, entry)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	backend := discoverer.mcpServerEntryToBackend(t.Context(), entry)
+
+	require.NotNil(t, backend)
+	assert.Equal(t, []byte(caCertData), backend.CABundleData)
+}
+
 func TestFetchCABundleData(t *testing.T) {
 	t.Parallel()
 

@@ -17,14 +17,14 @@ import (
 // newStringCache builds a ValidatingCache[string, string] for tests.
 func newStringCache(
 	load func(string) (string, error),
-	check func(string) error,
+	check func(string, string) error,
 	evict func(string, string),
 ) *ValidatingCache[string, string] {
 	return New(0, load, check, evict)
 }
 
 // alwaysAliveCheck returns a check function that always reports the entry as alive.
-func alwaysAliveCheck(_ string) error { return nil }
+func alwaysAliveCheck(_ string, _ string) error { return nil }
 
 // ---------------------------------------------------------------------------
 // Cache miss / restore
@@ -109,7 +109,7 @@ func TestValidatingCache_CacheHit_Expired_EvictsAndCallsOnEvict(t *testing.T) {
 	evictedVal := ""
 	c := newStringCache(
 		func(_ string) (string, error) { return "v", nil },
-		func(_ string) error { return ErrExpired },
+		func(_ string, _ string) error { return ErrExpired },
 		func(key, val string) {
 			evictedKey = key
 			evictedVal = val
@@ -134,7 +134,7 @@ func TestValidatingCache_CacheHit_Expired_EntryRemovedFromCache(t *testing.T) {
 			calls++
 			return "v", nil
 		},
-		func(_ string) error {
+		func(_ string, _ string) error {
 			if expired {
 				return ErrExpired
 			}
@@ -157,7 +157,7 @@ func TestValidatingCache_CacheHit_TransientCheckError_ReturnsCached(t *testing.T
 
 	c := newStringCache(
 		func(_ string) (string, error) { return "v", nil },
-		func(_ string) error { return errors.New("transient storage error") },
+		func(_ string, _ string) error { return errors.New("transient storage error") },
 		nil,
 	)
 	c.Get("k") //nolint:errcheck // prime the cache
@@ -182,7 +182,7 @@ func TestValidatingCache_Set_StoresValue(t *testing.T) {
 
 	c.Set("k", "v")
 
-	v, ok := c.Peek("k")
+	v, ok := c.Get("k")
 	require.True(t, ok)
 	assert.Equal(t, "v", v)
 }
@@ -198,83 +198,9 @@ func TestValidatingCache_Set_UpdatesExisting(t *testing.T) {
 	c.Get("k") //nolint:errcheck // prime with "loaded"
 	c.Set("k", "updated")
 
-	v, ok := c.Peek("k")
+	v, ok := c.Get("k")
 	require.True(t, ok)
 	assert.Equal(t, "updated", v)
-}
-
-func TestValidatingCache_Delete_RemovesEntry(t *testing.T) {
-	t.Parallel()
-
-	c := newStringCache(
-		func(_ string) (string, error) { return "v", nil },
-		alwaysAliveCheck,
-		nil,
-	)
-	c.Get("k") //nolint:errcheck
-
-	c.Delete("k")
-
-	_, ok := c.Peek("k")
-	assert.False(t, ok)
-}
-
-func TestValidatingCache_Peek_MissingKey_ReturnsFalse(t *testing.T) {
-	t.Parallel()
-
-	c := newStringCache(
-		func(string) (string, error) { return "", nil },
-		alwaysAliveCheck,
-		nil,
-	)
-
-	_, ok := c.Peek("absent")
-	assert.False(t, ok)
-}
-
-func TestValidatingCache_CompareAndSwap_Success(t *testing.T) {
-	t.Parallel()
-
-	c := newStringCache(
-		func(_ string) (string, error) { return "v1", nil },
-		alwaysAliveCheck,
-		nil,
-	)
-	c.Get("k") //nolint:errcheck // prime with "v1"
-
-	swapped := c.CompareAndSwap("k", "v1", "v2")
-	require.True(t, swapped)
-
-	v, ok := c.Peek("k")
-	require.True(t, ok)
-	assert.Equal(t, "v2", v)
-}
-
-func TestValidatingCache_CompareAndSwap_WrongOld_Fails(t *testing.T) {
-	t.Parallel()
-
-	c := newStringCache(
-		func(_ string) (string, error) { return "v1", nil },
-		alwaysAliveCheck,
-		nil,
-	)
-	c.Get("k") //nolint:errcheck
-
-	swapped := c.CompareAndSwap("k", "wrong", "v2")
-	assert.False(t, swapped)
-}
-
-func TestValidatingCache_CompareAndSwap_MissingKey_Fails(t *testing.T) {
-	t.Parallel()
-
-	c := newStringCache(
-		func(_ string) (string, error) { return "", errors.New("not found") },
-		alwaysAliveCheck,
-		nil,
-	)
-
-	swapped := c.CompareAndSwap("absent", "old", "new")
-	assert.False(t, swapped)
 }
 
 // ---------------------------------------------------------------------------
@@ -307,11 +233,9 @@ func TestValidatingCache_LRU_EvictsLeastRecentlyUsed(t *testing.T) {
 	assert.Equal(t, []string{"a"}, evictedKeys, "LRU entry (a) should be evicted")
 
 	// a is evicted; b and c remain.
-	_, aPresent := c.Peek("a")
-	assert.False(t, aPresent, "a should have been evicted")
-	_, bPresent := c.Peek("b")
+	_, bPresent := c.Get("b")
 	assert.True(t, bPresent)
-	_, cPresent := c.Peek("c")
+	_, cPresent := c.Get("c")
 	assert.True(t, cPresent)
 }
 
@@ -340,10 +264,8 @@ func TestValidatingCache_LRU_GetRefreshesMRUPosition(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, []string{"b"}, evictedKeys, "b should be evicted (LRU after a was re-accessed)")
 
-	_, aPresent := c.Peek("a")
+	_, aPresent := c.Get("a")
 	assert.True(t, aPresent, "a should still be in cache")
-	_, bPresent := c.Peek("b")
-	assert.False(t, bPresent, "b should have been evicted")
 }
 
 func TestValidatingCache_LRU_SetRefreshesMRUPosition(t *testing.T) {
@@ -429,8 +351,6 @@ func TestValidatingCache_LRU_Len(t *testing.T) {
 	assert.Equal(t, 1, c.Len())
 	c.Get("b") //nolint:errcheck
 	assert.Equal(t, 2, c.Len())
-	c.Delete("a")
-	assert.Equal(t, 1, c.Len())
 }
 
 // ---------------------------------------------------------------------------

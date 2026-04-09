@@ -1044,14 +1044,11 @@ spec:
         type: object
         x-kubernetes-validations:
         - message: either configYAML or sources must be specified
-          rule: size(self.spec.configYAML) > 0 || size(self.spec.sources) > 0
-        - message: configYAML is mutually exclusive with sources, registries, databaseConfig,
-            authConfig, and telemetryConfig
-          rule: '!(size(self.spec.configYAML) > 0 && (size(self.spec.sources) > 0
-            || size(self.spec.registries) > 0 || has(self.spec.databaseConfig) ||
-            has(self.spec.authConfig) || has(self.spec.telemetryConfig)))'
+          rule: size(self.spec.configYAML) > 0 || (has(self.spec.sources) && size(self.spec.sources)
+            > 0)
         - message: at most one managed source is allowed
-          rule: self.spec.sources.filter(s, has(s.managed)).size() <= 1
+          rule: '!has(self.spec.sources) || self.spec.sources.filter(s, has(s.managed)).size()
+            <= 1'
     served: true
     storage: true
     subresources:

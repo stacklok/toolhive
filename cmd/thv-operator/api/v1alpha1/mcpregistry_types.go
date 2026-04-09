@@ -862,9 +862,8 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="size(self.spec.configYAML) > 0 || size(self.spec.sources) > 0",message="either configYAML or sources must be specified"
-//+kubebuilder:validation:XValidation:rule="!(size(self.spec.configYAML) > 0 && (size(self.spec.sources) > 0 || size(self.spec.registries) > 0 || has(self.spec.databaseConfig) || has(self.spec.authConfig) || has(self.spec.telemetryConfig)))",message="configYAML is mutually exclusive with sources, registries, databaseConfig, authConfig, and telemetryConfig"
-//+kubebuilder:validation:XValidation:rule="self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
+//+kubebuilder:validation:XValidation:rule="size(self.spec.configYAML) > 0 || (has(self.spec.sources) && size(self.spec.sources) > 0)",message="either configYAML or sources must be specified"
+//+kubebuilder:validation:XValidation:rule="!has(self.spec.sources) || self.spec.sources.filter(s, has(s.managed)).size() <= 1",message="at most one managed source is allowed"
 
 // MCPRegistry is the Schema for the mcpregistries API
 type MCPRegistry struct {

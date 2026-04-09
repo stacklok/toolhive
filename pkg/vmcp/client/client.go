@@ -9,12 +9,15 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -87,25 +90,58 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 // environment-specific settings like TLS config or proxy overrides). Otherwise a transport
 // with the standard Go defaults is constructed, preserving proxy, dial timeout, HTTP/2, and
 // idle-connection settings that a zero-value &http.Transport{} would drop.
-func newBackendTransport() *http.Transport {
+//
+// If caBundlePath is non-empty, a custom TLS configuration is applied that trusts both
+// the system root CAs and the certificate(s) in the specified file. This is used for
+// entry-type backends with self-signed or internal CA certificates.
+func newBackendTransport(caBundlePath string) (*http.Transport, error) {
+	var t *http.Transport
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-		return dt.Clone()
+		t = dt.Clone()
+	} else {
+		// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
+		// Construct a transport with the same defaults as the Go standard library uses for
+		// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
+		t = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
 	}
-	// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
-	// Construct a transport with the same defaults as the Go standard library uses for
-	// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
-	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+
+	if caBundlePath != "" {
+		caCert, err := os.ReadFile(caBundlePath) //nolint:gosec // CA bundle path is validated by config validator (no path traversal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA bundle from %s: %w", caBundlePath, err)
+		}
+
+		caCertPool, err := x509.SystemCertPool()
+		if err != nil {
+			// Fall back to empty pool if system certs can't be loaded
+			caCertPool = x509.NewCertPool()
+		}
+
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", caBundlePath)
+		}
+
+		if t.TLSClientConfig == nil {
+			t.TLSClientConfig = &tls.Config{}
+		} else {
+			t.TLSClientConfig = t.TLSClientConfig.Clone()
+		}
+		t.TLSClientConfig.RootCAs = caCertPool
+		t.TLSClientConfig.MinVersion = tls.VersionTLS12
 	}
+
+	return t, nil
 }
 
 // roundTripperFunc is a function adapter for http.RoundTripper.
@@ -202,7 +238,11 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	//
 	// Clone DefaultTransport per call so each client gets an isolated connection pool,
 	// preventing stale keep-alive connections from one backend affecting others.
-	var baseTransport http.RoundTripper = newBackendTransport()
+	httpTransport, err := newBackendTransport(target.CABundlePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transport for backend %s: %w", target.WorkloadID, err)
+	}
+	var baseTransport http.RoundTripper = httpTransport
 
 	// Resolve authentication strategy ONCE at client creation time
 	authStrategy, err := h.resolveAuthStrategy(target)

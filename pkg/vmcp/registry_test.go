@@ -509,6 +509,28 @@ func TestBackendToTarget(t *testing.T) {
 			},
 		},
 		{
+			name: "entry backend with CA bundle",
+			backend: &Backend{
+				ID:            "remote-mcp",
+				Name:          "Remote MCP",
+				BaseURL:       "https://mcp.example.com/mcp",
+				TransportType: "streamable-http",
+				Type:          BackendTypeEntry,
+				CABundlePath:  "/etc/toolhive/ca-bundles/internal/ca.crt",
+				HealthStatus:  BackendHealthy,
+			},
+			wantNil: false,
+			validate: func(t *testing.T, target *BackendTarget) {
+				t.Helper()
+				assert.Equal(t, "remote-mcp", target.WorkloadID)
+				assert.Equal(t, "Remote MCP", target.WorkloadName)
+				assert.Equal(t, "https://mcp.example.com/mcp", target.BaseURL)
+				assert.Equal(t, "streamable-http", target.TransportType)
+				assert.Equal(t, "/etc/toolhive/ca-bundles/internal/ca.crt", target.CABundlePath)
+				assert.Equal(t, BackendHealthy, target.HealthStatus)
+			},
+		},
+		{
 			name: "minimal backend",
 			backend: &Backend{
 				ID: "minimal",

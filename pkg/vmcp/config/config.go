@@ -288,18 +288,24 @@ type StaticBackendConfig struct {
 	// +kubebuilder:validation:Required
 	Transport string `json:"transport" yaml:"transport"`
 
+	// Type is the backend workload type: "entry" for MCPServerEntry backends, or empty
+	// for container/proxy backends. Entry backends connect directly to remote MCP servers.
+	// +kubebuilder:validation:Enum=entry;""
+	// +optional
+	Type string `json:"type,omitempty" yaml:"type,omitempty"`
+
+	// CABundlePath is the file path to a custom CA certificate bundle for TLS verification.
+	// Only valid when Type is "entry". The operator mounts CA bundles at
+	// /etc/toolhive/ca-bundles/<name>/ca.crt.
+	// +optional
+	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
+
 	// Metadata is a custom key-value map for storing additional backend information
 	// such as labels, tags, or other arbitrary data (e.g., "env": "prod", "region": "us-east-1").
 	// This is NOT Kubernetes ObjectMeta - it's a simple string map for user-defined metadata.
 	// Reserved keys: "group" is automatically set by vMCP and any user-provided value will be overridden.
 	// +optional
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-
-	// CABundlePath is the file path to the CA certificate bundle for TLS verification.
-	// Set by the operator when an MCPServerEntry has a caBundleRef, pointing to the
-	// mounted ConfigMap volume path (e.g., /etc/toolhive/ca-bundles/<entry-name>/ca.crt).
-	// +optional
-	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
 }
 
 // OutgoingAuthConfig configures backend authentication.

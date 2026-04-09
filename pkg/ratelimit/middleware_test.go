@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
@@ -27,6 +28,25 @@ type dummyLimiter struct {
 
 func (d *dummyLimiter) Allow(context.Context, string, string) (*Decision, error) {
 	return d.decision, d.err
+}
+
+// recordingLimiter captures the arguments passed to Allow.
+type recordingLimiter struct {
+	toolName string
+	userID   string
+}
+
+func (r *recordingLimiter) Allow(_ context.Context, toolName, userID string) (*Decision, error) {
+	r.toolName = toolName
+	r.userID = userID
+	return &Decision{Allowed: true}, nil
+}
+
+// withIdentity adds an auth.Identity with the given subject to the request context.
+func withIdentity(r *http.Request, subject string) *http.Request {
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: subject}}
+	ctx := auth.WithIdentity(r.Context(), identity)
+	return r.WithContext(ctx)
 }
 
 // withParsedMCPRequest adds a ParsedMCPRequest to the request context.
@@ -147,4 +167,44 @@ func TestRateLimitHandler_NonToolCallPassesThrough(t *testing.T) {
 
 	assert.True(t, nextCalled, "non-tools/call should pass through regardless of limiter")
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestRateLimitHandler_PassesUserID(t *testing.T) {
+	t.Parallel()
+
+	recorder := &recordingLimiter{}
+	handler := rateLimitHandler(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = withParsedMCPRequest(req, "tools/call", "echo", 1)
+	req = withIdentity(req, "alice@example.com")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "echo", recorder.toolName)
+	assert.Equal(t, "alice@example.com", recorder.userID)
+}
+
+func TestRateLimitHandler_NoIdentityPassesEmptyUserID(t *testing.T) {
+	t.Parallel()
+
+	recorder := &recordingLimiter{}
+	handler := rateLimitHandler(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = withParsedMCPRequest(req, "tools/call", "echo", 1)
+	// No identity in context — unauthenticated request.
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "echo", recorder.toolName)
+	assert.Empty(t, recorder.userID, "unauthenticated requests should pass empty userID")
 }

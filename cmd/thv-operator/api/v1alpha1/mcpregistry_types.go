@@ -38,7 +38,6 @@ type MCPRegistrySpec struct {
 	// via the Volumes and VolumeMounts fields below.
 	//
 	// +optional
-	// +kubebuilder:validation:MaxLength=131072
 	ConfigYAML string `json:"configYAML,omitempty"`
 
 	// Volumes defines additional volumes to add to the registry API pod.
@@ -54,7 +53,6 @@ type MCPRegistrySpec struct {
 	//
 	// +optional
 	// +listType=atomic
-	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Volumes []apiextensionsv1.JSON `json:"volumes,omitempty"`
 
@@ -69,7 +67,6 @@ type MCPRegistrySpec struct {
 	//
 	// +optional
 	// +listType=atomic
-	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:pruning:PreserveUnknownFields
 	VolumeMounts []apiextensionsv1.JSON `json:"volumeMounts,omitempty"`
 

@@ -322,7 +322,6 @@ spec:
                   DatabaseConfig, AuthConfig, TelemetryConfig). When set, the operator
                   uses the decoupled code path — volumes and mounts must be provided
                   via the Volumes and VolumeMounts fields below.
-                maxLength: 131072
                 type: string
               databaseConfig:
                 description: |-
@@ -932,7 +931,6 @@ spec:
                   a corresponding volume mount must exist with mountPath: /secrets/git-creds.
                 items:
                   x-kubernetes-preserve-unknown-fields: true
-                maxItems: 50
                 type: array
                 x-kubernetes-list-type: atomic
                 x-kubernetes-preserve-unknown-fields: true
@@ -950,7 +948,6 @@ spec:
                     - Any other volume type the registry server needs
                 items:
                   x-kubernetes-preserve-unknown-fields: true
-                maxItems: 50
                 type: array
                 x-kubernetes-list-type: atomic
                 x-kubernetes-preserve-unknown-fields: true

@@ -538,8 +538,9 @@ _Appears in:_
 | `name` _string_ | Name is the backend identifier.<br />Must match the backend name from the MCPGroup for auth config resolution. |  | Required: \{\} <br /> |
 | `url` _string_ | URL is the backend's MCP server base URL. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `transport` _string_ | Transport is the MCP transport protocol: "sse" or "streamable-http"<br />Only network transports supported by vMCP client are allowed. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
+| `type` _string_ | Type is the backend workload type: "entry" for MCPServerEntry backends, or empty<br />for container/proxy backends. Entry backends connect directly to remote MCP servers. |  | Enum: [entry ] <br />Optional: \{\} <br /> |
+| `caBundlePath` _string_ | CABundlePath is the file path to a custom CA certificate bundle for TLS verification.<br />Only valid when Type is "entry". The operator mounts CA bundles at<br />/etc/toolhive/ca-bundles/<name>/ca.crt. |  | Optional: \{\} <br /> |
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
-| `caBundlePath` _string_ | CABundlePath is the file path to the CA certificate bundle for TLS verification.<br />Set by the operator when an MCPServerEntry has a caBundleRef, pointing to the<br />mounted ConfigMap volume path (e.g., /etc/toolhive/ca-bundles/<entry-name>/ca.crt). |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.StepErrorHandling

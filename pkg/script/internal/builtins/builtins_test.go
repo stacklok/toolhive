@@ -55,7 +55,7 @@ func TestBuild_ToolCallable(t *testing.T) {
 				},
 			}}
 
-			globals, _ := Build(context.Background(), tools, 100_000, 0)
+			globals := Build(context.Background(), tools, 100_000, 0)
 			_, err := core.Execute(tt.script, globals, 100_000)
 			require.NoError(t, err)
 			require.Equal(t, tt.expectArgs, captured)
@@ -107,7 +107,7 @@ func TestBuild_CallTool(t *testing.T) {
 				},
 			}}
 
-			globals, _ := Build(context.Background(), tools, 100_000, 0)
+			globals := Build(context.Background(), tools, 100_000, 0)
 			_, err := core.Execute(tt.script, globals, 100_000)
 
 			if tt.wantErr != "" {
@@ -125,7 +125,7 @@ func TestBuild_CallTool(t *testing.T) {
 func TestBuild_Parallel_OrderedResults(t *testing.T) {
 	t.Parallel()
 
-	globals, _ := Build(context.Background(), nil, 100_000, 0)
+	globals := Build(context.Background(), nil, 100_000, 0)
 
 	result, err := core.Execute(`
 results = parallel([
@@ -154,7 +154,7 @@ func TestBuild_Parallel_ErrorPropagation(t *testing.T) {
 		return nil, fmt.Errorf("intentional failure")
 	})
 
-	globals, _ := Build(context.Background(), nil, 100_000, 0)
+	globals := Build(context.Background(), nil, 100_000, 0)
 	globals["failing"] = failing
 
 	_, err := core.Execute(`return parallel([lambda: failing()])`, globals, 100_000)
@@ -186,7 +186,7 @@ func TestBuild_Parallel_ConcurrencyLimit(t *testing.T) {
 		return starlark.String("done"), nil
 	})
 
-	globals, _ := Build(context.Background(), nil, 1_000_000, 2) // limit to 2
+	globals := Build(context.Background(), nil, 1_000_000, 2) // limit to 2
 	globals["slow"] = slow
 
 	done := make(chan struct{})
@@ -217,7 +217,7 @@ return parallel([
 		"should never exceed concurrency limit of 2")
 }
 
-func TestBuild_Reserved(t *testing.T) {
+func TestBuild_GlobalsContainBuiltins(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDef{
@@ -226,11 +226,11 @@ func TestBuild_Reserved(t *testing.T) {
 		}},
 	}
 
-	_, reserved := Build(context.Background(), tools, 100_000, 0)
+	globals := Build(context.Background(), tools, 100_000, 0)
 
-	require.True(t, reserved["my_tool"], "sanitized tool name should be reserved")
-	require.True(t, reserved["call_tool"], "call_tool should be reserved")
-	require.True(t, reserved["parallel"], "parallel should be reserved")
+	require.Contains(t, globals, "my_tool", "sanitized tool name should be in globals")
+	require.Contains(t, globals, "call_tool", "call_tool should be in globals")
+	require.Contains(t, globals, "parallel", "parallel should be in globals")
 }
 
 func TestBuild_NameCollision(t *testing.T) {
@@ -245,7 +245,7 @@ func TestBuild_NameCollision(t *testing.T) {
 		}},
 	}
 
-	globals, _ := Build(context.Background(), tools, 100_000, 0)
+	globals := Build(context.Background(), tools, 100_000, 0)
 
 	// Only the first tool should survive sanitization collision
 	_, hasMyTool := globals["my_tool"]

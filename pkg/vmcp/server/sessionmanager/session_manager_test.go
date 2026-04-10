@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -90,6 +91,9 @@ func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]strin
 	return nil, transportsession.ErrSessionNotFound
 }
 func (alwaysFailDataStorage) Create(_ context.Context, _ string, _ map[string]string) (bool, error) {
+	return false, errors.New("storage unavailable")
+}
+func (alwaysFailDataStorage) Update(_ context.Context, _ string, _ map[string]string) (bool, error) {
 	return false, errors.New("storage unavailable")
 }
 func (alwaysFailDataStorage) Delete(_ context.Context, _ string) error { return nil }
@@ -176,7 +180,7 @@ func newTestSessionManager(
 ) (*Manager, transportsession.DataStorage) {
 	t.Helper()
 	storage := newTestSessionDataStorage(t)
-	sm, cleanup, err := New(storage, &FactoryConfig{Base: factory}, registry)
+	sm, cleanup, err := New(storage, &FactoryConfig{Base: factory, CacheCapacity: 1000}, registry)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cleanup(context.Background()) })
 	return sm, storage
@@ -216,7 +220,7 @@ func TestSessionManager_Generate(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		sess := newMockSession(t, ctrl, "placeholder", nil)
 		factory := newMockFactory(t, ctrl, sess)
-		sm, cleanup, err := New(alwaysFailDataStorage{}, &FactoryConfig{Base: factory}, newFakeRegistry())
+		sm, cleanup, err := New(alwaysFailDataStorage{}, &FactoryConfig{Base: factory, CacheCapacity: 1000}, newFakeRegistry())
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = cleanup(context.Background()) })
 
@@ -573,7 +577,8 @@ func TestSessionManager_Terminate(t *testing.T) {
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 				createdSess = newMockSession(t, ctrl, id, tools)
-				// Close() will be called exactly once during Terminate
+				// Close() is called eagerly by onEvict when Terminate removes
+				// the entry from the node-local cache after storage.Delete.
 				createdSess.EXPECT().Close().Return(nil).Times(1)
 				return createdSess, nil
 			}).Times(1)
@@ -589,7 +594,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, createdSess)
 
-		// Terminate should close the backend connections.
+		// Terminate deletes from storage and removes from cache; onEvict fires Close().
 		isNotAllowed, err := sm.Terminate(sessionID)
 		require.NoError(t, err)
 		assert.False(t, isNotAllowed)
@@ -605,7 +610,8 @@ func TestSessionManager_Terminate(t *testing.T) {
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 				sess := newMockSession(t, ctrl, id, nil)
-				sess.EXPECT().Close().Return(nil).Times(1)
+				// Close is called by onEvict when Terminate removes the cache entry.
+				sess.EXPECT().Close().Return(nil).AnyTimes()
 				return sess, nil
 			}).Times(1)
 
@@ -617,6 +623,12 @@ func TestSessionManager_Terminate(t *testing.T) {
 
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
+
+		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
+		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
+		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		}))
 
 		// Session must exist before termination.
 		_, loadErr := storage.Load(context.Background(), sessionID)
@@ -673,7 +685,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 			failStoreAfter: 1, // fail after 1 successful call (Generate's Create)
 			failDelete:     false,
 		}
-		sm, cleanup, err := New(failingStorage, &FactoryConfig{Base: factory}, registry)
+		sm, cleanup, err := New(failingStorage, &FactoryConfig{Base: factory, CacheCapacity: 1000}, registry)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = cleanup(context.Background()) })
 
@@ -711,7 +723,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 			failStoreAfter: 1, // fail after 1 successful call (Generate's Create)
 			failDelete:     true,
 		}
-		sm, cleanup, err := New(failingStorage, &FactoryConfig{Base: factory}, registry)
+		sm, cleanup, err := New(failingStorage, &FactoryConfig{Base: factory, CacheCapacity: 1000}, registry)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = cleanup(context.Background()) })
 
@@ -1875,12 +1887,18 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 				return sess, nil
 			}).Times(1)
 
-		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+		sm, storage := newTestSessionManager(t, factory, newFakeRegistry())
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
+
+		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
+		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
+		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		}))
 
 		err = sm.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
 			// Simulate concurrent Terminate() completing during decoration.
@@ -1888,7 +1906,7 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 			return sess
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "was terminated or concurrently modified during decoration")
+		assert.Contains(t, err.Error(), "was deleted during decoration")
 
 		// The session must not be resurrected.
 		_, ok := sm.GetMultiSession(sessionID)
@@ -1916,13 +1934,21 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		return f
 	}
 
+	makeEmptySess := func(t *testing.T) vmcpsession.MultiSession {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		m := sessionmocks.NewMockMultiSession(ctrl)
+		m.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+		return m
+	}
+
 	t.Run("alive session returns nil", func(t *testing.T) {
 		t.Parallel()
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "alive-session"
 		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{}))
 
-		err := sm.checkSession(sessionID)
+		err := sm.checkSession(sessionID, makeEmptySess(t))
 		assert.NoError(t, err, "alive session must return nil")
 	})
 
@@ -1930,8 +1956,8 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		t.Parallel()
 		sm, _ := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 
-		err := sm.checkSession("nonexistent-session")
-		assert.ErrorIs(t, err, ErrExpired, "deleted session must return ErrExpired")
+		err := sm.checkSession("nonexistent-session", makeEmptySess(t))
+		assert.ErrorIs(t, err, cache.ErrExpired, "deleted session must return ErrExpired")
 	})
 
 	t.Run("terminated session returns ErrExpired", func(t *testing.T) {
@@ -1945,8 +1971,8 @@ func TestSessionManager_CheckSession(t *testing.T) {
 			MetadataKeyTerminated: MetadataValTrue,
 		}))
 
-		err := sm.checkSession(sessionID)
-		assert.ErrorIs(t, err, ErrExpired, "terminated session must return ErrExpired")
+		err := sm.checkSession(sessionID, makeEmptySess(t))
+		assert.ErrorIs(t, err, cache.ErrExpired, "terminated session must return ErrExpired")
 	})
 
 	t.Run("stale backend list triggers cross-pod eviction", func(t *testing.T) {
@@ -1970,10 +1996,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		cached.EXPECT().GetMetadata().Return(map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-a,backend-b",
 		}).AnyTimes()
-		sm.sessions.Store(sessionID, cached)
+		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID)
-		assert.ErrorIs(t, err, ErrExpired,
+		err := sm.checkSession(sessionID, cached)
+		assert.ErrorIs(t, err, cache.ErrExpired,
 			"stale backend list must return ErrExpired to trigger cross-pod eviction")
 	})
 
@@ -1991,9 +2017,9 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		cached.EXPECT().GetMetadata().Return(map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-a",
 		}).AnyTimes()
-		sm.sessions.Store(sessionID, cached)
+		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID)
+		err := sm.checkSession(sessionID, cached)
 		assert.NoError(t, err, "matching backend list must return nil")
 	})
 
@@ -2011,9 +2037,9 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		cached := sessionmocks.NewMockMultiSession(ctrl)
 		cached.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
-		sm.sessions.Store(sessionID, cached)
+		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID)
+		err := sm.checkSession(sessionID, cached)
 		assert.NoError(t, err, "absent MetadataKeyBackendIDs in cache must not cause eviction")
 	})
 }
@@ -2166,6 +2192,12 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
+		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
+		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
+		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		}))
+
 		_, err = sm.Terminate(sessionID)
 		require.NoError(t, err)
 
@@ -2177,9 +2209,13 @@ func TestNotifyBackendExpired(t *testing.T) {
 			"terminated session must not be resurrected by NotifyBackendExpired")
 	})
 
-	t.Run("concurrent termination: sentinel prevents resurrection after Load succeeds", func(t *testing.T) {
+	t.Run("same-pod termination: storage.Update returns false, no resurrection", func(t *testing.T) {
 		t.Parallel()
 
+		// Verify that updateMetadata's storage.Update (SET XX) prevents
+		// resurrection even when Terminate runs concurrently on the same pod.
+		// We model Terminate completing (key deleted) before updateMetadata
+		// reaches its storage.Update call.
 		ctrl := gomock.NewController(t)
 		registry := newFakeRegistry()
 		sess := newMockSession(t, ctrl, "s", nil)
@@ -2196,22 +2232,17 @@ func TestNotifyBackendExpired(t *testing.T) {
 			map[string]string{"workload-a": "sess-a"},
 		)
 
-		// Simulate Terminate-in-progress: inject the terminatedSentinel directly
-		// into the node-local cache (as Terminate does before calling
-		// storage.Delete) while leaving storage intact. This models the TOCTOU
-		// window where NotifyBackendExpired's Load succeeded before Terminate's
-		// storage.Delete ran but our sentinel check runs while the sentinel is
-		// still present.
-		sm.sessions.Store(sessionID, terminatedSentinel{})
+		// Simulate Terminate having completed its storage.Delete already.
+		require.NoError(t, storage.Delete(context.Background(), sessionID))
 
-		// NotifyBackendExpired must detect the terminatedSentinel and bail
-		// before Upsert, leaving the storage record unmodified.
+		// storage.Update (SET XX) in updateMetadata returns (false, nil) because
+		// the key no longer exists — NotifyBackendExpired must bail without
+		// recreating the record.
 		sm.NotifyBackendExpired(sessionID, "workload-a")
 
-		got, loadErr := storage.Load(context.Background(), sessionID)
-		require.NoError(t, loadErr)
-		assert.Equal(t, "workload-a", got[vmcpsession.MetadataKeyBackendIDs],
-			"storage must not be modified when terminatedSentinel is present")
+		_, loadErr := storage.Load(context.Background(), sessionID)
+		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
+			"NotifyBackendExpired must not resurrect a session whose storage key was deleted by Terminate")
 	})
 
 	t.Run("cross-pod termination: absent storage key is a no-op (no resurrection)", func(t *testing.T) {
@@ -2247,7 +2278,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 			"NotifyBackendExpired must not resurrect a session terminated by another pod")
 	})
 
-	t.Run("evicts session from node-local cache on success", func(t *testing.T) {
+	t.Run("lazy eviction: session stays in cache immediately after NotifyBackendExpired", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -2261,9 +2292,8 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		// CreateSession must have populated the node-local cache.
-		_, cached := sm.sessions.Peek(sessionID)
-		require.True(t, cached, "session must be in node-local cache after CreateSession")
+		// Session must be in cache after CreateSession.
+		assert.Equal(t, 1, sm.sessions.Len(), "session must be in node-local cache after CreateSession")
 
 		seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
@@ -2272,11 +2302,10 @@ func TestNotifyBackendExpired(t *testing.T) {
 
 		sm.NotifyBackendExpired(sessionID, "workload-a")
 
-		// The session must have been evicted so the next GetMultiSession call
-		// triggers RestoreSession with the updated (backend-free) metadata.
-		_, stillCached := sm.sessions.Peek(sessionID)
-		assert.False(t, stillCached,
-			"session must be evicted from node-local cache after NotifyBackendExpired")
+		// With lazy eviction, session is still in cache immediately after NotifyBackendExpired.
+		// checkSession detects drift on the next GetMultiSession call.
+		assert.Equal(t, 1, sm.sessions.Len(),
+			"session must still be in cache immediately after NotifyBackendExpired (eviction is lazy)")
 	})
 }
 

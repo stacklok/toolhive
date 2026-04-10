@@ -22,8 +22,9 @@ func GenerateToolDescription(tools []Tool) string {
 	b.WriteString("Available tools (callable as functions with keyword or positional arguments):\n")
 	for _, t := range tools {
 		desc := t.Description
-		if len(desc) > 80 {
-			desc = desc[:77] + "..."
+		runes := []rune(desc)
+		if len(runes) > 80 {
+			desc = string(runes[:77]) + "..."
 		}
 		fmt.Fprintf(&b, "  - %s: %s\n", t.Name, desc)
 	}

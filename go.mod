@@ -79,7 +79,7 @@ require (
 
 require github.com/getsentry/sentry-go/otel v0.44.1
 
-require go.starlark.net v0.0.0-20260326113308-fadfc96def35 // indirect
+require go.starlark.net v0.0.0-20260326113308-fadfc96def35
 
 require (
 	cel.dev/expr v0.25.1 // indirect

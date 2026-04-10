@@ -806,7 +806,7 @@ func (s *service) applyGitInstallExisting(
 	}
 	for _, ct := range toWrite {
 		dir := filepath.Clean(clientDirs[ct])
-		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
 				http.StatusConflict,
@@ -837,7 +837,7 @@ func (s *service) applyGitInstallFresh(
 ) (*skills.InstallResult, error) {
 	for _, ct := range clientTypes {
 		dir := filepath.Clean(clientDirs[ct])
-		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
 				http.StatusConflict,
@@ -1405,7 +1405,7 @@ func (s *service) installExtractionSameDigestNewClients(
 	var written []string
 	for _, ct := range toWrite {
 		dir := filepath.Clean(clientDirs[ct])
-		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			removeSkillDirs(s.installer, clientDirs, written)
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
@@ -1471,7 +1471,7 @@ func (s *service) installExtractionFresh(
 ) (*skills.InstallResult, error) {
 	for _, ct := range clientTypes {
 		dir := filepath.Clean(clientDirs[ct])
-		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
 				http.StatusConflict,

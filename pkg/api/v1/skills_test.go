@@ -298,6 +298,26 @@ func TestSkillsRouter(t *testing.T) {
 			expectedStatus: http.StatusInternalServerError,
 			expectedBody:   "Internal Server Error",
 		},
+		{
+			name:   "install skill with clients",
+			method: "POST",
+			path:   "/",
+			body:   `{"name":"my-skill","clients":["claude-code","opencode"]}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
+					Name:    "my-skill",
+					Clients: []string{"claude-code", "opencode"},
+				}).Return(&skills.InstallResult{
+					Skill: skills.InstalledSkill{
+						Metadata: skills.SkillMetadata{Name: "my-skill"},
+						Status:   skills.InstallStatusInstalled,
+						Clients:  []string{"claude-code", "opencode"},
+					},
+				}, nil)
+			},
+			expectedStatus: http.StatusCreated,
+			expectedBody:   `"my-skill"`,
+		},
 		// install with version and scope
 		{
 			name:   "install skill with version and scope",

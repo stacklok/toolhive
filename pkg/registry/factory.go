@@ -82,7 +82,7 @@ func NewRegistryProvider(cfg *config.Config, opts ...ProviderOption) (Provider, 
 // GetDefaultProvider returns the default registry provider instance
 // This maintains backward compatibility with the existing singleton pattern
 func GetDefaultProvider() (Provider, error) {
-	return GetDefaultProviderWithConfig(config.NewDefaultProvider())
+	return GetDefaultProviderWithConfig(config.NewProvider())
 }
 
 // GetDefaultProviderWithConfig returns a registry provider using the given config provider.

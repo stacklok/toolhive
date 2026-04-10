@@ -15,7 +15,9 @@ import (
 )
 
 // CreateTokenInjectionMiddleware returns a middleware that injects a Bearer token
-// from the provided oauth2.TokenSource. It returns 401 when the workload is unauthenticated.
+// from the provided oauth2.TokenSource. It returns 503 Service Unavailable with a
+// Retry-After header when the token cannot be retrieved, so that MCP clients treat
+// the failure as transient rather than initiating an OAuth discovery flow.
 func CreateTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -24,8 +26,11 @@ func CreateTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.Middle
 				if err != nil {
 					slog.Warn("unable to retrieve OAuth token", "error", err)
 					// The token source (AuthenticatedTokenSource) handles marking
-					// the workload as unauthenticated in its Token() method
-					http.Error(w, "Authentication required", http.StatusUnauthorized)
+					// the workload as unauthenticated in its Token() method.
+					// Return 503 instead of 401 so MCP clients do not mistake this
+					// for a server that requires client-side OAuth authentication.
+					w.Header().Set("Retry-After", "10")
+					http.Error(w, "Token temporarily unavailable", http.StatusServiceUnavailable)
 					return
 				}
 

@@ -82,7 +82,7 @@ func TestWriteK8sManifest(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "sse", mcpServer.Spec.Transport)
 				assert.Equal(t, int32(8081), mcpServer.GetProxyPort())
-				assert.Equal(t, int32(3000), mcpServer.GetMcpPort())
+				assert.Equal(t, int32(3000), mcpServer.GetMCPPort())
 			},
 		},
 		{

@@ -222,7 +222,7 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 					Image:           images.YardstickServerImage,
 					Transport:       "streamable-http",
 					ProxyPort:       proxyPort,
-					McpPort:         8080,
+					MCPPort:         8080,
 					Replicas:        &replicas,
 					BackendReplicas: &backendReplicas,
 					SessionAffinity: "None",
@@ -351,7 +351,7 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 					Image:           images.YardstickServerImage,
 					Transport:       "streamable-http",
 					ProxyPort:       proxyPort,
-					McpPort:         8080,
+					MCPPort:         8080,
 					Replicas:        &replicas,
 					SessionAffinity: "None",
 					SessionStorage: &mcpv1alpha1.SessionStorageConfig{

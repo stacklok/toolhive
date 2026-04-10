@@ -67,7 +67,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					Transport: "stdio",
 					ProxyMode: "sse",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					Args:      []string{"--verbose"},
 					Env: []mcpv1alpha1.EnvVar{
 						{

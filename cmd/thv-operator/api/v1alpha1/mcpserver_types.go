@@ -221,11 +221,11 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=8080
 	ProxyPort int32 `json:"proxyPort,omitempty"`
 
-	// McpPort is the port that MCP server listens to
+	// MCPPort is the port that MCP server listens to
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
-	McpPort int32 `json:"mcpPort,omitempty"`
+	MCPPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
 	// +listType=atomic
@@ -1149,10 +1149,10 @@ func (m *MCPServer) GetProxyPort() int32 {
 	return 8080
 }
 
-// GetMcpPort returns the MCP port of the MCPServer
-func (m *MCPServer) GetMcpPort() int32 {
-	if m.Spec.McpPort > 0 {
-		return m.Spec.McpPort
+// GetMCPPort returns the MCP port of the MCPServer
+func (m *MCPServer) GetMCPPort() int32 {
+	if m.Spec.MCPPort > 0 {
+		return m.Spec.MCPPort
 	}
 	return 8080
 }

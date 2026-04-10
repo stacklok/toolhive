@@ -211,7 +211,7 @@ spec:
                 description: Image is the container image for the MCP server
                 type: string
               mcpPort:
-                description: McpPort is the port that MCP server listens to
+                description: MCPPort is the port that MCP server listens to
                 format: int32
                 maximum: 65535
                 minimum: 1

@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/stacklok/toolhive-core/registry/types"
+	registry "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/auth"
@@ -286,7 +286,7 @@ type RegistryRoutes struct {
 // NewRegistryRoutes creates a new RegistryRoutes with the default config provider
 func NewRegistryRoutes() *RegistryRoutes {
 	return &RegistryRoutes{
-		configProvider: config.NewDefaultProvider(),
+		configProvider: config.NewProvider(),
 		configService:  regpkg.NewConfigurator(),
 	}
 }
@@ -304,7 +304,7 @@ func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
 // In serve mode, the registry provider uses non-interactive auth (no browser OAuth).
 func NewRegistryRoutesForServe() *RegistryRoutes {
 	return &RegistryRoutes{
-		configProvider: config.NewDefaultProvider(),
+		configProvider: config.NewProvider(),
 		configService:  regpkg.NewConfigurator(),
 		serveMode:      true,
 	}

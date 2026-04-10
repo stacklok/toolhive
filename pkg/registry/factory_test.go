@@ -75,10 +75,11 @@ func writeTempConfigYAML(t *testing.T, dir, localRegistryPath string) string {
 	return configPath
 }
 
-//nolint:paralleltest // Mutates global config factory and provider state singletons
 // TestGetDefaultProvider_NoFactoryRegistered verifies that when no factory is
 // registered, GetDefaultProvider returns a non-nil provider backed by the
 // embedded registry data (which must contain at least one server).
+//
+//nolint:paralleltest // Mutates global config factory and provider state singletons
 func TestGetDefaultProvider_NoFactoryRegistered(t *testing.T) {
 	resetGlobalState(t)
 	// Ensure no factory is active and the cache is clear before the call.
@@ -98,7 +99,6 @@ func TestGetDefaultProvider_NoFactoryRegistered(t *testing.T) {
 	assert.NotEmpty(t, servers, "embedded registry must contain at least one server")
 }
 
-//nolint:paralleltest // Mutates global config factory and provider state singletons
 // TestGetDefaultProvider_RespectsRegisteredFactory is the critical regression
 // test for the bug fix. Before the fix, GetDefaultProvider called
 // config.NewDefaultProvider(), which bypassed any registered factory. The fix
@@ -111,6 +111,8 @@ func TestGetDefaultProvider_NoFactoryRegistered(t *testing.T) {
 //  3. Registers a factory that returns a PathProvider for that config file.
 //  4. Asserts that GetDefaultProvider() returns a provider whose ListServers
 //     includes the sentinel server — proving the factory was honoured.
+//
+//nolint:paralleltest // Mutates global config factory and provider state singletons
 func TestGetDefaultProvider_RespectsRegisteredFactory(t *testing.T) {
 	resetGlobalState(t)
 
@@ -142,10 +144,11 @@ func TestGetDefaultProvider_RespectsRegisteredFactory(t *testing.T) {
 			"this would fail on the old code that called config.NewDefaultProvider()")
 }
 
-//nolint:paralleltest // Mutates global config factory and provider state singletons
 // TestGetDefaultProvider_FactoryReturnsNil_FallsThrough verifies that when the
 // registered factory returns nil, GetDefaultProvider falls through to the
 // embedded registry (non-nil provider, non-empty server list).
+//
+//nolint:paralleltest // Mutates global config factory and provider state singletons
 func TestGetDefaultProvider_FactoryReturnsNil_FallsThrough(t *testing.T) {
 	resetGlobalState(t)
 
@@ -166,10 +169,11 @@ func TestGetDefaultProvider_FactoryReturnsNil_FallsThrough(t *testing.T) {
 	assert.NotEmpty(t, servers, "fallback to embedded registry must yield at least one server")
 }
 
-//nolint:paralleltest // Mutates global config factory and provider state singletons
 // TestGetDefaultProvider_CachesResult verifies that two consecutive calls to
 // GetDefaultProvider (without a reset in between) return the exact same
 // provider pointer, confirming the sync.Once caching semantics.
+//
+//nolint:paralleltest // Mutates global config factory and provider state singletons
 func TestGetDefaultProvider_CachesResult(t *testing.T) {
 	resetGlobalState(t)
 
@@ -190,10 +194,11 @@ func TestGetDefaultProvider_CachesResult(t *testing.T) {
 	assert.Same(t, first, second, "consecutive calls must return the same cached provider instance")
 }
 
-//nolint:paralleltest // Mutates global config factory and provider state singletons
 // TestResetDefaultProvider_AllowsReinit verifies that calling ResetDefaultProvider
 // clears the sync.Once cache so the next call to GetDefaultProvider creates a
 // fresh provider instance (a different pointer).
+//
+//nolint:paralleltest // Mutates global config factory and provider state singletons
 func TestResetDefaultProvider_AllowsReinit(t *testing.T) {
 	resetGlobalState(t)
 

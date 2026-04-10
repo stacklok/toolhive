@@ -787,16 +787,31 @@ func (s *service) applyGitInstallExisting(
 	files []gitresolver.FileEntry,
 ) (*skills.InstallResult, error) {
 	if existing.Digest != opts.Digest {
-		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
-			clientTypes, existing.Clients, true, true)
+		allClients, allDirs, err := s.expandToExistingClients(
+			existing.Clients, clientTypes, clientDirs, opts.Name, scope, opts.ProjectRoot)
+		if err != nil {
+			return nil, err
+		}
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, allClients, allDirs, files,
+			allClients, nil, true, true)
 	}
+	clientsExplicit := len(opts.Clients) > 0
 	if clientsContainAll(existing.Clients, clientTypes) ||
-		(len(existing.Clients) == 0 && len(clientTypes) <= 1) {
+		(len(existing.Clients) == 0 && len(clientTypes) <= 1 && !clientsExplicit) {
 		return &skills.InstallResult{Skill: existing}, nil
 	}
 	toWrite := missingClients(existing.Clients, clientTypes)
 	if len(toWrite) == 0 {
 		return &skills.InstallResult{Skill: existing}, nil
+	}
+	for _, ct := range toWrite {
+		dir := clientDirs[ct]
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+			return nil, httperr.WithCode(
+				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+				http.StatusConflict,
+			)
+		}
 	}
 	return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
 		toWrite, existing.Clients, true, false)
@@ -1240,6 +1255,35 @@ func (s *service) resolveAndValidateClients(
 	return requested, paths, nil
 }
 
+// expandToExistingClients merges existingClients into requestedClients and
+// resolves paths for any existing client not already in clientDirs. This
+// ensures upgrades write new files to all clients, not just the requested set.
+func (s *service) expandToExistingClients(
+	existingClients, requestedClients []string,
+	clientDirs map[string]string,
+	skillName string, scope skills.Scope, projectRoot string,
+) ([]string, map[string]string, error) {
+	allClients := mergeClientLists(requestedClients, existingClients)
+	allDirs := make(map[string]string, len(allClients))
+	for k, v := range clientDirs {
+		allDirs[k] = v
+	}
+	for _, ct := range allClients {
+		if _, ok := allDirs[ct]; ok {
+			continue
+		}
+		dir, err := s.pathResolver.GetSkillPath(ct, skillName, scope, projectRoot)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving skill path for existing client %q: %w", ct, err)
+		}
+		if err := validateResolvedDir(dir); err != nil {
+			return nil, nil, fmt.Errorf("resolved path for client %q is unsafe: %w", ct, err)
+		}
+		allDirs[ct] = dir
+	}
+	return allClients, allDirs, nil
+}
+
 // validateResolvedDir ensures a directory path returned by the PathResolver is
 // clean, absolute, and free of path-traversal segments. This provides
 // defense-in-depth against tainted paths reaching filesystem operations.
@@ -1316,26 +1360,34 @@ func (s *service) installWithExtraction(
 		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
 	}
 
-	digestMatches := storeErr == nil && existing.Digest == opts.Digest
-	// Legacy rows may have an empty Clients slice; treat as satisfied for a
-	// single-target install (previous behavior). Multi-client requests must
-	// still merge onto disk when the store has no client list.
-	allRequestedPresent := digestMatches && (clientsContainAll(existing.Clients, clientTypes) ||
-		(len(existing.Clients) == 0 && len(clientTypes) <= 1))
-
-	if digestMatches && allRequestedPresent {
+	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &skills.InstallResult{Skill: existing}, nil
 	}
 
+	digestMatches := storeErr == nil && existing.Digest == opts.Digest
 	if digestMatches && storeErr == nil {
 		return s.installExtractionSameDigestNewClients(ctx, opts, scope, existing, clientTypes, clientDirs)
 	}
 
-	if storeErr == nil && !digestMatches {
+	if storeErr == nil {
 		return s.installExtractionUpgradeDigest(ctx, opts, scope, existing, clientTypes, clientDirs)
 	}
 
 	return s.installExtractionFresh(ctx, opts, scope, clientTypes, clientDirs)
+}
+
+// isExtractionNoOp reports whether the install can be short-circuited because
+// the same digest and all requested clients are already present. Legacy store
+// rows (empty Clients slice) are treated as satisfied only when the user did
+// not explicitly specify --clients.
+func isExtractionNoOp(existing skills.InstalledSkill, storeErr error, opts skills.InstallOptions, clientTypes []string) bool {
+	if storeErr != nil || existing.Digest != opts.Digest {
+		return false
+	}
+	if clientsContainAll(existing.Clients, clientTypes) {
+		return true
+	}
+	return len(existing.Clients) == 0 && len(clientTypes) <= 1 && len(opts.Clients) == 0
 }
 
 func (s *service) installExtractionSameDigestNewClients(
@@ -1388,20 +1440,23 @@ func (s *service) installExtractionUpgradeDigest(
 	clientTypes []string,
 	clientDirs map[string]string,
 ) (*skills.InstallResult, error) {
+	allClients, allDirs, err := s.expandToExistingClients(
+		existing.Clients, clientTypes, clientDirs, opts.Name, scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
 	var written []string
-	for _, ct := range clientTypes {
-		dir := clientDirs[ct]
+	for _, ct := range allClients {
+		dir := allDirs[ct]
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, true); exErr != nil {
-			removeSkillDirs(s.installer, clientDirs, written)
+			removeSkillDirs(s.installer, allDirs, written)
 			return nil, fmt.Errorf("extracting skill upgrade: %w", exErr)
 		}
 		written = append(written, ct)
 	}
-	sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+	sk := buildInstalledSkill(opts, scope, allClients, nil)
 	if err := s.store.Update(ctx, sk); err != nil {
-		for _, ct := range clientTypes {
-			_ = s.installer.Remove(clientDirs[ct])
-		}
+		removeSkillDirs(s.installer, allDirs, allClients)
 		return nil, err
 	}
 	return &skills.InstallResult{Skill: sk}, nil
